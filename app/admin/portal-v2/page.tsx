@@ -8468,7 +8468,7 @@ export default function PortalV2Page() {
   // - a just-started local job locks the button before the server confirms
   // - a generation on another device/tab also locks the button
   const [serverActiveCount, setServerActiveCount] = useState<number | null>(null)
-  const localActiveCount = pendingSlots.filter((s) => s.status === "loading").length
+  const localActiveCount = user ? pendingSlots.filter((s) => s.status === "loading").length : 0
   const activeJobCount = serverActiveCount !== null ? Math.max(serverActiveCount, localActiveCount) : localActiveCount
 
   // Use a ref so the poll closure always sees the latest pendingSlots without re-registering the interval
@@ -8706,6 +8706,39 @@ export default function PortalV2Page() {
     fetch("/api/admin/config").then(r => r.ok ? r.json() : null).then(data => {
       if (data) setIsGenerationMaintenance(!!data.aiGenerationMaintenance)
     }).catch(() => {})
+  }, [])
+
+  // Autofill watchdog — re-kick stuck caption jobs while user is on this page.
+  // The cron already handles true background operation (every 60s), but this
+  // provides faster <90s recovery when the user is actively generating images.
+  useEffect(() => {
+    const AUTOFILL_JOBS_KEY = 'dataset-autofill-jobs'
+    const kick = async () => {
+      try {
+        const stored = JSON.parse(localStorage.getItem(AUTOFILL_JOBS_KEY) || '[]') as string[]
+        if (!stored.length) return
+        const adminPass = sessionStorage.getItem('admin-password')
+        if (!adminPass) return
+        const headers = { 'x-admin-password': adminPass }
+        const now = Date.now()
+        // Fetch status for each stored job and only kick those that are stuck
+        // (running but not updated in 90s) to avoid racing an active processor.
+        await Promise.all(stored.map(async (jobId) => {
+          try {
+            const res = await fetch(`/api/admin/auto-caption/jobs/${jobId}`, { headers })
+            if (!res.ok) return
+            const job = await res.json()
+            if (job.status !== 'running') return
+            const stale = !job.updatedAt || now - new Date(job.updatedAt).getTime() > 90_000
+            if (!stale) return
+            fetch(`/api/admin/auto-caption/jobs/${jobId}/continue`, { method: 'POST', headers }).catch(() => {})
+          } catch {}
+        }))
+      } catch {}
+    }
+    kick() // Immediate check on mount — catches stalls that happened during navigation
+    const interval = setInterval(kick, 45_000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {

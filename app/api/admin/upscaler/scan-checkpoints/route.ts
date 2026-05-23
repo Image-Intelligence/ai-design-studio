@@ -25,7 +25,7 @@ async function isAdmin(): Promise<boolean> {
 export async function GET() {
   if (!await isAdmin()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const checkpoints: { name: string; path: string; iter: number; experiment: string }[] = []
+  const checkpoints: { name: string; path: string; iter: number; experiment: string; arch: string }[] = []
 
   // 1. Pre-trained / community models — AI/Real-ESRGAN/weights/*.pth
   const weightsDir = path.join(process.cwd(), 'AI', 'Real-ESRGAN', 'weights')
@@ -39,11 +39,12 @@ export async function GET() {
         path:       path.join(weightsDir, file).replace(/\\/g, '/'),
         iter:       0,
         experiment: 'pretrained',
+        arch:       'esrgan',
       })
     }
   } catch { /* weights dir doesn't exist yet */ }
 
-  // 2. Locally trained checkpoints — AI/Real-ESRGAN/experiments/*/models/net_g_*.pth
+  // 2. Locally trained ESRGAN checkpoints — AI/Real-ESRGAN/experiments/*/models/net_g_*.pth
   const experimentsDir = path.join(process.cwd(), 'AI', 'Real-ESRGAN', 'experiments')
   try {
     const experiments = fs.readdirSync(experimentsDir).sort()
@@ -66,10 +67,40 @@ export async function GET() {
           path:       path.join(experimentsDir, exp, 'models', file).replace(/\\/g, '/'),
           iter,
           experiment: exp,
+          arch:       'esrgan',
         })
       }
     }
   } catch { /* experimentsDir doesn't exist yet */ }
+
+  // 3. neosr locally trained checkpoints — AI/neosr/experiments/*/models/net_g_*.pth
+  const neosrExpDir = path.join(process.cwd(), 'AI', 'neosr', 'experiments')
+  try {
+    const experiments = fs.readdirSync(neosrExpDir).sort()
+    for (const exp of experiments) {
+      if (exp.includes('archived')) continue
+      const modelsDir = path.join(neosrExpDir, exp, 'models')
+      if (!fs.existsSync(modelsDir)) continue
+
+      const files = fs.readdirSync(modelsDir)
+        .filter(f => /^net_g_\d+\.pth$/.test(f))
+        .sort((a, b) => {
+          const n = (s: string) => parseInt(s.match(/\d+/)?.[0] ?? '0')
+          return n(a) - n(b)
+        })
+
+      for (const file of files) {
+        const iter = parseInt(file.match(/\d+/)?.[0] ?? '0')
+        checkpoints.push({
+          name:       file,
+          path:       path.join(neosrExpDir, exp, 'models', file).replace(/\\/g, '/'),
+          iter,
+          experiment: exp,
+          arch:       'neosr',
+        })
+      }
+    }
+  } catch { /* neosr dir doesn't exist yet */ }
 
   return NextResponse.json(checkpoints)
 }

@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server'
+import { after, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
 import { syncActiveCounters } from '@/app/api/admin/queue/stats/route'
+import { processChunk, getBaseUrl } from '@/app/api/admin/auto-caption/jobs/_processor'
 
 // Jobs stuck in 'processing' longer than this are considered dead and are
 // automatically reset so their slots can be reused.
@@ -64,32 +65,42 @@ export async function GET(request: Request) {
       prisma.generationQueue.count({ where: { status: 'queued' } }),
     ])
 
-    if (!globalLimit || queuedCount === 0) {
-      return NextResponse.json({ success: true, staleReset, promoted: 0 })
+    let promoted = 0
+    if (globalLimit && queuedCount > 0) {
+      const freeSlots = Math.max(0, globalLimit.maxConcurrent - globalLimit.currentActive)
+      const toPromote = Math.min(freeSlots, queuedCount)
+      if (toPromote > 0) {
+        // Fill all free slots concurrently.  The retry loop inside promoteNextQueuedJob
+        // ensures each concurrent call claims a different queued job.
+        await Promise.all(
+          Array.from({ length: toPromote }, () =>
+            promoteNextQueuedJob().catch(e => console.error('[cron-drain] promote error:', e))
+          )
+        )
+        promoted = toPromote
+        console.log(`[cron-drain] Promoted ${toPromote} queued job(s)`)
+      }
     }
 
-    const freeSlots = Math.max(0, globalLimit.maxConcurrent - globalLimit.currentActive)
-    const toPromote = Math.min(freeSlots, queuedCount)
-
-    if (toPromote === 0) {
-      return NextResponse.json({
-        success: true,
-        staleReset,
-        promoted: 0,
-        message: `Queue at capacity (${globalLimit.currentActive}/${globalLimit.maxConcurrent})`,
-      })
+    // ── 3. Re-kick stuck AutoFill caption jobs ───────────────────────────────
+    // AutoFill jobs chain chunks via an HTTP self-call. If that call fails, the
+    // job stays 'running' but nothing processes it. Re-kick any job that hasn't
+    // updated in 90 seconds so the chain resumes without user intervention.
+    // This runs unconditionally — autofill must survive even when the image queue is idle.
+    const autofillStuckThreshold = new Date(Date.now() - 90_000)
+    const stuckAutofillJobs = await prisma.autoFillJob.findMany({
+      where:  { status: 'running', updatedAt: { lt: autofillStuckThreshold } },
+      select: { id: true },
+    })
+    if (stuckAutofillJobs.length > 0) {
+      const baseUrl = getBaseUrl(request)
+      for (const job of stuckAutofillJobs) {
+        after(async () => { await processChunk(job.id, baseUrl) })
+      }
+      console.log(`[cron-drain] Re-kicked ${stuckAutofillJobs.length} stuck autofill job(s)`)
     }
 
-    // Fill all free slots concurrently.  The retry loop inside promoteNextQueuedJob
-    // ensures each concurrent call claims a different queued job.
-    await Promise.all(
-      Array.from({ length: toPromote }, () =>
-        promoteNextQueuedJob().catch(e => console.error('[cron-drain] promote error:', e))
-      )
-    )
-
-    console.log(`[cron-drain] Promoted ${toPromote} queued job(s)`)
-    return NextResponse.json({ success: true, staleReset, promoted: toPromote })
+    return NextResponse.json({ success: true, staleReset, promoted, autofillKicked: stuckAutofillJobs.length })
   } catch (error) {
     console.error('[cron-drain] Error:', error)
     return NextResponse.json({ error: 'Drain failed' }, { status: 500 })

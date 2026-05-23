@@ -17,6 +17,7 @@ export async function GET(req: Request) {
     select:  {
       id: true, status: true, mode: true, modelKey: true, advanced: true,
       totalCount: true, nextIndex: true, processedCount: true, skippedCount: true, failedCount: true,
+      triggerWord: true, curatorContext: true,
       createdAt: true, updatedAt: true,
     },
   })
@@ -49,13 +50,14 @@ export async function POST(req: Request) {
   const triggerWord = mode === 'flux' ? (contextTags?.[0] ?? null) : null
 
   // If a job is actively running (updated recently) or paused, enqueue; otherwise start immediately.
-  // Ignore 'running' jobs not updated in 15+ minutes — they are stuck/zombie and shouldn't block new work.
-  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000)
+  // Ignore 'running' jobs not updated in 3+ minutes — they are stuck/zombie and the cron watchdog
+  // will re-kick them. Don't let them block new work.
+  const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000)
   const activeJob = await prisma.autoFillJob.findFirst({
     where: {
       OR: [
         { status: 'paused' },
-        { status: 'running', updatedAt: { gte: fifteenMinutesAgo } },
+        { status: 'running', updatedAt: { gte: threeMinutesAgo } },
       ],
     },
   })

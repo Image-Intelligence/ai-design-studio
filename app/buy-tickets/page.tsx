@@ -421,7 +421,7 @@ export default function BuyTicketsPage() {
                     </span>
                   </button>
                   <p className="text-[9px] text-slate-800 text-center font-mono tracking-widest uppercase">
-                    All transactions encrypted · Powered by LemonSqueezy
+                    All transactions encrypted · Secured checkout
                   </p>
                 </>
               )}

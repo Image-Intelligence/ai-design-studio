@@ -1148,6 +1148,7 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
   const [editingId,      setEditingId]      = useState<number | null>(null)
   const [editValue,      setEditValue]      = useState('')
   const [savingIds,      setSavingIds]      = useState(new Set<number>())
+  const lastAutoKick     = useRef<Record<string, number>>({}) // jobId → last auto-kick timestamp
 
   // Keep ref in sync + notify parent + persist active job IDs (guard on isInitialized to avoid overwriting localStorage before restore)
   useEffect(() => {
@@ -1158,36 +1159,34 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
     try { localStorage.setItem(AUTOFILL_JOBS_KEY, JSON.stringify(activeIds)) } catch {}
   }, [runs]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Mount: restore active jobs from localStorage
+  // Mount: load active jobs from DB (cross-device — not localStorage-specific)
   useEffect(() => {
-    const storedIds = (() => {
-      try { return JSON.parse(localStorage.getItem(AUTOFILL_JOBS_KEY) ?? '[]') as string[] } catch { return [] as string[] }
-    })()
-    if (!storedIds.length) {
-      isInitialized.current = true
-      return
-    }
-    Promise.all(storedIds.map(async (jobId: string) => {
-      try {
-        const res = await fetch(`/api/admin/auto-caption/jobs/${jobId}`, { headers: authHeaders() })
-        if (!res.ok) return null
-        const job = await res.json()
-        if (job.status === 'done' || job.status === 'cancelled') return null
-        const modeLabel = job.mode === 'flux' ? 'FLUX' : job.mode === 'caption' ? 'Caption' : 'Tags'
-        return {
-          jobId, status: job.status as RunEntry['status'],
-          mode: job.mode as AutoFillMode, modelKey: job.modelKey as AutoFillModel,
-          totalCount: job.totalCount, nextIndex: job.nextIndex,
-          processedCount: job.processedCount, skippedCount: job.skippedCount, failedCount: job.failedCount,
-          updatedAt: job.updatedAt ?? null, label: `${modeLabel} · restored`,
-        } as RunEntry
-      } catch { return null }
-    })).then(results => {
-      const valid = results.filter((r): r is RunEntry => r !== null)
-      if (valid.length) setRuns(valid)
-    }).finally(() => {
-      isInitialized.current = true
-    })
+    fetch('/api/admin/auto-caption/jobs', { headers: authHeaders() })
+      .then(r => r.ok ? r.json() : { jobs: [] })
+      .then(({ jobs }: { jobs: any[] }) => {
+        const entries: RunEntry[] = jobs
+          .filter((j: any) => j.status !== 'done' && j.status !== 'cancelled')
+          .map((j: any) => {
+            const modeLabel = j.mode === 'flux' ? 'FLUX' : j.mode === 'caption' ? 'Caption' : 'Tags'
+            const tag = j.triggerWord || (j.curatorContext ? j.curatorContext.slice(0, 24) : null)
+            return {
+              jobId:          j.id,
+              status:         j.status as RunEntry['status'],
+              mode:           j.mode as AutoFillMode,
+              modelKey:       j.modelKey as AutoFillModel,
+              totalCount:     j.totalCount,
+              nextIndex:      j.nextIndex,
+              processedCount: j.processedCount,
+              skippedCount:   j.skippedCount,
+              failedCount:    j.failedCount,
+              updatedAt:      j.updatedAt ?? null,
+              label:          tag ? `${modeLabel} · ${tag}` : modeLabel,
+            } as RunEntry
+          })
+        if (entries.length) setRuns(entries)
+      })
+      .catch(() => {})
+      .finally(() => { isInitialized.current = true })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Polling — single interval reads from ref to avoid stale closures; also polls selected job for detail view
@@ -1232,6 +1231,18 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
             failedCount:    job.failedCount,
             updatedAt:      job.updatedAt ?? r.updatedAt,
           } : r))
+
+          // Auto-kick stuck jobs — don't wait for user to click Resume
+          const isStuckNow = job.status === 'running'
+            && job.updatedAt
+            && Date.now() - new Date(job.updatedAt).getTime() > 90_000
+          const lastKick = lastAutoKick.current[jobId] ?? 0
+          if (isStuckNow && Date.now() - lastKick > 60_000) {
+            lastAutoKick.current[jobId] = Date.now()
+            fetch(`/api/admin/auto-caption/jobs/${jobId}/continue`, {
+              method: 'POST', headers: authHeaders(),
+            }).catch(() => {})
+          }
         } catch {}
       }))
     }, 3000)
@@ -1631,7 +1642,7 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
               const isQueued    = run.status === 'queued'
               const isDone      = run.status === 'done'
               const isCancelled = run.status === 'cancelled'
-              const isStuck     = isRunning && !!run.updatedAt && Date.now() - new Date(run.updatedAt).getTime() > 10 * 60 * 1000
+              const isStuck     = isRunning && !!run.updatedAt && Date.now() - new Date(run.updatedAt).getTime() > 90_000
               const pct         = run.totalCount > 0 ? (run.nextIndex / run.totalCount) * 100 : 0
 
               return (

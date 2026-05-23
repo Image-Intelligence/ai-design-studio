@@ -1,7 +1,7 @@
 import { after } from 'next/server'
 import { prisma } from '@/lib/prisma'
 
-export const CHUNK_SIZE = 15
+export const CHUNK_SIZE = 5
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY!
 
@@ -240,10 +240,11 @@ export async function autoStartNextQueued(baseUrl: string): Promise<void> {
 
 export async function processChunk(jobId: string, baseUrl: string): Promise<void> {
   try {
-  await _processChunk(jobId, baseUrl)
+    await _processChunk(jobId, baseUrl)
   } catch {
-    // Fatal error — mark done so the job doesn't block the queue, then start next
-    try { await prisma.autoFillJob.update({ where: { id: jobId }, data: { status: 'done' } }) } catch {}
+    // Unexpected fatal error — park as 'paused' (not 'done') so progress is preserved
+    // and the user can resume. Then allow the next queued job to run.
+    try { await prisma.autoFillJob.update({ where: { id: jobId }, data: { status: 'paused' } }) } catch {}
     try { await autoStartNextQueued(baseUrl) } catch {}
   }
 }
@@ -376,13 +377,20 @@ async function _processChunk(jobId: string, baseUrl: string): Promise<void> {
     await prisma.autoFillJob.update({ where: { id: jobId }, data: { status: 'done' } })
     await autoStartNextQueued(baseUrl)
   } else {
-    try {
-      await fetch(`${baseUrl}/api/admin/auto-caption/jobs/${jobId}/continue`, {
-        method:  'POST',
-        headers: { 'x-admin-password': process.env.ADMIN_PASSWORD ?? '' },
-      })
-    } catch {
-      // Continue call failed — job stays 'running'; stuck detection + Resume handles recovery
+    // Chain the next chunk via HTTP self-call (gives a fresh function invocation + timeout budget).
+    // Retry up to 3 times — if all fail the job stays 'running' and the cron watchdog re-kicks
+    // it within 60 seconds.
+    let chained = false
+    for (let attempt = 0; attempt < 3 && !chained; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
+      try {
+        const res = await fetch(`${baseUrl}/api/admin/auto-caption/jobs/${jobId}/continue`, {
+          method:  'POST',
+          headers: { 'x-admin-password': process.env.ADMIN_PASSWORD ?? '' },
+          signal:  AbortSignal.timeout(10_000),
+        })
+        if (res.ok) chained = true
+      } catch { /* retry */ }
     }
   }
 }

@@ -72,11 +72,14 @@ export async function POST(req: Request) {
 async function killByPort(): Promise<void> {
   const { execSync } = await import('child_process')
   try {
-    // Windows: find the PID of whatever is listening on PORT
-    const out = execSync(`netstat -ano | findstr ":${PORT}.*LISTENING"`, { encoding: 'utf8' })
-    const pid = out.trim().split(/\s+/).pop()
-    if (pid && /^\d+$/.test(pid) && pid !== '0') {
-      execSync(`taskkill /F /PID ${pid}`, { encoding: 'utf8' })
+    const out = execSync(`netstat -ano | findstr ":${PORT}"`, { encoding: 'utf8' })
+    const pids = [...new Set(
+      out.split('\n')
+        .map(line => line.trim().split(/\s+/).pop() ?? '')
+        .filter(pid => /^\d+$/.test(pid) && pid !== '0')
+    )]
+    if (pids.length > 0) {
+      execSync(`taskkill /F ${pids.map(p => `/PID ${p}`).join(' ')}`, { encoding: 'utf8' })
     }
   } catch {}
 }

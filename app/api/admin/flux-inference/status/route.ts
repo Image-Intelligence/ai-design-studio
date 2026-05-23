@@ -4,11 +4,6 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const RUNPOD_API = 'https://api.runpod.ai/v2'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 const r2 = new S3Client({
   region:   'auto',
@@ -35,7 +30,6 @@ interface RunPodStatus {
 }
 
 export async function GET(req: Request) {
-  if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { searchParams } = new URL(req.url)
   const jobId = searchParams.get('job_id')

@@ -518,38 +518,16 @@ export default function SubscribePage() {
                     </label>
                   </div>
 
-                  {/* Subscribe button */}
-                  {purchaseError && (
-                    <p className="text-xs text-red-400 text-center bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">
-                      {purchaseError}
+                  {/* Subscriptions temporarily unavailable */}
+                  <div className="space-y-3">
+                    <div className="w-full py-4 rounded-xl border-2 border-orange-500/30 bg-orange-500/5 text-center cursor-not-allowed">
+                      <p className="font-black text-base tracking-widest text-orange-400">COMING SOON</p>
+                      <p className="text-[10px] font-normal mt-0.5 text-orange-400/50">Subscriptions are temporarily unavailable</p>
+                    </div>
+                    <p className="text-xs text-slate-600 text-center leading-relaxed">
+                      We're setting up a new payment system. Check back soon — your existing tickets and benefits are unaffected.
                     </p>
-                  )}
-                  <button
-                    onClick={handleSubscribe}
-                    disabled={!acceptedTOS || purchasing}
-                    className={`w-full py-4 rounded-xl font-black text-base tracking-widest transition-all ${
-                      !acceptedTOS
-                        ? 'cursor-not-allowed bg-slate-900 border-2 border-slate-800 text-slate-600'
-                        : purchasing
-                        ? 'cursor-wait bg-slate-800 border-2 border-purple-500/50 text-purple-400 animate-pulse'
-                        : 'cursor-pointer bg-gradient-to-r from-purple-600 to-cyan-600 border-2 border-purple-400/50 text-white hover:shadow-lg hover:shadow-purple-500/30 active:scale-[0.99]'
-                    }`}
-                  >
-                    {purchasing ? 'REDIRECTING TO CHECKOUT...' : 'SUBSCRIBE'}
-                    <span className={`block text-[10px] font-normal mt-0.5 tracking-normal ${
-                      !acceptedTOS ? 'text-slate-700' : purchasing ? 'text-purple-600' : 'text-white/60'
-                    }`}>
-                      {purchasing
-                        ? 'Opening secure checkout...'
-                        : !acceptedTOS
-                        ? 'Accept the terms above to continue'
-                        : `${selectedPlan.name} · $${selectedPlan.price} ${selectedPlan.intervalLabel}`}
-                    </span>
-                  </button>
-
-                  <p className="text-[9px] text-slate-700 text-center font-mono tracking-widest uppercase mt-3">
-                    All transactions encrypted · Powered by LemonSqueezy
-                  </p>
+                  </div>
                 </>
               )}
             </div>

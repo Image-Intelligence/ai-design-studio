@@ -36,9 +36,17 @@ export async function POST(req: Request) {
     }
 
     if (action === 'refund') {
+      const ticket = await prisma.ticket.findUnique({ where: { userId: user.id } })
+      if (!ticket) return NextResponse.json({ error: 'No ticket record' }, { status: 400 })
+      // Cap refund: balance can never exceed totalBought (prevents arbitrary ticket inflation)
+      const maxRefundable = Math.max(0, ticket.totalBought - ticket.balance)
+      const effectiveAmount = Math.min(amount, maxRefundable)
+      if (effectiveAmount <= 0) {
+        return NextResponse.json({ success: true, newBalance: ticket.balance })
+      }
       const updated = await prisma.ticket.update({
         where: { userId: user.id },
-        data: { balance: { increment: amount } },
+        data: { balance: { increment: effectiveAmount } },
         select: { balance: true },
       })
       return NextResponse.json({ success: true, newBalance: updated.balance })
