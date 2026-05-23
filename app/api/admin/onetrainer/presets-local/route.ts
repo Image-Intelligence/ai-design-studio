@@ -11,7 +11,8 @@ function checkAuth(req: Request) {
 export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const presetsDir = path.join(process.cwd(), 'AI', 'OneTrainer', 'OneTrainer', 'training_presets')
+  // Committed copy of OneTrainer training presets (works on Vercel and locally)
+  const presetsDir = path.join(process.cwd(), 'data', 'training-presets')
 
   if (!fs.existsSync(presetsDir)) {
     return NextResponse.json([])
