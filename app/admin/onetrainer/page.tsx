@@ -150,6 +150,45 @@ const VRAM_PILL: Record<string, string> = {
   '24 GB': 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
 }
 
+// ─── LoRA download block ───────────────────────────────────────────────────────
+
+function LoraDownloadBlock({ r2Key, adminHeaders }: { r2Key: string; adminHeaders: Record<string, string> }) {
+  const [downloading, setDownloading] = useState(false)
+  const filename = r2Key.split('/').pop() ?? 'lora.safetensors'
+
+  async function download() {
+    setDownloading(true)
+    try {
+      const res = await fetch(`/api/admin/onetrainer/cloud/download?key=${encodeURIComponent(r2Key)}`, { headers: adminHeaders })
+      if (!res.ok) { alert('Failed to get download URL'); return }
+      const { url } = await res.json()
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+    } catch { alert('Download error') }
+    finally { setDownloading(false) }
+  }
+
+  return (
+    <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+      <CheckCircle size={11} className="text-emerald-400 shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className="text-[10px] text-slate-500 mb-0.5">LoRA saved to R2</p>
+        <p className="text-[11px] text-emerald-300 font-mono truncate">{r2Key}</p>
+      </div>
+      <button
+        onClick={download}
+        disabled={downloading}
+        className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold hover:bg-emerald-500/25 transition-colors disabled:opacity-50"
+      >
+        <ExternalLink size={10} />
+        {downloading ? 'Getting link…' : 'Download'}
+      </button>
+    </div>
+  )
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function OneTrainerPage() {
@@ -1045,13 +1084,7 @@ export default function OneTrainerPage() {
 
               {/* Cloud: output LoRA key when done */}
               {mode === 'cloud' && cloudStatus?.output_r2_key && (
-                <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
-                  <CheckCircle size={11} className="text-emerald-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[10px] text-slate-500 mb-0.5">LoRA saved to R2</p>
-                    <p className="text-[11px] text-emerald-300 font-mono truncate">{cloudStatus.output_r2_key}</p>
-                  </div>
-                </div>
+                <LoraDownloadBlock r2Key={cloudStatus.output_r2_key} adminHeaders={ah()} />
               )}
 
               {/* Cloud: error */}
