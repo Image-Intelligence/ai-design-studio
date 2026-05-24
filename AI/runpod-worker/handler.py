@@ -20,6 +20,7 @@ Input JSON shape:
 
 import os
 import sys
+import re
 import json
 import time
 import zipfile
@@ -35,6 +36,56 @@ from botocore.config import Config
 OT_DIR     = '/workspace/OneTrainer'
 MODELS_DIR = '/workspace/models'
 WORK_DIR   = '/workspace/runs'
+
+# OneTrainer saves Flux LoRAs in kohya format. These maps convert kohya sub-keys
+# to the diffusers transformer module path used in the live pipeline.
+_DOUBLE_BLOCK_KEY_MAP = {
+    'img_attn.qkv.0':  'attn.to_q',
+    'img_attn.qkv.1':  'attn.to_k',
+    'img_attn.qkv.2':  'attn.to_v',
+    'txt_attn.qkv.0':  'attn.add_q_proj',
+    'txt_attn.qkv.1':  'attn.add_k_proj',
+    'txt_attn.qkv.2':  'attn.add_v_proj',
+    'img_attn.proj':   'attn.to_out.0',
+    'img_mlp.0':       'ff.net.0.proj',
+    'img_mlp.2':       'ff.net.2',
+    'img_mod.lin':     'norm1.linear',
+    'txt_attn.proj':   'attn.to_add_out',
+    'txt_mlp.0':       'ff_context.net.0.proj',
+    'txt_mlp.2':       'ff_context.net.2',
+    'txt_mod.lin':     'norm1_context.linear',
+}
+
+_SINGLE_BLOCK_KEY_MAP = {
+    'linear1.0':      'attn.to_q',
+    'linear1.1':      'attn.to_k',
+    'linear1.2':      'attn.to_v',
+    'linear1.3':      'proj_mlp',
+    'linear2':        'proj_out',
+    'modulation.lin': 'norm.linear',
+}
+
+def _kohya_key_to_module_path(base_key: str) -> str | None:
+    """Convert an OT/kohya LoRA base key to a diffusers transformer module path.
+
+    Input:  'lora_transformer.double_blocks.3.img_attn.qkv.0'
+    Output: 'transformer_blocks.3.attn.to_q'
+    """
+    if not base_key.startswith('lora_transformer.'):
+        return None
+    rest = base_key[len('lora_transformer.'):]
+
+    m = re.match(r'^double_blocks\.(\d+)\.(.+)$', rest)
+    if m:
+        sub = _DOUBLE_BLOCK_KEY_MAP.get(m.group(2))
+        return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+    m = re.match(r'^single_blocks\.(\d+)\.(.+)$', rest)
+    if m:
+        sub = _SINGLE_BLOCK_KEY_MAP.get(m.group(2))
+        return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+    return None
 
 # Flux1-dev component configs embedded directly so inference never depends on
 # finding config files at a specific container path.
@@ -328,13 +379,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     logs.append('[inference] Pipeline ready.')
     _flush_logs(r2, bucket, job_id, logs)
 
-    # 4. Load LoRAs — manual weight merge to handle OneTrainer's packed LoRA format.
-    # pipe.load_lora_weights() fails because packed keys target FluxTransformerBlock
-    # objects rather than individual nn.Linear layers. Manually merge instead:
-    # W += scale * (B @ A), skip any key whose target isn't an nn.Linear.
+    # 4. Load LoRAs — manual weight merge.
+    # OneTrainer saves in kohya format (lora_down/lora_up, lora_transformer. prefix).
+    # We convert keys using _kohya_key_to_module_path then apply W += scale*(B@A).
     if lora_paths:
         from safetensors.torch import load_file as _sf_load
-
         _module_dict = dict(pipe.transformer.named_modules())
 
         for i, li in enumerate(lora_paths):
@@ -343,40 +392,53 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             lora_sd = _sf_load(li['path'])
 
-            # Group lora_A / lora_B pairs by base key
-            lora_pairs: dict = {}
-            for _k in lora_sd:
-                if _k.endswith('.lora_A.weight'):
-                    lora_pairs.setdefault(_k[:-len('.lora_A.weight')], {})['A'] = lora_sd[_k]
-                elif _k.endswith('.lora_B.weight'):
-                    lora_pairs.setdefault(_k[:-len('.lora_B.weight')], {})['B'] = lora_sd[_k]
+            # Log a few key names so we can confirm format in RunPod logs
+            _sample = [k for k in lora_sd if 'lora_down' in k or 'lora_A' in k][:3]
+            logs.append(f'[inference] LoRA key sample: {_sample}')
 
-            _applied = 0
-            _skipped = 0
-            for _base, _pair in lora_pairs.items():
+            # Group A/B pairs — support both kohya (lora_down/up) and diffusers (lora_A/B)
+            _pairs: dict = {}
+            for _k, _v in lora_sd.items():
+                for _sfx, _side in [('.lora_down.weight', 'A'), ('.lora_up.weight', 'B'),
+                                     ('.lora_A.weight',    'A'), ('.lora_B.weight',  'B')]:
+                    if _k.endswith(_sfx):
+                        _pairs.setdefault(_k[:-len(_sfx)], {})[_side] = _v
+                        break
+
+            _applied = _skipped = 0
+            for _base, _pair in _pairs.items():
                 if 'A' not in _pair or 'B' not in _pair:
                     continue
-                # Strip "transformer." prefix to get module path
-                _mod_path = _base[len('transformer.'):] if _base.startswith('transformer.') else _base
-                _mod = _module_dict.get(_mod_path)
-                if _mod is None or not isinstance(_mod, torch.nn.Linear):
+
+                # Resolve to diffusers module path
+                _mod_path = _kohya_key_to_module_path(_base)
+                if _mod_path is None and _base.startswith('transformer.'):
+                    _mod_path = _base[len('transformer.'):]
+
+                if not _mod_path:
                     _skipped += 1
                     continue
-                # Scale: strength * alpha/rank if alpha present, else plain strength
+
+                _mod = _module_dict.get(_mod_path)
+                if not isinstance(_mod, torch.nn.Linear):
+                    _skipped += 1
+                    continue
+
                 _alpha_key = _base + '.alpha'
                 if _alpha_key in lora_sd:
                     _rank = _pair['A'].shape[0]
                     _scale = li['strength'] * float(lora_sd[_alpha_key]) / _rank
                 else:
                     _scale = li['strength']
+
                 _A = _pair['A'].to(_mod.weight.device, dtype=_mod.weight.dtype)
                 _B = _pair['B'].to(_mod.weight.device, dtype=_mod.weight.dtype)
                 with torch.no_grad():
                     _mod.weight.data += _scale * (_B @ _A)
                 _applied += 1
 
-            logs.append(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} non-Linear targets skipped')
-        _flush_logs(r2, bucket, job_id, logs)
+            logs.append(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped')
+            _flush_logs(r2, bucket, job_id, logs)
 
     # 5. Generate
     logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
