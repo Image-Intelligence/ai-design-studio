@@ -189,6 +189,48 @@ function LoraDownloadBlock({ r2Key, adminHeaders }: { r2Key: string; adminHeader
   )
 }
 
+function LoraListItem({ file, adminHeaders }: { file: R2Checkpoint; adminHeaders: Record<string, string> }) {
+  const [downloading, setDownloading] = useState(false)
+
+  async function download() {
+    setDownloading(true)
+    try {
+      const res = await fetch(`/api/admin/onetrainer/cloud/download?key=${encodeURIComponent(file.key)}`, { headers: adminHeaders })
+      if (!res.ok) { alert('Failed to get download URL'); return }
+      const { url } = await res.json()
+      const a = document.createElement('a')
+      a.href = url
+      a.download = file.name
+      a.click()
+    } catch { alert('Download error') }
+    finally { setDownloading(false) }
+  }
+
+  const date = file.last_modified
+    ? new Date(file.last_modified).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : null
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-white/[0.07] bg-white/[0.02] hover:border-white/[0.12] transition-colors">
+      <Zap size={14} className="text-emerald-400 shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className="text-[12px] font-semibold text-white truncate">{file.name.replace(/\.safetensors$/i, '')}</p>
+        <p className="text-[10px] text-slate-600 font-mono mt-0.5">
+          {file.size_gb} GB · safetensors{date ? ` · ${date}` : ''}
+        </p>
+      </div>
+      <button
+        onClick={download}
+        disabled={downloading}
+        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] font-bold hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+      >
+        <ExternalLink size={10} />
+        {downloading ? 'Getting link…' : 'Download'}
+      </button>
+    </div>
+  )
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function OneTrainerPage() {
@@ -238,7 +280,11 @@ export default function OneTrainerPage() {
   const [cloudJobId,  setCloudJobId]  = useState<string | null>(null)
 
   const [launching, setLaunching] = useState(false)
-  const [tab, setTab]             = useState<'config' | 'monitor'>('config')
+  const [tab, setTab]             = useState<'config' | 'monitor' | 'loras'>('config')
+
+  // Saved LoRAs (cloud mode)
+  const [r2Loras,        setR2Loras]        = useState<R2Checkpoint[]>([])
+  const [r2LorasLoading, setR2LorasLoading] = useState(false)
 
   // Live log polling (cloud mode)
   const [liveLogs, setLiveLogs]     = useState<string[]>([])
@@ -339,6 +385,15 @@ export default function OneTrainerPage() {
       if (res.ok) setR2Checkpoints(await res.json())
     } catch {}
     finally { setR2CheckpointsLoading(false) }
+  }
+
+  async function loadR2Loras() {
+    setR2LorasLoading(true)
+    try {
+      const res = await fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/loras/', { headers: ah() })
+      if (res.ok) setR2Loras(await res.json())
+    } catch {}
+    finally { setR2LorasLoading(false) }
   }
 
   // ── Dataset upload (cloud mode) ────────────────────────────────────────────
@@ -644,8 +699,8 @@ export default function OneTrainerPage() {
       {/* ── Tabs ── */}
       <div className="shrink-0 border-b border-white/[0.06] px-4">
         <div className="flex">
-          {([['config', 'Configuration', Settings2], ['monitor', 'Monitor', Terminal]] as const).map(([id, label, Icon]) => (
-            <button key={id} onClick={() => setTab(id)}
+          {([['config', 'Configuration', Settings2], ['monitor', 'Monitor', Terminal], ['loras', 'Saved LoRAs', Zap]] as const).map(([id, label, Icon]) => (
+            <button key={id} onClick={() => { setTab(id); if (id === 'loras') loadR2Loras() }}
               className={`flex items-center gap-2 px-4 py-3 text-xs font-medium border-b-2 transition-colors ${
                 tab === id ? 'border-violet-500 text-white' : 'border-transparent text-slate-500 hover:text-slate-300'
               }`}>
@@ -1140,6 +1195,48 @@ export default function OneTrainerPage() {
                 className="flex items-center gap-2 text-xs text-slate-600 hover:text-slate-400 transition-colors">
                 <Settings2 size={11} /> Configure a new run
               </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Saved LoRAs tab ── */}
+      {tab === 'loras' && (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-2xl mx-auto space-y-4">
+
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-bold text-white">Saved LoRAs</p>
+                <p className="text-[11px] text-slate-600 mt-0.5">All completed training outputs stored in R2 under <span className="font-mono">training/loras/</span></p>
+              </div>
+              <button onClick={loadR2Loras} disabled={r2LorasLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-slate-400 hover:text-white hover:border-white/20 text-[11px] transition-all disabled:opacity-40">
+                {r2LorasLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                Refresh
+              </button>
+            </div>
+
+            {r2LorasLoading && (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 size={20} className="animate-spin text-slate-600" />
+              </div>
+            )}
+
+            {!r2LorasLoading && r2Loras.length === 0 && (
+              <div className="text-center py-12 rounded-2xl border border-white/[0.06] bg-white/[0.02]">
+                <Zap size={28} className="mx-auto text-slate-700 mb-3" />
+                <p className="text-sm text-slate-600">No LoRAs found</p>
+                <p className="text-[11px] text-slate-700 mt-1">Completed training runs will appear here automatically.</p>
+              </div>
+            )}
+
+            {r2Loras.length > 0 && (
+              <div className="space-y-2">
+                {r2Loras.map(f => (
+                  <LoraListItem key={f.key} file={f} adminHeaders={ah()} />
+                ))}
+              </div>
             )}
           </div>
         </div>
