@@ -25,6 +25,7 @@ import time
 import zipfile
 import subprocess
 import shutil
+import glob
 
 import runpod
 import boto3
@@ -44,6 +45,41 @@ def _r2():
         config=Config(signature_version='s3v4'),
         region_name='auto',
     )
+
+
+IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+
+def _find_image_dir(base_dir: str) -> str:
+    """Return the directory that actually contains images.
+
+    Handles the common case where the zip had a root folder, so extraction
+    produces base_dir/some_folder/img.jpg instead of base_dir/img.jpg.
+    Searches up to 2 levels deep and returns the first directory with images.
+    """
+    def has_images(d: str) -> bool:
+        return any(os.path.splitext(f)[1].lower() in IMAGE_EXTS for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)))
+
+    if has_images(base_dir):
+        return base_dir
+    for entry in sorted(os.listdir(base_dir)):
+        sub = os.path.join(base_dir, entry)
+        if not os.path.isdir(sub):
+            continue
+        if has_images(sub):
+            return sub
+        # one more level
+        for entry2 in sorted(os.listdir(sub)):
+            sub2 = os.path.join(sub, entry2)
+            if os.path.isdir(sub2) and has_images(sub2):
+                return sub2
+    return base_dir  # fall back to original, error will surface below
+
+
+def _count_images(directory: str) -> int:
+    return len([
+        f for f in glob.glob(os.path.join(directory, '**', '*'), recursive=True)
+        if os.path.isfile(f) and os.path.splitext(f)[1].lower() in IMAGE_EXTS
+    ])
 
 
 def _flush_logs(r2, bucket: str, job_id: str, logs: list) -> None:
@@ -323,7 +359,24 @@ def handler(job):
         with zipfile.ZipFile(zip_path, 'r') as z:
             z.extractall(extract_dir)
         os.remove(zip_path)  # free space immediately after extraction
-        concept_dirs.append(extract_dir)
+
+        # Auto-detect actual image directory (handles zip-with-root-folder)
+        image_dir   = _find_image_dir(extract_dir)
+        image_count = _count_images(image_dir)
+        logs.append(f"[runpod] Dataset '{c['name']}': {image_count} images found at {image_dir}")
+        if image_count == 0:
+            _flush_logs(r2, bucket, job_id, logs)
+            return {
+                'success': False,
+                'error': (
+                    f"No images found in dataset '{c['name']}'. "
+                    f"Check your zip structure — images must be .jpg/.jpeg/.png/.webp. "
+                    f"Extracted to: {extract_dir}"
+                ),
+                'logs': logs,
+            }
+        _flush_logs(r2, bucket, job_id, logs)
+        concept_dirs.append(image_dir)
 
     # ── 4. build config ─────────────────────────────────────────────────────
     config['base_model_name']          = ckpt_path
