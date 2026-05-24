@@ -11,7 +11,8 @@ export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { searchParams } = new URL(req.url)
-  const prefix = searchParams.get('prefix') ?? 'training/checkpoints/'
+  const prefix   = searchParams.get('prefix') ?? 'training/checkpoints/'
+  const allFiles = searchParams.get('allFiles') === 'true'
 
   const r2 = new S3Client({
     region: 'auto',
@@ -29,7 +30,7 @@ export async function GET(req: Request) {
     }))
 
     const files = (res.Contents ?? [])
-      .filter(obj => obj.Key && /\.(safetensors|ckpt|pt)$/i.test(obj.Key))
+      .filter(obj => obj.Key && (allFiles || /\.(safetensors|ckpt|pt)$/i.test(obj.Key)))
       .map(obj => ({
         key:           obj.Key!,
         name:          obj.Key!.split('/').pop()!,

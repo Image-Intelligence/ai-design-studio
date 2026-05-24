@@ -214,9 +214,9 @@ function LoraListItem({ file, adminHeaders }: { file: R2Checkpoint; adminHeaders
     <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-white/[0.07] bg-white/[0.02] hover:border-white/[0.12] transition-colors">
       <Zap size={14} className="text-emerald-400 shrink-0" />
       <div className="flex-1 min-w-0">
-        <p className="text-[12px] font-semibold text-white truncate">{file.name.replace(/\.safetensors$/i, '')}</p>
+        <p className="text-[12px] font-semibold text-white truncate">{file.name.replace(/\.(safetensors|ckpt|pt|zip|tar\.gz)$/i, '')}</p>
         <p className="text-[10px] text-slate-600 font-mono mt-0.5">
-          {file.size_gb} GB · safetensors{date ? ` · ${date}` : ''}
+          {file.size_gb} GB · {file.name.split('.').pop()}{date ? ` · ${date}` : ''} · <span className="text-slate-700">{file.key}</span>
         </p>
       </div>
       <button
@@ -390,8 +390,15 @@ export default function OneTrainerPage() {
   async function loadR2Loras() {
     setR2LorasLoading(true)
     try {
-      const res = await fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/loras/', { headers: ah() })
-      if (res.ok) setR2Loras(await res.json())
+      const [lorasRes, modelsRes] = await Promise.all([
+        fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/loras/&allFiles=true', { headers: ah() }),
+        fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/models/&allFiles=true', { headers: ah() }),
+      ])
+      const loras  = lorasRes.ok  ? await lorasRes.json()  as R2Checkpoint[] : []
+      const models = modelsRes.ok ? await modelsRes.json() as R2Checkpoint[] : []
+      const seen   = new Set<string>()
+      const merged = [...loras, ...models].filter(f => { if (seen.has(f.key)) return false; seen.add(f.key); return true })
+      setR2Loras(merged)
     } catch {}
     finally { setR2LorasLoading(false) }
   }
