@@ -328,34 +328,55 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     logs.append('[inference] Pipeline ready.')
     _flush_logs(r2, bucket, job_id, logs)
 
-    # Patch _maybe_expand_lora_state_dict: it's a @classmethod that tries to look up
-    # packed single-block weights (e.g. 'single_transformer_blocks.0.weight') in the
-    # base transformer state dict. OneTrainer checkpoints store these as unpacked
-    # sub-modules so the key is missing. Catch the KeyError and return the LoRA dict
-    # unchanged — no expansion needed for unpacked transformers.
-    try:
-        _orig_expand = type(pipe)._maybe_expand_lora_state_dict  # bound classmethod (cls pre-bound)
-        def _patched_expand_fn(cls, transformer, lora_state_dict):
-            try:
-                return _orig_expand(transformer=transformer, lora_state_dict=lora_state_dict)
-            except KeyError:
-                return lora_state_dict
-        type(pipe)._maybe_expand_lora_state_dict = classmethod(_patched_expand_fn)
-        logs.append('[inference] Patched _maybe_expand_lora_state_dict (classmethod)')
-    except AttributeError:
-        pass  # diffusers version without this method — no patch needed
-    _flush_logs(r2, bucket, job_id, logs)
-
-    # 4. Load LoRAs
-    for i, li in enumerate(lora_paths):
-        name = f'lora_{i}'
-        logs.append(f'[inference] Loading LoRA {i+1} (strength {li["strength"]})...')
-        pipe.load_lora_weights(li['path'], adapter_name=name)
+    # 4. Load LoRAs — manual weight merge to handle OneTrainer's packed LoRA format.
+    # pipe.load_lora_weights() fails because packed keys target FluxTransformerBlock
+    # objects rather than individual nn.Linear layers. Manually merge instead:
+    # W += scale * (B @ A), skip any key whose target isn't an nn.Linear.
     if lora_paths:
-        names   = [f'lora_{i}' for i in range(len(lora_paths))]
-        weights = [li['strength'] for li in lora_paths]
-        pipe.set_adapters(names, adapter_weights=weights)
-    _flush_logs(r2, bucket, job_id, logs)
+        from safetensors.torch import load_file as _sf_load
+
+        _module_dict = dict(pipe.transformer.named_modules())
+
+        for i, li in enumerate(lora_paths):
+            logs.append(f'[inference] Applying LoRA {i+1} (strength {li["strength"]})...')
+            _flush_logs(r2, bucket, job_id, logs)
+
+            lora_sd = _sf_load(li['path'])
+
+            # Group lora_A / lora_B pairs by base key
+            lora_pairs: dict = {}
+            for _k in lora_sd:
+                if _k.endswith('.lora_A.weight'):
+                    lora_pairs.setdefault(_k[:-len('.lora_A.weight')], {})['A'] = lora_sd[_k]
+                elif _k.endswith('.lora_B.weight'):
+                    lora_pairs.setdefault(_k[:-len('.lora_B.weight')], {})['B'] = lora_sd[_k]
+
+            _applied = 0
+            _skipped = 0
+            for _base, _pair in lora_pairs.items():
+                if 'A' not in _pair or 'B' not in _pair:
+                    continue
+                # Strip "transformer." prefix to get module path
+                _mod_path = _base[len('transformer.'):] if _base.startswith('transformer.') else _base
+                _mod = _module_dict.get(_mod_path)
+                if _mod is None or not isinstance(_mod, torch.nn.Linear):
+                    _skipped += 1
+                    continue
+                # Scale: strength * alpha/rank if alpha present, else plain strength
+                _alpha_key = _base + '.alpha'
+                if _alpha_key in lora_sd:
+                    _rank = _pair['A'].shape[0]
+                    _scale = li['strength'] * float(lora_sd[_alpha_key]) / _rank
+                else:
+                    _scale = li['strength']
+                _A = _pair['A'].to(_mod.weight.device, dtype=_mod.weight.dtype)
+                _B = _pair['B'].to(_mod.weight.device, dtype=_mod.weight.dtype)
+                with torch.no_grad():
+                    _mod.weight.data += _scale * (_B @ _A)
+                _applied += 1
+
+            logs.append(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} non-Linear targets skipped')
+        _flush_logs(r2, bucket, job_id, logs)
 
     # 5. Generate
     logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
