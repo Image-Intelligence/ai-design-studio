@@ -222,7 +222,8 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         tokenizer_2 = AutoTokenizer.from_pretrained('google/t5-v1_1-xxl')
 
         # Local config dirs bundled in the Docker image — no HF token needed
-        _ot_root         = '/workspace/OneTrainer/OneTrainer'
+        # Dockerfile copies these to /workspace/OneTrainer/ (not the inner OneTrainer/ subdir)
+        _ot_root         = '/workspace/OneTrainer'
         _vae_cfg_dir     = os.path.join(_ot_root, 'flux1dev_vae_config')
         _trans_cfg_dir   = os.path.join(_ot_root, 'flux1dev_transformer_config')
 

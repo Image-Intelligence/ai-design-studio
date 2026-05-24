@@ -2114,7 +2114,9 @@ function ImageDetailModal({
                 <X size={22} className="text-red-400" />
               </div>
               <p className="text-sm text-red-400 font-semibold tracking-wide">Generation Failed</p>
-              <p className="text-[12px] text-slate-400 max-w-xs leading-relaxed">{image.failError || "The generation did not complete."}</p>
+              <div className="w-full max-w-sm max-h-48 overflow-y-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-left">
+                <p className="text-[11px] text-slate-400 font-mono leading-relaxed whitespace-pre-wrap break-all select-all">{image.failError || "The generation did not complete."}</p>
+              </div>
             </div>
           ) : (
             <img
@@ -2435,7 +2437,9 @@ function VideoDetailModal({
                 <X size={20} className="text-red-400" />
               </div>
               <p className="text-sm text-red-400 font-medium">Generation Failed</p>
-              <p className="text-[12px] text-slate-500 max-w-xs leading-relaxed">{video.failError || "The video generation did not complete."}</p>
+              <div className="w-full max-w-sm max-h-48 overflow-y-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-left">
+                <p className="text-[11px] text-slate-400 font-mono leading-relaxed whitespace-pre-wrap break-all select-all">{video.failError || "The video generation did not complete."}</p>
+              </div>
             </div>
           ) : (
             <video
