@@ -75,6 +75,22 @@ def _find_image_dir(base_dir: str) -> str:
     return base_dir  # fall back to original, error will surface below
 
 
+def _find_config_dir(name: str) -> str:
+    """Find a bundled config directory, checking multiple candidate locations.
+
+    Handles both old images (OneTrainer/OneTrainer/...) and new ones (OneTrainer/...).
+    """
+    candidates = [
+        f'/workspace/OneTrainer/{name}',
+        f'/workspace/OneTrainer/OneTrainer/{name}',
+        f'/workspace/{name}',
+    ]
+    for path in candidates:
+        if os.path.isdir(path) and os.path.exists(os.path.join(path, 'config.json')):
+            return path
+    return candidates[0]  # fall back; missing dir error surfaces below
+
+
 def _count_images(directory: str) -> int:
     return len([
         f for f in glob.glob(os.path.join(directory, '**', '*'), recursive=True)
@@ -221,11 +237,13 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         t5 = t5.to(torch.bfloat16)
         tokenizer_2 = AutoTokenizer.from_pretrained('google/t5-v1_1-xxl')
 
-        # Local config dirs bundled in the Docker image — no HF token needed
-        # Dockerfile copies these to /workspace/OneTrainer/ (not the inner OneTrainer/ subdir)
-        _ot_root         = '/workspace/OneTrainer'
-        _vae_cfg_dir     = os.path.join(_ot_root, 'flux1dev_vae_config')
-        _trans_cfg_dir   = os.path.join(_ot_root, 'flux1dev_transformer_config')
+        # Locate config dirs at runtime — handles both old images (/workspace/OneTrainer/OneTrainer/...)
+        # and new images (/workspace/OneTrainer/...) without needing a Docker rebuild.
+        _vae_cfg_dir   = _find_config_dir('flux1dev_vae_config')
+        _trans_cfg_dir = _find_config_dir('flux1dev_transformer_config')
+        logs.append(f'[inference] VAE config dir: {_vae_cfg_dir}')
+        logs.append(f'[inference] Transformer config dir: {_trans_cfg_dir}')
+        _flush_logs(r2, bucket, job_id, logs)
 
         # VAE — pass local config dir so from_single_file never hits HF
         logs.append('[inference] Loading VAE...')
