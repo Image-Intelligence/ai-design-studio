@@ -33,6 +33,9 @@ import runpod
 import boto3
 from botocore.config import Config
 
+HANDLER_VERSION = '2026-05-24-v3'
+print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
+
 OT_DIR     = '/workspace/OneTrainer'
 MODELS_DIR = '/workspace/models'
 WORK_DIR   = '/workspace/runs'
@@ -258,6 +261,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     seed     = inp.get('seed')
     out_key  = inp.get('output_r2_key') or f'inference/outputs/{job_id}.png'
 
+    print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
     _flush_logs(r2, bucket, job_id, logs)
 
@@ -394,6 +398,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             # Log a few key names so we can confirm format in RunPod logs
             _sample = [k for k in lora_sd if 'lora_down' in k or 'lora_A' in k][:3]
+            print(f'[inference] LoRA {i+1} key sample: {_sample}', flush=True)
             logs.append(f'[inference] LoRA key sample: {_sample}')
 
             # Group A/B pairs — support both kohya (lora_down/up) and diffusers (lora_A/B)
@@ -437,6 +442,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                     _mod.weight.data += _scale * (_B @ _A)
                 _applied += 1
 
+            print(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped', flush=True)
             logs.append(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped')
             _flush_logs(r2, bucket, job_id, logs)
 
