@@ -390,15 +390,9 @@ export default function OneTrainerPage() {
   async function loadR2Loras() {
     setR2LorasLoading(true)
     try {
-      const [lorasRes, modelsRes] = await Promise.all([
-        fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/loras/&allFiles=true', { headers: ah() }),
-        fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/models/&allFiles=true', { headers: ah() }),
-      ])
-      const loras  = lorasRes.ok  ? await lorasRes.json()  as R2Checkpoint[] : []
-      const models = modelsRes.ok ? await modelsRes.json() as R2Checkpoint[] : []
-      const seen   = new Set<string>()
-      const merged = [...loras, ...models].filter(f => { if (seen.has(f.key)) return false; seen.add(f.key); return true })
-      setR2Loras(merged)
+      // Scan entire training/ tree so nothing is missed regardless of where the worker saved it
+      const res = await fetch('/api/admin/onetrainer/cloud/checkpoints?prefix=training/&allFiles=true', { headers: ah() })
+      if (res.ok) setR2Loras(await res.json())
     } catch {}
     finally { setR2LorasLoading(false) }
   }
