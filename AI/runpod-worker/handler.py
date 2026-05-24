@@ -26,6 +26,7 @@ import zipfile
 import subprocess
 import shutil
 import glob
+import tempfile
 
 import runpod
 import boto3
@@ -34,6 +35,58 @@ from botocore.config import Config
 OT_DIR     = '/workspace/OneTrainer'
 MODELS_DIR = '/workspace/models'
 WORK_DIR   = '/workspace/runs'
+
+# Flux1-dev component configs embedded directly so inference never depends on
+# finding config files at a specific container path.
+_VAE_CONFIG = {
+    "_class_name": "AutoencoderKL",
+    "_diffusers_version": "0.30.0.dev0",
+    "act_fn": "silu",
+    "block_out_channels": [128, 256, 512, 512],
+    "down_block_types": ["DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D"],
+    "force_upcast": True,
+    "in_channels": 3,
+    "latent_channels": 16,
+    "layers_per_block": 2,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "sample_size": 1024,
+    "scaling_factor": 0.3611,
+    "shift_factor": 0.1159,
+    "up_block_types": ["UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D"],
+    "use_post_quant_conv": False,
+    "use_quant_conv": False,
+}
+
+_TRANSFORMER_CONFIG = {
+    "_class_name": "FluxTransformer2DModel",
+    "_diffusers_version": "0.30.0.dev0",
+    "attention_head_dim": 128,
+    "axes_dims_rope": [16, 56, 56],
+    "guidance_embeds": True,
+    "in_channels": 64,
+    "joint_attention_dim": 4096,
+    "num_attention_heads": 24,
+    "num_layers": 19,
+    "num_single_layers": 38,
+    "patch_size": 1,
+    "pooled_projection_dim": 768,
+}
+
+_EMBEDDED_CONFIGS_DIR = None  # populated on first call to _get_embedded_config_dir()
+
+def _get_embedded_config_dir(name: str, config_dict: dict) -> str:
+    """Write an embedded config dict to a temp dir and return the path."""
+    global _EMBEDDED_CONFIGS_DIR
+    if _EMBEDDED_CONFIGS_DIR is None:
+        _EMBEDDED_CONFIGS_DIR = tempfile.mkdtemp(prefix='flux_configs_')
+    cfg_dir = os.path.join(_EMBEDDED_CONFIGS_DIR, name)
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg_file = os.path.join(cfg_dir, 'config.json')
+    if not os.path.exists(cfg_file):
+        with open(cfg_file, 'w') as f:
+            json.dump(config_dict, f)
+    return cfg_dir
 
 
 def _r2():
@@ -237,10 +290,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         t5 = t5.to(torch.bfloat16)
         tokenizer_2 = AutoTokenizer.from_pretrained('google/t5-v1_1-xxl')
 
-        # Locate config dirs at runtime — handles both old images (/workspace/OneTrainer/OneTrainer/...)
-        # and new images (/workspace/OneTrainer/...) without needing a Docker rebuild.
-        _vae_cfg_dir   = _find_config_dir('flux1dev_vae_config')
-        _trans_cfg_dir = _find_config_dir('flux1dev_transformer_config')
+        # Use embedded configs written to a temp dir — works on any image version.
+        _vae_cfg_dir   = _get_embedded_config_dir('flux1dev_vae_config', _VAE_CONFIG)
+        _trans_cfg_dir = _get_embedded_config_dir('flux1dev_transformer_config', _TRANSFORMER_CONFIG)
         logs.append(f'[inference] VAE config dir: {_vae_cfg_dir}')
         logs.append(f'[inference] Transformer config dir: {_trans_cfg_dir}')
         _flush_logs(r2, bucket, job_id, logs)
