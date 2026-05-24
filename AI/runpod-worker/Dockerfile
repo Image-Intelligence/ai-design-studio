@@ -16,7 +16,7 @@ WORKDIR /workspace/OneTrainer
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install worker deps
-RUN pip install --no-cache-dir runpod boto3 tensorboard
+RUN pip install --no-cache-dir runpod boto3 tensorboard peft
 
 # Create tensorboard symlink and default samples file
 RUN ln -sf $(which tensorboard) /usr/bin/tensorboard && \
