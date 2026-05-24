@@ -333,11 +333,12 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # packed key is missing, return the LoRA dict as-is (no expansion needed).
     try:
         _orig_expand = type(pipe)._maybe_expand_lora_state_dict
-        def _patched_expand(self, lora_sd, transformer):
+        def _patched_expand(self, *args, **kwargs):
             try:
-                return _orig_expand(self, lora_sd, transformer)
+                return _orig_expand(self, *args, **kwargs)
             except KeyError:
-                return lora_sd
+                # Base transformer uses unpacked weights — no expansion needed, return as-is
+                return args[0] if args else kwargs.get('lora_state_dict')
         type(pipe)._maybe_expand_lora_state_dict = _patched_expand
         logs.append('[inference] Patched _maybe_expand_lora_state_dict for unpacked transformer')
     except AttributeError:
