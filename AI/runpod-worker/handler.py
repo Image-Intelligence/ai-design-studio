@@ -328,21 +328,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     logs.append('[inference] Pipeline ready.')
     _flush_logs(r2, bucket, job_id, logs)
 
-    # Patch _maybe_expand_lora_state_dict: it assumes the base transformer uses packed
-    # single-block weights, but OneTrainer checkpoints use unpacked weights. When the
-    # packed key is missing, return the LoRA dict as-is (no expansion needed).
+    # Patch _maybe_expand_lora_state_dict: it's a @classmethod that tries to look up
+    # packed single-block weights (e.g. 'single_transformer_blocks.0.weight') in the
+    # base transformer state dict. OneTrainer checkpoints store these as unpacked
+    # sub-modules so the key is missing. Catch the KeyError and return the LoRA dict
+    # unchanged — no expansion needed for unpacked transformers.
     try:
-        _orig_expand = type(pipe)._maybe_expand_lora_state_dict
-        def _patched_expand(self, *args, **kwargs):
+        _orig_expand = type(pipe)._maybe_expand_lora_state_dict  # bound classmethod (cls pre-bound)
+        def _patched_expand_fn(cls, transformer, lora_state_dict):
             try:
-                return _orig_expand(self, *args, **kwargs)
+                return _orig_expand(transformer=transformer, lora_state_dict=lora_state_dict)
             except KeyError:
-                # Base transformer uses unpacked weights — no expansion needed, return as-is
-                return args[0] if args else kwargs.get('lora_state_dict')
-        type(pipe)._maybe_expand_lora_state_dict = _patched_expand
-        logs.append('[inference] Patched _maybe_expand_lora_state_dict for unpacked transformer')
+                return lora_state_dict
+        type(pipe)._maybe_expand_lora_state_dict = classmethod(_patched_expand_fn)
+        logs.append('[inference] Patched _maybe_expand_lora_state_dict (classmethod)')
     except AttributeError:
-        pass  # older diffusers without this method — no patch needed
+        pass  # diffusers version without this method — no patch needed
     _flush_logs(r2, bucket, job_id, logs)
 
     # 4. Load LoRAs
