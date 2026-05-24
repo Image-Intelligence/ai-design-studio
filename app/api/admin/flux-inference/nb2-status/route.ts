@@ -55,7 +55,7 @@ export async function POST(req: Request) {
         new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: r2Key }),
         { expiresIn: 3600 },
       )
-      return NextResponse.json({ status: 'completed', images: [{ url: imageUrl, dbId: null }] })
+      return NextResponse.json({ status: 'completed', images: [{ url: imageUrl, dbId: null, r2Key }] })
     } catch {
       return NextResponse.json({ status: 'failed', error: 'Failed to sign image URL' })
     }

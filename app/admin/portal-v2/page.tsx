@@ -7694,6 +7694,28 @@ export default function PortalV2Page() {
   const handleBalanceChange = useCallback((balance: number) =>
     setUser(u => u ? { ...u, ticketBalance: balance } : u), [])
 
+  // Restore custom-flux-lora images that completed in previous sessions
+  useEffect(() => {
+    const stored = (() => {
+      try { return JSON.parse(localStorage.getItem("pv2-flux-images") || "[]") as { r2Key: string; prompt: string; createdAt: string }[] }
+      catch { return [] }
+    })()
+    if (stored.length === 0) return
+    const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+    Promise.all(stored.map(async (entry, i) => {
+      try {
+        const res = await fetch(`/api/admin/onetrainer/cloud/download?key=${encodeURIComponent(entry.r2Key)}`, {
+          headers: pass ? { 'x-admin-password': pass } : {},
+        })
+        const data = await res.json()
+        if (data.url) {
+          handlePrependImage({ id: `flux-${entry.r2Key}`, imageUrl: data.url, prompt: entry.prompt, model: 'custom-flux-lora', createdAt: entry.createdAt })
+        }
+      } catch {}
+    }))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // --- Video handlers ---
   const uploadVideoFrame = useCallback(async (file: File): Promise<string | null> => {
     try {
@@ -8206,24 +8228,37 @@ export default function PortalV2Page() {
           } catch {}
           // Use dbId returned by the status route directly — avoids race condition
           // where two concurrent pollers re-fetch /api/my-images and get the same record
-          const completedImgs: { url: string; dbId?: number | null }[] = statusData.images || []
-          const modelId = statusUrl.includes("kling-o3") ? "kling-o3-image"
+          const completedImgs: { url: string; dbId?: number | null; r2Key?: string }[] = statusData.images || []
+          const isFluxRunpod = statusUrl.includes("flux-inference")
+          const modelId = isFluxRunpod ? "custom-flux-lora"
+            : statusUrl.includes("kling-o3") ? "kling-o3-image"
             : statusUrl.includes("kling-image") ? "kling-v3-image"
             : statusUrl.includes("wan-27-pro") ? "wan-2.7-pro"
             : statusUrl.includes("gpt-image-2") ? "gpt-image-2"
             : "nano-banana-pro-2"
-          completedImgs.forEach((img, i) =>
+          const createdAt = new Date().toISOString()
+          completedImgs.forEach((img, i) => {
             handlePrependImage({
               id: img.dbId ?? (Date.now() + i),
               imageUrl: img.url,
               prompt,
               model: modelId,
-              createdAt: new Date().toISOString(),
+              createdAt,
               aspectRatio,
               quality,
               referenceImageUrls: referenceImageUrls.length > 0 ? referenceImageUrls : undefined,
             })
-          )
+            // Persist custom-flux-lora images so they survive page refresh
+            if (isFluxRunpod && img.r2Key) {
+              try {
+                const stored = JSON.parse(localStorage.getItem("pv2-flux-images") || "[]") as { r2Key: string; prompt: string; createdAt: string }[]
+                if (!stored.some(s => s.r2Key === img.r2Key)) {
+                  stored.unshift({ r2Key: img.r2Key!, prompt, createdAt })
+                  localStorage.setItem("pv2-flux-images", JSON.stringify(stored.slice(0, 50)))
+                }
+              } catch {}
+            }
+          })
           slotIds.forEach(sid => handleRemovePending(sid))
         } else if (statusData.status === "failed") {
           clearInterval(interval)
