@@ -16,8 +16,8 @@ export async function GET(req: Request) {
   const key = searchParams.get('key')
 
   if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 })
-  if (!key.startsWith('training/')) {
-    return NextResponse.json({ error: 'Key must be under training/' }, { status: 400 })
+  if (!key.startsWith('training/') && !key.startsWith('inference/')) {
+    return NextResponse.json({ error: 'Key must be under training/ or inference/' }, { status: 400 })
   }
 
   try {
