@@ -7709,7 +7709,7 @@ export default function PortalV2Page() {
         })
         const data = await res.json()
         if (data.url) {
-          handlePrependImage({ id: `flux-${entry.r2Key}`, imageUrl: data.url, prompt: entry.prompt, model: 'custom-flux-lora', createdAt: entry.createdAt })
+          handlePrependImage({ id: -(i + 1), imageUrl: data.url, prompt: entry.prompt, model: 'custom-flux-lora', createdAt: entry.createdAt })
         }
       } catch {}
     }))
