@@ -33,7 +33,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-24-v6'
+HANDLER_VERSION = '2026-05-24-v7'
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
@@ -127,6 +127,8 @@ _DIFFUSERS_DOUBLE_US = {
     'attn_to_add_out':       'attn.to_add_out',
     'ff_net_0_proj':         'ff.net.0.proj',
     'ff_net_2':              'ff.net.2',
+    'ff_context_net_0_proj': 'ff_context.net.0.proj',
+    'ff_context_net_2':      'ff_context.net.2',
     'norm1_linear':          'norm1.linear',
     'norm1_context_linear':  'norm1_context.linear',
 }
