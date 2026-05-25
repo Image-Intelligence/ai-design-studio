@@ -65,13 +65,13 @@ export async function presignUploadPart(key: string, uploadId: string, partNumbe
 
 export async function completeMultipartUpload(key: string, uploadId: string): Promise<void> {
   const parts: { PartNumber: number; ETag: string }[] = []
-  let marker: number | undefined
+  let marker: string | undefined
   do {
     const res = await r2.send(new ListPartsCommand({ Bucket: BUCKET, Key: key, UploadId: uploadId, PartNumberMarker: marker }))
     for (const p of res.Parts ?? []) {
       if (p.PartNumber && p.ETag) parts.push({ PartNumber: p.PartNumber, ETag: p.ETag })
     }
-    marker = res.IsTruncated ? (res.NextPartNumberMarker ?? undefined) : undefined
+    marker = res.IsTruncated && res.NextPartNumberMarker != null ? String(res.NextPartNumberMarker) : undefined
   } while (marker)
   parts.sort((a, b) => a.PartNumber - b.PartNumber)
   await r2.send(new CompleteMultipartUploadCommand({
