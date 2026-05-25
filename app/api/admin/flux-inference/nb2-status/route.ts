@@ -27,7 +27,12 @@ export async function POST(req: Request) {
   const res = await fetch(`${RUNPOD_API}/${endpointId}/status/${jobId}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
-  if (!res.ok) return NextResponse.json({ status: 'failed', error: `RunPod HTTP ${res.status}` })
+  if (!res.ok) {
+    // 404 means RunPod doesn't have this job yet (brief registration delay after /run submit)
+    // or has already purged a completed job — treat as still processing rather than a hard fail.
+    if (res.status === 404) return NextResponse.json({ status: 'processing' })
+    return NextResponse.json({ status: 'failed', error: `RunPod HTTP ${res.status}` })
+  }
 
   const data = await res.json() as { status: string; output?: { success?: boolean; output_r2_key?: string; error?: string }; error?: string }
 

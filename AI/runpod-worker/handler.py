@@ -33,33 +33,77 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-24-v3'
+HANDLER_VERSION = '2026-05-24-v4'
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
 MODELS_DIR = '/workspace/models'
 WORK_DIR   = '/workspace/runs'
 
-# OneTrainer saves Flux LoRAs in kohya format. These maps convert kohya sub-keys
-# to the diffusers transformer module path used in the live pipeline.
-_DOUBLE_BLOCK_KEY_MAP = {
+# OneTrainer saves Flux LoRAs with ALL dots replaced by underscores and the
+# prefix 'lora_transformer_' (underscore, no dot after 'transformer').
+# e.g. 'lora_transformer_double_blocks_0_img_attn_qkv_0.lora_down.weight'
+#
+# Sub-key maps for the UNDERSCORE format (what OneTrainer actually produces):
+_DOUBLE_BLOCK_US = {
+    'img_attn_qkv_0':  'attn.to_q',
+    'img_attn_qkv_1':  'attn.to_k',
+    'img_attn_qkv_2':  'attn.to_v',
+    'img_attn_proj':   'attn.to_out.0',
+    'img_mlp_0':       'ff.net.0.proj',
+    'img_mlp_2':       'ff.net.2',
+    'img_mod_lin':     'norm1.linear',
+    'txt_attn_qkv_0':  'attn.add_q_proj',
+    'txt_attn_qkv_1':  'attn.add_k_proj',
+    'txt_attn_qkv_2':  'attn.add_v_proj',
+    'txt_attn_proj':   'attn.to_add_out',
+    'txt_mlp_0':       'ff_context.net.0.proj',
+    'txt_mlp_2':       'ff_context.net.2',
+    'txt_mod_lin':     'norm1_context.linear',
+}
+
+_SINGLE_BLOCK_US = {
+    'linear1_0':      'attn.to_q',
+    'linear1_1':      'attn.to_k',
+    'linear1_2':      'attn.to_v',
+    'linear1_3':      'proj_mlp',
+    'linear2':        'proj_out',
+    'modulation_lin': 'norm.linear',
+}
+
+# Top-level transformer layers (no block index)
+_TOP_LEVEL_US = {
+    'context_embedder':  'context_embedder',
+    'proj_out':          'proj_out',
+    'norm_out_linear':   'norm_out.linear',
+    'x_embedder':        'x_embedder',
+    'time_text_embed_timestep_embedder_linear_1': 'time_text_embed.timestep_embedder.linear_1',
+    'time_text_embed_timestep_embedder_linear_2': 'time_text_embed.timestep_embedder.linear_2',
+    'time_text_embed_guidance_embedder_linear_1': 'time_text_embed.guidance_embedder.linear_1',
+    'time_text_embed_guidance_embedder_linear_2': 'time_text_embed.guidance_embedder.linear_2',
+    'time_text_embed_text_embedder_linear_1':     'time_text_embed.text_embedder.linear_1',
+    'time_text_embed_text_embedder_linear_2':     'time_text_embed.text_embedder.linear_2',
+}
+
+# Legacy dot format (kept for compatibility with older LoRA files)
+_DOUBLE_BLOCK_DOT = {
     'img_attn.qkv.0':  'attn.to_q',
     'img_attn.qkv.1':  'attn.to_k',
     'img_attn.qkv.2':  'attn.to_v',
-    'txt_attn.qkv.0':  'attn.add_q_proj',
-    'txt_attn.qkv.1':  'attn.add_k_proj',
-    'txt_attn.qkv.2':  'attn.add_v_proj',
     'img_attn.proj':   'attn.to_out.0',
     'img_mlp.0':       'ff.net.0.proj',
     'img_mlp.2':       'ff.net.2',
     'img_mod.lin':     'norm1.linear',
+    'txt_attn.qkv.0':  'attn.add_q_proj',
+    'txt_attn.qkv.1':  'attn.add_k_proj',
+    'txt_attn.qkv.2':  'attn.add_v_proj',
     'txt_attn.proj':   'attn.to_add_out',
     'txt_mlp.0':       'ff_context.net.0.proj',
     'txt_mlp.2':       'ff_context.net.2',
     'txt_mod.lin':     'norm1_context.linear',
 }
 
-_SINGLE_BLOCK_KEY_MAP = {
+_SINGLE_BLOCK_DOT = {
     'linear1.0':      'attn.to_q',
     'linear1.1':      'attn.to_k',
     'linear1.2':      'attn.to_v',
@@ -68,25 +112,44 @@ _SINGLE_BLOCK_KEY_MAP = {
     'modulation.lin': 'norm.linear',
 }
 
+
 def _kohya_key_to_module_path(base_key: str) -> str | None:
     """Convert an OT/kohya LoRA base key to a diffusers transformer module path.
 
-    Input:  'lora_transformer.double_blocks.3.img_attn.qkv.0'
-    Output: 'transformer_blocks.3.attn.to_q'
+    Handles both formats OneTrainer may produce:
+      Underscore: 'lora_transformer_double_blocks_3_img_attn_qkv_0'  (current)
+      Dot:        'lora_transformer.double_blocks.3.img_attn.qkv.0'  (legacy)
+    Both map to: 'transformer_blocks.3.attn.to_q'
     """
-    if not base_key.startswith('lora_transformer.'):
-        return None
-    rest = base_key[len('lora_transformer.'):]
+    # ── Underscore format (current OneTrainer output) ──────────────────────
+    if base_key.startswith('lora_transformer_'):
+        rest = base_key[len('lora_transformer_'):]
 
-    m = re.match(r'^double_blocks\.(\d+)\.(.+)$', rest)
-    if m:
-        sub = _DOUBLE_BLOCK_KEY_MAP.get(m.group(2))
-        return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
+        m = re.match(r'^double_blocks_(\d+)_(.+)$', rest)
+        if m:
+            sub = _DOUBLE_BLOCK_US.get(m.group(2))
+            return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
 
-    m = re.match(r'^single_blocks\.(\d+)\.(.+)$', rest)
-    if m:
-        sub = _SINGLE_BLOCK_KEY_MAP.get(m.group(2))
-        return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
+        m = re.match(r'^single_blocks_(\d+)_(.+)$', rest)
+        if m:
+            sub = _SINGLE_BLOCK_US.get(m.group(2))
+            return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+        return _TOP_LEVEL_US.get(rest)  # top-level layer or None
+
+    # ── Dot format (legacy) ────────────────────────────────────────────────
+    if base_key.startswith('lora_transformer.'):
+        rest = base_key[len('lora_transformer.'):]
+
+        m = re.match(r'^double_blocks\.(\d+)\.(.+)$', rest)
+        if m:
+            sub = _DOUBLE_BLOCK_DOT.get(m.group(2))
+            return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+        m = re.match(r'^single_blocks\.(\d+)\.(.+)$', rest)
+        if m:
+            sub = _SINGLE_BLOCK_DOT.get(m.group(2))
+            return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
 
     return None
 
@@ -444,6 +507,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             print(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped', flush=True)
             logs.append(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped')
+            if _skipped > 0 and _applied == 0:
+                _first_missed = next(iter(_pairs), None)
+                print(f'[inference] LoRA {i+1} first unmatched base key: {_first_missed}', flush=True)
             _flush_logs(r2, bucket, job_id, logs)
 
     # 5. Generate
