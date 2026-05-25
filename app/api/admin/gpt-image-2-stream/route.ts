@@ -6,6 +6,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -15,6 +16,22 @@ const EDIT_ENDPOINT = 'openai/gpt-image-2/edit'
 function parseSize(size: string): { width: number; height: number } {
   const [w, h] = size.split('x').map(Number)
   return (w && h) ? { width: w, height: h } : { width: 1024, height: 1024 }
+}
+
+function computeGptTicketCost(quality: string, size: string): number {
+  if (quality === 'low') return 1
+  if (quality === 'medium') {
+    if (size === '1024x1024' || size === '2560x1440') return 3
+    if (size === '3840x2160') return 4
+    return 2
+  }
+  if (quality === 'high') {
+    if (size === '1024x1024') return 8
+    if (size === '2560x1440') return 9
+    if (size === '3840x2160') return 15
+    return 6
+  }
+  return 1
 }
 
 // POST /api/admin/gpt-image-2-stream
@@ -46,7 +63,6 @@ export async function POST(req: Request) {
     outputFormat = 'png',
     referenceImages = [],
     referenceImageUrls = [],
-    ticketCost = 0,
   } = body
 
   if (!prompt?.trim()) {
@@ -54,6 +70,16 @@ export async function POST(req: Request) {
   }
 
   const userId = sessionUser.id
+
+  // Server-side ticket check — compute cost from quality + size, do not trust client value
+  const ticketCost = computeGptTicketCost(quality, size)
+  const ticketResult = await deductGenerationTickets(userId, sessionUser.email, ticketCost)
+  if (!ticketResult.ok) {
+    return NextResponse.json(
+      { error: `Insufficient tickets — need ${ticketResult.need}, have ${ticketResult.have}` },
+      { status: 402 },
+    )
+  }
 
   // Server-side concurrency check — prevents multi-device/multi-tab abuse
   const { allowed, activeCount, limit } = await checkUserConcurrency(userId)
@@ -74,6 +100,7 @@ export async function POST(req: Request) {
       const send = (data: object) => {
         try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)) } catch {}
       }
+      let submittedEventSent = false
 
       try {
         console.log(`GPT Image 2 stream: quality=${quality}→${safeQuality} size=${size} format=${safeFormat} refs=${referenceImages.length}`)
@@ -151,7 +178,8 @@ export async function POST(req: Request) {
           console.error('gpt-image-2-stream: queue entry creation failed (non-fatal):', dbErr)
         }
 
-        // Send 'submitted' immediately — client writes slot to sessionStorage and charges tickets
+        // Send 'submitted' immediately — client writes slot to sessionStorage
+        submittedEventSent = true
         send({ type: 'submitted', requestId, falEndpoint: endpoint, permanentReferenceUrls })
 
         const markQueueDone = async (status: 'completed' | 'failed') => {
@@ -275,6 +303,11 @@ export async function POST(req: Request) {
       } catch (err: any) {
         console.error('gpt-image-2-stream error:', err)
         send({ type: 'error', error: err.message || 'Generation failed' })
+        // Only refund server-side if FAL submit never happened — post-submit failures
+        // are refunded by the client's existing use-tickets refund call.
+        if (!submittedEventSent) {
+          await refundGenerationTickets(userId, sessionUser.email, ticketCost)
+        }
       } finally {
         await prisma.$disconnect()
         controller.close()

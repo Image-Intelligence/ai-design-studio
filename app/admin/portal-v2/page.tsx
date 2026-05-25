@@ -3615,6 +3615,7 @@ function PromptBox({
   configOverride,
   isGenerationMaintenance = false,
   isAdminAccount = false,
+  ticketBalance = 0,
 }: {
   model: ImageModelConfig
   onModelChange: (m: ImageModelConfig) => void
@@ -3640,6 +3641,7 @@ function PromptBox({
   configOverride?: { aspectRatio?: string; quality?: string; outputFormat?: string; imageCount?: number; version: number }
   isGenerationMaintenance?: boolean
   isAdminAccount?: boolean
+  ticketBalance?: number
 }) {
   const PROMPT_STORAGE_KEY = "pv2-prompt-state"
   const [prompt, setPrompt] = useState<string>("")
@@ -3853,9 +3855,10 @@ function PromptBox({
   const needsRefImage = !!model.requiresReferenceImage && activeRefImages.length === 0
   const slotsNeeded = (model.isFal || model.id === "nano-banana-pro-2" || model.id === "gpt-image-2") ? imageCount : 1
   const queueFull = activeJobCount + slotsNeeded > maxConcurrent
+  const hasEnoughTickets = isAdminAccount || ticketBalance >= totalCost
   const canGenerate = model.isUpscaler
-    ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint)
-    : !isGenerationMaintenance && !!userId && prompt.trim().length > 0 && !generating && !needsRefImage && !queueFull
+    ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint) && hasEnoughTickets
+    : !isGenerationMaintenance && !!userId && prompt.trim().length > 0 && !generating && !needsRefImage && !queueFull && hasEnoughTickets
 
   const handleGenerate = async () => {
     if (!canGenerate) return
@@ -9220,8 +9223,8 @@ export default function PortalV2Page() {
             onStartNb2Polling={startNb2SlotPolling}
             onCancelNb2Polling={cancelNb2SlotPolling}
             onDeductTickets={(amount) => {
+              // UI-only update — server deducts atomically in the submit route before FAL
               setUser(prev => prev ? { ...prev, ticketBalance: Math.max(0, prev.ticketBalance - amount) } : prev)
-              fetch("/api/admin/use-tickets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "deduct", amount }) }).catch(() => {})
             }}
             activeJobCount={activeJobCount}
             maxConcurrent={maxConcurrent}
@@ -9229,6 +9232,7 @@ export default function PortalV2Page() {
             configOverride={configOverride}
             isGenerationMaintenance={isGenerationMaintenance && !isAdminAccount && !isAuditAccount}
             isAdminAccount={isAdminAccount}
+            ticketBalance={user?.ticketBalance ?? 0}
           />
           )}
         </>

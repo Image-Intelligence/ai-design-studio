@@ -7,6 +7,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -91,6 +92,16 @@ export async function POST(req: Request) {
     const targetUserId: number | null = sessionUser?.id ?? null
     if (!targetUserId) return NextResponse.json({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 
+    // Server-side ticket check — WAN 2.7 Pro costs 4 tickets
+    const ticketCost = 4
+    const ticketResult = await deductGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
+    if (!ticketResult.ok) {
+      return NextResponse.json(
+        { error: `Insufficient tickets — need ${ticketResult.need}, have ${ticketResult.have}` },
+        { status: 402 },
+      )
+    }
+
     const { allowed, activeCount, limit } = await checkUserConcurrency(targetUserId)
     if (!allowed) {
       return NextResponse.json(
@@ -148,6 +159,7 @@ export async function POST(req: Request) {
         where: { modelId: FAL_GLOBAL_ID },
         data: { currentActive: { decrement: 1 } },
       }).catch(() => {})
+      await refundGenerationTickets(targetUserId!, sessionUser!.email, ticketCost)
       throw submitError
     }
   } catch (error: any) {

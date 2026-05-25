@@ -7,6 +7,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -104,6 +105,16 @@ export async function POST(req: Request) {
     const targetUserId: number | null = sessionUser?.id ?? null
     if (!targetUserId) return NextResponse.json({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 
+    // Server-side ticket check — cost: 12 for 4K, 7 otherwise
+    const ticketCost = (resolution as string) === '4K' ? 12 : 7
+    const ticketResult = await deductGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
+    if (!ticketResult.ok) {
+      return NextResponse.json(
+        { error: `Insufficient tickets — need ${ticketResult.need}, have ${ticketResult.have}` },
+        { status: 402 },
+      )
+    }
+
     const { allowed, activeCount, limit } = await checkUserConcurrency(targetUserId)
     if (!allowed) {
       return NextResponse.json(
@@ -160,12 +171,13 @@ export async function POST(req: Request) {
         permanentReferenceUrls,
       })
     } catch (submitError: any) {
-      // FAL submit failed — release the slot we claimed
+      // FAL submit failed — release the slot and refund tickets
       const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
       await prisma.modelConcurrencyLimit.updateMany({
         where: { modelId: FAL_GLOBAL_ID },
         data: { currentActive: { decrement: 1 } },
       }).catch(() => {})
+      await refundGenerationTickets(targetUserId!, sessionUser!.email, ticketCost)
       throw submitError
     }
   } catch (error: any) {
