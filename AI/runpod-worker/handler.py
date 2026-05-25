@@ -33,7 +33,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-24-v5'
+HANDLER_VERSION = '2026-05-24-v6'
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
@@ -114,21 +114,48 @@ _SINGLE_BLOCK_DOT = {
     'modulation.lin': 'norm.linear',
 }
 
+# Diffusers naming with ALL dots replaced by underscores
+# (e.g. lora_transformer_transformer_blocks_0_attn_to_q)
+_DIFFUSERS_DOUBLE_US = {
+    'attn_to_q':             'attn.to_q',
+    'attn_to_k':             'attn.to_k',
+    'attn_to_v':             'attn.to_v',
+    'attn_to_out_0':         'attn.to_out.0',
+    'attn_add_q_proj':       'attn.add_q_proj',
+    'attn_add_k_proj':       'attn.add_k_proj',
+    'attn_add_v_proj':       'attn.add_v_proj',
+    'attn_to_add_out':       'attn.to_add_out',
+    'ff_net_0_proj':         'ff.net.0.proj',
+    'ff_net_2':              'ff.net.2',
+    'norm1_linear':          'norm1.linear',
+    'norm1_context_linear':  'norm1_context.linear',
+}
+
+_DIFFUSERS_SINGLE_US = {
+    'attn_to_q':   'attn.to_q',
+    'attn_to_k':   'attn.to_k',
+    'attn_to_v':   'attn.to_v',
+    'proj_mlp':    'proj_mlp',
+    'proj_out':    'proj_out',
+    'norm_linear': 'norm.linear',
+}
+
 
 def _kohya_key_to_module_path(base_key: str) -> str | None:
     """Convert an OT/kohya LoRA base key to a diffusers transformer module path.
 
-    OneTrainer uses underscore prefix + dot separators within block paths:
-      Block:     'lora_transformer_double_blocks.3.img_attn.qkv.0'  → 'transformer_blocks.3.attn.to_q'
-      Top-level: 'lora_transformer_norm_out_linear'                  → 'norm_out.linear'
-    Legacy dot format (lora_transformer.) still handled for older files.
+    Tries every known format OneTrainer may produce:
+      A) BFL naming, dots:       lora_transformer_double_blocks.0.img_attn.qkv.0
+      B) BFL naming, underscores: lora_transformer_double_blocks_0_img_attn_qkv_0
+      C) Diffusers naming, dots: lora_transformer_transformer_blocks.0.attn.to_q
+      D) Diffusers naming, US:   lora_transformer_transformer_blocks_0_attn_to_q
+      E) Top-level underscore:   lora_transformer_norm_out_linear
+      Legacy: lora_transformer.double_blocks.0.img_attn.qkv.0
     """
-    # ── OneTrainer format: lora_transformer_ prefix, dots within block paths ──
-    # Block keys: lora_transformer_double_blocks.0.img_attn.qkv.0
-    # Top-level:  lora_transformer_norm_out_linear  (underscores joining name parts)
     if base_key.startswith('lora_transformer_'):
         rest = base_key[len('lora_transformer_'):]
 
+        # A) BFL naming with dots
         m = re.match(r'^double_blocks\.(\d+)\.(.+)$', rest)
         if m:
             sub = _DOUBLE_BLOCK_DOT.get(m.group(2))
@@ -139,9 +166,37 @@ def _kohya_key_to_module_path(base_key: str) -> str | None:
             sub = _SINGLE_BLOCK_DOT.get(m.group(2))
             return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
 
-        return _TOP_LEVEL_US.get(rest)  # top-level layer or None
+        # B) BFL naming with underscores
+        m = re.match(r'^double_blocks_(\d+)_(.+)$', rest)
+        if m:
+            sub = _DOUBLE_BLOCK_US.get(m.group(2))
+            return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
 
-    # ── Dot format (legacy) ────────────────────────────────────────────────
+        m = re.match(r'^single_blocks_(\d+)_(.+)$', rest)
+        if m:
+            sub = _SINGLE_BLOCK_US.get(m.group(2))
+            return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+        # C) Diffusers naming with dots — rest IS already the module path
+        m = re.match(r'^(transformer_blocks|single_transformer_blocks)\.(\d+)\..+$', rest)
+        if m:
+            return rest
+
+        # D) Diffusers naming with underscores
+        m = re.match(r'^transformer_blocks_(\d+)_(.+)$', rest)
+        if m:
+            sub = _DIFFUSERS_DOUBLE_US.get(m.group(2))
+            return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+        m = re.match(r'^single_transformer_blocks_(\d+)_(.+)$', rest)
+        if m:
+            sub = _DIFFUSERS_SINGLE_US.get(m.group(2))
+            return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
+
+        # E) Top-level layers (underscore-joined names)
+        return _TOP_LEVEL_US.get(rest)
+
+    # ── Legacy dot format ──────────────────────────────────────────────────
     if base_key.startswith('lora_transformer.'):
         rest = base_key[len('lora_transformer.'):]
 
@@ -463,10 +518,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             lora_sd = _sf_load(li['path'])
 
-            # Log a few key names so we can confirm format in RunPod logs
-            _sample = [k for k in lora_sd if 'lora_down' in k or 'lora_A' in k][:3]
-            print(f'[inference] LoRA {i+1} key sample: {_sample}', flush=True)
-            logs.append(f'[inference] LoRA key sample: {_sample}')
+            # Log top-level + block key samples to confirm exact format
+            _sample_top = [k for k in lora_sd if ('lora_down' in k or 'lora_A' in k)
+                           and not re.search(r'\d', k)][:3]
+            _sample_blk = [k for k in lora_sd if ('lora_down' in k or 'lora_A' in k)
+                           and re.search(r'\d', k)][:3]
+            print(f'[inference] LoRA {i+1} top-level key sample: {_sample_top}', flush=True)
+            print(f'[inference] LoRA {i+1} block key sample:     {_sample_blk}', flush=True)
+            logs.append(f'[inference] LoRA top-level key sample: {_sample_top}')
+            logs.append(f'[inference] LoRA block key sample: {_sample_blk}')
 
             # Group A/B pairs — support both kohya (lora_down/up) and diffusers (lora_A/B)
             _pairs: dict = {}
@@ -478,6 +538,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                         break
 
             _applied = _skipped = 0
+            _first_skipped: str | None = None
             for _base, _pair in _pairs.items():
                 if 'A' not in _pair or 'B' not in _pair:
                     continue
@@ -486,13 +547,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _mod_path = _kohya_key_to_module_path(_base)
                 if _mod_path is None and _base.startswith('transformer.'):
                     _mod_path = _base[len('transformer.'):]
+                # Direct fallback: if rest of lora_transformer_ key is already a valid path
+                if _mod_path is None and _base.startswith('lora_transformer_'):
+                    _cand = _base[len('lora_transformer_'):]
+                    if _cand in _module_dict:
+                        _mod_path = _cand
 
                 if not _mod_path:
+                    if _first_skipped is None:
+                        _first_skipped = _base
                     _skipped += 1
                     continue
 
                 _mod = _module_dict.get(_mod_path)
                 if not isinstance(_mod, torch.nn.Linear):
+                    if _first_skipped is None:
+                        _first_skipped = _base
                     _skipped += 1
                     continue
 
@@ -511,9 +581,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             print(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped', flush=True)
             logs.append(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped')
-            if _skipped > 0 and _applied == 0:
-                _first_missed = next(iter(_pairs), None)
-                print(f'[inference] LoRA {i+1} first unmatched base key: {_first_missed}', flush=True)
+            if _first_skipped is not None:
+                print(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}', flush=True)
+                logs.append(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}')
             _flush_logs(r2, bucket, job_id, logs)
 
     # 5. Generate
