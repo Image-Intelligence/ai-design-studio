@@ -1,5 +1,16 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  GetObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  ListPartsCommand,
+} from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+
+export const MULTIPART_CHUNK_SIZE = 50 * 1024 * 1024  // 50 MB
 
 const r2 = new S3Client({
   region: 'auto',
@@ -40,6 +51,35 @@ export async function presignPutUrl(
 export async function presignGetUrl(key: string, expiresIn = 3600): Promise<string> {
   const cmd = new GetObjectCommand({ Bucket: BUCKET, Key: key })
   return getSignedUrl(r2, cmd, { expiresIn })
+}
+
+export async function initMultipartUpload(key: string, contentType: string): Promise<{ uploadId: string }> {
+  const res = await r2.send(new CreateMultipartUploadCommand({ Bucket: BUCKET, Key: key, ContentType: contentType }))
+  if (!res.UploadId) throw new Error('R2 did not return an UploadId')
+  return { uploadId: res.UploadId }
+}
+
+export async function presignUploadPart(key: string, uploadId: string, partNumber: number, expiresIn = 3600): Promise<string> {
+  return getSignedUrl(r2, new UploadPartCommand({ Bucket: BUCKET, Key: key, UploadId: uploadId, PartNumber: partNumber }), { expiresIn })
+}
+
+export async function completeMultipartUpload(key: string, uploadId: string): Promise<void> {
+  const parts: { PartNumber: number; ETag: string }[] = []
+  let marker: number | undefined
+  do {
+    const res = await r2.send(new ListPartsCommand({ Bucket: BUCKET, Key: key, UploadId: uploadId, PartNumberMarker: marker }))
+    for (const p of res.Parts ?? []) {
+      if (p.PartNumber && p.ETag) parts.push({ PartNumber: p.PartNumber, ETag: p.ETag })
+    }
+    marker = res.IsTruncated ? (res.NextPartNumberMarker ?? undefined) : undefined
+  } while (marker)
+  parts.sort((a, b) => a.PartNumber - b.PartNumber)
+  await r2.send(new CompleteMultipartUploadCommand({
+    Bucket: BUCKET,
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: { Parts: parts },
+  }))
 }
 
 export async function deleteFromR2(urlOrKey: string | string[]): Promise<void> {

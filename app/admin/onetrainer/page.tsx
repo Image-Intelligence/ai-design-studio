@@ -405,35 +405,62 @@ export default function OneTrainerPage() {
   }
 
   async function handleDatasetFile(conceptId: string, file: File) {
-    // Get presigned URL
-    const presignRes = await fetch('/api/admin/onetrainer/cloud/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...ah() },
-      body: JSON.stringify({ type: 'dataset', filename: file.name, contentType: 'application/zip' }),
-    })
-    if (!presignRes.ok) { alert('Failed to get upload URL'); return }
-    const { uploadUrl, key } = await presignRes.json()
+    const CHUNK = 50 * 1024 * 1024  // 50 MB per part
 
-    updateConcept(conceptId, { uploadProgress: 0 })
+    try {
+      // 1. Initiate multipart upload — server creates the upload and returns per-part presigned URLs
+      const initRes = await fetch('/api/admin/onetrainer/cloud/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...ah() },
+        body: JSON.stringify({ action: 'init', type: 'dataset', filename: file.name, contentType: 'application/zip', fileSize: file.size }),
+      })
+      if (!initRes.ok) throw new Error(`Init failed: ${initRes.status}`)
+      const { uploadId, key, partUrls } = await initRes.json()
 
-    await new Promise<void>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable) updateConcept(conceptId, { uploadProgress: Math.round(e.loaded / e.total * 100) })
+      updateConcept(conceptId, { uploadProgress: 0 })
+
+      // 2. Upload each chunk directly to R2 using its presigned URL
+      let uploadedBytes = 0
+      for (let i = 0; i < partUrls.length; i++) {
+        const start = i * CHUNK
+        const end = Math.min(start + CHUNK, file.size)
+        const chunk = file.slice(start, end)
+
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          xhr.upload.onprogress = e => {
+            if (e.lengthComputable) {
+              const pct = Math.round((uploadedBytes + e.loaded) / file.size * 100)
+              updateConcept(conceptId, { uploadProgress: Math.min(pct, 99) })
+            }
+          }
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              uploadedBytes += (end - start)
+              resolve()
+            } else {
+              reject(new Error(`Part ${i + 1} upload failed: ${xhr.status}`))
+            }
+          }
+          xhr.onerror = () => reject(new Error(`Part ${i + 1} network error`))
+          xhr.open('PUT', partUrls[i])
+          xhr.send(chunk)
+        })
       }
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          updateConcept(conceptId, { r2DatasetKey: key, uploadProgress: undefined })
-          resolve()
-        } else {
-          reject(new Error(`Upload failed: ${xhr.status}`))
-        }
-      }
-      xhr.onerror = () => reject(new Error('Upload network error'))
-      xhr.open('PUT', uploadUrl)
-      xhr.setRequestHeader('Content-Type', 'application/zip')
-      xhr.send(file)
-    })
+
+      // 3. Tell the server to assemble the parts
+      const completeRes = await fetch('/api/admin/onetrainer/cloud/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...ah() },
+        body: JSON.stringify({ action: 'complete', key, uploadId }),
+      })
+      if (!completeRes.ok) throw new Error(`Complete failed: ${completeRes.status}`)
+
+      updateConcept(conceptId, { r2DatasetKey: key, uploadProgress: undefined })
+    } catch (err: any) {
+      updateConcept(conceptId, { uploadProgress: undefined })
+      alert(`Dataset upload failed: ${err.message}`)
+    }
   }
 
   // ── Training status poll ───────────────────────────────────────────────────
