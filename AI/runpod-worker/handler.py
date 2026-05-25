@@ -33,18 +33,20 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-24-v4'
+HANDLER_VERSION = '2026-05-24-v5'
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
 MODELS_DIR = '/workspace/models'
 WORK_DIR   = '/workspace/runs'
 
-# OneTrainer saves Flux LoRAs with ALL dots replaced by underscores and the
-# prefix 'lora_transformer_' (underscore, no dot after 'transformer').
-# e.g. 'lora_transformer_double_blocks_0_img_attn_qkv_0.lora_down.weight'
+# OneTrainer saves Flux LoRAs with the prefix 'lora_transformer_' (underscore).
+# Block paths use dots within the path component:
+#   e.g. 'lora_transformer_double_blocks.0.img_attn.qkv.0.lora_down.weight'
+# Top-level names use underscores to join multi-word names:
+#   e.g. 'lora_transformer_norm_out_linear.lora_down.weight'
 #
-# Sub-key maps for the UNDERSCORE format (what OneTrainer actually produces):
+# _DOUBLE_BLOCK_US / _SINGLE_BLOCK_US kept for potential legacy files only.
 _DOUBLE_BLOCK_US = {
     'img_attn_qkv_0':  'attn.to_q',
     'img_attn_qkv_1':  'attn.to_k',
@@ -116,23 +118,25 @@ _SINGLE_BLOCK_DOT = {
 def _kohya_key_to_module_path(base_key: str) -> str | None:
     """Convert an OT/kohya LoRA base key to a diffusers transformer module path.
 
-    Handles both formats OneTrainer may produce:
-      Underscore: 'lora_transformer_double_blocks_3_img_attn_qkv_0'  (current)
-      Dot:        'lora_transformer.double_blocks.3.img_attn.qkv.0'  (legacy)
-    Both map to: 'transformer_blocks.3.attn.to_q'
+    OneTrainer uses underscore prefix + dot separators within block paths:
+      Block:     'lora_transformer_double_blocks.3.img_attn.qkv.0'  → 'transformer_blocks.3.attn.to_q'
+      Top-level: 'lora_transformer_norm_out_linear'                  → 'norm_out.linear'
+    Legacy dot format (lora_transformer.) still handled for older files.
     """
-    # ── Underscore format (current OneTrainer output) ──────────────────────
+    # ── OneTrainer format: lora_transformer_ prefix, dots within block paths ──
+    # Block keys: lora_transformer_double_blocks.0.img_attn.qkv.0
+    # Top-level:  lora_transformer_norm_out_linear  (underscores joining name parts)
     if base_key.startswith('lora_transformer_'):
         rest = base_key[len('lora_transformer_'):]
 
-        m = re.match(r'^double_blocks_(\d+)_(.+)$', rest)
+        m = re.match(r'^double_blocks\.(\d+)\.(.+)$', rest)
         if m:
-            sub = _DOUBLE_BLOCK_US.get(m.group(2))
+            sub = _DOUBLE_BLOCK_DOT.get(m.group(2))
             return f'transformer_blocks.{m.group(1)}.{sub}' if sub else None
 
-        m = re.match(r'^single_blocks_(\d+)_(.+)$', rest)
+        m = re.match(r'^single_blocks\.(\d+)\.(.+)$', rest)
         if m:
-            sub = _SINGLE_BLOCK_US.get(m.group(2))
+            sub = _SINGLE_BLOCK_DOT.get(m.group(2))
             return f'single_transformer_blocks.{m.group(1)}.{sub}' if sub else None
 
         return _TOP_LEVEL_US.get(rest)  # top-level layer or None
