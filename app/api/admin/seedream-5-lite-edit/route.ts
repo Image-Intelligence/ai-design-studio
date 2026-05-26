@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 const prisma = new PrismaClient()
@@ -16,7 +17,11 @@ export async function POST(req: Request) {
     const token = cookieStore.get('session')?.value
     const sessionUser = token ? await getUserFromSession(token) : null
 
-    if (await isGenerationBlocked(sessionUser?.email)) {
+    if (!sessionUser) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    if (await isGenerationBlocked(sessionUser.email)) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
@@ -35,6 +40,16 @@ export async function POST(req: Request) {
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
+    }
+
+    // Server-side ticket cost — 4 for 3K, 2 otherwise
+    const ticketCost = (image_size as string) === 'auto_3K' ? 4 : 2
+    const ticketResult = await deductGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)
+    if (!ticketResult.ok) {
+      return NextResponse.json(
+        { error: `Insufficient tickets — need ${ticketResult.need}, have ${ticketResult.have}` },
+        { status: 402 },
+      )
     }
 
     // Minimal input — only send fields we know FAL accepts.
@@ -118,6 +133,7 @@ export async function POST(req: Request) {
       } else if (detail) {
         detailMsg = JSON.stringify(detail)
       }
+      await refundGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)
       const rawBody = JSON.stringify(falError.body)
       const errorMsg = detailMsg || falError.message || 'Generation failed'
       return NextResponse.json(
@@ -132,6 +148,7 @@ export async function POST(req: Request) {
     const seed: number | undefined = (result.data as any).seed
 
     if (falImages.length === 0) {
+      await refundGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)
       return NextResponse.json({ error: 'No images returned from model' }, { status: 500 })
     }
 

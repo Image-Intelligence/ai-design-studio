@@ -7,11 +7,26 @@ import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
 const TEXT_ENDPOINT = 'fal-ai/gpt-image-2'
 const EDIT_ENDPOINT = 'openai/gpt-image-2/edit'
+
+function computeGptTicketCost(quality: string, size: string): number {
+  if (quality === 'low') return 1
+  if (quality === 'high') {
+    if (size === '1024x1024') return 8
+    if (size === '2560x1440') return 9
+    if (size === '3840x2160') return 15
+    return 6
+  }
+  // medium (default)
+  if (size === '1024x1024' || size === '2560x1440') return 3
+  if (size === '3840x2160') return 4
+  return 2
+}
 
 // Size tokens are the exact pixel dimensions shown in the portal (e.g. "1920x1080").
 // Split on "x" to get width/height directly — no lookup table needed.
@@ -53,11 +68,22 @@ export async function POST(req: Request) {
       size = '1024x1024',        // pixel-dimension token from the portal
       referenceImages = [],       // base64 data URIs from the client
       referenceImageUrls = [],    // permanent R2 URLs for DB storage
-      ticketCost = 0,
     } = body
+
+    // Compute ticket cost server-side — never trust client-supplied value
+    const ticketCost = computeGptTicketCost(quality as string, size as string)
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
+    }
+
+    // Deduct tickets before submitting to FAL
+    const ticketResult = await deductGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
+    if (!ticketResult.ok) {
+      return NextResponse.json(
+        { error: `Insufficient tickets — need ${ticketResult.need}, have ${ticketResult.have}` },
+        { status: 402 },
+      )
     }
 
     const { width, height } = parseSize(size)
@@ -160,6 +186,7 @@ export async function POST(req: Request) {
         where: { modelId: FAL_GLOBAL_ID },
         data: { currentActive: { decrement: 1 } },
       }).catch(() => {})
+      await refundGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
       throw submitError
     }
   } catch (error: any) {

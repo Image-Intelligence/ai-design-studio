@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 const prisma = new PrismaClient()
@@ -15,7 +16,11 @@ export async function POST(req: Request) {
     const token = cookieStore.get('session')?.value
     const sessionUser = token ? await getUserFromSession(token) : null
 
-    if (await isGenerationBlocked(sessionUser?.email)) {
+    if (!sessionUser) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    if (await isGenerationBlocked(sessionUser.email)) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
@@ -31,6 +36,16 @@ export async function POST(req: Request) {
       enable_web_search = false,
       seed,
     } = body
+
+    // Server-side ticket cost — matches nano-banana-2-live pricing
+    const ticketCost = (resolution as string) === '4K' ? 12 : 7
+    const ticketResult = await deductGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)
+    if (!ticketResult.ok) {
+      return NextResponse.json(
+        { error: `Insufficient tickets — need ${ticketResult.need}, have ${ticketResult.have}` },
+        { status: 402 },
+      )
+    }
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
@@ -55,16 +70,20 @@ export async function POST(req: Request) {
     console.log('NanoBanana 2 prototype request:', JSON.stringify(input))
     const start = Date.now()
 
-    const result = await fal.subscribe('fal-ai/nano-banana-2', {
-      input,
-      logs: false,
-    })
+    let result: any
+    try {
+      result = await fal.subscribe('fal-ai/nano-banana-2', { input, logs: false })
+    } catch (falErr: any) {
+      await refundGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)
+      throw falErr
+    }
 
     const elapsed = Date.now() - start
     const falImages: { url: string; width?: number; height?: number; file_size?: number }[] =
       (result.data as any).images || []
 
     if (falImages.length === 0) {
+      await refundGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)
       return NextResponse.json({ error: 'No images returned from model' }, { status: 500 })
     }
 
@@ -84,21 +103,16 @@ export async function POST(req: Request) {
       hostedImages.push({ url, width: falImg.width, height: falImg.height })
     }
 
-    // Save to DB under the first user (admin/site owner).
+    // Save to DB.
     try {
-      const targetUserId: number | null = sessionUser?.id ?? null
-      if (!targetUserId) {
-        console.error('nano-banana-2: no session user — skipping DB save')
-      }
-      if (targetUserId) {
-        await Promise.all(hostedImages.map(img =>
+      await Promise.all(hostedImages.map(img =>
           prisma.generatedImage.create({
             data: {
-              userId:            targetUserId!,
+              userId:            sessionUser.id,
               prompt:            prompt.trim(),
               imageUrl:          img.url,
               model:             'nano-banana-2',
-              ticketCost:        0,
+              ticketCost,
               referenceImageUrls: [],
               quality:           resolution,
               aspectRatio:       aspect_ratio,
@@ -106,7 +120,6 @@ export async function POST(req: Request) {
             },
           })
         ))
-      }
     } catch (dbErr) {
       // Non-fatal — log but still return the images
       console.error('NanaBanana2: failed to save to DB:', dbErr)

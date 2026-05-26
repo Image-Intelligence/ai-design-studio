@@ -1,4 +1,7 @@
 import { NextResponse } from 'next/server'
+import { getUserFromSession } from '@/lib/auth'
+import { cookies } from 'next/headers'
+import { isAdminEmail } from '@/lib/ticket-gate'
 
 const RUNPOD_API   = 'https://api.runpod.ai/v2'
 const COMFYUI_URL  = 'http://localhost:8188'
@@ -131,6 +134,18 @@ async function pollComfyHistory(promptId: string): Promise<{ filename: string; s
 }
 
 export async function POST(req: Request) {
+  // Require admin password header OR a session belonging to an admin email
+  const adminPass = process.env.ADMIN_PASSWORD
+  const hasAdminPass = adminPass && req.headers.get('x-admin-password') === adminPass
+  if (!hasAdminPass) {
+    const cookieStore = await cookies()
+    const token = cookieStore.get('session')?.value
+    const sessionUser = token ? await getUserFromSession(token) : null
+    if (!sessionUser || !isAdminEmail(sessionUser.email ?? '')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+  }
+
   let body: {
     mode: 'local' | 'runpod'
     prompt: string
