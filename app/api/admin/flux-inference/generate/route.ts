@@ -156,6 +156,10 @@ export async function POST(req: Request) {
     steps?: number
     guidance?: number
     seed?: number | null
+    refine?: boolean
+    refine_strength?: number
+    upscale?: 'none' | '2k' | '4k'
+    upscale_strength?: number
   }
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
@@ -177,6 +181,10 @@ export async function POST(req: Request) {
       checkpoint_r2_key: checkpoint,
       loras: loras.map(l => ({ r2_key: l.r2_key ?? l.name, strength: l.strength })),
       width, height, steps, guidance, seed,
+      refine:           body.refine          ?? false,
+      refine_strength:  body.refine_strength ?? 0.3,
+      upscale:          body.upscale         ?? 'none',
+      upscale_strength: body.upscale_strength ?? 0.3,
     }
 
     const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {

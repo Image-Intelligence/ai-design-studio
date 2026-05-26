@@ -360,6 +360,92 @@ def _download(r2, key: str, dest: str, label: str, logs: list) -> bool:
 INFERENCE_CACHE = '/workspace/inference_cache'
 
 
+def _tiled_img2img(pipe_i2i, image_pil, prompt: str, upscale_factor: int,
+                   strength: float, steps: int, guidance: float,
+                   seed, logs: list):
+    """
+    Lanczos upscale then tiled img2img for detail enhancement.
+    Tiles are 1024×1024 (Flux native resolution) with 128px feathered overlap.
+    """
+    from PIL import Image
+    import numpy as np
+    import torch
+
+    TILE = 1024
+    OVER = 128
+    STEP = TILE - OVER
+
+    new_w = image_pil.width  * upscale_factor
+    new_h = image_pil.height * upscale_factor
+    logs.append(f'[upscale] Lanczos {image_pil.width}×{image_pil.height} → {new_w}×{new_h}')
+    big = image_pil.resize((new_w, new_h), Image.LANCZOS)
+
+    canvas  = np.zeros((new_h, new_w, 3), dtype=np.float32)
+    weights = np.zeros((new_h, new_w, 1), dtype=np.float32)
+
+    def _feather_1d(size, over):
+        w    = np.ones(size, dtype=np.float32)
+        ramp = np.linspace(0.0, 1.0, over + 2)[1:-1]
+        w[:over]  = ramp
+        w[-over:] = ramp[::-1]
+        return w
+
+    xs = list(range(0, max(new_w - OVER, 1), STEP))
+    ys = list(range(0, max(new_h - OVER, 1), STEP))
+    if not xs: xs = [0]
+    if not ys: ys = [0]
+
+    n_tiles = len(xs) * len(ys)
+    logs.append(f'[upscale] Processing {n_tiles} tiles ({len(xs)} cols × {len(ys)} rows)...')
+
+    tile_idx = 0
+    for y_start in ys:
+        for x_start in xs:
+            # Clamp so last tiles always reach the image edge
+            x1 = min(x_start, max(0, new_w - TILE))
+            y1 = min(y_start, max(0, new_h - TILE))
+            x2 = min(x1 + TILE, new_w)
+            y2 = min(y1 + TILE, new_h)
+            tw, th = x2 - x1, y2 - y1
+
+            tile_crop = big.crop((x1, y1, x2, y2))
+            if tw < TILE or th < TILE:
+                padded = Image.new('RGB', (TILE, TILE))
+                padded.paste(tile_crop, (0, 0))
+                tile_in = padded
+            else:
+                tile_in = tile_crop
+
+            tile_seed = (int(seed) + tile_idx) if seed is not None else None
+            gen = torch.Generator('cuda').manual_seed(tile_seed) if tile_seed is not None else None
+
+            out = pipe_i2i(
+                prompt=prompt,
+                image=tile_in,
+                strength=strength,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=gen,
+                width=TILE,
+                height=TILE,
+            ).images[0]
+
+            tile_arr = np.array(out, dtype=np.float32)[:th, :tw]
+            wx = _feather_1d(tw, min(OVER, tw // 2))
+            wy = _feather_1d(th, min(OVER, th // 2))
+            w  = (wy[:, None] * wx[None, :])[:, :, None]
+
+            canvas[y1:y2, x1:x2]  += tile_arr * w
+            weights[y1:y2, x1:x2] += w
+
+            tile_idx += 1
+            logs.append(f'[upscale] Tile {tile_idx}/{n_tiles} ({x1},{y1})→({x2},{y2})')
+
+    result_arr = (canvas / np.maximum(weights, 1e-8)).clip(0, 255).astype(np.uint8)
+    from PIL import Image as _Img
+    return _Img.fromarray(result_arr)
+
+
 def _handle_inference(job_id: str, inp: dict) -> dict:
     """Run Flux image inference with optional LoRAs."""
     # OneTrainer's bundled diffusers has the QK-norm patch for transformer-only checkpoints
@@ -378,15 +464,21 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     os.makedirs(INFERENCE_CACHE, exist_ok=True)
     os.makedirs(MODELS_DIR, exist_ok=True)
 
-    prompt   = inp.get('prompt', '')
-    ckpt_key = inp['checkpoint_r2_key']
-    loras    = inp.get('loras', [])
-    width    = int(inp.get('width', 1024))
-    height   = int(inp.get('height', 1024))
-    steps    = int(inp.get('steps', 20))
-    guidance = float(inp.get('guidance', 3.5))
-    seed     = inp.get('seed')
-    out_key  = inp.get('output_r2_key') or f'inference/outputs/{job_id}.png'
+    prompt          = inp.get('prompt', '')
+    ckpt_key        = inp['checkpoint_r2_key']
+    loras           = inp.get('loras', [])
+    width           = int(inp.get('width', 1024))
+    height          = int(inp.get('height', 1024))
+    steps           = int(inp.get('steps', 20))
+    guidance        = float(inp.get('guidance', 3.5))
+    seed            = inp.get('seed')
+    out_key         = inp.get('output_r2_key') or f'inference/outputs/{job_id}.png'
+    # Post-processing options
+    refine          = bool(inp.get('refine', False))
+    refine_strength = float(inp.get('refine_strength', 0.3))
+    upscale         = inp.get('upscale', 'none')   # 'none' | '2k' | '4k'
+    upscale_strength = float(inp.get('upscale_strength', 0.3))
+    upscale_factor  = {'2k': 2, '4k': 4}.get(str(upscale).lower(), 0)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
@@ -612,15 +704,57 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 logs.append(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}')
             _flush_logs(r2, bucket, job_id, logs)
 
+    # Load FluxImg2ImgPipeline for refine/upscale (shares weights with pipe — no extra VRAM)
+    pipe_i2i = None
+    if refine or upscale_factor > 0:
+        try:
+            from diffusers import FluxImg2ImgPipeline
+            pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
+            logs.append('[inference] FluxImg2ImgPipeline ready.')
+        except Exception as _i2i_err:
+            logs.append(f'[inference] Warning: FluxImg2ImgPipeline unavailable ({_i2i_err}). Refine/upscale skipped.')
+        _flush_logs(r2, bucket, job_id, logs)
+
     _inf_error: Exception | None = None
     try:
-        # 5. Generate
+        # 5. Base generation
         logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
         _flush_logs(r2, bucket, job_id, logs)
         gen = torch.Generator('cuda').manual_seed(int(seed)) if seed is not None else None
         result = pipe(prompt=prompt, width=width, height=height,
                       num_inference_steps=steps, guidance_scale=guidance, generator=gen)
         image = result.images[0]
+        logs.append('[inference] Base generation done.')
+        _flush_logs(r2, bucket, job_id, logs)
+
+        # 5a. Optional refine pass (img2img at same resolution, low denoise)
+        if refine and pipe_i2i is not None:
+            logs.append(f'[inference] Refine pass — strength={refine_strength}...')
+            _flush_logs(r2, bucket, job_id, logs)
+            gen_r = torch.Generator('cuda').manual_seed(int(seed) + 1) if seed is not None else None
+            image = pipe_i2i(
+                prompt=prompt,
+                image=image,
+                strength=refine_strength,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=gen_r,
+                width=width,
+                height=height,
+            ).images[0]
+            logs.append('[inference] Refine done.')
+            _flush_logs(r2, bucket, job_id, logs)
+
+        # 5b. Optional tiled upscale
+        if upscale_factor > 0 and pipe_i2i is not None:
+            logs.append(f'[inference] Tiled {upscale_factor}× upscale — tile strength={upscale_strength}...')
+            _flush_logs(r2, bucket, job_id, logs)
+            image = _tiled_img2img(
+                pipe_i2i, image, prompt, upscale_factor,
+                upscale_strength, steps, guidance, seed, logs,
+            )
+            logs.append(f'[inference] Upscale done — final size {image.width}×{image.height}.')
+            _flush_logs(r2, bucket, job_id, logs)
 
         # 6. Upload result
         out_path = os.path.join(run_dir, 'output.png')

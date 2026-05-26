@@ -3153,6 +3153,11 @@ function CustomFluxPanel({
   const [resultUrl, setResultUrl]     = useState<string | null>(null)
   const [error, setError]             = useState<string | null>(null)
   const [status, setStatus]           = useState('')
+  // Post-processing
+  const [refine, setRefine]                     = useState(false)
+  const [refineStrength, setRefineStrength]     = useState(0.3)
+  const [upscale, setUpscale]                   = useState<'none'|'2k'|'4k'>('none')
+  const [upscaleStrength, setUpscaleStrength]   = useState(0.3)
 
   // Available models
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([])
@@ -3267,6 +3272,11 @@ function CustomFluxPanel({
         .map(l => ({ name: l.name, key: l.key, r2_key: l.key, strength: l.strength })),
       width, height, steps, guidance,
       seed: seed === -1 ? null : seed,
+      // Post-processing (RunPod only)
+      refine:           mode === 'runpod' ? refine           : false,
+      refine_strength:  refineStrength,
+      upscale:          mode === 'runpod' ? upscale          : 'none',
+      upscale_strength: upscaleStrength,
     }
 
     try {
@@ -3370,7 +3380,7 @@ function CustomFluxPanel({
           <div className="rounded-xl border border-white/[0.08] bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2.5">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-mono text-cyan-400/60 uppercase tracking-widest">Config</span>
-              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1) }}
+              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setRefineStrength(0.3); setUpscaleStrength(0.3) }}
                 className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
             </div>
             {[
@@ -3393,6 +3403,25 @@ function CustomFluxPanel({
                 onChange={e => setSeed(e.target.value === '' ? -1 : parseInt(e.target.value))}
                 className="w-32 bg-white/5 border border-white/10 rounded px-2 py-1 text-[11px] font-mono text-white placeholder-slate-600 focus:outline-none focus:border-white/20" />
             </div>
+            {/* Refine + upscale strength — only shown when RunPod mode and relevant toggle is on */}
+            {mode === 'runpod' && refine && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
+                <span className="text-[10px] font-mono text-emerald-400/70">Refine str</span>
+                <input type="range" min={0.1} max={0.6} step={0.05} value={refineStrength}
+                  onChange={e => setRefineStrength(parseFloat(e.target.value))}
+                  className="w-full accent-emerald-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-emerald-300 tabular-nums text-right">{refineStrength.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && upscale !== 'none' && (
+              <div className={`grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 ${!refine ? 'border-t border-white/5 pt-2' : ''}`}>
+                <span className="text-[10px] font-mono text-violet-400/70">Tile str</span>
+                <input type="range" min={0.1} max={0.5} step={0.05} value={upscaleStrength}
+                  onChange={e => setUpscaleStrength(parseFloat(e.target.value))}
+                  className="w-full accent-violet-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{upscaleStrength.toFixed(2)}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -3564,6 +3593,35 @@ function CustomFluxPanel({
               <SlidersHorizontal size={11} />
               <span className="font-mono">{steps}s · {guidance.toFixed(1)}g · {width}×{height}</span>
             </button>
+
+            {/* RunPod-only: Refine toggle + Quality selector */}
+            {mode === 'runpod' && (
+              <>
+                <div className="w-px h-3 bg-white/10 shrink-0" />
+                {/* Refine toggle */}
+                <button onClick={() => setRefine(v => !v)}
+                  title="Run an img2img detail pass at the same resolution after generation"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    refine
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  Refine
+                </button>
+                {/* Quality / upscale selector */}
+                <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">
+                  {(['none', '2k', '4k'] as const).map(q => (
+                    <button key={q} onClick={() => setUpscale(q)}
+                      title={q === 'none' ? 'No upscale' : q === '2k' ? '2× tiled upscale (~2 min)' : '4× tiled upscale (~8 min)'}
+                      className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        upscale === q ? 'bg-violet-500/20 text-violet-200' : 'text-slate-500 hover:text-slate-300'
+                      }`}>
+                      {q === 'none' ? 'Base' : q.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
 
             {/* Spacer */}
             <div className="hidden sm:block sm:flex-1" />

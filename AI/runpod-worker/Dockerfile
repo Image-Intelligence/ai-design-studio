@@ -15,8 +15,8 @@ RUN git clone https://github.com/Nerogar/OneTrainer.git && \
 WORKDIR /workspace/OneTrainer
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install worker deps
-RUN pip install --no-cache-dir runpod boto3 tensorboard peft
+# Install worker deps (diffusers>=0.31 required for FluxImg2ImgPipeline)
+RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0"
 
 # Create tensorboard symlink and default samples file
 RUN ln -sf $(which tensorboard) /usr/bin/tensorboard && \
