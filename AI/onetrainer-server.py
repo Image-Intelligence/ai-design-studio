@@ -162,6 +162,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
 
             try:
+                _env = os.environ.copy()
+                _env["CUDA_VISIBLE_DEVICES"] = "1"  # Use RTX (GPU 1), not Intel integrated (GPU 0)
                 proc = subprocess.Popen(
                     [PYTHON_EXE, TRAIN_SCRIPT, "--config-path", TEMP_CONFIG],
                     stdout=subprocess.PIPE,
@@ -169,6 +171,7 @@ class Handler(BaseHTTPRequestHandler):
                     text=True,
                     bufsize=1,
                     cwd=OT_DIR,
+                    env=_env,
                 )
                 _process = proc
                 with _lock:

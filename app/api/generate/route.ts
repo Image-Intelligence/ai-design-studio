@@ -7,6 +7,7 @@ import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
 import { fal } from "@fal-ai/client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
+import { reserveGenerationTickets } from '@/lib/ticket-gate'
 
 const prisma = new PrismaClient()
 
@@ -202,10 +203,13 @@ export async function POST(request: Request) {
           const upscalePrompt = (prompt || 'masterpiece, best quality, highres').trim()
 
           if (!skipTickets) {
-            await prisma.ticket.update({
-              where: { userId: user.id },
-              data: { reserved: { increment: ticketCost } }
-            })
+            const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
+            if (!reserveResult.ok) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
           const newBalance = skipTickets
@@ -321,7 +325,13 @@ export async function POST(request: Request) {
           }
 
           if (!skipTickets) {
-            await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { increment: 1 } } })
+            const reserveResult = await reserveGenerationTickets(user.id, user.email!, 1)
+            if (!reserveResult.ok) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
           const newBalance = skipTickets
@@ -404,7 +414,13 @@ export async function POST(request: Request) {
           }
 
           if (!skipTickets) {
-            await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { increment: 1 } } })
+            const reserveResult = await reserveGenerationTickets(user.id, user.email!, 1)
+            if (!reserveResult.ok) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
           const newBalance = skipTickets
@@ -515,17 +531,15 @@ export async function POST(request: Request) {
             console.warn('[drct] failed to fetch/re-upload source, using original URL:', uploadErr)
           }
 
-          // Check actual ticket cost against balance
-          const effectiveDrctBalance = (ticketRecord?.balance || 0) - (ticketRecord?.reserved || 0)
-          if (!skipTickets && effectiveDrctBalance < drctTicketCost) {
-            return NextResponse.json(
-              { error: `Insufficient tickets. Need ${drctTicketCost} ticket(s) for this output size, but you have ${effectiveDrctBalance}.` },
-              { status: 402 }
-            )
-          }
-
+          // Check actual ticket cost against balance — atomic to prevent TOCTOU races
           if (!skipTickets) {
-            await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { increment: drctTicketCost } } })
+            const reserveResult = await reserveGenerationTickets(user.id, user.email!, drctTicketCost)
+            if (!reserveResult.ok) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${drctTicketCost} ticket(s) for this output size, but you have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
           const newBalance = skipTickets
@@ -587,15 +601,14 @@ export async function POST(request: Request) {
           }
 
           const supirCost = 8
-          const effectiveBalance = (ticketRecord?.balance || 0) - (ticketRecord?.reserved || 0)
-          if (!skipTickets && effectiveBalance < supirCost) {
-            return NextResponse.json(
-              { error: `Insufficient tickets. Need ${supirCost}, have ${effectiveBalance}.` },
-              { status: 402 }
-            )
-          }
           if (!skipTickets) {
-            await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { increment: supirCost } } })
+            const reserveResult = await reserveGenerationTickets(user.id, user.email!, supirCost)
+            if (!reserveResult.ok) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${supirCost}, have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
           const newBalance = skipTickets
@@ -944,18 +957,24 @@ export async function POST(request: Request) {
             },
           })
 
-          // Deduct tickets
-          let syncUpdatedTicket = ticketRecord
+          // Deduct tickets atomically — prevents negative balances from concurrent sync requests
+          let newBalance = ticketRecord?.balance || 0
           if (!skipTickets) {
-            syncUpdatedTicket = await prisma.ticket.update({
-              where: { userId: user.id },
-              data: { balance: { decrement: ticketCost }, totalUsed: { increment: ticketCost } },
-            })
+            const affected = await prisma.$executeRaw`
+              UPDATE "Ticket"
+              SET balance = balance - ${ticketCost}, "totalUsed" = "totalUsed" + ${ticketCost}
+              WHERE "userId" = ${user.id}
+                AND (balance - COALESCE(reserved, 0)) >= ${ticketCost}
+            `
+            if (affected === 0) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${ticketCost} ticket(s) to complete this generation.` },
+                { status: 402 }
+              )
+            }
+            const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
+            newBalance = Math.max(0, (updatedTicket?.balance ?? 0) - (updatedTicket?.reserved ?? 0))
           }
-
-          const syncRawBalance = skipTickets ? (ticketRecord?.balance || 0) : (syncUpdatedTicket?.balance || 0)
-          const syncRawReserved = skipTickets ? (ticketRecord?.reserved || 0) : (syncUpdatedTicket?.reserved || 0)
-          const newBalance = Math.max(0, syncRawBalance - syncRawReserved)
 
           console.log('=== FAL.AI SYNC GENERATION COMPLETE ===')
           return NextResponse.json({ imageUrl: syncUrl, newBalance, modelUsed: selectedModel.displayName })
@@ -968,10 +987,13 @@ export async function POST(request: Request) {
           // Reserve tickets upfront — same for both queued and immediate paths.
           // The actual balance deduction only happens in the FAL webhook on success.
           if (!skipTickets) {
-            await prisma.ticket.update({
-              where: { userId: user.id },
-              data: { reserved: { increment: ticketCost } }
-            })
+            const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
+            if (!reserveResult.ok) {
+              return NextResponse.json(
+                { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
             reservationMade = true
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })

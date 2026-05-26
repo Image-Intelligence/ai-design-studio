@@ -18,19 +18,52 @@ export async function deductGenerationTickets(
 ): Promise<{ ok: true; newBalance: number } | { ok: false; have: number; need: number }> {
   if (cost <= 0 || isAdminEmail(userEmail)) return { ok: true, newBalance: -1 }
 
-  const ticket = await prisma.ticket.findUnique({ where: { userId } })
-  const available = (ticket?.balance ?? 0) - (ticket?.reserved ?? 0)
+  // Single atomic UPDATE prevents TOCTOU race: concurrent requests that both
+  // pass a separate balance check can both decrement, causing negative balances.
+  const affected = await prisma.$executeRaw`
+    UPDATE "Ticket"
+    SET balance = balance - ${cost}, "totalUsed" = "totalUsed" + ${cost}
+    WHERE "userId" = ${userId}
+      AND (balance - COALESCE(reserved, 0)) >= ${cost}
+  `
 
-  if (available < cost) {
-    return { ok: false, have: Math.max(0, available), need: cost }
+  if (affected === 0) {
+    const ticket = await prisma.ticket.findUnique({ where: { userId } })
+    const available = Math.max(0, (ticket?.balance ?? 0) - (ticket?.reserved ?? 0))
+    return { ok: false, have: available, need: cost }
   }
 
-  const updated = await prisma.ticket.update({
-    where: { userId },
-    data: { balance: { decrement: cost }, totalUsed: { increment: cost } },
-    select: { balance: true },
-  })
-  return { ok: true, newBalance: updated.balance }
+  const updated = await prisma.ticket.findUnique({ where: { userId }, select: { balance: true } })
+  return { ok: true, newBalance: updated?.balance ?? 0 }
+}
+
+/**
+ * Atomically reserve tickets before submitting an async FAL job.
+ * Uses the same atomic UPDATE pattern as deductGenerationTickets to prevent
+ * TOCTOU races where two concurrent requests both pass the balance check.
+ * Admin emails are skipped. Returns { ok: false } if balance is insufficient.
+ */
+export async function reserveGenerationTickets(
+  userId: number,
+  userEmail: string,
+  cost: number,
+): Promise<{ ok: true } | { ok: false; have: number; need: number }> {
+  if (cost <= 0 || isAdminEmail(userEmail)) return { ok: true }
+
+  const affected = await prisma.$executeRaw`
+    UPDATE "Ticket"
+    SET reserved = reserved + ${cost}
+    WHERE "userId" = ${userId}
+      AND (balance - COALESCE(reserved, 0)) >= ${cost}
+  `
+
+  if (affected === 0) {
+    const ticket = await prisma.ticket.findUnique({ where: { userId } })
+    const available = Math.max(0, (ticket?.balance ?? 0) - (ticket?.reserved ?? 0))
+    return { ok: false, have: available, need: cost }
+  }
+
+  return { ok: true }
 }
 
 /**

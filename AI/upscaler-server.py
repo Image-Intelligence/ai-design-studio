@@ -35,6 +35,13 @@ ARCHS = {
         'desc':       'Transformer-based — best for fine skin & face detail, auto-generates LR pairs',
         'setup':      'git clone https://github.com/ming053l/DRCT.git\ncd DRCT\npython -m venv venv\nvenv\\Scripts\\activate\npip install -r requirements.txt',
     },
+    'neosr': {
+        'label':   'neosr',
+        'dir':     AI_DIR / 'neosr',
+        'scripts': ['train.py'],
+        'desc':    'Unified framework — train SPAN, DAT, RRDBNet, SwinIR, HAT and more',
+        'setup':   'git clone https://github.com/muslll/neosr\ncd neosr\nC:\\Users\\Owner\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m pip install -e .',
+    },
 }
 
 def _find_script(arch_id):
@@ -48,8 +55,10 @@ def _find_script(arch_id):
 def _find_python(arch_id):
     a = ARCHS[arch_id]
     candidates = [
-        a['dir']  / 'venv' / 'Scripts' / 'python.exe',
-        a['dir']  / 'venv' / 'bin'     / 'python',
+        a['dir']  / '.venv' / 'Scripts' / 'python.exe',   # uv-managed venv
+        a['dir']  / '.venv' / 'bin'     / 'python',
+        a['dir']  / 'venv'  / 'Scripts' / 'python.exe',
+        a['dir']  / 'venv'  / 'bin'     / 'python',
         AI_DIR    / 'upscaler-venv' / 'Scripts' / 'python.exe',
         AI_DIR    / 'upscaler-venv' / 'bin'     / 'python',
         Path(r'C:\Users\Owner\AppData\Local\Programs\Python\Python311\python.exe'),
@@ -349,6 +358,99 @@ dist_params:
   port: 29502
 """
 
+def make_neosr_config(c, net_type, lq_path, pretrain_g_path=None):
+    scale     = int(_cfg(c, 'scale', 4))
+    hr_patch  = int(_cfg(c, 'patchSize', 256))
+    lr_patch  = max(8, hr_patch // scale)   # neosr patch_size = LR crop size
+    batch     = int(_cfg(c, 'batchSize', 4))
+    iters     = int(_cfg(c, 'totalIter', 100000))
+    save_freq = int(_cfg(c, 'saveFreq', 5000))
+    lr_g      = float(_cfg(c, 'lr', 1e-3))
+    lr_d      = lr_g / 10
+    hr        = c['datasetPath'].replace('/', '\\')
+    lq        = lq_path.replace('/', '\\')
+    name      = _cfg(c, 'name', f'custom_{net_type}')
+
+    path_block = ''
+    if pretrain_g_path:
+        pretrain_escaped = pretrain_g_path.replace('\\', '\\\\')
+        path_block = f'\n[path]\npretrain_network_g = "{pretrain_escaped}"\nstrict_load_g = false\n'
+
+    hr_escaped = hr.replace('\\', '\\\\')
+    lq_escaped = lq.replace('\\', '\\\\')
+
+    warmup_g = min(1600, iters // 60)
+    warmup_d = min(600,  iters // 160)
+
+    # transformer archs: enable wavelet_guided; CNN archs: skip it
+    TRANSFORMER_ARCHS = {'dat_2', 'hat_s', 'drct', 'srformer_light', 'man', 'rgt_s'}
+    is_xfm = net_type in TRANSFORMER_ARCHS
+    wavelet_block = f'\nwavelet_guided = true\nwavelet_init = {iters // 12}\n' if is_xfm else ''
+
+    return f'''name = "{name}"
+model_type = "image"
+scale = {scale}
+use_amp = true
+bfloat16 = true
+fast_matmul = true
+
+[datasets.train]
+type = "paired"
+dataroot_gt = "{hr_escaped}"
+dataroot_lq = "{lq_escaped}"
+patch_size = {lr_patch}
+batch_size = {batch}
+augmentation = ["none", "mixup", "cutmix", "resizemix", "cutblur"]
+aug_prob = [0.5, 0.1, 0.1, 0.1, 0.5]
+{path_block}
+[network_g]
+type = "{net_type}"
+
+[network_d]
+type = "metagan"
+
+[train]
+ema = 0.999{wavelet_block}
+[train.optim_g]
+type = "adan_sf"
+lr = {lr_g}
+betas = [0.98, 0.92, 0.99]
+weight_decay = 0.01
+schedule_free = true
+warmup_steps = {warmup_g}
+
+[train.optim_d]
+type = "adan_sf"
+lr = {lr_d}
+betas = [0.98, 0.92, 0.99]
+weight_decay = 0.01
+schedule_free = true
+warmup_steps = {warmup_d}
+
+[train.mssim_opt]
+type = "mssim_loss"
+loss_weight = 1.0
+
+[train.ldl_opt]
+type = "ldl_loss"
+loss_weight = 1.0
+
+[train.fdl_opt]
+type = "fdl_loss"
+model = "dinov2"
+loss_weight = 0.75
+
+[train.gan_opt]
+type = "gan_loss"
+gan_type = "bce"
+loss_weight = 0.3
+
+[logger]
+total_iter = {iters}
+save_checkpoint_freq = {save_freq}
+use_tb_logger = true
+'''
+
 # ── LR generation for DRCT ────────────────────────────────────────────────────
 
 def generate_lr(hr_dir, lr_dir, scale):
@@ -387,15 +489,19 @@ def _log(msg):
         if len(_state['logs']) > 2000:
             _state['logs'] = _state['logs'][-2000:]
 
-ITER_RE = re.compile(r'iter[:\s]+(\d+)', re.IGNORECASE)
+ITER_RE = re.compile(r'iter[:\s\[]*(\d[\d,]*)', re.IGNORECASE)
 
 def _train_thread(arch_id, config_text, work_dir, python_exe):
     global _process
-    config_path = Path(work_dir) / 'train_config.yml'
+    ext         = 'toml' if arch_id == 'neosr' else 'yml'
+    config_path = Path(work_dir) / f'train_config.{ext}'
     config_path.write_text(config_text, encoding='utf-8')
 
     script = _find_script(arch_id)
-    cmd    = [python_exe, script, '-opt', str(config_path), '--launcher', 'none']
+    if arch_id == 'neosr':
+        cmd = [python_exe, script, '-opt', str(config_path)]
+    else:
+        cmd = [python_exe, script, '-opt', str(config_path), '--launcher', 'none']
 
     with _lock:
         _state['status'] = 'training'
@@ -420,7 +526,7 @@ def _train_thread(arch_id, config_text, work_dir, python_exe):
             m = ITER_RE.search(line)
             if m:
                 with _lock:
-                    _state['iter'] = int(m.group(1))
+                    _state['iter'] = int(m.group(1).replace(',', ''))
 
         _process.wait()
         code = _process.returncode
@@ -436,6 +542,45 @@ def _train_thread(arch_id, config_text, work_dir, python_exe):
             _state['status'] = 'error'
     finally:
         _process = None
+
+def _lr_prep_and_train(cfg, arch_id, work_dir, python_exe, net_type=None):
+    """Generates LR pairs in the background then starts training. Keeps the HTTP handler non-blocking."""
+    scale  = int(cfg.get('scale', 4))
+    lr_dir = str(work_dir / 'lr_auto')
+
+    IMG_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff'}
+    hr_path  = Path(cfg['datasetPath'])
+    lr_path  = Path(lr_dir)
+    hr_count = sum(1 for f in hr_path.iterdir() if f.is_file() and f.suffix.lower() in IMG_EXTS)
+    lr_count = sum(1 for f in lr_path.iterdir() if f.is_file() and f.suffix.lower() in IMG_EXTS) if lr_path.exists() else 0
+
+    if lr_count == hr_count and lr_count > 0:
+        _log(f'Reusing existing LR dataset: {lr_dir} ({lr_count} images)')
+    else:
+        if lr_count > 0:
+            _log(f'LR/HR count mismatch ({lr_count} vs {hr_count}) — regenerating LR dataset...')
+            import shutil
+            shutil.rmtree(lr_dir, ignore_errors=True)
+        else:
+            _log(f'Generating LR dataset (1/{scale} of HR) — {hr_count} images...')
+        ok, msg = generate_lr(cfg['datasetPath'], lr_dir, scale)
+        _log(msg)
+        if not ok:
+            with _lock:
+                _state['status'] = 'error'
+            return
+
+    if arch_id == 'neosr':
+        pretrain_path = cfg.get('pretrainNetworkG') or None
+        if pretrain_path:
+            _log(f'Fine-tuning {net_type.upper()} from: {pretrain_path}')
+        else:
+            _log(f'Starting {net_type.upper()} training from scratch')
+        config_text = make_neosr_config(cfg, net_type, lr_dir, pretrain_path)
+    else:  # drct
+        config_text = make_drct_config(cfg, lr_dir)
+
+    _train_thread(arch_id, config_text, work_dir, python_exe)
 
 def _guess_weight_arch(name: str) -> str:
     n = name.lower()
@@ -556,35 +701,38 @@ class Handler(BaseHTTPRequestHandler):
             if arch_id == 'esrgan':
                 actual_out = ARCHS[arch_id]['dir'] / 'experiments' / cfg.get('name', 'run')
                 _log(f'Models will save to: {actual_out / "models"}')
-                resume_path  = cfg.get('resumeStatePath')  or None
+                resume_path   = cfg.get('resumeStatePath')  or None
                 pretrain_path = cfg.get('pretrainNetworkG') or None
                 if resume_path:
-                    _log(f'Resuming from state:     {resume_path}')
+                    _log(f'Resuming from state:  {resume_path}')
                 elif pretrain_path:
-                    _log(f'Fine-tuning from:        {pretrain_path}')
+                    _log(f'Fine-tuning from:     {pretrain_path}')
                 else:
                     _log('Starting fresh (random init)')
                 _log('Scanning HR dataset and generating meta_info.txt...')
                 meta_path, img_count = generate_meta_info(cfg['datasetPath'], work_dir)
                 _log(f'Found {img_count} images → {meta_path}')
                 config_text = make_esrgan_config(cfg, meta_path, resume_path, pretrain_path)
-            else:
-                scale  = int(cfg.get('scale', 4))
-                lr_dir = str(work_dir / 'lr_auto')
-                _log(f'Generating LR dataset (1/{scale} of HR)...')
-                ok, msg = generate_lr(cfg['datasetPath'], lr_dir, scale)
-                _log(msg)
-                if not ok:
-                    with _lock:
-                        _state['status'] = 'error'
-                    return self._send({'error': msg}, 500)
-                config_text = make_drct_config(cfg, lr_dir)
+                threading.Thread(
+                    target=_train_thread,
+                    args=(arch_id, config_text, work_dir, python_exe),
+                    daemon=True,
+                ).start()
+            elif arch_id == 'neosr':
+                # LR generation can take minutes for large datasets — run non-blocking
+                net_type = cfg.get('netType', 'span')
+                threading.Thread(
+                    target=_lr_prep_and_train,
+                    args=(cfg, arch_id, work_dir, python_exe, net_type),
+                    daemon=True,
+                ).start()
+            else:  # drct
+                threading.Thread(
+                    target=_lr_prep_and_train,
+                    args=(cfg, arch_id, work_dir, python_exe, None),
+                    daemon=True,
+                ).start()
 
-            threading.Thread(
-                target=_train_thread,
-                args=(arch_id, config_text, work_dir, python_exe),
-                daemon=True,
-            ).start()
             return self._send({'ok': True, 'arch': arch_id})
 
         if self.path == '/infer':
