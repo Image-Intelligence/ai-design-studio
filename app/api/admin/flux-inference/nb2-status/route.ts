@@ -1,17 +1,7 @@
 import { NextResponse } from 'next/server'
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const RUNPOD_API = 'https://api.runpod.ai/v2'
-
-const r2 = new S3Client({
-  region:   'auto',
-  endpoint: process.env.R2_ENDPOINT,
-  credentials: {
-    accessKeyId:     process.env.R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-  },
-})
+const PUBLIC_URL = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
 
 // POST — called by startNb2SlotPolling with { requestId, ... }
 // Returns { status: 'processing' | 'completed' | 'failed', images?: [{url, dbId}], error? }
@@ -54,16 +44,11 @@ export async function POST(req: Request) {
     const r2Key = data.output?.output_r2_key
     if (!r2Key) return NextResponse.json({ status: 'failed', error: 'Job completed but no output image key' })
 
-    try {
-      const imageUrl = await getSignedUrl(
-        r2,
-        new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: r2Key }),
-        { expiresIn: 3600 },
-      )
-      return NextResponse.json({ status: 'completed', images: [{ url: imageUrl, dbId: null, r2Key }] })
-    } catch {
-      return NextResponse.json({ status: 'failed', error: 'Failed to sign image URL' })
-    }
+    const imageUrl = PUBLIC_URL
+      ? `${PUBLIC_URL}/${r2Key}`
+      : `https://${process.env.R2_BUCKET_NAME}.${new URL(process.env.R2_ENDPOINT!).hostname}/${r2Key}`
+
+    return NextResponse.json({ status: 'completed', images: [{ url: imageUrl, dbId: null, r2Key }] })
   }
 
   return NextResponse.json({ status: 'processing' })

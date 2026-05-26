@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { presignGetUrl } from '@/lib/r2'
 
+const PUBLIC_URL = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
+
 function checkAuth(req: Request) {
   const pass = process.env.ADMIN_PASSWORD
   if (!pass) return true
@@ -8,7 +10,7 @@ function checkAuth(req: Request) {
 }
 
 // GET /api/admin/onetrainer/cloud/download?key=training/loras/foo.safetensors
-// Returns a 1-hour presigned download URL for any R2 key under training/
+// Returns a public URL (preferred) or 1-hour presigned URL for any R2 key under training/ or inference/
 export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -18,6 +20,11 @@ export async function GET(req: Request) {
   if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 })
   if (!key.startsWith('training/') && !key.startsWith('inference/')) {
     return NextResponse.json({ error: 'Key must be under training/ or inference/' }, { status: 400 })
+  }
+
+  // Prefer the permanent public URL so returned URLs never expire
+  if (PUBLIC_URL) {
+    return NextResponse.json({ url: `${PUBLIC_URL}/${key}` })
   }
 
   try {
