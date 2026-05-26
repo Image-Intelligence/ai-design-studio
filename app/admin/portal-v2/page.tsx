@@ -27,6 +27,7 @@ interface ImageItem {
   videoMetadata?: Record<string, any>
   loraUrl?: string | null
   loraName?: string | null
+  r2Key?: string
 }
 
 type AspectRatio = "auto" | "1:1" | "2:3" | "3:2" | "4:5" | "5:4" | "3:4" | "4:3" | "9:16" | "16:9" | "21:9"
@@ -2062,7 +2063,7 @@ function ImageDetailModal({
   onClose: () => void
   onRescan: (image: ImageItem) => void
   onUsePrompt: (text: string) => void
-  onAddRef: (url: string) => void
+  onAddRef: (url: string, r2Key?: string) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [addedRef, setAddedRef] = useState(false)
@@ -2310,7 +2311,7 @@ function ImageDetailModal({
                 <>
                   <button
                     onClick={() => {
-                      onAddRef(image.imageUrl)
+                      onAddRef(image.imageUrl, image.r2Key)
                       setAddedRef(true)
                       setTimeout(() => setAddedRef(false), 2000)
                     }}
@@ -3140,7 +3141,7 @@ function CustomFluxPanel({
 }) {
   const [mode, setMode]               = useState<FluxMode>('runpod')
   const [checkpoint, setCheckpoint]   = useState('')
-  const [loras, setLoras]             = useState<FluxLoraEntry[]>([])
+  const [loras, setLoras]             = useState<FluxLoraEntry[]>([{ id: `lora-${Date.now()}`, name: '', key: '', strength: 1.0 }])
   const [prompt, setPrompt]           = useState('')
   const [steps, setSteps]             = useState(20)
   const [guidance, setGuidance]       = useState(3.5)
@@ -3226,8 +3227,16 @@ function CustomFluxPanel({
         xhr.send(file)
       })
 
-      // Add to LoRA list and refresh picker
-      setLoras(prev => [...prev, { id: `lora-${Date.now()}`, name: file.name, key, strength: 1.0 }])
+      // Fill first empty slot, or append if all slots are filled
+      setLoras(prev => {
+        const emptyIdx = prev.findIndex(l => !l.key)
+        if (emptyIdx !== -1) {
+          const next = [...prev]
+          next[emptyIdx] = { ...next[emptyIdx], name: file.name, key }
+          return next
+        }
+        return [...prev, { id: `lora-${Date.now()}`, name: file.name, key, strength: 1.0 }]
+      })
       refreshModels()
     } catch (e) {
       setError(`LoRA upload failed: ${String(e)}`)
@@ -3436,9 +3445,9 @@ function CustomFluxPanel({
 
             {/* Actions */}
             <div className="flex items-center gap-2 pt-0.5">
-              <button onClick={addLora}
-                className="text-[11px] text-slate-500 hover:text-cyan-400 transition-colors flex items-center gap-1">
-                <Plus size={10} /> Add from list
+              <button onClick={addLora} disabled={loras.length >= 4}
+                className="text-[11px] text-slate-500 hover:text-cyan-400 transition-colors flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed">
+                <Plus size={10} /> Add LoRA {loras.length < 4 ? `(${loras.length}/4)` : '(max 4)'}
               </button>
               <span className="text-slate-700 text-[10px]">·</span>
               <button onClick={() => loraFileInputRef.current?.click()} disabled={loraUploading}
@@ -3478,7 +3487,7 @@ function CustomFluxPanel({
             <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">
               {(['local', 'runpod'] as FluxMode[]).map(m => (
                 <button key={m}
-                  onClick={() => { setMode(m); setCheckpoint(''); setLoras([]); setResultUrl(null); setError(null) }}
+                  onClick={() => { setMode(m); setCheckpoint(''); setLoras([{ id: `lora-${Date.now()}`, name: '', key: '', strength: 1.0 }]); setResultUrl(null); setError(null) }}
                   className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${mode === m ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
                   {m === 'local' ? 'Local' : 'RunPod'}
                 </button>
@@ -7705,17 +7714,23 @@ export default function PortalV2Page() {
     })()
     if (stored.length === 0) return
     const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
-    Promise.all(stored.map(async (entry, i) => {
+    Promise.all(stored.map(async (entry) => {
       try {
         const res = await fetch(`/api/admin/onetrainer/cloud/download?key=${encodeURIComponent(entry.r2Key)}`, {
           headers: pass ? { 'x-admin-password': pass } : {},
         })
         const data = await res.json()
-        if (data.url) {
-          handlePrependImage({ id: -(i + 1), imageUrl: data.url, prompt: entry.prompt, model: 'custom-flux-lora', createdAt: entry.createdAt })
-        }
+        if (data.url) return { url: data.url, r2Key: entry.r2Key, prompt: entry.prompt, createdAt: entry.createdAt }
       } catch {}
-    }))
+      return null
+    })).then(results => {
+      // Sort oldest→newest so the last prepend (newest) ends up at the top of the feed
+      const valid = (results.filter(Boolean) as { url: string; r2Key: string; prompt: string; createdAt: string }[])
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      valid.forEach((r, i) =>
+        handlePrependImage({ id: -(valid.length - i), imageUrl: r.url, r2Key: r.r2Key, prompt: r.prompt, model: 'custom-flux-lora', createdAt: r.createdAt })
+      )
+    })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -8241,9 +8256,11 @@ export default function PortalV2Page() {
             : "nano-banana-pro-2"
           const createdAt = new Date().toISOString()
           completedImgs.forEach((img, i) => {
+            const tempId = img.dbId ?? (Date.now() + i)
             handlePrependImage({
-              id: img.dbId ?? (Date.now() + i),
+              id: tempId,
               imageUrl: img.url,
+              r2Key: img.r2Key,
               prompt,
               model: modelId,
               createdAt,
@@ -8251,15 +8268,18 @@ export default function PortalV2Page() {
               quality,
               referenceImageUrls: referenceImageUrls.length > 0 ? referenceImageUrls : undefined,
             })
-            // Persist custom-flux-lora images so they survive page refresh
+            // Save custom-flux-lora images to DB for cross-device persistence
             if (isFluxRunpod && img.r2Key) {
-              try {
-                const stored = JSON.parse(localStorage.getItem("pv2-flux-images") || "[]") as { r2Key: string; prompt: string; createdAt: string }[]
-                if (!stored.some(s => s.r2Key === img.r2Key)) {
-                  stored.unshift({ r2Key: img.r2Key!, prompt, createdAt })
-                  localStorage.setItem("pv2-flux-images", JSON.stringify(stored.slice(0, 50)))
+              const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+              fetch('/api/admin/flux-inference/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
+                body: JSON.stringify({ r2Key: img.r2Key, prompt }),
+              }).then(r => r.json()).then((data: { id?: number }) => {
+                if (data.id) {
+                  setFreshImages(prev => prev.map(fi => fi.id === tempId ? { ...fi, id: data.id! } : fi))
                 }
-              } catch {}
+              }).catch(() => {})
             }
           })
           slotIds.forEach(sid => handleRemovePending(sid))
@@ -8282,7 +8302,7 @@ export default function PortalV2Page() {
       } catch { /* keep polling on transient error */ } finally { pollInFlight = false }
     }, 5000)
     nb2PollingIntervals.current[requestId] = interval
-  }, [handleUpdatePending, handlePrependImage, handleRemovePending, setUser])
+  }, [handleUpdatePending, handlePrependImage, handleRemovePending, setUser, setFreshImages])
 
   const cancelNb2SlotPolling = useCallback((requestId: string) => {
     const interval = nb2PollingIntervals.current[requestId]
@@ -9475,9 +9495,20 @@ export default function PortalV2Page() {
           onClose={() => setSelectedImage(null)}
           onRescan={handleRescan}
           onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null) }}
-          onAddRef={(url) => {
-            const item: RefImage = { id: `ref-${Date.now()}-${Math.random()}`, url }
-            handleUploadRef([item])
+          onAddRef={(url, r2Key) => {
+            const addRef = (finalUrl: string) =>
+              handleUploadRef([{ id: `ref-${Date.now()}-${Math.random()}`, url: finalUrl }])
+            if (r2Key) {
+              const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+              fetch(`/api/admin/onetrainer/cloud/download?key=${encodeURIComponent(r2Key)}`, {
+                headers: pass ? { 'x-admin-password': pass } : {},
+              })
+                .then(r => r.json())
+                .then((data: { url?: string }) => addRef(data.url || url))
+                .catch(() => addRef(url))
+            } else {
+              addRef(url)
+            }
           }}
         />
       )}
