@@ -7764,32 +7764,9 @@ export default function PortalV2Page() {
   const handleBalanceChange = useCallback((balance: number) =>
     setUser(u => u ? { ...u, ticketBalance: balance } : u), [])
 
-  // Restore custom-flux-lora images that completed in previous sessions
+  // Clear stale pv2-flux-images localStorage key (written by old code before DB saving was added)
   useEffect(() => {
-    const stored = (() => {
-      try { return JSON.parse(localStorage.getItem("pv2-flux-images") || "[]") as { r2Key: string; prompt: string; createdAt: string }[] }
-      catch { return [] }
-    })()
-    if (stored.length === 0) return
-    const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
-    Promise.all(stored.map(async (entry) => {
-      try {
-        const res = await fetch(`/api/admin/onetrainer/cloud/download?key=${encodeURIComponent(entry.r2Key)}`, {
-          headers: pass ? { 'x-admin-password': pass } : {},
-        })
-        const data = await res.json()
-        if (data.url) return { url: data.url, r2Key: entry.r2Key, prompt: entry.prompt, createdAt: entry.createdAt }
-      } catch {}
-      return null
-    })).then(results => {
-      // Sort oldest→newest so the last prepend (newest) ends up at the top of the feed
-      const valid = (results.filter(Boolean) as { url: string; r2Key: string; prompt: string; createdAt: string }[])
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-      valid.forEach((r, i) =>
-        handlePrependImage({ id: -(valid.length - i), imageUrl: r.url, r2Key: r.r2Key, prompt: r.prompt, model: 'custom-flux-lora', createdAt: r.createdAt })
-      )
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    localStorage.removeItem("pv2-flux-images")
   }, [])
 
   // --- Video handlers ---
