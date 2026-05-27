@@ -34,7 +34,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-24-v8'
+HANDLER_VERSION = '2026-05-26-v9'
 
 _PIPE_CACHE: dict = {}  # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
@@ -619,12 +619,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         _flush_logs(r2, bucket, job_id, logs)
 
     # 4. Load LoRAs — manual weight merge.
-    # Weights are saved before modification and restored after inference so the
-    # cached pipeline is always in a clean state for the next job.
-    _saved_weights: dict = {}  # mod_path → original weight tensor
+    # Saved weights are stored on CPU so they don't consume VRAM.
+    # LoRA deltas are also computed on CPU (A/B matrices are small) and only
+    # the final result is moved to the GPU weight, avoiding large temporaries.
+    os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+    _saved_weights: dict = {}  # mod_path → CPU tensor (original weight)
     if lora_paths:
         from safetensors.torch import load_file as _sf_load
         _module_dict = dict(pipe.transformer.named_modules())
+        torch.cuda.empty_cache()
 
         for i, li in enumerate(lora_paths):
             logs.append(f'[inference] Applying LoRA {i+1} (strength {li["strength"]})...')
@@ -687,14 +690,20 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 else:
                     _scale = li['strength']
 
-                # Save original weight before first modification so we can restore it
+                # Save original weight on CPU — keeps VRAM free for inference
                 if _mod_path not in _saved_weights:
-                    _saved_weights[_mod_path] = _mod.weight.data.clone()
+                    _saved_weights[_mod_path] = _mod.weight.data.cpu()
 
-                _A = _pair['A'].to(_mod.weight.device, dtype=_mod.weight.dtype)
-                _B = _pair['B'].to(_mod.weight.device, dtype=_mod.weight.dtype)
+                # Compute delta on CPU to avoid allocating a large GPU temporary.
+                # A/B are small (rank × dim), so CPU matmul is negligible overhead.
+                _A_cpu = _pair['A'].to(torch.float32)
+                _B_cpu = _pair['B'].to(torch.float32)
+                _delta = (_scale * (_B_cpu @ _A_cpu)).to(
+                    device=_mod.weight.device, dtype=_mod.weight.dtype
+                )
                 with torch.no_grad():
-                    _mod.weight.data += _scale * (_B @ _A)
+                    _mod.weight.data += _delta
+                del _delta, _A_cpu, _B_cpu
                 _applied += 1
 
             print(f'[inference] LoRA {i+1}: {_applied} pairs merged, {_skipped} skipped', flush=True)
@@ -767,15 +776,19 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         _inf_error = e
 
     finally:
-        # Always restore LoRA-modified weights so the cached pipeline is clean for next job
+        # Restore LoRA-modified weights from CPU storage so the cached pipeline is clean
         if _saved_weights:
             try:
                 _rm = dict(pipe.transformer.named_modules())
                 for _rp, _rw in _saved_weights.items():
                     _rm_mod = _rm.get(_rp)
                     if _rm_mod is not None:
-                        _rm_mod.weight.data.copy_(_rw)
-                logs.append(f'[inference] Restored {len(_saved_weights)} LoRA-modified weights.')
+                        _rm_mod.weight.data.copy_(
+                            _rw.to(device=_rm_mod.weight.device, dtype=_rm_mod.weight.dtype)
+                        )
+                del _saved_weights
+                torch.cuda.empty_cache()
+                logs.append(f'[inference] LoRA weights restored.')
             except Exception as _re:
                 logs.append(f'[inference] Warning: weight restore error: {_re}')
         _flush_logs(r2, bucket, job_id, logs)
