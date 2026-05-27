@@ -16,7 +16,15 @@ WORKDIR /workspace/OneTrainer
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install worker deps (diffusers>=0.31 required for FluxImg2ImgPipeline)
-RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0"
+RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
+    realesrgan opencv-python-headless
+
+# Download Real-ESRGAN model weights (baked into image so inference starts instantly)
+RUN mkdir -p /workspace/models/esrgan && \
+    wget -q -O /workspace/models/esrgan/RealESRGAN_x4plus.pth \
+        https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth && \
+    wget -q -O /workspace/models/esrgan/RealESRGAN_x2plus.pth \
+        https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
 
 # Create tensorboard symlink and default samples file
 RUN ln -sf $(which tensorboard) /usr/bin/tensorboard && \

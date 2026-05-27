@@ -158,7 +158,7 @@ export async function POST(req: Request) {
     seed?: number | null
     refine?: boolean
     refine_strength?: number
-    upscale?: 'none' | '2k' | '4k'
+    upscale?: 'none' | '2k' | '4k' | '2k-esrgan' | '4k-esrgan'
     upscale_strength?: number
   }
   try { body = await req.json() } catch {

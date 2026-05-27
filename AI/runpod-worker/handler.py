@@ -34,7 +34,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-26-v9'
+HANDLER_VERSION = '2026-05-26-v10'
 
 _PIPE_CACHE: dict = {}  # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
@@ -360,6 +360,43 @@ def _download(r2, key: str, dest: str, label: str, logs: list) -> bool:
 INFERENCE_CACHE = '/workspace/inference_cache'
 
 
+def _esrgan_upscale(image_pil, scale: int, logs: list):
+    """
+    Real-ESRGAN upscale. Uses dedicated GAN super-resolution model which adds
+    genuine high-frequency texture (pores, fabric, hair) unlike diffusion upscalers.
+    scale=2 uses RealESRGAN_x2plus; scale=4 uses RealESRGAN_x4plus.
+    """
+    import numpy as np
+    import cv2
+    from PIL import Image
+    from basicsr.archs.rrdbnet_arch import RRDBNet
+    from realesrgan import RealESRGANer
+
+    model_path = f'/workspace/models/esrgan/RealESRGAN_x{scale}plus.pth'
+    logs.append(f'[esrgan] Starting {scale}× upscale with {model_path}')
+
+    num_block = 23
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
+                    num_block=num_block, num_grow_ch=32, scale=scale)
+
+    upsampler = RealESRGANer(
+        scale=scale,
+        model_path=model_path,
+        model=model,
+        tile=512,
+        tile_pad=32,
+        pre_pad=0,
+        half=True,
+    )
+
+    img_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+    output_bgr, _ = upsampler.enhance(img_bgr, outscale=scale)
+    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
+    result = Image.fromarray(output_rgb)
+    logs.append(f'[esrgan] Done — output {result.width}×{result.height}')
+    return result
+
+
 def _tiled_img2img(pipe_i2i, image_pil, prompt: str, upscale_factor: int,
                    strength: float, steps: int, guidance: float,
                    seed, logs: list):
@@ -476,9 +513,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # Post-processing options
     refine          = bool(inp.get('refine', False))
     refine_strength = float(inp.get('refine_strength', 0.3))
-    upscale         = inp.get('upscale', 'none')   # 'none' | '2k' | '4k'
+    upscale          = inp.get('upscale', 'none')   # 'none' | '2k' | '4k' | '2k-esrgan' | '4k-esrgan'
     upscale_strength = float(inp.get('upscale_strength', 0.3))
-    upscale_factor  = {'2k': 2, '4k': 4}.get(str(upscale).lower(), 0)
+    _up              = str(upscale).lower()
+    upscale_factor   = {'2k': 2, '4k': 4}.get(_up, 0)           # Flux tiled
+    esrgan_factor    = {'2k-esrgan': 2, '4k-esrgan': 4}.get(_up, 0)  # Real-ESRGAN
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
@@ -713,7 +752,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 logs.append(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}')
             _flush_logs(r2, bucket, job_id, logs)
 
-    # Load FluxImg2ImgPipeline for refine/upscale (shares weights with pipe — no extra VRAM)
+    # Load FluxImg2ImgPipeline for refine/Flux-tiled upscale (shares weights — no extra VRAM)
     pipe_i2i = None
     if refine or upscale_factor > 0:
         try:
@@ -754,7 +793,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append('[inference] Refine done.')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 5b. Optional tiled upscale
+        # 5b. Optional Flux tiled upscale
         if upscale_factor > 0 and pipe_i2i is not None:
             logs.append(f'[inference] Tiled {upscale_factor}× upscale — tile strength={upscale_strength}...')
             _flush_logs(r2, bucket, job_id, logs)
@@ -763,6 +802,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 upscale_strength, steps, guidance, seed, logs,
             )
             logs.append(f'[inference] Upscale done — final size {image.width}×{image.height}.')
+            _flush_logs(r2, bucket, job_id, logs)
+
+        # 5c. Optional Real-ESRGAN upscale
+        if esrgan_factor > 0:
+            logs.append(f'[inference] Real-ESRGAN {esrgan_factor}× upscale...')
+            _flush_logs(r2, bucket, job_id, logs)
+            image = _esrgan_upscale(image, esrgan_factor, logs)
+            logs.append(f'[inference] ESRGAN done — final size {image.width}×{image.height}.')
             _flush_logs(r2, bucket, job_id, logs)
 
         # 6. Upload result

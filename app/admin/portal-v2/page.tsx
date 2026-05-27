@@ -3156,7 +3156,7 @@ function CustomFluxPanel({
   // Post-processing
   const [refine, setRefine]                     = useState(false)
   const [refineStrength, setRefineStrength]     = useState(0.3)
-  const [upscale, setUpscale]                   = useState<'none'|'2k'|'4k'>('none')
+  const [upscale, setUpscale]                   = useState<'none'|'2k'|'4k'|'2k-esrgan'|'4k-esrgan'>('none')
   const [upscaleStrength, setUpscaleStrength]   = useState(0.3)
 
   // Available models
@@ -3413,7 +3413,7 @@ function CustomFluxPanel({
                 <span className="text-[11px] font-mono text-emerald-300 tabular-nums text-right">{refineStrength.toFixed(2)}</span>
               </div>
             )}
-            {mode === 'runpod' && upscale !== 'none' && (
+            {mode === 'runpod' && (upscale === '2k' || upscale === '4k') && (
               <div className={`grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 ${!refine ? 'border-t border-white/5 pt-2' : ''}`}>
                 <span className="text-[10px] font-mono text-violet-400/70">Tile str</span>
                 <input type="range" min={0.1} max={0.5} step={0.05} value={upscaleStrength}
@@ -3610,13 +3610,20 @@ function CustomFluxPanel({
                 </button>
                 {/* Quality / upscale selector */}
                 <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">
-                  {(['none', '2k', '4k'] as const).map(q => (
-                    <button key={q} onClick={() => setUpscale(q)}
-                      title={q === 'none' ? 'No upscale' : q === '2k' ? '2× tiled upscale (~2 min)' : '4× tiled upscale (~8 min)'}
+                  {([
+                    { val: 'none',      label: 'Base', title: 'No upscale',                   color: 'violet' },
+                    { val: '2k',        label: '2K',   title: '2× Flux tiled upscale (~2 min)', color: 'violet' },
+                    { val: '4k',        label: '4K',   title: '4× Flux tiled upscale (~8 min)', color: 'violet' },
+                    { val: '2k-esrgan', label: '2K+',  title: '2× Real-ESRGAN (sharp texture)', color: 'amber'  },
+                    { val: '4k-esrgan', label: '4K+',  title: '4× Real-ESRGAN (sharp texture)', color: 'amber'  },
+                  ] as const).map(({ val, label, title, color }) => (
+                    <button key={val} onClick={() => setUpscale(val)} title={title}
                       className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        upscale === q ? 'bg-violet-500/20 text-violet-200' : 'text-slate-500 hover:text-slate-300'
+                        upscale === val
+                          ? color === 'amber' ? 'bg-amber-500/20 text-amber-200' : 'bg-violet-500/20 text-violet-200'
+                          : 'text-slate-500 hover:text-slate-300'
                       }`}>
-                      {q === 'none' ? 'Base' : q.toUpperCase()}
+                      {label}
                     </button>
                   ))}
                 </div>
