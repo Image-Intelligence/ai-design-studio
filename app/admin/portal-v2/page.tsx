@@ -3158,6 +3158,13 @@ function CustomFluxPanel({
   const [refineStrength, setRefineStrength]     = useState(0.3)
   const [upscale, setUpscale]                   = useState<'none'|'2k'|'4k'|'2k-esrgan'|'4k-esrgan'>('none')
   const [upscaleStrength, setUpscaleStrength]   = useState(0.3)
+  const [adetailer, setAdetailer]               = useState(false)
+  const [adetailerStrength, setAdetailerStrength] = useState(0.35)
+  const [ipAdapter, setIpAdapter]               = useState(false)
+  const [ipScale, setIpScale]                   = useState(0.6)
+  const [ipRefImages, setIpRefImages]           = useState<Array<{r2Key: string; previewUrl: string}>>([])
+  const [ipUploading, setIpUploading]           = useState(false)
+  const ipFileInputRef                          = useRef<HTMLInputElement>(null)
 
   // Available models
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([])
@@ -3251,6 +3258,29 @@ function CustomFluxPanel({
     }
   }
 
+  const handleIpImageUpload = async (file: File) => {
+    if (ipRefImages.length >= 3) return
+    setIpUploading(true)
+    const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+    const authHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) }
+    try {
+      const presignRes = await fetch('/api/admin/onetrainer/cloud/upload', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ type: 'ref', filename: file.name, contentType: file.type || 'image/png' }),
+      })
+      if (!presignRes.ok) { setError('Failed to get upload URL'); return }
+      const { uploadUrl, key } = await presignRes.json() as { uploadUrl: string; key: string }
+      await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type || 'image/png' }, body: file })
+      const previewUrl = URL.createObjectURL(file)
+      setIpRefImages(prev => [...prev, { r2Key: key, previewUrl }])
+    } catch (e) {
+      setError(`Ref image upload failed: ${String(e)}`)
+    } finally {
+      setIpUploading(false)
+    }
+  }
+
   const checkpoints = mode === 'local' ? comfyCheckpoints.map(n => ({ key: n, name: n })) : r2Checkpoints
   const loraOptions = mode === 'local' ? comfyLoras.map(n => ({ key: n, name: n }))     : r2Loras
 
@@ -3273,10 +3303,14 @@ function CustomFluxPanel({
       width, height, steps, guidance,
       seed: seed === -1 ? null : seed,
       // Post-processing (RunPod only)
-      refine:           mode === 'runpod' ? refine           : false,
-      refine_strength:  refineStrength,
-      upscale:          mode === 'runpod' ? upscale          : 'none',
-      upscale_strength: upscaleStrength,
+      refine:             mode === 'runpod' ? refine     : false,
+      refine_strength:    refineStrength,
+      upscale:            mode === 'runpod' ? upscale    : 'none',
+      upscale_strength:   upscaleStrength,
+      adetailer:          mode === 'runpod' ? adetailer  : false,
+      adetailer_strength: adetailerStrength,
+      ip_adapter_images:  mode === 'runpod' && ipAdapter ? ipRefImages.map(r => r.r2Key) : [],
+      ip_adapter_scale:   ipScale,
     }
 
     try {
@@ -3380,7 +3414,7 @@ function CustomFluxPanel({
           <div className="rounded-xl border border-white/[0.08] bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2.5">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-mono text-cyan-400/60 uppercase tracking-widest">Config</span>
-              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setRefineStrength(0.3); setUpscaleStrength(0.3) }}
+              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setRefineStrength(0.3); setUpscaleStrength(0.3); setAdetailerStrength(0.35); setIpScale(0.6) }}
                 className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
             </div>
             {[
@@ -3420,6 +3454,24 @@ function CustomFluxPanel({
                   onChange={e => setUpscaleStrength(parseFloat(e.target.value))}
                   className="w-full accent-violet-400 cursor-pointer h-0.5" />
                 <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{upscaleStrength.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && adetailer && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
+                <span className="text-[10px] font-mono text-rose-400/70">Faces str</span>
+                <input type="range" min={0.2} max={0.6} step={0.05} value={adetailerStrength}
+                  onChange={e => setAdetailerStrength(parseFloat(e.target.value))}
+                  className="w-full accent-rose-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-rose-300 tabular-nums text-right">{adetailerStrength.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && ipAdapter && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
+                <span className="text-[10px] font-mono text-teal-400/70">IP scale</span>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={ipScale}
+                  onChange={e => setIpScale(parseFloat(e.target.value))}
+                  className="w-full accent-teal-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-teal-300 tabular-nums text-right">{ipScale.toFixed(2)}</span>
               </div>
             )}
           </div>
@@ -3488,6 +3540,36 @@ function CustomFluxPanel({
             {/* Hidden file input */}
             <input ref={loraFileInputRef} type="file" accept=".safetensors,.ckpt,.pt" className="hidden"
               onChange={e => { const f = e.target.files?.[0]; if (f) handleLoraUpload(f); e.target.value = '' }} />
+          </div>
+        )}
+
+        {/* IP-Adapter reference images panel */}
+        {mode === 'runpod' && ipAdapter && (
+          <div className="rounded-xl border border-teal-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-teal-400/60 uppercase tracking-widest">Reference Images</span>
+              <span className="text-[10px] text-slate-600">{ipRefImages.length}/3 — style &amp; appearance guide</span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {ipRefImages.map((img, i) => (
+                <div key={i} className="relative group w-14 h-14 rounded-md overflow-hidden border border-white/10">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={img.previewUrl} alt="" className="w-full h-full object-cover" />
+                  <button onClick={() => setIpRefImages(prev => prev.filter((_, j) => j !== i))}
+                    className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity text-rose-400 text-[10px]">
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {ipRefImages.length < 3 && (
+                <button onClick={() => ipFileInputRef.current?.click()} disabled={ipUploading}
+                  className="w-14 h-14 rounded-md border border-dashed border-teal-500/30 flex items-center justify-center text-teal-500/60 hover:text-teal-400 hover:border-teal-400/50 transition-colors disabled:opacity-40 text-lg">
+                  {ipUploading ? <div className="w-3 h-3 rounded-full border border-teal-400 border-t-transparent animate-spin" /> : '+'}
+                </button>
+              )}
+            </div>
+            <input ref={ipFileInputRef} type="file" accept="image/*" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleIpImageUpload(f); e.target.value = '' }} />
           </div>
         )}
 
@@ -3607,6 +3689,26 @@ function CustomFluxPanel({
                       : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
                   }`}>
                   Refine
+                </button>
+                {/* ADetailer face fix toggle */}
+                <button onClick={() => setAdetailer(v => !v)}
+                  title="Detect faces and run a targeted detail pass on each one (ADetailer)"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    adetailer
+                      ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  Faces
+                </button>
+                {/* IP-Adapter toggle */}
+                <button onClick={() => setIpAdapter(v => !v)}
+                  title="Use reference images to guide style and appearance (IP-Adapter)"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    ipAdapter
+                      ? 'bg-teal-500/15 border-teal-500/40 text-teal-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  IP
                 </button>
                 {/* Quality / upscale selector */}
                 <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">

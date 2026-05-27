@@ -34,9 +34,10 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-26-v11'
+HANDLER_VERSION = '2026-05-27-v12'
 
-_PIPE_CACHE: dict = {}  # ckpt_path → FluxPipeline (reused across jobs on warm workers)
+_PIPE_CACHE: dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
+_YOLO_CACHE: dict = {}   # model_path → YOLO instance
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
@@ -360,6 +361,83 @@ def _download(r2, key: str, dest: str, label: str, logs: list) -> bool:
 INFERENCE_CACHE = '/workspace/inference_cache'
 
 
+def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
+                         steps: int, guidance: float, seed, logs: list):
+    """
+    Detect faces with YOLO, run a targeted img2img detail pass on each one,
+    and blend back with feathered edges. Same approach as A1111 ADetailer.
+    """
+    from PIL import Image, ImageFilter
+    import numpy as np
+    import torch
+
+    global _YOLO_CACHE
+    MODEL_PATH   = '/workspace/models/adetailer/face_yolov8n.pt'
+    INPAINT_SIZE = 512
+    PADDING      = 0.25   # expand each bbox side by 25 %
+    FEATHER      = 20     # edge blend width in pixels
+
+    if MODEL_PATH not in _YOLO_CACHE:
+        from ultralytics import YOLO
+        _YOLO_CACHE[MODEL_PATH] = YOLO(MODEL_PATH)
+    yolo = _YOLO_CACHE[MODEL_PATH]
+
+    results = yolo(image_pil, verbose=False, conf=0.35)
+    if not results or len(results[0].boxes) == 0:
+        logs.append('[adetailer] No faces detected — skipping.')
+        return image_pil
+
+    boxes = results[0].boxes.xyxy.cpu().numpy()
+    logs.append(f'[adetailer] Detected {len(boxes)} face(s).')
+    W, H  = image_pil.size
+    output = image_pil.copy()
+
+    for i, box in enumerate(boxes):
+        x1, y1, x2, y2 = [float(v) for v in box]
+        bw, bh = x2 - x1, y2 - y1
+        # Expand bbox
+        px1 = max(0.0, x1 - bw * PADDING)
+        py1 = max(0.0, y1 - bh * PADDING)
+        px2 = min(float(W), x2 + bw * PADDING)
+        py2 = min(float(H), y2 + bh * PADDING)
+        rw, rh = int(px2 - px1), int(py2 - py1)
+
+        # Crop → resize to INPAINT_SIZE for detail pass
+        face_crop    = output.crop((int(px1), int(py1), int(px2), int(py2)))
+        face_resized = face_crop.resize((INPAINT_SIZE, INPAINT_SIZE), Image.LANCZOS)
+
+        gen = torch.Generator('cuda').manual_seed(int(seed) + 100 + i) if seed is not None else None
+        fixed_resized = pipe_i2i(
+            prompt=prompt,
+            image=face_resized,
+            strength=strength,
+            num_inference_steps=steps,
+            guidance_scale=guidance,
+            generator=gen,
+            width=INPAINT_SIZE,
+            height=INPAINT_SIZE,
+        ).images[0]
+
+        # Resize fixed face back to original region size
+        fixed_back = fixed_resized.resize((rw, rh), Image.LANCZOS)
+
+        # Feathered paste mask — gradient edges so the blend isn't sharp
+        mask_arr = np.ones((rh, rw), dtype=np.float32)
+        for f in range(FEATHER):
+            a = f / FEATHER
+            if f < rh:       mask_arr[f, :]       *= a
+            if rh-f-1 >= 0:  mask_arr[rh-f-1, :]  *= a
+            if f < rw:       mask_arr[:, f]         *= a
+            if rw-f-1 >= 0:  mask_arr[:, rw-f-1]   *= a
+        mask = Image.fromarray((mask_arr * 255).astype(np.uint8), 'L')
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=FEATHER // 2))
+
+        output.paste(fixed_back, (int(px1), int(py1)), mask=mask)
+        logs.append(f'[adetailer] Face {i+1}/{len(boxes)} fixed.')
+
+    return output
+
+
 def _esrgan_upscale(image_pil, scale: int, logs: list):
     """
     Real-ESRGAN upscale. Uses dedicated GAN super-resolution model which adds
@@ -529,8 +607,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     upscale          = inp.get('upscale', 'none')   # 'none' | '2k' | '4k' | '2k-esrgan' | '4k-esrgan'
     upscale_strength = float(inp.get('upscale_strength', 0.3))
     _up              = str(upscale).lower()
-    upscale_factor   = {'2k': 2, '4k': 4}.get(_up, 0)           # Flux tiled
-    esrgan_factor    = {'2k-esrgan': 2, '4k-esrgan': 4}.get(_up, 0)  # Real-ESRGAN
+    upscale_factor   = {'2k': 2, '4k': 4}.get(_up, 0)
+    esrgan_factor    = {'2k-esrgan': 2, '4k-esrgan': 4}.get(_up, 0)
+    # ADetailer
+    adetailer          = bool(inp.get('adetailer', False))
+    adetailer_strength = float(inp.get('adetailer_strength', 0.35))
+    # IP-Adapter
+    ip_image_keys = inp.get('ip_adapter_images', [])   # list of R2 keys
+    ip_scale      = float(inp.get('ip_adapter_scale', 0.6))
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
@@ -765,9 +849,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 logs.append(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}')
             _flush_logs(r2, bucket, job_id, logs)
 
-    # Load FluxImg2ImgPipeline for refine/Flux-tiled upscale (shares weights — no extra VRAM)
+    # Load FluxImg2ImgPipeline for refine/Flux-tiled upscale/adetailer (shares weights — no extra VRAM)
     pipe_i2i = None
-    if refine or upscale_factor > 0:
+    if refine or upscale_factor > 0 or adetailer:
         try:
             from diffusers import FluxImg2ImgPipeline
             pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
@@ -776,14 +860,47 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inference] Warning: FluxImg2ImgPipeline unavailable ({_i2i_err}). Refine/upscale skipped.')
         _flush_logs(r2, bucket, job_id, logs)
 
+    # 5. Load IP-Adapter if reference images provided
+    ip_adapter_loaded = False
+    ip_ref_image      = None
+    if ip_image_keys:
+        try:
+            from PIL import Image as _PilImg
+            _ref_imgs = []
+            for _ik in ip_image_keys[:3]:
+                _rp = os.path.join(run_dir, f'ref_{len(_ref_imgs)}.png')
+                if _download(r2, _ik, _rp, 'ref image', logs):
+                    _ref_imgs.append(_PilImg.open(_rp).convert('RGB'))
+            if _ref_imgs:
+                IP_ADAPTER_PATH = os.path.join(MODELS_DIR, 'ip_adapter')
+                CLIP_PATH       = os.path.join(MODELS_DIR, 'clip_vision')
+                logs.append(f'[ip_adapter] Loading with scale={ip_scale}, {len(_ref_imgs)} ref image(s)...')
+                _flush_logs(r2, bucket, job_id, logs)
+                pipe.load_ip_adapter(
+                    IP_ADAPTER_PATH,
+                    weight_name='ip_adapter.bin',
+                    image_encoder_pretrained_model_name_or_path=CLIP_PATH,
+                )
+                pipe.set_ip_adapter_scale(ip_scale)
+                ip_ref_image     = _ref_imgs[0] if len(_ref_imgs) == 1 else _ref_imgs
+                ip_adapter_loaded = True
+                logs.append('[ip_adapter] Ready.')
+                _flush_logs(r2, bucket, job_id, logs)
+        except Exception as _ip_err:
+            logs.append(f'[ip_adapter] Warning: failed to load ({_ip_err}). Continuing without.')
+            _flush_logs(r2, bucket, job_id, logs)
+
     _inf_error: Exception | None = None
     try:
-        # 5. Base generation
+        # 6. Base generation
         logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
         _flush_logs(r2, bucket, job_id, logs)
         gen = torch.Generator('cuda').manual_seed(int(seed)) if seed is not None else None
-        result = pipe(prompt=prompt, width=width, height=height,
-                      num_inference_steps=steps, guidance_scale=guidance, generator=gen)
+        _pipe_kwargs: dict = dict(prompt=prompt, width=width, height=height,
+                                  num_inference_steps=steps, guidance_scale=guidance, generator=gen)
+        if ip_ref_image is not None:
+            _pipe_kwargs['ip_adapter_image'] = ip_ref_image
+        result = pipe(**_pipe_kwargs)
         image = result.images[0]
         logs.append('[inference] Base generation done.')
         _flush_logs(r2, bucket, job_id, logs)
@@ -817,7 +934,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inference] Upscale done — final size {image.width}×{image.height}.')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 5c. Optional Real-ESRGAN upscale
+        # 6c. Optional Real-ESRGAN upscale
         if esrgan_factor > 0:
             logs.append(f'[inference] Real-ESRGAN {esrgan_factor}× upscale...')
             _flush_logs(r2, bucket, job_id, logs)
@@ -825,7 +942,17 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inference] ESRGAN done — final size {image.width}×{image.height}.')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 6. Upload result
+        # 6d. Optional ADetailer face fix (runs last so it operates on the final image)
+        if adetailer and pipe_i2i is not None:
+            logs.append(f'[inference] ADetailer face fix — strength={adetailer_strength}...')
+            _flush_logs(r2, bucket, job_id, logs)
+            image = _adetailer_fix_faces(
+                pipe_i2i, image, prompt, adetailer_strength,
+                steps, guidance, seed, logs,
+            )
+            _flush_logs(r2, bucket, job_id, logs)
+
+        # 7. Upload result
         out_path = os.path.join(run_dir, 'output.png')
         image.save(out_path, format='PNG')
         logs.append(f'[inference] Uploading to R2 ({out_key})...')
@@ -836,6 +963,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         _inf_error = e
 
     finally:
+        # Unload IP-Adapter so the cached pipeline is clean for the next job
+        if ip_adapter_loaded:
+            try:
+                pipe.unload_ip_adapter()
+                logs.append('[ip_adapter] Unloaded.')
+            except Exception as _ipe:
+                logs.append(f'[ip_adapter] Warning: unload error: {_ipe}')
+
         # Restore LoRA-modified weights from CPU storage so the cached pipeline is clean
         if _saved_weights:
             try:

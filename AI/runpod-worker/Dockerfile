@@ -15,16 +15,37 @@ RUN git clone https://github.com/Nerogar/OneTrainer.git && \
 WORKDIR /workspace/OneTrainer
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install worker deps (diffusers>=0.31 required for FluxImg2ImgPipeline)
+# Install worker deps
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
-    realesrgan opencv-python-headless
+    realesrgan opencv-python-headless ultralytics huggingface_hub
 
-# Download Real-ESRGAN model weights (baked into image so inference starts instantly)
+# Download Real-ESRGAN model weights
 RUN mkdir -p /workspace/models/esrgan && \
     wget -q -O /workspace/models/esrgan/RealESRGAN_x4plus.pth \
         https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth && \
     wget -q -O /workspace/models/esrgan/RealESRGAN_x2plus.pth \
         https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
+
+# Download ADetailer face detection model (same model used by A1111 ADetailer extension)
+RUN mkdir -p /workspace/models/adetailer && \
+    wget -q -O /workspace/models/adetailer/face_yolov8n.pt \
+        https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt
+
+# Download IP-Adapter weights + CLIP vision encoder (baked in to avoid first-run download)
+RUN python -c "\
+from huggingface_hub import hf_hub_download, snapshot_download; \
+import os, shutil; \
+os.makedirs('/workspace/models/ip_adapter', exist_ok=True); \
+p = hf_hub_download('InstantX/FLUX.1-dev-IP-Adapter', 'ip_adapter.bin'); \
+shutil.copy(p, '/workspace/models/ip_adapter/ip_adapter.bin'); \
+print('IP-Adapter weights ready')"
+
+RUN python -c "\
+from transformers import CLIPVisionModelWithProjection; \
+import torch; \
+m = CLIPVisionModelWithProjection.from_pretrained('openai/clip-vit-large-patch14'); \
+m.save_pretrained('/workspace/models/clip_vision'); \
+print('CLIP vision encoder ready')"
 
 # Create tensorboard symlink and default samples file
 RUN ln -sf $(which tensorboard) /usr/bin/tensorboard && \
