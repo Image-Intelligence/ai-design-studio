@@ -871,9 +871,32 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _rp = os.path.join(run_dir, f'ref_{len(_ref_imgs)}.png')
                 if _download(r2, _ik, _rp, 'ref image', logs):
                     _ref_imgs.append(_PilImg.open(_rp).convert('RGB'))
+
             if _ref_imgs:
                 IP_ADAPTER_PATH = os.path.join(MODELS_DIR, 'ip_adapter')
                 CLIP_PATH       = os.path.join(MODELS_DIR, 'clip_vision')
+
+                # Download IP-Adapter weights on first use (cached in MODELS_DIR)
+                ip_bin = os.path.join(IP_ADAPTER_PATH, 'ip_adapter.bin')
+                if not os.path.exists(ip_bin):
+                    logs.append('[ip_adapter] First use — downloading IP-Adapter weights...')
+                    _flush_logs(r2, bucket, job_id, logs)
+                    from huggingface_hub import hf_hub_download as _hf_dl
+                    os.makedirs(IP_ADAPTER_PATH, exist_ok=True)
+                    _hf_dl('InstantX/FLUX.1-dev-IP-Adapter', 'ip_adapter.bin',
+                           local_dir=IP_ADAPTER_PATH)
+                    logs.append('[ip_adapter] IP-Adapter weights cached.')
+
+                # Download CLIP vision encoder on first use (~650 MB, one-time)
+                if not os.path.exists(os.path.join(CLIP_PATH, 'config.json')):
+                    logs.append('[ip_adapter] First use — downloading CLIP vision encoder (~650 MB)...')
+                    _flush_logs(r2, bucket, job_id, logs)
+                    from transformers import CLIPVisionModelWithProjection as _CLIP
+                    _clip_model = _CLIP.from_pretrained('openai/clip-vit-large-patch14')
+                    _clip_model.save_pretrained(CLIP_PATH)
+                    del _clip_model
+                    logs.append('[ip_adapter] CLIP vision encoder cached.')
+
                 logs.append(f'[ip_adapter] Loading with scale={ip_scale}, {len(_ref_imgs)} ref image(s)...')
                 _flush_logs(r2, bucket, job_id, logs)
                 pipe.load_ip_adapter(
@@ -882,12 +905,12 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                     image_encoder_pretrained_model_name_or_path=CLIP_PATH,
                 )
                 pipe.set_ip_adapter_scale(ip_scale)
-                ip_ref_image     = _ref_imgs[0] if len(_ref_imgs) == 1 else _ref_imgs
+                ip_ref_image      = _ref_imgs[0] if len(_ref_imgs) == 1 else _ref_imgs
                 ip_adapter_loaded = True
                 logs.append('[ip_adapter] Ready.')
                 _flush_logs(r2, bucket, job_id, logs)
         except Exception as _ip_err:
-            logs.append(f'[ip_adapter] Warning: failed to load ({_ip_err}). Continuing without.')
+            logs.append(f'[ip_adapter] Warning: failed to load ({_ip_err}). Continuing without IP-Adapter.')
             _flush_logs(r2, bucket, job_id, logs)
 
     _inf_error: Exception | None = None

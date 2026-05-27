@@ -31,21 +31,9 @@ RUN mkdir -p /workspace/models/adetailer && \
     wget -q -O /workspace/models/adetailer/face_yolov8n.pt \
         https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt
 
-# Download IP-Adapter weights + CLIP vision encoder (baked in to avoid first-run download)
-RUN python -c "\
-from huggingface_hub import hf_hub_download, snapshot_download; \
-import os, shutil; \
-os.makedirs('/workspace/models/ip_adapter', exist_ok=True); \
-p = hf_hub_download('InstantX/FLUX.1-dev-IP-Adapter', 'ip_adapter.bin'); \
-shutil.copy(p, '/workspace/models/ip_adapter/ip_adapter.bin'); \
-print('IP-Adapter weights ready')"
-
-RUN python -c "\
-from transformers import CLIPVisionModelWithProjection; \
-import torch; \
-m = CLIPVisionModelWithProjection.from_pretrained('openai/clip-vit-large-patch14'); \
-m.save_pretrained('/workspace/models/clip_vision'); \
-print('CLIP vision encoder ready')"
+# IP-Adapter weights + CLIP vision encoder are downloaded at first use inside
+# handler.py and cached in MODELS_DIR — keeping them out of the image avoids
+# flaky HuggingFace downloads during CI builds.
 
 # Create tensorboard symlink and default samples file
 RUN ln -sf $(which tensorboard) /usr/bin/tensorboard && \
