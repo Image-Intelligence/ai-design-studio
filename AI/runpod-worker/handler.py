@@ -34,7 +34,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-26-v10'
+HANDLER_VERSION = '2026-05-26-v11'
 
 _PIPE_CACHE: dict = {}  # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
@@ -366,6 +366,19 @@ def _esrgan_upscale(image_pil, scale: int, logs: list):
     genuine high-frequency texture (pores, fabric, hair) unlike diffusion upscalers.
     scale=2 uses RealESRGAN_x2plus; scale=4 uses RealESRGAN_x4plus.
     """
+    import sys, types
+
+    # basicsr imports torchvision.transforms.functional_tensor which was removed
+    # in torchvision>=0.15 (RunPod ships torchvision 0.19). Create a compat shim.
+    try:
+        import torchvision.transforms.functional_tensor  # noqa: F401
+    except ModuleNotFoundError:
+        import torchvision.transforms.functional as _tvf
+        _compat = types.ModuleType('torchvision.transforms.functional_tensor')
+        for _n in dir(_tvf):
+            setattr(_compat, _n, getattr(_tvf, _n))
+        sys.modules['torchvision.transforms.functional_tensor'] = _compat
+
     import numpy as np
     import cv2
     from PIL import Image
