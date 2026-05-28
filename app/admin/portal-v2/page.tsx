@@ -239,6 +239,17 @@ async function compressBlobToDataUrl(blob: Blob, maxSize = 1920, quality = 0.85)
   })
 }
 
+// Calculate optimal Flux base dimensions from a reference image's natural size.
+// Targets ~1MP total (1024×1024 = Flux sweet spot), snapped to multiples of 64.
+function calcImg2ImgDims(nw: number, nh: number): { w: number; h: number } {
+  const ratio = nw / nh
+  let h = Math.round(Math.sqrt(1024 * 1024 / ratio) / 64) * 64
+  let w = Math.round(h * ratio / 64) * 64
+  w = Math.max(512, Math.min(2048, w))
+  h = Math.max(512, Math.min(2048, h))
+  return { w, h }
+}
+
 async function refImageToBase64(img: RefImage): Promise<string> {
   if (img.file) return compressFileToDataUrl(img.file, 1920, 0.85)
   // Data URLs are already base64 — no network fetch needed
@@ -3166,6 +3177,24 @@ function CustomFluxPanel({
   const [ipScale, setIpScale]                   = useState(0.6)
   const [img2img, setImg2img]                   = useState(false)
   const [img2imgStrength, setImg2imgStrength]   = useState(0.65)
+  const [autoBaseDims, setAutoBaseDims]         = useState<{ w: number; h: number } | null>(null)
+
+  // Auto-detect aspect ratio from first active ref when img2img is on
+  const firstRefId  = img2img ? (activeRefImages[0]?.id  ?? '') : ''
+  const firstRefUrl = img2img ? (activeRefImages[0]?.url ?? '') : ''
+  useEffect(() => {
+    if (!firstRefId || !firstRefUrl) { setAutoBaseDims(null); return }
+    const imgEl = new window.Image()
+    imgEl.onload = () => {
+      if (!imgEl.naturalWidth || !imgEl.naturalHeight) return
+      const dims = calcImg2ImgDims(imgEl.naturalWidth, imgEl.naturalHeight)
+      setAutoBaseDims(dims)
+      setWidth(dims.w)
+      setHeight(dims.h)
+    }
+    imgEl.onerror = () => setAutoBaseDims(null)
+    imgEl.src = firstRefUrl
+  }, [firstRefId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Available models
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([])
@@ -3456,13 +3485,16 @@ function CustomFluxPanel({
               { label: 'Height',   value: height,   min: 512, max: 2048, step: 64,   set: setHeight,   fmt: (v: number) => String(v) },
             ].map(({ label, value, min, max, step, set, fmt }) => (
               <div key={label} className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
-                <span className="text-[10px] font-mono text-slate-500">{label}</span>
+                <span className={`text-[10px] font-mono ${img2img && autoBaseDims && (label === 'Width' || label === 'Height') ? 'text-indigo-400/80' : 'text-slate-500'}`}>{label}</span>
                 <input type="range" min={min} max={max} step={step} value={value}
                   onChange={e => set(parseFloat(e.target.value) as never)}
                   className="w-full accent-cyan-400 cursor-pointer h-0.5" />
                 <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{fmt(value)}</span>
               </div>
             ))}
+            {img2img && autoBaseDims && (
+              <p className="text-[10px] text-indigo-400/50 -mt-1">Width &amp; Height auto-set from reference aspect ratio — drag to override</p>
+            )}
             <div className="grid grid-cols-[5rem_1fr] items-center gap-3 pt-0.5">
               <span className="text-[10px] font-mono text-slate-500">Seed</span>
               <input type="number" value={seed === -1 ? '' : seed} placeholder="random"
@@ -3617,19 +3649,40 @@ function CustomFluxPanel({
               <span className="text-[10px] font-mono text-indigo-400/60 uppercase tracking-widest">img2img Source</span>
               <span className="text-[10px] text-slate-600">first active ref · activate in the Refs panel above</span>
             </div>
-            {activeRefImages.length > 0 ? (
-              <div className="flex items-center gap-3 flex-wrap">
-                <div className="relative w-14 h-14 rounded-md overflow-hidden border border-indigo-500/30">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={activeRefImages[0].url} alt="" className="w-full h-full object-cover" />
+            {activeRefImages.length > 0 ? (() => {
+              const upscaleFactor = upscale === '2k' || upscale === '2k-esrgan' ? 2
+                                  : upscale === '4k' || upscale === '4k-esrgan' ? 4 : 1
+              const baseW = autoBaseDims?.w ?? width
+              const baseH = autoBaseDims?.h ?? height
+              const finalW = baseW * upscaleFactor
+              const finalH = baseH * upscaleFactor
+              const upscaleLabel = upscale === '2k' ? '2K Flux' : upscale === '4k' ? '4K Flux'
+                                 : upscale === '2k-esrgan' ? '2K+ ESRGAN' : upscale === '4k-esrgan' ? '4K+ ESRGAN' : null
+              return (
+                <div className="flex items-start gap-3 flex-wrap">
+                  {/* Thumbnail at natural aspect ratio */}
+                  <div className="relative shrink-0 max-w-[56px] max-h-[56px] rounded-md overflow-hidden border border-indigo-500/30 flex items-center justify-center bg-black/30">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={activeRefImages[0].url} alt="" className="max-w-[56px] max-h-[56px] object-contain" />
+                  </div>
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <span className="text-[10px] text-slate-400">Diffusion starts from this image · strength {img2imgStrength.toFixed(2)}</span>
+                    {autoBaseDims ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] font-mono text-indigo-300">
+                          Base: {baseW}×{baseH}
+                          {upscaleLabel && <span className="text-slate-500"> → Final: <span className="text-indigo-200">{finalW.toLocaleString()}×{finalH.toLocaleString()}</span> <span className="text-slate-600">({upscaleLabel})</span></span>}
+                        </span>
+                        {!upscaleLabel && <span className="text-[10px] text-slate-600">No upscale selected — output will be {baseW}×{baseH}</span>}
+                      </div>
+                    ) : (
+                      <span className="text-[10px] text-slate-600 italic">Detecting dimensions…</span>
+                    )}
+                    {ipAdapter && <span className="text-[10px] text-teal-400/70">+ IP-Adapter appearance guidance active</span>}
+                  </div>
                 </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[10px] text-slate-400">Diffusion starts from this image</span>
-                  <span className="text-[10px] text-slate-600">Strength {img2imgStrength.toFixed(2)} — lower preserves more of the original</span>
-                  {ipAdapter && <span className="text-[10px] text-teal-400/70">+ IP-Adapter appearance guidance active</span>}
-                </div>
-              </div>
-            ) : (
+              )
+            })() : (
               <p className="text-[11px] text-slate-600 italic">No active reference images — activate one in the Refs panel to use as the img2img source</p>
             )}
           </div>
