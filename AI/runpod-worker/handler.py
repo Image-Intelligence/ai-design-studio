@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v21'
+HANDLER_VERSION = '2026-05-28-v22'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -482,10 +482,21 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
 
     logs.append(f'[esrgan] {outscale}× upscale ({model_name})...')
 
+    import torch
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
                     num_block=23, num_grow_ch=32, scale=model_scale)
+    # Load weights manually to handle both Real-ESRGAN ('params'/'params_ema' keys)
+    # and legacy ESRGAN format (raw state dict at top level, e.g. 4x-UltraSharp).
+    loadnet = torch.load(model_path, map_location=torch.device('cpu'))
+    if 'params_ema' in loadnet:
+        state_dict = loadnet['params_ema']
+    elif 'params' in loadnet:
+        state_dict = loadnet['params']
+    else:
+        state_dict = loadnet  # legacy format: state dict is the top-level object
+    model.load_state_dict(state_dict, strict=True)
     upsampler = RealESRGANer(
-        scale=model_scale, model_path=model_path, model=model,
+        scale=model_scale, model_path=None, model=model,
         tile=512, tile_pad=32, pre_pad=0, half=True,
     )
 
