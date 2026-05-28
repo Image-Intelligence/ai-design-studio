@@ -74,7 +74,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "supir",                apiId: "supir",                    name: "SUPIR",               aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: false, isUpscaler: true },
   { id: "local-realesrgan",    apiId: "local-realesrgan",         name: "Real-ESRGAN (Local)",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: false, isUpscaler: true, isLocalModel: true },
   { id: "local-neosr",         apiId: "local-neosr",              name: "DAT-2 (Local)",         aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: false, isUpscaler: true, isLocalModel: true },
-  { id: "custom-flux-lora",    apiId: "custom-flux-lora",         name: "Custom Flux LoRA",      aspectRatios: ["1:1", "9:16", "16:9", "4:3", "3:4"], supportsQuality: false, maxReferenceImages: 0, isFal: false, isCustomFlux: true },
+  { id: "custom-flux-lora",    apiId: "custom-flux-lora",         name: "Custom Flux LoRA",      aspectRatios: ["1:1", "9:16", "16:9", "4:3", "3:4"], supportsQuality: false, maxReferenceImages: 3, isFal: false, isCustomFlux: true },
 ]
 
 // --- HELPERS ---
