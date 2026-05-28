@@ -42,7 +42,11 @@ export async function POST(req: Request) {
 
   if (status === 'completed') {
     const r2Key = data.output?.output_r2_key
-    if (!r2Key) return NextResponse.json({ status: 'failed', error: 'Job completed but no output image key' })
+    if (!r2Key) {
+      // Handler returned success=False — surface its error message, not a generic one
+      const handlerErr = data.output?.error ?? 'Job completed but produced no output (check worker logs)'
+      return NextResponse.json({ status: 'failed', error: handlerErr })
+    }
 
     const imageUrl = PUBLIC_URL
       ? `${PUBLIC_URL}/${r2Key}`

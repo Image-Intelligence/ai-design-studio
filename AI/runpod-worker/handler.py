@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v19'
+HANDLER_VERSION = '2026-05-28-v20'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -472,11 +472,15 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
     if model_name == 'ultrasharp':
         model_path  = '/workspace/models/esrgan/4x-UltraSharp.pth'
         model_scale = 4
-        # Download at runtime if Dockerfile wget failed
-        if not os.path.exists(model_path):
-            logs.append('[esrgan] Downloading 4x-UltraSharp (first use)...')
+        # Dockerfile wget can silently produce a corrupted/HTML file on failure.
+        # Treat anything under 10 MB as invalid and redownload.
+        _valid = os.path.exists(model_path) and os.path.getsize(model_path) > 10_000_000
+        if not _valid:
+            logs.append('[esrgan] Downloading 4x-UltraSharp (missing or invalid file)...')
             from huggingface_hub import hf_hub_download as _hf_dl
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            if os.path.exists(model_path):
+                os.remove(model_path)
             _hf_dl('Kim2091/4x-UltraSharp', '4x-UltraSharp.pth',
                    local_dir=os.path.dirname(model_path))
             logs.append('[esrgan] 4x-UltraSharp cached.')

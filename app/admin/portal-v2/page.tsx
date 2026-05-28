@@ -3252,9 +3252,9 @@ function CustomFluxPanel({
     : upscaleMethod === 'esrgan' ? (upscaleScale === 2 ? '2k-esrgan' : '4k-esrgan')
     : 'combo'
 
-  // Auto-detect aspect ratio from first active ref when img2img is on
-  const firstRefId  = img2img ? (activeRefImages[0]?.id  ?? '') : ''
-  const firstRefUrl = img2img ? (activeRefImages[0]?.url ?? '') : ''
+  // Auto-detect aspect ratio from first active ref image (always, not just when img2img is on)
+  const firstRefId  = activeRefImages[0]?.id  ?? ''
+  const firstRefUrl = activeRefImages[0]?.url ?? ''
   useEffect(() => {
     if (!firstRefId || !firstRefUrl) { setAutoBaseDims(null); return }
     const imgEl = new window.Image()
@@ -3373,10 +3373,9 @@ function CustomFluxPanel({
     setResultUrl(null)
     setStatus('submitting')
 
-    // When img2img is active, use the auto-detected aspect-ratio dims rather than
-    // the width/height state (which may not have flushed yet from the useEffect).
-    const reqWidth  = (img2img && autoBaseDims) ? autoBaseDims.w : width
-    const reqHeight = (img2img && autoBaseDims) ? autoBaseDims.h : height
+    // Use auto-detected dims from ref image whenever available — ref always sets aspect ratio.
+    const reqWidth  = autoBaseDims?.w ?? width
+    const reqHeight = autoBaseDims?.h ?? height
 
     const body = {
       mode,
