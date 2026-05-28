@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v26'
+HANDLER_VERSION = '2026-05-28-v27'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -612,8 +612,11 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
         model = LegacyRRDBNet(scale=model_scale)
 
     model.load_state_dict(state_dict, strict=True)
+    # Pass the real path string — realesrgan 0.3.0 calls model_path.startswith()
+    # before checking whether a pre-loaded model was provided, so None crashes.
+    # With model= set, the library skips re-loading the weights from disk.
     upsampler = RealESRGANer(
-        scale=model_scale, model_path=None, model=model,
+        scale=model_scale, model_path=model_path, model=model,
         tile=512, tile_pad=32, pre_pad=0, half=True,
     )
 
