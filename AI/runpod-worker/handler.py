@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v22'
+HANDLER_VERSION = '2026-05-28-v23'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -457,6 +457,100 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
     return output
 
 
+def _esrgan_load_state_dict(model_path: str, logs: list) -> dict:
+    """
+    Load an ESRGAN .pth file and return a state dict in basicsr RRDBNet format.
+    Handles four common checkpoint formats:
+      1. Real-ESRGAN  — top-level dict has 'params_ema' or 'params' key
+      2. basicsr      — state dict keys start with conv_first / body / conv_body …
+      3. orig ESRGAN  — keys: conv_first / RRDB_trunk.N.RDB… / trunk_conv / upconv…
+      4. sequential   — keys: model.0 / model.1.sub.N.RDBN.convK.0 / model.M …
+    """
+    import torch
+    import re as _re
+
+    loadnet = torch.load(model_path, map_location=torch.device('cpu'))
+
+    # Format 1 — Real-ESRGAN wrapper
+    if isinstance(loadnet, dict):
+        if 'params_ema' in loadnet:
+            return loadnet['params_ema']
+        if 'params' in loadnet:
+            return loadnet['params']
+
+    # Format 2 — already basicsr keys
+    if isinstance(loadnet, dict) and 'conv_first.weight' in loadnet and 'body.0.rdb1.conv1.weight' in loadnet:
+        return loadnet
+
+    # Format 3 — original ESRGAN class (conv_first / RRDB_trunk / trunk_conv / upconv1 / HRconv)
+    if isinstance(loadnet, dict) and 'RRDB_trunk.0.RDB1.conv1.0.weight' in loadnet:
+        logs.append('[esrgan] Converting original-ESRGAN format → basicsr format')
+        sd = {}
+        for k, v in loadnet.items():
+            if 'res_scale' in k:
+                continue
+            # RRDB_trunk.N.RDBY.convZ.0.* → body.N.rdbY.convZ.*
+            m = _re.match(r'^RRDB_trunk\.(\d+)\.(RDB\d+)\.conv(\d+)\.0\.(.+)$', k)
+            if m:
+                sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
+                continue
+            # trunk_conv → conv_body
+            m = _re.match(r'^trunk_conv\.(.+)$', k)
+            if m:
+                sd[f'conv_body.{m.group(1)}'] = v
+                continue
+            # upconv1 / upconv2 → conv_up1 / conv_up2
+            m = _re.match(r'^upconv(\d)\.(.+)$', k)
+            if m:
+                sd[f'conv_up{m.group(1)}.{m.group(2)}'] = v
+                continue
+            # HRconv → conv_hr
+            m = _re.match(r'^HRconv\.(.+)$', k)
+            if m:
+                sd[f'conv_hr.{m.group(1)}'] = v
+                continue
+            # conv_first and conv_last map 1-to-1
+            sd[k] = v
+        return sd
+
+    # Format 4 — sequential wrapper (model.0 / model.1.sub.N.RDBN / model.M …)
+    if isinstance(loadnet, dict) and 'model.0.weight' in loadnet:
+        logs.append('[esrgan] Converting sequential-ESRGAN format → basicsr format')
+        sd = {}
+        extra = {}  # model index → {param_suffix: tensor}
+        for k, v in loadnet.items():
+            if 'res_scale' in k:
+                continue
+            # conv_first
+            m = _re.match(r'^model\.0\.(.+)$', k)
+            if m:
+                sd[f'conv_first.{m.group(1)}'] = v
+                continue
+            # RRDB body blocks
+            m = _re.match(r'^model\.1\.sub\.(\d+)\.(RDB\d+)\.conv(\d+)\.0\.(.+)$', k)
+            if m:
+                sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
+                continue
+            # All remaining model.N.* (N > 1, no .sub.) = conv_body then upsample convs
+            m = _re.match(r'^model\.(\d+)\.(.+)$', k)
+            if m and int(m.group(1)) > 1:
+                extra.setdefault(int(m.group(1)), {})[m.group(2)] = v
+
+        # Map remaining layers in ascending index order
+        # Typical order: conv_body, conv_up1, conv_up2, conv_hr, conv_last
+        targets = ['conv_body', 'conv_up1', 'conv_up2', 'conv_hr', 'conv_last']
+        for i, idx in enumerate(sorted(extra.keys())):
+            if i < len(targets):
+                for param, v in extra[idx].items():
+                    sd[f'{targets[i]}.{param}'] = v
+        return sd
+
+    # Unknown — return raw and let load_state_dict surface the error
+    top = list(loadnet.keys())[:10] if isinstance(loadnet, dict) else str(type(loadnet))
+    logs.append(f'[esrgan] WARNING: unrecognised checkpoint format, top keys: {top}')
+    return loadnet
+
+
 def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
     """
     ESRGAN upscale.
@@ -482,18 +576,9 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
 
     logs.append(f'[esrgan] {outscale}× upscale ({model_name})...')
 
-    import torch
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
                     num_block=23, num_grow_ch=32, scale=model_scale)
-    # Load weights manually to handle both Real-ESRGAN ('params'/'params_ema' keys)
-    # and legacy ESRGAN format (raw state dict at top level, e.g. 4x-UltraSharp).
-    loadnet = torch.load(model_path, map_location=torch.device('cpu'))
-    if 'params_ema' in loadnet:
-        state_dict = loadnet['params_ema']
-    elif 'params' in loadnet:
-        state_dict = loadnet['params']
-    else:
-        state_dict = loadnet  # legacy format: state dict is the top-level object
+    state_dict = _esrgan_load_state_dict(model_path, logs)
     model.load_state_dict(state_dict, strict=True)
     upsampler = RealESRGANer(
         scale=model_scale, model_path=None, model=model,
