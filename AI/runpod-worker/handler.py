@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v25'
+HANDLER_VERSION = '2026-05-28-v26'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -1211,18 +1211,31 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _flush_logs(r2, bucket, job_id, logs)
 
         # 5c. Upscaling (Flux tiling, ESRGAN, or Combo)
+        # ESRGAN target resolutions: '2k-esrgan' → 2048px long side, '4k-esrgan' → 3840px long side.
+        # outscale is computed dynamically so the output always hits the target regardless of base size.
+        _ESRGAN_TARGET_PX = {'2k-esrgan': 2048, '4k-esrgan': 3840}
+
+        def _esrgan_target_outscale(img, upscale_key: str) -> float:
+            target = _ESRGAN_TARGET_PX.get(upscale_key, 0)
+            if not target:
+                return float(esrgan_factor)  # fallback to fixed factor
+            long_side = max(img.width, img.height)
+            return max(1.0, target / long_side)
+
         if do_combo and pipe_i2i is not None:
             if combo_order == 'flux-first':
                 logs.append(f'[combo] Step 1/2 — Flux 2× tiling (strength={upscale_strength})...')
                 _flush_logs(r2, bucket, job_id, logs)
                 image = _tiled_img2img(pipe_i2i, image, prompt, 2, upscale_strength, steps, guidance, seed, logs)
-                logs.append('[combo] Step 2/2 — ESRGAN 2×...')
+                _esc = _esrgan_target_outscale(image, _up)
+                logs.append(f'[combo] Step 2/2 — ESRGAN (outscale={_esc:.2f})...')
                 _flush_logs(r2, bucket, job_id, logs)
-                image = _esrgan_upscale(image, esrgan_model, 2, logs)
+                image = _esrgan_upscale(image, esrgan_model, _esc, logs)
             else:  # esrgan-first
-                logs.append('[combo] Step 1/2 — ESRGAN 2×...')
+                _esc = _esrgan_target_outscale(image, _up)
+                logs.append(f'[combo] Step 1/2 — ESRGAN (outscale={_esc:.2f})...')
                 _flush_logs(r2, bucket, job_id, logs)
-                image = _esrgan_upscale(image, esrgan_model, 2, logs)
+                image = _esrgan_upscale(image, esrgan_model, _esc, logs)
                 logs.append(f'[combo] Step 2/2 — Flux 2× tiling (strength={upscale_strength})...')
                 _flush_logs(r2, bucket, job_id, logs)
                 image = _tiled_img2img(pipe_i2i, image, prompt, 2, upscale_strength, steps, guidance, seed, logs)
@@ -1237,9 +1250,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             _flush_logs(r2, bucket, job_id, logs)
 
         elif esrgan_factor > 0:
-            logs.append(f'[inference] ESRGAN {esrgan_factor}× ({esrgan_model})...')
+            _outscale = _esrgan_target_outscale(image, _up)
+            _target_px = _ESRGAN_TARGET_PX.get(_up, 0)
+            logs.append(f'[inference] ESRGAN → {_target_px}px long-side (outscale={_outscale:.2f}, model={esrgan_model})...')
             _flush_logs(r2, bucket, job_id, logs)
-            image = _esrgan_upscale(image, esrgan_model, esrgan_factor, logs)
+            image = _esrgan_upscale(image, esrgan_model, _outscale, logs)
             logs.append(f'[inference] ESRGAN done — {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
