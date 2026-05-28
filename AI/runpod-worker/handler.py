@@ -34,7 +34,10 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-27-v15'
+HANDLER_VERSION = '2026-05-27-v16'
+
+# Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 _PIPE_CACHE:   dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 _YOLO_CACHE:  dict = {}   # model_path → YOLO instance
@@ -831,7 +834,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 transformer=transformer,
             )
 
-        pipe = pipe.to('cuda')
+        # Clear any fragmentation from previous failed jobs before moving to VRAM
+        gc.collect()
+        torch.cuda.empty_cache()
+        logs.append(f'[inference] VRAM free before .to(cuda): {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB')
+        _flush_logs(r2, bucket, job_id, logs)
+        try:
+            pipe = pipe.to('cuda')
+        except torch.cuda.OutOfMemoryError as _oom:
+            # Partial load may have consumed VRAM — purge and surface the error
+            _PIPE_CACHE.pop(ckpt_path, None)
+            gc.collect()
+            torch.cuda.empty_cache()
+            raise RuntimeError(
+                f'CUDA OOM moving pipeline to GPU: {_oom}. '
+                f'VRAM free after cleanup: {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB'
+            ) from _oom
         _PIPE_CACHE[ckpt_path] = pipe
         logs.append('[inference] Pipeline ready (cached for reuse).')
         _flush_logs(r2, bucket, job_id, logs)
@@ -840,7 +858,6 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # Saved weights are stored on CPU so they don't consume VRAM.
     # LoRA deltas are also computed on CPU (A/B matrices are small) and only
     # the final result is moved to the GPU weight, avoiding large temporaries.
-    os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
     _saved_weights: dict = {}  # mod_path → CPU tensor (original weight)
     if lora_paths:
         from safetensors.torch import load_file as _sf_load
