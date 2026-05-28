@@ -866,11 +866,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     if ip_image_keys:
         try:
             from PIL import Image as _PilImg
+            from io import BytesIO as _BytesIO
+            import base64 as _b64mod
             _ref_imgs = []
             for _ik in ip_image_keys[:3]:
-                _rp = os.path.join(run_dir, f'ref_{len(_ref_imgs)}.png')
-                if _download(r2, _ik, _rp, 'ref image', logs):
-                    _ref_imgs.append(_PilImg.open(_rp).convert('RGB'))
+                try:
+                    if str(_ik).startswith('data:image/'):
+                        # Base64 data URL — decode directly (no R2 download needed)
+                        _b64_data = _ik.split(',', 1)[1]
+                        _ref_imgs.append(_PilImg.open(_BytesIO(_b64mod.b64decode(_b64_data))).convert('RGB'))
+                    else:
+                        # R2 key — download file
+                        _rp = os.path.join(run_dir, f'ref_{len(_ref_imgs)}.png')
+                        if _download(r2, _ik, _rp, 'ref image', logs):
+                            _ref_imgs.append(_PilImg.open(_rp).convert('RGB'))
+                except Exception as _re:
+                    logs.append(f'[ip_adapter] Warning: could not load ref image: {_re}')
 
             if _ref_imgs:
                 IP_ADAPTER_PATH = os.path.join(MODELS_DIR, 'ip_adapter')
@@ -878,7 +889,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
                 # Download IP-Adapter weights on first use (cached in MODELS_DIR)
                 ip_bin = os.path.join(IP_ADAPTER_PATH, 'ip_adapter.bin')
-                if not os.path.exists(ip_bin):
+                if not os.path.exists(ip_bin):  # noqa
                     logs.append('[ip_adapter] First use — downloading IP-Adapter weights...')
                     _flush_logs(r2, bucket, job_id, logs)
                     from huggingface_hub import hf_hub_download as _hf_dl

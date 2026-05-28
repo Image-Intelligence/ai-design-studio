@@ -3134,10 +3134,12 @@ function CustomFluxPanel({
   onAddPending,
   onStartNb2Polling,
   onPrependImage,
+  activeRefImages = [],
 }: {
   onAddPending:      (slot: PendingSlot) => void
   onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string) => void
   onPrependImage:    (img: ImageItem) => void
+  activeRefImages?:  RefImage[]
 }) {
   const [mode, setMode]               = useState<FluxMode>('runpod')
   const [checkpoint, setCheckpoint]   = useState('')
@@ -3162,9 +3164,6 @@ function CustomFluxPanel({
   const [adetailerStrength, setAdetailerStrength] = useState(0.35)
   const [ipAdapter, setIpAdapter]               = useState(false)
   const [ipScale, setIpScale]                   = useState(0.6)
-  const [ipRefImages, setIpRefImages]           = useState<Array<{r2Key: string; previewUrl: string}>>([])
-  const [ipUploading, setIpUploading]           = useState(false)
-  const ipFileInputRef                          = useRef<HTMLInputElement>(null)
 
   // Available models
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([])
@@ -3258,29 +3257,6 @@ function CustomFluxPanel({
     }
   }
 
-  const handleIpImageUpload = async (file: File) => {
-    if (ipRefImages.length >= 3) return
-    setIpUploading(true)
-    const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
-    const authHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) }
-    try {
-      const presignRes = await fetch('/api/admin/onetrainer/cloud/upload', {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({ type: 'ref', filename: file.name, contentType: file.type || 'image/png' }),
-      })
-      if (!presignRes.ok) { setError('Failed to get upload URL'); return }
-      const { uploadUrl, key } = await presignRes.json() as { uploadUrl: string; key: string }
-      await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type || 'image/png' }, body: file })
-      const previewUrl = URL.createObjectURL(file)
-      setIpRefImages(prev => [...prev, { r2Key: key, previewUrl }])
-    } catch (e) {
-      setError(`Ref image upload failed: ${String(e)}`)
-    } finally {
-      setIpUploading(false)
-    }
-  }
-
   const checkpoints = mode === 'local' ? comfyCheckpoints.map(n => ({ key: n, name: n })) : r2Checkpoints
   const loraOptions = mode === 'local' ? comfyLoras.map(n => ({ key: n, name: n }))     : r2Loras
 
@@ -3309,8 +3285,24 @@ function CustomFluxPanel({
       upscale_strength:   upscaleStrength,
       adetailer:          mode === 'runpod' ? adetailer  : false,
       adetailer_strength: adetailerStrength,
-      ip_adapter_images:  mode === 'runpod' && ipAdapter ? ipRefImages.map(r => r.r2Key) : [],
+      ip_adapter_images:  [] as string[],  // filled below
       ip_adapter_scale:   ipScale,
+    }
+
+    // Convert active ref images to base64 so RunPod can decode them
+    if (mode === 'runpod' && ipAdapter && activeRefImages.length > 0) {
+      body.ip_adapter_images = await Promise.all(
+        activeRefImages.slice(0, 3).map(ref =>
+          fetch(ref.url)
+            .then(r => r.blob())
+            .then(blob => new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload  = () => resolve(reader.result as string)
+              reader.onerror = reject
+              reader.readAsDataURL(blob)
+            }))
+        )
+      )
     }
 
     try {
@@ -3543,33 +3535,29 @@ function CustomFluxPanel({
           </div>
         )}
 
-        {/* IP-Adapter reference images panel */}
+        {/* IP-Adapter: shows which active refs will be used — no separate upload */}
         {mode === 'runpod' && ipAdapter && (
           <div className="rounded-xl border border-teal-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-teal-400/60 uppercase tracking-widest">Reference Images</span>
-              <span className="text-[10px] text-slate-600">{ipRefImages.length}/3 — style &amp; appearance guide</span>
+              <span className="text-[10px] font-mono text-teal-400/60 uppercase tracking-widest">IP Reference Images</span>
+              <span className="text-[10px] text-slate-600">activate images in the Refs panel above</span>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {ipRefImages.map((img, i) => (
-                <div key={i} className="relative group w-14 h-14 rounded-md overflow-hidden border border-white/10">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={img.previewUrl} alt="" className="w-full h-full object-cover" />
-                  <button onClick={() => setIpRefImages(prev => prev.filter((_, j) => j !== i))}
-                    className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity text-rose-400 text-[10px]">
-                    ✕
-                  </button>
-                </div>
-              ))}
-              {ipRefImages.length < 3 && (
-                <button onClick={() => ipFileInputRef.current?.click()} disabled={ipUploading}
-                  className="w-14 h-14 rounded-md border border-dashed border-teal-500/30 flex items-center justify-center text-teal-500/60 hover:text-teal-400 hover:border-teal-400/50 transition-colors disabled:opacity-40 text-lg">
-                  {ipUploading ? <div className="w-3 h-3 rounded-full border border-teal-400 border-t-transparent animate-spin" /> : '+'}
-                </button>
-              )}
-            </div>
-            <input ref={ipFileInputRef} type="file" accept="image/*" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleIpImageUpload(f); e.target.value = '' }} />
+            {activeRefImages.length > 0 ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                {activeRefImages.slice(0, 3).map((img, i) => (
+                  <div key={img.id} className="relative w-14 h-14 rounded-md overflow-hidden border border-teal-500/30">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img.url} alt="" className="w-full h-full object-cover" />
+                    {i === 0 && activeRefImages.length > 3 && (
+                      <span className="absolute bottom-0 right-0 text-[9px] bg-black/70 text-teal-300 px-1">+{activeRefImages.length - 3}</span>
+                    )}
+                  </div>
+                ))}
+                <span className="text-[10px] text-slate-500">{Math.min(activeRefImages.length, 3)} image{activeRefImages.length !== 1 ? 's' : ''} will guide style &amp; appearance</span>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-600 italic">No active reference images — activate some in the Refs panel to use IP-Adapter</p>
+            )}
           </div>
         )}
 
@@ -9367,6 +9355,7 @@ export default function PortalV2Page() {
               onAddPending={handleAddPending}
               onStartNb2Polling={startNb2SlotPolling}
               onPrependImage={handlePrependImage}
+              activeRefImages={refLibrary.filter(img => activeRefIds.includes(img.id)).slice(0, 3)}
             />
           ) : (
           <PromptBox
