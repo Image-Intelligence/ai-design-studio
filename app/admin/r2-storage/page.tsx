@@ -66,6 +66,14 @@ const REQUIRED_MODELS = [
   },
 ] as const
 
+const ESRGAN_MODELS = [
+  {
+    filename:    '4x-UltraSharp.pth',
+    label:       '4x-UltraSharp',
+    description: 'ESRGAN 4× super-resolution · ~64 MB · required for UltraSharp upscale mode',
+  },
+] as const
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface FileEntry {
@@ -150,7 +158,10 @@ export default function R2StoragePage() {
     finally { setLoading(prev => ({ ...prev, [prefix]: false })) }
   }, [])
 
-  useEffect(() => { loadFiles(currentTab.prefix) }, [activeTab]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    loadFiles(currentTab.prefix)
+    if (activeTab === 'models') loadFiles('training/models/esrgan/')
+  }, [activeTab]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Delete ─────────────────────────────────────────────────────────────────
 
@@ -253,6 +264,10 @@ export default function R2StoragePage() {
 
   function handleModelFile(file: File, filename: string) {
     uploadFile(file, `training/models/${filename}`, 'training/models/')
+  }
+
+  function handleEsrganModelFile(file: File, filename: string) {
+    uploadFile(file, `training/models/esrgan/${filename}`, 'training/models/esrgan/')
   }
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -433,6 +448,99 @@ export default function R2StoragePage() {
             </div>
           )}
 
+          {/* ── ESRGAN Upscale Models ── */}
+          {activeTab === 'models' && (
+            <div className="rounded-2xl border border-white/[0.08] bg-[#0f0f1a] p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">ESRGAN Upscale Models</p>
+                  <p className="text-[10px] text-slate-600 mt-0.5">.pth files used by the RunPod worker for ESRGAN upscaling.</p>
+                </div>
+                <button onClick={() => loadFiles('training/models/esrgan/')}
+                  className="p-1.5 rounded-lg hover:bg-white/[0.06] text-slate-600 hover:text-slate-400 transition-colors">
+                  {loading['training/models/esrgan/'] ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {ESRGAN_MODELS.map(model => {
+                  const existing = (filesByPrefix['training/models/esrgan/'] ?? []).find(f => f.name === model.filename)
+                  const job      = jobs.find(j => j.targetKey === `training/models/esrgan/${model.filename}`)
+                  return (
+                    <div key={model.filename}
+                      className="flex items-center gap-4 px-4 py-3.5 rounded-xl border border-white/[0.07] bg-white/[0.02]">
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${
+                        job      ? 'bg-violet-400 animate-pulse' :
+                        existing ? 'bg-emerald-400' :
+                                   'bg-amber-500/60'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-[11px] font-semibold text-white">{model.label}</p>
+                          {existing && !job && (
+                            <span className="text-[9px] text-emerald-400 font-mono">{fmt(existing.size_bytes)}</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-600 font-mono mt-0.5">{model.filename}</p>
+                        <p className="text-[10px] text-slate-700 mt-0.5">{model.description}</p>
+                      </div>
+                      {job ? (
+                        <div className="text-[10px] font-mono text-violet-400 shrink-0">
+                          {job.status === 'starting'   ? 'Starting…' :
+                           job.status === 'completing' ? 'Finishing…' :
+                           job.status === 'done'       ? '✓ Done!' :
+                           job.status === 'error'      ? 'Error' :
+                           `${Math.round(job.completedParts / job.totalParts * 100)}%`}
+                        </div>
+                      ) : existing ? (
+                        <div className="flex items-center gap-2 shrink-0">
+                          <CheckCircle size={12} className="text-emerald-400" />
+                          <button onClick={() => modelRefs.current[`esrgan_${model.filename}`]?.click()}
+                            className="text-[10px] text-slate-500 hover:text-white px-2 py-1 rounded-lg border border-white/[0.08] hover:border-white/20 transition-all">
+                            Replace
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => modelRefs.current[`esrgan_${model.filename}`]?.click()}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/25 text-amber-300 text-[11px] hover:bg-amber-500/20 transition-all shrink-0">
+                          <Upload size={10} /> Upload
+                        </button>
+                      )}
+                      <input
+                        type="file"
+                        accept=".pth"
+                        className="hidden"
+                        ref={el => { modelRefs.current[`esrgan_${model.filename}`] = el }}
+                        onChange={e => {
+                          const f = e.target.files?.[0]
+                          if (f) handleEsrganModelFile(f, model.filename)
+                          e.target.value = ''
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Upload arbitrary .pth */}
+              <input
+                type="file"
+                accept=".pth"
+                className="hidden"
+                ref={el => { modelRefs.current['esrgan_custom'] = el }}
+                onChange={e => {
+                  const f = e.target.files?.[0]
+                  if (f) handleEsrganModelFile(f, f.name)
+                  e.target.value = ''
+                }}
+              />
+              <button onClick={() => modelRefs.current['esrgan_custom']?.click()}
+                className="w-full py-2 rounded-xl border border-dashed border-white/[0.08] text-[11px] text-slate-600 hover:text-slate-400 hover:border-white/[0.15] transition-all flex items-center justify-center gap-1.5">
+                <Upload size={10} /> Upload custom .pth file
+              </button>
+            </div>
+          )}
+
           {/* ── Upload zone (all tabs except models and loras) ── */}
           {activeTab !== 'models' && !currentTab.readOnly && (
             <div
@@ -552,8 +660,13 @@ export default function R2StoragePage() {
                   <code className="text-[10px] text-slate-400 font-mono">training/models/{m.filename}</code>
                 </div>
               ))}
+              {ESRGAN_MODELS.map(m => (
+                <div key={m.filename} className="flex items-center gap-2">
+                  <code className="text-[10px] text-amber-500/70 font-mono">training/models/esrgan/{m.filename}</code>
+                </div>
+              ))}
               <p className="text-[10px] text-slate-700 mt-2">
-                These exact filenames are expected by the RunPod worker. Uploading via the buttons above sets them automatically.
+                These exact paths are expected by the RunPod worker. Uploading via the buttons above sets them automatically.
               </p>
             </div>
           )}

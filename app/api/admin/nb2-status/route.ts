@@ -131,6 +131,12 @@ export async function POST(req: Request) {
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
       return NextResponse.json({ status: 'failed', error: `Generation failed: ${detail}` })
     }
+    // 404 / job not found — permanent failure (job expired or never registered)
+    if (error.status === 404 || /not.found|no.longer.available|expired/i.test(error.message ?? '')) {
+      if (requestId) await releaseQueueSlot(requestId, true, 'Generation request expired or not found')
+      return NextResponse.json({ status: 'failed', error: 'Generation request expired or not found' })
+    }
+    // Transient error — keep polling
     return NextResponse.json({ status: 'in_progress', error: error.message })
   } finally {
     await prisma.$disconnect()

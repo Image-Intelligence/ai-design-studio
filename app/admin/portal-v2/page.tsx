@@ -1834,6 +1834,7 @@ function PendingDetailModal({
   isQueued,
   onClose,
   onUsePrompt,
+  onDismiss,
 }: {
   prompt: string
   model: string
@@ -1846,6 +1847,7 @@ function PendingDetailModal({
   isQueued?: boolean
   onClose: () => void
   onUsePrompt: (text: string) => void
+  onDismiss?: () => void
 }) {
   const [copied, setCopied] = useState(false)
   const modelName = getModelDisplayName(model)
@@ -1987,6 +1989,14 @@ function PendingDetailModal({
                 Use Prompt
               </button>
             </div>
+            {onDismiss && (
+              <button
+                onClick={() => { onDismiss(); onClose() }}
+                className="w-full py-1.5 rounded-lg border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-[11px] text-red-400 hover:text-red-300 transition-all flex items-center justify-center gap-1.5"
+              >
+                <X size={11} /> Dismiss Generation
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -10046,6 +10056,10 @@ export default function PortalV2Page() {
           isQueued={!!(pendingDetail.queueJobId && !pendingDetail.nb2RequestId)}
           onClose={() => setPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setPendingDetail(null) }}
+          onDismiss={() => {
+            if (pendingDetail.nb2RequestId) cancelNb2SlotPolling(pendingDetail.nb2RequestId)
+            handleRemovePending(pendingDetail.slotId)
+          }}
         />
       )}
 
@@ -10061,6 +10075,11 @@ export default function PortalV2Page() {
           isQueued={!!(videoPendingDetail.queueJobId && !videoPendingDetail.requestId)}
           onClose={() => setVideoPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setVideoPendingDetail(null) }}
+          onDismiss={() => {
+            const interval = videoPollingIntervals.current[videoPendingDetail.slotId]
+            if (interval) { clearInterval(interval); delete videoPollingIntervals.current[videoPendingDetail.slotId] }
+            setVideoPendingSlots(prev => prev.filter(s => s.slotId !== videoPendingDetail.slotId))
+          }}
         />
       )}
       <ChatWidget sideTabOnly={scannerMode === "video"} />
