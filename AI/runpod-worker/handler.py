@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v18'
+HANDLER_VERSION = '2026-05-28-v19'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -686,7 +686,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     img2img_image_b64 = inp.get('img2img_image', '')
     img2img_strength  = float(inp.get('img2img_strength', 0.65))
     # Unconditional debug
-    print(f'[debug] upscale={upscale} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)}', flush=True)
+    print(f'[debug] upscale={upscale} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)} width={width} height={height}', flush=True)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')

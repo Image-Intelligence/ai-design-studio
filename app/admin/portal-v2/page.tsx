@@ -3314,6 +3314,11 @@ function CustomFluxPanel({
     setResultUrl(null)
     setStatus('submitting')
 
+    // When img2img is active, use the auto-detected aspect-ratio dims rather than
+    // the width/height state (which may not have flushed yet from the useEffect).
+    const reqWidth  = (img2img && autoBaseDims) ? autoBaseDims.w : width
+    const reqHeight = (img2img && autoBaseDims) ? autoBaseDims.h : height
+
     const body = {
       mode,
       prompt:     prompt.trim(),
@@ -3321,7 +3326,7 @@ function CustomFluxPanel({
       loras:      loras
         .filter(l => l.key)
         .map(l => ({ name: l.name, key: l.key, r2_key: l.key, strength: l.strength })),
-      width, height, steps, guidance,
+      width: reqWidth, height: reqHeight, steps, guidance,
       seed: seed === -1 ? null : seed,
       // Post-processing (RunPod only)
       refine:             mode === 'runpod' ? refine         : false,
