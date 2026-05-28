@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v24'
+HANDLER_VERSION = '2026-05-28-v25'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -1158,7 +1158,8 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             _flush_logs(r2, bucket, job_id, logs)
             _base_kwargs: dict = dict(prompt=prompt, image=img2img_pil,
                                       strength=img2img_strength, num_inference_steps=steps,
-                                      guidance_scale=guidance, generator=gen)
+                                      guidance_scale=guidance, generator=gen,
+                                      width=width, height=height)
             if ip_ref_image is not None:
                 _base_kwargs['ip_adapter_image'] = ip_ref_image
             image = pipe_i2i(**_base_kwargs).images[0]

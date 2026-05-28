@@ -3401,7 +3401,7 @@ function CustomFluxPanel({
       refine_strength:    refineStrength,
       upscale:            mode === 'runpod' ? upscaleParam   : 'none',
       upscale_strength:   fluxTileStrength,
-      esrgan_model:       esrganModel,
+      esrgan_model:       upscaleEnabled ? esrganModel : undefined,
       combo_order:        comboOrder,
       adetailer:          mode === 'runpod' ? adetailer      : false,
       adetailer_strength: adetailerStrength,
