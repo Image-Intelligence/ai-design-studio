@@ -3169,15 +3169,29 @@ function CustomFluxPanel({
   // Post-processing
   const [refine, setRefine]                     = useState(false)
   const [refineStrength, setRefineStrength]     = useState(0.3)
-  const [upscale, setUpscale]                   = useState<'none'|'2k'|'4k'|'2k-esrgan'|'4k-esrgan'>('none')
-  const [upscaleStrength, setUpscaleStrength]   = useState(0.3)
+  // Upscaling
+  const [upscaleEnabled, setUpscaleEnabled]     = useState(false)
+  const [upscaleMethod, setUpscaleMethod]       = useState<'flux'|'esrgan'|'combo'>('esrgan')
+  const [upscaleScale, setUpscaleScale]         = useState<2|4>(2)
+  const [esrganModel, setEsrganModel]           = useState<'ultrasharp'|'x4plus'>('ultrasharp')
+  const [comboOrder, setComboOrder]             = useState<'flux-first'|'esrgan-first'>('flux-first')
+  const [fluxTileStrength, setFluxTileStrength] = useState(0.3)
+  // Post-processing
   const [adetailer, setAdetailer]               = useState(false)
   const [adetailerStrength, setAdetailerStrength] = useState(0.35)
+  const [gfpgan, setGfpgan]                     = useState(false)
+  const [gfpganWeight, setGfpganWeight]         = useState(0.8)
   const [ipAdapter, setIpAdapter]               = useState(false)
   const [ipScale, setIpScale]                   = useState(0.6)
   const [img2img, setImg2img]                   = useState(false)
   const [img2imgStrength, setImg2imgStrength]   = useState(0.65)
   const [autoBaseDims, setAutoBaseDims]         = useState<{ w: number; h: number } | null>(null)
+
+  // Derived upscale param sent to the API
+  const upscaleParam = !upscaleEnabled ? 'none'
+    : upscaleMethod === 'flux'   ? (upscaleScale === 2 ? '2k'        : '4k')
+    : upscaleMethod === 'esrgan' ? (upscaleScale === 2 ? '2k-esrgan' : '4k-esrgan')
+    : 'combo'
 
   // Auto-detect aspect ratio from first active ref when img2img is on
   const firstRefId  = img2img ? (activeRefImages[0]?.id  ?? '') : ''
@@ -3310,15 +3324,19 @@ function CustomFluxPanel({
       width, height, steps, guidance,
       seed: seed === -1 ? null : seed,
       // Post-processing (RunPod only)
-      refine:             mode === 'runpod' ? refine     : false,
+      refine:             mode === 'runpod' ? refine         : false,
       refine_strength:    refineStrength,
-      upscale:            mode === 'runpod' ? upscale    : 'none',
-      upscale_strength:   upscaleStrength,
-      adetailer:          mode === 'runpod' ? adetailer  : false,
+      upscale:            mode === 'runpod' ? upscaleParam   : 'none',
+      upscale_strength:   fluxTileStrength,
+      esrgan_model:       esrganModel,
+      combo_order:        comboOrder,
+      adetailer:          mode === 'runpod' ? adetailer      : false,
       adetailer_strength: adetailerStrength,
+      gfpgan:             mode === 'runpod' ? gfpgan         : false,
+      gfpgan_weight:      gfpganWeight,
       ip_adapter_images:  [] as string[],  // filled below
       ip_adapter_scale:   ipScale,
-      img2img_image:      '',             // filled below
+      img2img_image:      '',              // filled below
       img2img_strength:   img2imgStrength,
     }
 
@@ -3475,7 +3493,7 @@ function CustomFluxPanel({
           <div className="rounded-xl border border-white/[0.08] bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2.5">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-mono text-cyan-400/60 uppercase tracking-widest">Config</span>
-              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setRefineStrength(0.3); setUpscaleStrength(0.3); setAdetailerStrength(0.35); setIpScale(0.6) }}
+              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setRefineStrength(0.3); setFluxTileStrength(0.3); setAdetailerStrength(0.35); setIpScale(0.6); setGfpganWeight(0.8) }}
                 className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
             </div>
             {[
@@ -3511,15 +3529,6 @@ function CustomFluxPanel({
                 <span className="text-[11px] font-mono text-emerald-300 tabular-nums text-right">{refineStrength.toFixed(2)}</span>
               </div>
             )}
-            {mode === 'runpod' && (upscale === '2k' || upscale === '4k') && (
-              <div className={`grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 ${!refine ? 'border-t border-white/5 pt-2' : ''}`}>
-                <span className="text-[10px] font-mono text-violet-400/70">Tile str</span>
-                <input type="range" min={0.1} max={0.5} step={0.05} value={upscaleStrength}
-                  onChange={e => setUpscaleStrength(parseFloat(e.target.value))}
-                  className="w-full accent-violet-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{upscaleStrength.toFixed(2)}</span>
-              </div>
-            )}
             {mode === 'runpod' && adetailer && (
               <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
                 <span className="text-[10px] font-mono text-rose-400/70">Faces str</span>
@@ -3536,6 +3545,15 @@ function CustomFluxPanel({
                   onChange={e => setIpScale(parseFloat(e.target.value))}
                   className="w-full accent-teal-400 cursor-pointer h-0.5" />
                 <span className="text-[11px] font-mono text-teal-300 tabular-nums text-right">{ipScale.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && gfpgan && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
+                <span className="text-[10px] font-mono text-purple-400/70">GFPGAN wt</span>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={gfpganWeight}
+                  onChange={e => setGfpganWeight(parseFloat(e.target.value))}
+                  className="w-full accent-purple-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-purple-300 tabular-nums text-right">{gfpganWeight.toFixed(2)}</span>
               </div>
             )}
             {mode === 'runpod' && img2img && (
@@ -3616,6 +3634,124 @@ function CustomFluxPanel({
           </div>
         )}
 
+        {/* Upscaling configuration panel */}
+        {mode === 'runpod' && upscaleEnabled && (
+          <div className="rounded-xl border border-violet-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-3">
+            <span className="text-[10px] font-mono text-violet-400/60 uppercase tracking-widest">Upscaling</span>
+
+            {/* Method */}
+            <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
+              <span className="text-[10px] font-mono text-slate-500">Method</span>
+              <div className="flex gap-1 flex-wrap">
+                {([
+                  { val: 'flux'   as const, label: 'Flux Tiling',  desc: 'faithful diffusion detail' },
+                  { val: 'esrgan' as const, label: 'ESRGAN',        desc: 'fast GAN texture' },
+                  { val: 'combo'  as const, label: 'Combo',         desc: 'both in sequence' },
+                ]).map(({ val, label }) => (
+                  <button key={val} onClick={() => setUpscaleMethod(val)}
+                    className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                      upscaleMethod === val
+                        ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scale (hidden for combo — always 2×+2×=4× effective) */}
+            {upscaleMethod !== 'combo' && (
+              <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Scale</span>
+                <div className="flex gap-1">
+                  {([2, 4] as const).map(s => (
+                    <button key={s} onClick={() => setUpscaleScale(s)}
+                      className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                        upscaleScale === s
+                          ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                          : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                      }`}>
+                      {s}×
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ESRGAN model (ESRGAN or Combo) */}
+            {(upscaleMethod === 'esrgan' || upscaleMethod === 'combo') && (
+              <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Model</span>
+                <div className="flex gap-1">
+                  <button onClick={() => setEsrganModel('ultrasharp')}
+                    className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                      esrganModel === 'ultrasharp'
+                        ? 'bg-amber-500/20 border-amber-500/40 text-amber-200'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                    }`}>
+                    4x-UltraSharp
+                  </button>
+                  <button onClick={() => setEsrganModel('x4plus')}
+                    className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                      esrganModel === 'x4plus'
+                        ? 'bg-amber-500/20 border-amber-500/40 text-amber-200'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                    }`}>
+                    RealESRGAN
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Combo order */}
+            {upscaleMethod === 'combo' && (
+              <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Order</span>
+                <div className="flex gap-1">
+                  <button onClick={() => setComboOrder('flux-first')}
+                    className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                      comboOrder === 'flux-first'
+                        ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                    }`}>
+                    Flux → ESRGAN
+                  </button>
+                  <button onClick={() => setComboOrder('esrgan-first')}
+                    className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                      comboOrder === 'esrgan-first'
+                        ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                    }`}>
+                    ESRGAN → Flux
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Flux tile strength (Flux or Combo) */}
+            {(upscaleMethod === 'flux' || upscaleMethod === 'combo') && (
+              <div className="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
+                <span className="text-[10px] font-mono text-violet-400/70">Tile str</span>
+                <input type="range" min={0.1} max={0.5} step={0.05} value={fluxTileStrength}
+                  onChange={e => setFluxTileStrength(parseFloat(e.target.value))}
+                  className="w-full accent-violet-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{fluxTileStrength.toFixed(2)}</span>
+              </div>
+            )}
+
+            {/* Informational footer */}
+            <p className="text-[10px] text-slate-600 border-t border-white/5 pt-2">
+              {upscaleMethod === 'combo'
+                ? `Flux 2× tiling → ESRGAN 2× (${esrganModel === 'ultrasharp' ? '4x-UltraSharp' : 'RealESRGAN'}) = effective 4× — faithful structure + GAN texture`
+                : upscaleMethod === 'flux'
+                ? `Flux diffusion tiling ${upscaleScale}× — accurate, prompt-guided detail, slower`
+                : `${esrganModel === 'ultrasharp' ? '4x-UltraSharp' : 'RealESRGAN'} ${upscaleScale}× — fast, adds high-freq texture, no diffusion`
+              }
+            </p>
+          </div>
+        )}
+
         {/* IP-Adapter: shows which active refs will be used — no separate upload */}
         {mode === 'runpod' && ipAdapter && (
           <div className="rounded-xl border border-teal-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
@@ -3650,14 +3786,16 @@ function CustomFluxPanel({
               <span className="text-[10px] text-slate-600">first active ref · activate in the Refs panel above</span>
             </div>
             {activeRefImages.length > 0 ? (() => {
-              const upscaleFactor = upscale === '2k' || upscale === '2k-esrgan' ? 2
-                                  : upscale === '4k' || upscale === '4k-esrgan' ? 4 : 1
+              const upscaleFactor = !upscaleEnabled ? 1
+                : upscaleMethod === 'combo' ? 4 : upscaleScale
               const baseW = autoBaseDims?.w ?? width
               const baseH = autoBaseDims?.h ?? height
               const finalW = baseW * upscaleFactor
               const finalH = baseH * upscaleFactor
-              const upscaleLabel = upscale === '2k' ? '2K Flux' : upscale === '4k' ? '4K Flux'
-                                 : upscale === '2k-esrgan' ? '2K+ ESRGAN' : upscale === '4k-esrgan' ? '4K+ ESRGAN' : null
+              const upscaleLabel = !upscaleEnabled ? null
+                : upscaleMethod === 'flux'   ? `${upscaleScale}× Flux Tiling`
+                : upscaleMethod === 'esrgan' ? `${upscaleScale}× ${esrganModel === 'ultrasharp' ? 'UltraSharp' : 'RealESRGAN'}`
+                : `4× Combo (${comboOrder === 'flux-first' ? 'Flux→ESRGAN' : 'ESRGAN→Flux'})`
               return (
                 <div className="flex items-start gap-3 flex-wrap">
                   {/* Thumbnail at natural aspect ratio */}
@@ -3815,6 +3953,16 @@ function CustomFluxPanel({
                   }`}>
                   Faces
                 </button>
+                {/* GFPGAN face restoration toggle */}
+                <button onClick={() => setGfpgan(v => !v)}
+                  title="GFPGAN v1.4 — restore realistic skin pores and micro-texture to faces"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    gfpgan
+                      ? 'bg-purple-500/15 border-purple-500/40 text-purple-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  GFPGAN
+                </button>
                 {/* IP-Adapter toggle */}
                 <button onClick={() => setIpAdapter(v => !v)}
                   title="Use reference images to guide style and appearance (IP-Adapter)"
@@ -3835,25 +3983,16 @@ function CustomFluxPanel({
                   }`}>
                   i2i
                 </button>
-                {/* Quality / upscale selector */}
-                <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">
-                  {([
-                    { val: 'none',      label: 'Base', title: 'No upscale',                   color: 'violet' },
-                    { val: '2k',        label: '2K',   title: '2× Flux tiled upscale (~2 min)', color: 'violet' },
-                    { val: '4k',        label: '4K',   title: '4× Flux tiled upscale (~8 min)', color: 'violet' },
-                    { val: '2k-esrgan', label: '2K+',  title: '2× Real-ESRGAN (sharp texture)', color: 'amber'  },
-                    { val: '4k-esrgan', label: '4K+',  title: '4× Real-ESRGAN (sharp texture)', color: 'amber'  },
-                  ] as const).map(({ val, label, title, color }) => (
-                    <button key={val} onClick={() => setUpscale(val)} title={title}
-                      className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        upscale === val
-                          ? color === 'amber' ? 'bg-amber-500/20 text-amber-200' : 'bg-violet-500/20 text-violet-200'
-                          : 'text-slate-500 hover:text-slate-300'
-                      }`}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {/* Upscaling toggle */}
+                <button onClick={() => setUpscaleEnabled(v => !v)}
+                  title="Configure upscaling pipeline"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    upscaleEnabled
+                      ? 'bg-violet-500/15 border-violet-500/40 text-violet-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  Upscale
+                </button>
               </>
             )}
 

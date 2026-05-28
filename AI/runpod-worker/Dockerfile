@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install worker deps
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
-    realesrgan opencv-python-headless ultralytics huggingface_hub
+    realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan
 
 # Download Real-ESRGAN model weights
 RUN mkdir -p /workspace/models/esrgan && \
@@ -26,10 +26,21 @@ RUN mkdir -p /workspace/models/esrgan && \
     wget -q -O /workspace/models/esrgan/RealESRGAN_x2plus.pth \
         https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
 
+# Download 4x-UltraSharp ESRGAN model (better portrait/skin texture than stock RealESRGAN)
+# Falls back to runtime download via huggingface_hub if this URL changes
+RUN wget -q -O /workspace/models/esrgan/4x-UltraSharp.pth \
+        https://huggingface.co/Kim2091/4x-UltraSharp/resolve/main/4x-UltraSharp.pth \
+    || echo "[build] 4x-UltraSharp download failed — will retry at runtime"
+
 # Download ADetailer face detection model (same model used by A1111 ADetailer extension)
 RUN mkdir -p /workspace/models/adetailer && \
     wget -q -O /workspace/models/adetailer/face_yolov8n.pt \
         https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt
+
+# Download GFPGAN v1.4 face restoration model
+RUN mkdir -p /workspace/models/gfpgan && \
+    wget -q -O /workspace/models/gfpgan/GFPGANv1.4.pth \
+        https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth
 
 # IP-Adapter weights + CLIP vision encoder are downloaded at first use inside
 # handler.py and cached in MODELS_DIR — keeping them out of the image avoids

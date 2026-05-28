@@ -34,10 +34,11 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-27-v14'
+HANDLER_VERSION = '2026-05-27-v15'
 
-_PIPE_CACHE: dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
-_YOLO_CACHE: dict = {}   # model_path → YOLO instance
+_PIPE_CACHE:   dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
+_YOLO_CACHE:  dict = {}   # model_path → YOLO instance
+_GFPGAN_CACHE: dict = {}   # model_path → GFPGANer instance
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
@@ -438,16 +439,16 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
     return output
 
 
-def _esrgan_upscale(image_pil, scale: int, logs: list):
+def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
     """
-    Real-ESRGAN upscale. Uses dedicated GAN super-resolution model which adds
-    genuine high-frequency texture (pores, fabric, hair) unlike diffusion upscalers.
-    scale=2 uses RealESRGAN_x2plus; scale=4 uses RealESRGAN_x4plus.
+    ESRGAN upscale.
+    model_name: 'x4plus' | 'x2plus' | 'ultrasharp'
+    outscale:   target output scale factor (can differ from model's native scale)
     """
     import sys, types
 
     # basicsr imports torchvision.transforms.functional_tensor which was removed
-    # in torchvision>=0.15 (RunPod ships torchvision 0.19). Create a compat shim.
+    # in torchvision>=0.15.  Create a compat shim.
     try:
         import torchvision.transforms.functional_tensor  # noqa: F401
     except ModuleNotFoundError:
@@ -463,29 +464,84 @@ def _esrgan_upscale(image_pil, scale: int, logs: list):
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from realesrgan import RealESRGANer
 
-    model_path = f'/workspace/models/esrgan/RealESRGAN_x{scale}plus.pth'
-    logs.append(f'[esrgan] Starting {scale}× upscale with {model_path}')
+    if model_name == 'ultrasharp':
+        model_path  = '/workspace/models/esrgan/4x-UltraSharp.pth'
+        model_scale = 4
+        # Download at runtime if Dockerfile wget failed
+        if not os.path.exists(model_path):
+            logs.append('[esrgan] Downloading 4x-UltraSharp (first use)...')
+            from huggingface_hub import hf_hub_download as _hf_dl
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            _hf_dl('Kim2091/4x-UltraSharp', '4x-UltraSharp.pth',
+                   local_dir=os.path.dirname(model_path))
+            logs.append('[esrgan] 4x-UltraSharp cached.')
+    elif model_name == 'x2plus':
+        model_path  = '/workspace/models/esrgan/RealESRGAN_x2plus.pth'
+        model_scale = 2
+    else:  # x4plus (default)
+        model_path  = '/workspace/models/esrgan/RealESRGAN_x4plus.pth'
+        model_scale = 4
 
-    num_block = 23
+    logs.append(f'[esrgan] {outscale}× upscale ({model_name})...')
+
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
-                    num_block=num_block, num_grow_ch=32, scale=scale)
-
+                    num_block=23, num_grow_ch=32, scale=model_scale)
     upsampler = RealESRGANer(
-        scale=scale,
-        model_path=model_path,
-        model=model,
-        tile=512,
-        tile_pad=32,
-        pre_pad=0,
-        half=True,
+        scale=model_scale, model_path=model_path, model=model,
+        tile=512, tile_pad=32, pre_pad=0, half=True,
     )
 
     img_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-    output_bgr, _ = upsampler.enhance(img_bgr, outscale=scale)
-    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
-    result = Image.fromarray(output_rgb)
-    logs.append(f'[esrgan] Done — output {result.width}×{result.height}')
+    output_bgr, _ = upsampler.enhance(img_bgr, outscale=outscale)
+    result = Image.fromarray(cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB))
+    logs.append(f'[esrgan] Done — {result.width}×{result.height}')
     return result
+
+
+def _gfpgan_restore(image_pil, weight: float, logs: list):
+    """
+    GFPGAN v1.4 face restoration — adds realistic skin pores, fine texture,
+    and micro-detail that diffusion models typically smooth away.
+    weight: blend factor between original (0) and fully restored (1).
+    """
+    import numpy as np
+    import cv2
+    from PIL import Image
+
+    global _GFPGAN_CACHE
+    MODEL_PATH = '/workspace/models/gfpgan/GFPGANv1.4.pth'
+
+    if MODEL_PATH not in _GFPGAN_CACHE:
+        logs.append('[gfpgan] Loading GFPGANv1.4 (first use on this worker)...')
+        from gfpgan import GFPGANer
+        _GFPGAN_CACHE[MODEL_PATH] = GFPGANer(
+            model_path=MODEL_PATH,
+            upscale=1,           # we handle upscaling separately
+            arch='clean',
+            channel_multiplier=2,
+            bg_upsampler=None,
+        )
+
+    restorer = _GFPGAN_CACHE[MODEL_PATH]
+    img_bgr  = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+
+    try:
+        _, _, restored_bgr = restorer.enhance(
+            img_bgr, has_aligned=False, only_center_face=False, paste_back=True
+        )
+    except Exception as _ge:
+        logs.append(f'[gfpgan] Warning: restore failed ({_ge}). Returning original.')
+        return image_pil
+
+    if restored_bgr is None:
+        logs.append('[gfpgan] No faces detected — skipping.')
+        return image_pil
+
+    restored_pil = Image.fromarray(cv2.cvtColor(restored_bgr, cv2.COLOR_BGR2RGB))
+    if weight < 1.0:
+        restored_pil = Image.blend(image_pil.resize(restored_pil.size), restored_pil, weight)
+    logs.append(f'[gfpgan] Done (weight={weight:.2f}) — {restored_pil.width}×{restored_pil.height}')
+    return restored_pil
 
 
 def _tiled_img2img(pipe_i2i, image_pil, prompt: str, upscale_factor: int,
@@ -604,22 +660,28 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # Post-processing options
     refine          = bool(inp.get('refine', False))
     refine_strength = float(inp.get('refine_strength', 0.3))
-    upscale          = inp.get('upscale', 'none')   # 'none' | '2k' | '4k' | '2k-esrgan' | '4k-esrgan'
+    upscale          = inp.get('upscale', 'none')
     upscale_strength = float(inp.get('upscale_strength', 0.3))
     _up              = str(upscale).lower()
     upscale_factor   = {'2k': 2, '4k': 4}.get(_up, 0)
     esrgan_factor    = {'2k-esrgan': 2, '4k-esrgan': 4}.get(_up, 0)
+    do_combo         = (_up == 'combo')
+    esrgan_model     = inp.get('esrgan_model', 'x4plus')   # 'x4plus' | 'x2plus' | 'ultrasharp'
+    combo_order      = inp.get('combo_order', 'flux-first') # 'flux-first' | 'esrgan-first'
     # ADetailer
     adetailer          = bool(inp.get('adetailer', False))
     adetailer_strength = float(inp.get('adetailer_strength', 0.35))
+    # GFPGAN face restoration
+    gfpgan_enabled = bool(inp.get('gfpgan', False))
+    gfpgan_weight  = float(inp.get('gfpgan_weight', 0.8))
     # IP-Adapter
     ip_image_keys = inp.get('ip_adapter_images', [])   # list of base64 data URLs or R2 keys
     ip_scale      = float(inp.get('ip_adapter_scale', 0.6))
     # img2img from reference image
     img2img_image_b64 = inp.get('img2img_image', '')
     img2img_strength  = float(inp.get('img2img_strength', 0.65))
-    # Unconditional debug — always visible in logs to confirm payload arrived
-    print(f'[debug] ip_images_count={len(ip_image_keys)} ip_scale={ip_scale} adetailer={adetailer} img2img={bool(img2img_image_b64)}', flush=True)
+    # Unconditional debug
+    print(f'[debug] upscale={upscale} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)}', flush=True)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
@@ -869,9 +931,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 logs.append(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}')
             _flush_logs(r2, bucket, job_id, logs)
 
-    # Load FluxImg2ImgPipeline for img2img/refine/Flux-tiled upscale/adetailer (shares weights — no extra VRAM)
+    # Load FluxImg2ImgPipeline for img2img/refine/tiled upscale/combo/adetailer (shares weights — no extra VRAM)
     pipe_i2i = None
-    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None:
+    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None or do_combo:
         try:
             from diffusers import FluxImg2ImgPipeline
             pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
@@ -989,33 +1051,51 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append('[inference] Refine done.')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 5b. Optional Flux tiled upscale
-        if upscale_factor > 0 and pipe_i2i is not None:
-            logs.append(f'[inference] Tiled {upscale_factor}× upscale — tile strength={upscale_strength}...')
-            _flush_logs(r2, bucket, job_id, logs)
-            image = _tiled_img2img(
-                pipe_i2i, image, prompt, upscale_factor,
-                upscale_strength, steps, guidance, seed, logs,
-            )
-            logs.append(f'[inference] Upscale done — final size {image.width}×{image.height}.')
+        # 5b. Upscaling (Flux tiling, ESRGAN, or Combo)
+        if do_combo and pipe_i2i is not None:
+            if combo_order == 'flux-first':
+                logs.append(f'[combo] Step 1/2 — Flux 2× tiling (strength={upscale_strength})...')
+                _flush_logs(r2, bucket, job_id, logs)
+                image = _tiled_img2img(pipe_i2i, image, prompt, 2, upscale_strength, steps, guidance, seed, logs)
+                logs.append('[combo] Step 2/2 — ESRGAN 2×...')
+                _flush_logs(r2, bucket, job_id, logs)
+                image = _esrgan_upscale(image, esrgan_model, 2, logs)
+            else:  # esrgan-first
+                logs.append('[combo] Step 1/2 — ESRGAN 2×...')
+                _flush_logs(r2, bucket, job_id, logs)
+                image = _esrgan_upscale(image, esrgan_model, 2, logs)
+                logs.append(f'[combo] Step 2/2 — Flux 2× tiling (strength={upscale_strength})...')
+                _flush_logs(r2, bucket, job_id, logs)
+                image = _tiled_img2img(pipe_i2i, image, prompt, 2, upscale_strength, steps, guidance, seed, logs)
+            logs.append(f'[combo] Done — {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 6c. Optional Real-ESRGAN upscale
-        if esrgan_factor > 0:
-            logs.append(f'[inference] Real-ESRGAN {esrgan_factor}× upscale...')
+        elif upscale_factor > 0 and pipe_i2i is not None:
+            logs.append(f'[inference] Flux tiled {upscale_factor}× (strength={upscale_strength})...')
             _flush_logs(r2, bucket, job_id, logs)
-            image = _esrgan_upscale(image, esrgan_factor, logs)
-            logs.append(f'[inference] ESRGAN done — final size {image.width}×{image.height}.')
+            image = _tiled_img2img(pipe_i2i, image, prompt, upscale_factor, upscale_strength, steps, guidance, seed, logs)
+            logs.append(f'[inference] Tiling done — {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 6d. Optional ADetailer face fix (runs last so it operates on the final image)
+        elif esrgan_factor > 0:
+            logs.append(f'[inference] ESRGAN {esrgan_factor}× ({esrgan_model})...')
+            _flush_logs(r2, bucket, job_id, logs)
+            image = _esrgan_upscale(image, esrgan_model, esrgan_factor, logs)
+            logs.append(f'[inference] ESRGAN done — {image.width}×{image.height}')
+            _flush_logs(r2, bucket, job_id, logs)
+
+        # 6d. Optional ADetailer face fix
         if adetailer and pipe_i2i is not None:
-            logs.append(f'[inference] ADetailer face fix — strength={adetailer_strength}...')
+            logs.append(f'[inference] ADetailer — strength={adetailer_strength}...')
             _flush_logs(r2, bucket, job_id, logs)
-            image = _adetailer_fix_faces(
-                pipe_i2i, image, prompt, adetailer_strength,
-                steps, guidance, seed, logs,
-            )
+            image = _adetailer_fix_faces(pipe_i2i, image, prompt, adetailer_strength, steps, guidance, seed, logs)
+            _flush_logs(r2, bucket, job_id, logs)
+
+        # 6e. Optional GFPGAN face restoration (runs after ADetailer for best results)
+        if gfpgan_enabled:
+            logs.append(f'[inference] GFPGAN restoration (weight={gfpgan_weight:.2f})...')
+            _flush_logs(r2, bucket, job_id, logs)
+            image = _gfpgan_restore(image, gfpgan_weight, logs)
             _flush_logs(r2, bucket, job_id, logs)
 
         # 7. Upload result

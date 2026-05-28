@@ -166,6 +166,10 @@ export async function POST(req: Request) {
     ip_adapter_scale?: number
     img2img_image?: string
     img2img_strength?: number
+    esrgan_model?: string
+    combo_order?: string
+    gfpgan?: boolean
+    gfpgan_weight?: number
   }
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
@@ -197,6 +201,10 @@ export async function POST(req: Request) {
       ip_adapter_scale:  body.ip_adapter_scale  ?? 0.6,
       img2img_image:     body.img2img_image     ?? '',
       img2img_strength:  body.img2img_strength  ?? 0.65,
+      esrgan_model:      body.esrgan_model      ?? 'x4plus',
+      combo_order:       body.combo_order       ?? 'flux-first',
+      gfpgan:            body.gfpgan            ?? false,
+      gfpgan_weight:     body.gfpgan_weight     ?? 0.8,
     }
 
     const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {
