@@ -3164,6 +3164,8 @@ function CustomFluxPanel({
   const [adetailerStrength, setAdetailerStrength] = useState(0.35)
   const [ipAdapter, setIpAdapter]               = useState(false)
   const [ipScale, setIpScale]                   = useState(0.6)
+  const [img2img, setImg2img]                   = useState(false)
+  const [img2imgStrength, setImg2imgStrength]   = useState(0.65)
 
   // Available models
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([])
@@ -3287,6 +3289,33 @@ function CustomFluxPanel({
       adetailer_strength: adetailerStrength,
       ip_adapter_images:  [] as string[],  // filled below
       ip_adapter_scale:   ipScale,
+      img2img_image:      '',             // filled below
+      img2img_strength:   img2imgStrength,
+    }
+
+    // img2img source: encode first active ref at 1024px (higher than IP-Adapter needs for structure preservation)
+    if (mode === 'runpod' && img2img && activeRefImages.length > 0) {
+      try {
+        const ref = activeRefImages[0]
+        let encoded: string
+        if (ref.file) {
+          encoded = await compressFileToDataUrl(ref.file, 1024, 0.92)
+        } else if (ref.url.startsWith('data:')) {
+          const r = await fetch(ref.url)
+          encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
+        } else {
+          const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(ref.url)}`
+          const r = await fetch(proxyUrl)
+          if (!r.ok) throw new Error(`Failed to load ref image (${r.status})`)
+          encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
+        }
+        body.img2img_image = encoded
+        console.log('[img2img] encoded source image, size:', `${Math.round(encoded.length / 1024)}KB`)
+      } catch (e) {
+        setError(`img2img: failed to encode source image — ${String(e)}`)
+        setGenerating(false)
+        return
+      }
     }
 
     // Convert active ref images to base64 (max 512px — keeps payload small for RunPod)
@@ -3477,6 +3506,15 @@ function CustomFluxPanel({
                 <span className="text-[11px] font-mono text-teal-300 tabular-nums text-right">{ipScale.toFixed(2)}</span>
               </div>
             )}
+            {mode === 'runpod' && img2img && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
+                <span className="text-[10px] font-mono text-indigo-400/70">i2i str</span>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={img2imgStrength}
+                  onChange={e => setImg2imgStrength(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-indigo-300 tabular-nums text-right">{img2imgStrength.toFixed(2)}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -3568,6 +3606,31 @@ function CustomFluxPanel({
               </div>
             ) : (
               <p className="text-[11px] text-slate-600 italic">No active reference images — activate some in the Refs panel to use IP-Adapter</p>
+            )}
+          </div>
+        )}
+
+        {/* img2img: shows which ref will be used as the starting image */}
+        {mode === 'runpod' && img2img && (
+          <div className="rounded-xl border border-indigo-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-indigo-400/60 uppercase tracking-widest">img2img Source</span>
+              <span className="text-[10px] text-slate-600">first active ref · activate in the Refs panel above</span>
+            </div>
+            {activeRefImages.length > 0 ? (
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="relative w-14 h-14 rounded-md overflow-hidden border border-indigo-500/30">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={activeRefImages[0].url} alt="" className="w-full h-full object-cover" />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-slate-400">Diffusion starts from this image</span>
+                  <span className="text-[10px] text-slate-600">Strength {img2imgStrength.toFixed(2)} — lower preserves more of the original</span>
+                  {ipAdapter && <span className="text-[10px] text-teal-400/70">+ IP-Adapter appearance guidance active</span>}
+                </div>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-600 italic">No active reference images — activate one in the Refs panel to use as the img2img source</p>
             )}
           </div>
         )}
@@ -3708,6 +3771,16 @@ function CustomFluxPanel({
                       : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
                   }`}>
                   IP
+                </button>
+                {/* img2img toggle */}
+                <button onClick={() => setImg2img(v => !v)}
+                  title="Start diffusion from your reference image instead of noise (img2img)"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    img2img
+                      ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  i2i
                 </button>
                 {/* Quality / upscale selector */}
                 <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">

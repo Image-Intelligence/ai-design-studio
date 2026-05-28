@@ -34,7 +34,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-27-v13'
+HANDLER_VERSION = '2026-05-27-v14'
 
 _PIPE_CACHE: dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 _YOLO_CACHE: dict = {}   # model_path → YOLO instance
@@ -615,12 +615,30 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # IP-Adapter
     ip_image_keys = inp.get('ip_adapter_images', [])   # list of base64 data URLs or R2 keys
     ip_scale      = float(inp.get('ip_adapter_scale', 0.6))
+    # img2img from reference image
+    img2img_image_b64 = inp.get('img2img_image', '')
+    img2img_strength  = float(inp.get('img2img_strength', 0.65))
     # Unconditional debug — always visible in logs to confirm payload arrived
-    print(f'[debug] ip_images_count={len(ip_image_keys)} ip_scale={ip_scale} adetailer={adetailer}', flush=True)
+    print(f'[debug] ip_images_count={len(ip_image_keys)} ip_scale={ip_scale} adetailer={adetailer} img2img={bool(img2img_image_b64)}', flush=True)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
     _flush_logs(r2, bucket, job_id, logs)
+
+    # Decode img2img source image if provided
+    img2img_pil = None
+    if img2img_image_b64 and str(img2img_image_b64).startswith('data:image/'):
+        try:
+            from PIL import Image as _PIL_i2i
+            from io import BytesIO as _BIO_i2i
+            import base64 as _b64_i2i
+            _b64_data_i2i = img2img_image_b64.split(',', 1)[1]
+            img2img_pil = _PIL_i2i.open(_BIO_i2i(_b64_i2i.b64decode(_b64_data_i2i))).convert('RGB')
+            img2img_pil = img2img_pil.resize((width, height), _PIL_i2i.LANCZOS)
+            logs.append(f'[img2img] Source image decoded and resized to {width}×{height}.')
+        except Exception as _i2i_dec_err:
+            logs.append(f'[img2img] Warning: failed to decode source image ({_i2i_dec_err}). Falling back to text2img.')
+            img2img_pil = None
 
     # 1. Checkpoint — cached by filename so warm workers skip the download
     ckpt_filename = ckpt_key.split('/')[-1]
@@ -851,9 +869,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 logs.append(f'[inference] LoRA {i+1} first skipped key: {_first_skipped}')
             _flush_logs(r2, bucket, job_id, logs)
 
-    # Load FluxImg2ImgPipeline for refine/Flux-tiled upscale/adetailer (shares weights — no extra VRAM)
+    # Load FluxImg2ImgPipeline for img2img/refine/Flux-tiled upscale/adetailer (shares weights — no extra VRAM)
     pipe_i2i = None
-    if refine or upscale_factor > 0 or adetailer:
+    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None:
         try:
             from diffusers import FluxImg2ImgPipeline
             pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
@@ -918,6 +936,8 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                     image_encoder_pretrained_model_name_or_path=CLIP_PATH,
                 )
                 pipe.set_ip_adapter_scale(ip_scale)
+                if pipe_i2i is not None:
+                    pipe_i2i.set_ip_adapter_scale(ip_scale)
                 ip_ref_image      = _ref_imgs[0] if len(_ref_imgs) == 1 else _ref_imgs
                 ip_adapter_loaded = True
                 logs.append('[ip_adapter] Ready.')
@@ -928,17 +948,27 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
     _inf_error: Exception | None = None
     try:
-        # 6. Base generation
-        logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
-        _flush_logs(r2, bucket, job_id, logs)
+        # 6. Base generation (img2img or text2img)
         gen = torch.Generator('cuda').manual_seed(int(seed)) if seed is not None else None
-        _pipe_kwargs: dict = dict(prompt=prompt, width=width, height=height,
-                                  num_inference_steps=steps, guidance_scale=guidance, generator=gen)
-        if ip_ref_image is not None:
-            _pipe_kwargs['ip_adapter_image'] = ip_ref_image
-        result = pipe(**_pipe_kwargs)
-        image = result.images[0]
-        logs.append('[inference] Base generation done.')
+        if img2img_pil is not None and pipe_i2i is not None:
+            logs.append(f'[img2img] Starting from reference image — strength={img2img_strength} ({steps} steps)...')
+            _flush_logs(r2, bucket, job_id, logs)
+            _base_kwargs: dict = dict(prompt=prompt, image=img2img_pil,
+                                      strength=img2img_strength, num_inference_steps=steps,
+                                      guidance_scale=guidance, generator=gen)
+            if ip_ref_image is not None:
+                _base_kwargs['ip_adapter_image'] = ip_ref_image
+            image = pipe_i2i(**_base_kwargs).images[0]
+            logs.append(f'[img2img] Done — {image.width}×{image.height}.')
+        else:
+            logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
+            _flush_logs(r2, bucket, job_id, logs)
+            _pipe_kwargs: dict = dict(prompt=prompt, width=width, height=height,
+                                      num_inference_steps=steps, guidance_scale=guidance, generator=gen)
+            if ip_ref_image is not None:
+                _pipe_kwargs['ip_adapter_image'] = ip_ref_image
+            image = pipe(**_pipe_kwargs).images[0]
+            logs.append('[inference] Base generation done.')
         _flush_logs(r2, bucket, job_id, logs)
 
         # 5a. Optional refine pass (img2img at same resolution, low denoise)
