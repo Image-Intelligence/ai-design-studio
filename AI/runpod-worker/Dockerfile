@@ -26,11 +26,8 @@ RUN mkdir -p /workspace/models/esrgan && \
     wget -q -O /workspace/models/esrgan/RealESRGAN_x2plus.pth \
         https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
 
-# Download 4x-UltraSharp ESRGAN model (better portrait/skin texture than stock RealESRGAN)
-# Falls back to runtime download via huggingface_hub if this URL changes
-RUN wget -q -O /workspace/models/esrgan/4x-UltraSharp.pth \
-        https://huggingface.co/Kim2091/4x-UltraSharp/resolve/main/4x-UltraSharp.pth \
-    || echo "[build] 4x-UltraSharp download failed — will retry at runtime"
+# 4x-UltraSharp is downloaded at runtime from the user's R2 bucket
+# (training/models/esrgan/4x-UltraSharp.pth) — the HuggingFace repo is private.
 
 # Download ADetailer face detection model (same model used by A1111 ADetailer extension)
 RUN mkdir -p /workspace/models/adetailer && \

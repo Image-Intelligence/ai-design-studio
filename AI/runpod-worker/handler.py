@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v20'
+HANDLER_VERSION = '2026-05-28-v21'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -472,18 +472,7 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
     if model_name == 'ultrasharp':
         model_path  = '/workspace/models/esrgan/4x-UltraSharp.pth'
         model_scale = 4
-        # Dockerfile wget can silently produce a corrupted/HTML file on failure.
-        # Treat anything under 10 MB as invalid and redownload.
-        _valid = os.path.exists(model_path) and os.path.getsize(model_path) > 10_000_000
-        if not _valid:
-            logs.append('[esrgan] Downloading 4x-UltraSharp (missing or invalid file)...')
-            from huggingface_hub import hf_hub_download as _hf_dl
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            if os.path.exists(model_path):
-                os.remove(model_path)
-            _hf_dl('Kim2091/4x-UltraSharp', '4x-UltraSharp.pth',
-                   local_dir=os.path.dirname(model_path))
-            logs.append('[esrgan] 4x-UltraSharp cached.')
+        # File is pre-fetched from R2 by _handle_inference before this call
     elif model_name == 'x2plus':
         model_path  = '/workspace/models/esrgan/RealESRGAN_x2plus.pth'
         model_scale = 2
@@ -1075,7 +1064,24 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append('[inference] Refine done.')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 5b. Upscaling (Flux tiling, ESRGAN, or Combo)
+        # 5b. Pre-fetch UltraSharp from R2 if it will be used and isn't cached locally.
+        # HuggingFace repo Kim2091/4x-UltraSharp is private — R2 is the reliable source.
+        if esrgan_model == 'ultrasharp' and (do_combo or esrgan_factor > 0):
+            _us_local = '/workspace/models/esrgan/4x-UltraSharp.pth'
+            if not os.path.exists(_us_local) or os.path.getsize(_us_local) < 10_000_000:
+                _us_r2_key = 'training/models/esrgan/4x-UltraSharp.pth'
+                logs.append(f'[esrgan] 4x-UltraSharp not cached — downloading from R2 ({_us_r2_key})...')
+                _flush_logs(r2, bucket, job_id, logs)
+                os.makedirs(os.path.dirname(_us_local), exist_ok=True)
+                if not _download(r2, _us_r2_key, _us_local, '4x-UltraSharp', logs):
+                    raise RuntimeError(
+                        '4x-UltraSharp model not found in R2. '
+                        f'Upload the file to your R2 bucket at: {_us_r2_key}'
+                    )
+                logs.append('[esrgan] 4x-UltraSharp cached locally.')
+                _flush_logs(r2, bucket, job_id, logs)
+
+        # 5c. Upscaling (Flux tiling, ESRGAN, or Combo)
         if do_combo and pipe_i2i is not None:
             if combo_order == 'flux-first':
                 logs.append(f'[combo] Step 1/2 — Flux 2× tiling (strength={upscale_strength})...')
