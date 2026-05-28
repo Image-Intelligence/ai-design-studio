@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-27-v17'
+HANDLER_VERSION = '2026-05-28-v18'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -696,13 +696,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     img2img_pil = None
     if img2img_image_b64 and str(img2img_image_b64).startswith('data:image/'):
         try:
-            from PIL import Image as _PIL_i2i
+            from PIL import Image as _PIL_i2i, ImageOps as _IOP_i2i
             from io import BytesIO as _BIO_i2i
             import base64 as _b64_i2i
             _b64_data_i2i = img2img_image_b64.split(',', 1)[1]
             img2img_pil = _PIL_i2i.open(_BIO_i2i(_b64_i2i.b64decode(_b64_data_i2i))).convert('RGB')
-            img2img_pil = img2img_pil.resize((width, height), _PIL_i2i.LANCZOS)
-            logs.append(f'[img2img] Source image decoded and resized to {width}×{height}.')
+            # ImageOps.fit scales proportionally then center-crops — no aspect ratio distortion
+            img2img_pil = _IOP_i2i.fit(img2img_pil, (width, height), _PIL_i2i.LANCZOS)
+            logs.append(f'[img2img] Source image decoded and fitted to {width}×{height} (center-crop, no stretch).')
         except Exception as _i2i_dec_err:
             logs.append(f'[img2img] Warning: failed to decode source image ({_i2i_dec_err}). Falling back to text2img.')
             img2img_pil = None
