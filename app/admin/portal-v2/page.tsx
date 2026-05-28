@@ -3291,18 +3291,24 @@ function CustomFluxPanel({
 
     // Convert active ref images to base64 so RunPod can decode them
     if (mode === 'runpod' && ipAdapter && activeRefImages.length > 0) {
-      body.ip_adapter_images = await Promise.all(
-        activeRefImages.slice(0, 3).map(ref =>
-          fetch(ref.url)
-            .then(r => r.blob())
-            .then(blob => new Promise<string>((resolve, reject) => {
-              const reader = new FileReader()
-              reader.onload  = () => resolve(reader.result as string)
-              reader.onerror = reject
-              reader.readAsDataURL(blob)
-            }))
+      try {
+        body.ip_adapter_images = await Promise.all(
+          activeRefImages.slice(0, 3).map(ref =>
+            fetch(ref.url)
+              .then(r => r.blob())
+              .then(blob => new Promise<string>((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onload  = () => resolve(reader.result as string)
+                reader.onerror = reject
+                reader.readAsDataURL(blob)
+              }))
+          )
         )
-      )
+      } catch (e) {
+        setError(`IP-Adapter: failed to encode reference image — ${String(e)}`)
+        setGenerating(false)
+        return
+      }
     }
 
     try {
