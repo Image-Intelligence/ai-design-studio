@@ -34,7 +34,7 @@ import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-27-v12'
+HANDLER_VERSION = '2026-05-27-v13'
 
 _PIPE_CACHE: dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 _YOLO_CACHE: dict = {}   # model_path → YOLO instance
@@ -613,8 +613,10 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     adetailer          = bool(inp.get('adetailer', False))
     adetailer_strength = float(inp.get('adetailer_strength', 0.35))
     # IP-Adapter
-    ip_image_keys = inp.get('ip_adapter_images', [])   # list of R2 keys
+    ip_image_keys = inp.get('ip_adapter_images', [])   # list of base64 data URLs or R2 keys
     ip_scale      = float(inp.get('ip_adapter_scale', 0.6))
+    # Unconditional debug — always visible in logs to confirm payload arrived
+    print(f'[debug] ip_images_count={len(ip_image_keys)} ip_scale={ip_scale} adetailer={adetailer}', flush=True)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')

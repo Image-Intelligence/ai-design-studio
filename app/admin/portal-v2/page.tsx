@@ -3289,21 +3289,26 @@ function CustomFluxPanel({
       ip_adapter_scale:   ipScale,
     }
 
-    // Convert active ref images to base64 so RunPod can decode them
+    // Convert active ref images to base64 (max 512px — keeps payload small for RunPod)
     if (mode === 'runpod' && ipAdapter && activeRefImages.length > 0) {
       try {
         body.ip_adapter_images = await Promise.all(
-          activeRefImages.slice(0, 3).map(ref =>
-            fetch(ref.url)
-              .then(r => r.blob())
-              .then(blob => new Promise<string>((resolve, reject) => {
-                const reader = new FileReader()
-                reader.onload  = () => resolve(reader.result as string)
-                reader.onerror = reject
-                reader.readAsDataURL(blob)
-              }))
-          )
+          activeRefImages.slice(0, 3).map(async ref => {
+            // Use File directly if available (avoids CORS, no network round-trip)
+            if (ref.file) return compressFileToDataUrl(ref.file, 512, 0.85)
+            // Data URL — re-encode at 512px
+            if (ref.url.startsWith('data:')) {
+              const r = await fetch(ref.url)
+              return compressBlobToDataUrl(await r.blob(), 512, 0.85)
+            }
+            // External / R2 URL — proxy to avoid CORS then compress
+            const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(ref.url)}`
+            const r = await fetch(proxyUrl)
+            if (!r.ok) throw new Error(`Failed to load ref image (${r.status})`)
+            return compressBlobToDataUrl(await r.blob(), 512, 0.85)
+          })
         )
+        console.log('[ip-adapter] encoded', body.ip_adapter_images.length, 'ref images, sizes:', body.ip_adapter_images.map(s => `${Math.round(s.length / 1024)}KB`))
       } catch (e) {
         setError(`IP-Adapter: failed to encode reference image — ${String(e)}`)
         setGenerating(false)
