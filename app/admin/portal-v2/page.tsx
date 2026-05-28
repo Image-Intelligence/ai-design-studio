@@ -2082,7 +2082,7 @@ function ImageDetailModal({
   const modelName = getModelDisplayName(image.model)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
-  const showSettings = !!(isUpscalerImage || image.aspectRatio || image.quality || modelConfig?.supportsQuality)
+  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality)
   const formattedDate = image.createdAt
     ? new Date(image.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : null
@@ -2223,6 +2223,65 @@ function ImageDetailModal({
                         </span>
                       )}
                       {!image.videoMetadata?.upscaleFactor && (
+                        <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
+                      )}
+                    </>
+                  ) : modelConfig?.isCustomFlux ? (
+                    <>
+                      {image.videoMetadata?.fluxWidth && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                          {String(image.videoMetadata.fluxWidth)}×{String(image.videoMetadata.fluxHeight)}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxSteps && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-300 text-[11px] font-mono">
+                          {String(image.videoMetadata.fluxSteps)} steps
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxGuidance && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-300 text-[11px] font-mono">
+                          cfg {String(image.videoMetadata.fluxGuidance)}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxUpscale && image.videoMetadata.fluxUpscale !== 'none' && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[11px] font-mono">
+                          {image.videoMetadata.fluxUpscale === 'combo'
+                            ? `combo ${image.videoMetadata.fluxComboOrder === 'flux-first' ? 'flux→esrgan' : 'esrgan→flux'}`
+                            : String(image.videoMetadata.fluxUpscale)}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxEsrganModel && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-300 text-[11px] font-mono">
+                          {String(image.videoMetadata.fluxEsrganModel)}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxRefine && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">refine</span>
+                      )}
+                      {image.videoMetadata?.fluxGfpgan && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">
+                          gfpgan {image.videoMetadata.fluxGfpganWeight ? Number(image.videoMetadata.fluxGfpganWeight).toFixed(1) : ''}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxAdetailer && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">adetailer</span>
+                      )}
+                      {image.videoMetadata?.fluxImg2img && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">
+                          i2i {image.videoMetadata.fluxImg2imgStr ? Number(image.videoMetadata.fluxImg2imgStr).toFixed(2) : ''}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxSeed && image.videoMetadata.fluxSeed !== 'random' && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-400 text-[11px] font-mono">
+                          seed {String(image.videoMetadata.fluxSeed)}
+                        </span>
+                      )}
+                      {image.videoMetadata?.fluxCheckpoint && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
+                          {String(image.videoMetadata.fluxCheckpoint)}
+                        </span>
+                      )}
+                      {!image.videoMetadata?.fluxWidth && (
                         <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
                       )}
                     </>
@@ -3148,7 +3207,7 @@ function CustomFluxPanel({
   activeRefImages = [],
 }: {
   onAddPending:      (slot: PendingSlot) => void
-  onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string) => void
+  onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[], videoMetadata?: Record<string, unknown>) => void
   onPrependImage:    (img: ImageItem) => void
   activeRefImages?:  RefImage[]
 }) {
@@ -3407,10 +3466,31 @@ function CustomFluxPanel({
       const data = await res.json() as { mode: string; job_id?: string; image_data_url?: string; error?: string; seed?: number }
       if (!res.ok || data.error) { setError(data.error ?? 'Generation failed'); setGenerating(false); return }
 
+      const ckptShort = checkpoint.split('/').pop()?.replace(/\.[^.]+$/, '') ?? checkpoint
+      const fluxMeta: Record<string, unknown> = {
+        fluxCheckpoint:   ckptShort,
+        fluxWidth:        reqWidth,
+        fluxHeight:       reqHeight,
+        fluxSteps:        steps,
+        fluxGuidance:     guidance,
+        fluxSeed:         seed === -1 ? 'random' : seed,
+        fluxUpscale:      upscaleParam,
+        fluxEsrganModel:  (upscaleParam.includes('esrgan') || upscaleParam === 'combo') ? esrganModel : undefined,
+        fluxComboOrder:   upscaleParam === 'combo' ? comboOrder : undefined,
+        fluxTileStrength: upscaleParam !== 'none' && !upscaleParam.endsWith('-esrgan') ? fluxTileStrength : undefined,
+        fluxRefine:       refine || undefined,
+        fluxAdetailer:    adetailer || undefined,
+        fluxGfpgan:       gfpgan || undefined,
+        fluxGfpganWeight: gfpgan ? gfpganWeight : undefined,
+        fluxImg2img:      img2img || undefined,
+        fluxImg2imgStr:   img2img ? img2imgStrength : undefined,
+        fluxLoras:        loras.filter(l => l.key).map(l => l.name || l.key.split('/').pop() || ''),
+      }
+
       if (data.mode === 'local' && data.image_data_url) {
         // Local: show inline and also add to session feed
         setResultUrl(data.image_data_url)
-        onPrependImage({ id: Date.now(), imageUrl: data.image_data_url, prompt: prompt.trim(), model: 'custom-flux-lora', createdAt: new Date().toISOString() })
+        onPrependImage({ id: Date.now(), imageUrl: data.image_data_url, prompt: prompt.trim(), model: 'custom-flux-lora', createdAt: new Date().toISOString(), videoMetadata: fluxMeta as Record<string, any> })
         setGenerating(false)
       } else if (data.mode === 'runpod' && data.job_id) {
         // RunPod: hand off to parent's polling → image appears in feed when done
@@ -3431,7 +3511,7 @@ function CustomFluxPanel({
           stored.unshift(slot)
           localStorage.setItem('pv2-pending-slots', JSON.stringify(stored))
         } catch {}
-        onStartNb2Polling(data.job_id, '', [slotId], prompt.trim(), 'png', '1:1', '/api/admin/flux-inference/nb2-status')
+        onStartNb2Polling(data.job_id, '', [slotId], prompt.trim(), 'png', `${reqWidth}x${reqHeight}`, '/api/admin/flux-inference/nb2-status', undefined, 0, [], fluxMeta)
         setGenerating(false)
         setStatus('')
       }
@@ -8605,6 +8685,7 @@ export default function PortalV2Page() {
     quality?: string,
     ticketCost: number = 0,
     referenceImageUrls: string[] = [],
+    videoMetadata?: Record<string, unknown>,
   ) => {
     if (nb2PollingIntervals.current[requestId]) return
     let pollCount = 0
@@ -8680,6 +8761,7 @@ export default function PortalV2Page() {
               aspectRatio,
               quality,
               referenceImageUrls: referenceImageUrls.length > 0 ? referenceImageUrls : undefined,
+              videoMetadata: videoMetadata as Record<string, any> | undefined,
             })
             // Save custom-flux-lora images to DB for cross-device persistence
             if (isFluxRunpod && img.r2Key) {
