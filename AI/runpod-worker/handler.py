@@ -30,11 +30,26 @@ import shutil
 import glob
 import tempfile
 
+import types
+
 import runpod
 import boto3
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-05-27-v16'
+# basicsr (used by realesrgan + gfpgan) imports torchvision.transforms.functional_tensor
+# which was removed in torchvision>=0.15. Install a compat shim at module load so it
+# applies regardless of whether ESRGAN or GFPGAN is the first feature to run.
+try:
+    import torchvision.transforms.functional_tensor  # noqa: F401
+except ModuleNotFoundError:
+    import torchvision.transforms.functional as _tvf
+    _compat = types.ModuleType('torchvision.transforms.functional_tensor')
+    for _attr in dir(_tvf):
+        setattr(_compat, _attr, getattr(_tvf, _attr))
+    sys.modules['torchvision.transforms.functional_tensor'] = _compat
+    del _tvf, _compat, _attr
+
+HANDLER_VERSION = '2026-05-27-v17'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -448,19 +463,6 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
     model_name: 'x4plus' | 'x2plus' | 'ultrasharp'
     outscale:   target output scale factor (can differ from model's native scale)
     """
-    import sys, types
-
-    # basicsr imports torchvision.transforms.functional_tensor which was removed
-    # in torchvision>=0.15.  Create a compat shim.
-    try:
-        import torchvision.transforms.functional_tensor  # noqa: F401
-    except ModuleNotFoundError:
-        import torchvision.transforms.functional as _tvf
-        _compat = types.ModuleType('torchvision.transforms.functional_tensor')
-        for _n in dir(_tvf):
-            setattr(_compat, _n, getattr(_tvf, _n))
-        sys.modules['torchvision.transforms.functional_tensor'] = _compat
-
     import numpy as np
     import cv2
     from PIL import Image
