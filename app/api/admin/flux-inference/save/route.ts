@@ -15,8 +15,8 @@ export async function POST(req: Request) {
   const sessionUser = token ? await getUserFromSession(token) : null
   if (!sessionUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await req.json().catch(() => ({})) as { r2Key?: string; prompt?: string }
-  const { r2Key, prompt } = body
+  const body = await req.json().catch(() => ({})) as { r2Key?: string; prompt?: string; videoMetadata?: Record<string, unknown> }
+  const { r2Key, prompt, videoMetadata } = body
   if (!r2Key) return NextResponse.json({ error: 'Missing r2Key' }, { status: 400 })
 
   // Idempotency: return existing record if already saved
@@ -39,6 +39,7 @@ export async function POST(req: Request) {
       ticketCost:         0,
       referenceImageUrls: [],
       expiresAt:          new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
+      ...(videoMetadata ? { videoMetadata: videoMetadata as object } : {}),
     },
     select: { id: true },
   })

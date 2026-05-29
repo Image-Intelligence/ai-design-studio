@@ -8778,7 +8778,7 @@ export default function PortalV2Page() {
               fetch('/api/admin/flux-inference/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
-                body: JSON.stringify({ r2Key: img.r2Key, prompt }),
+                body: JSON.stringify({ r2Key: img.r2Key, prompt, videoMetadata }),
               }).then(r => r.json()).then((data: { id?: number }) => {
                 if (data.id) {
                   setFreshImages(prev => prev.map(fi => fi.id === tempId ? { ...fi, id: data.id! } : fi))
