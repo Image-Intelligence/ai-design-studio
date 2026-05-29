@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v30'
+HANDLER_VERSION = '2026-05-29-v31'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -611,28 +611,21 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
 
     model.load_state_dict(state_dict, strict=True)
     model.eval()
-    model = model.cuda().half()
+    model = model.cuda().float()   # float32 — fp16 causes precision artifacts on ESRGAN
 
-    # Channel convention:
-    #   basicsr / Real-ESRGAN (params_ema format, has_conv_hr=True)  → trained on RGB
-    #   original ESRGAN (sequential format, has_conv_hr=False)        → trained on BGR
-    # realesrgan's enhance() always converts BGR→RGB before the model, which is wrong
-    # for old-ESRGAN checkpoints like 4x-UltraSharp. We run inference ourselves so
-    # we can pass each model its expected channel order.
-    bgr_model = not has_conv_hr
-
+    # All ESRGAN variants expect RGB input.
+    # Original ESRGAN test.py does img[:, :, [2, 1, 0]] to convert BGR→RGB before the model,
+    # so sequential-format checkpoints (4x-UltraSharp) are also RGB-trained — no channel swap needed.
     img = np.array(image_pil, dtype=np.float32)  # HWC, RGB, 0-255
-    if bgr_model:
-        img = img[:, :, ::-1].copy()             # RGB → BGR
     img /= 255.0
-    img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).half().unsqueeze(0).cuda()
+    img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).float().unsqueeze(0).cuda()
 
     h, w   = img_t.shape[2], img_t.shape[3]
     TILE   = 512
     PAD    = 32
     out_h  = h * model_scale
     out_w  = w * model_scale
-    output = img_t.new_zeros((1, 3, out_h, out_w))
+    output = torch.zeros(1, 3, out_h, out_w, dtype=torch.float32, device='cuda')
 
     tiles_x = math.ceil(w / TILE)
     tiles_y = math.ceil(h / TILE)
@@ -652,10 +645,9 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
             output[:, :, y1*model_scale:y2*model_scale,
                          x1*model_scale:x2*model_scale] = tile_out[:, :, oy:oy+th, ox:ox+tw]
 
-    out = output.squeeze().float().cpu().clamp_(0, 1).numpy()
+    out = output.squeeze().cpu().clamp_(0, 1).numpy()
     out = np.transpose(out, (1, 2, 0))          # CHW → HWC
-    if bgr_model:
-        out = out[:, :, ::-1].copy()            # BGR → RGB
+    logs.append(f'[esrgan] Output stats: min={out.min():.4f} max={out.max():.4f} mean={out.mean():.4f} nans={np.isnan(out).sum()}')
     out = (out * 255.0).round().astype(np.uint8)
 
     # Resize to the requested outscale (model ran at native scale, e.g. 4×)
