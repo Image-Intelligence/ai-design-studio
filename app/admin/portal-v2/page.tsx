@@ -2257,6 +2257,8 @@ function ImageDetailModal({
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[11px] font-mono">
                           {image.videoMetadata.fluxUpscale === 'combo'
                             ? `combo ${image.videoMetadata.fluxComboOrder === 'flux-first' ? 'flux→esrgan' : 'esrgan→flux'}`
+                            : image.videoMetadata.fluxUpscale === 'pipeline'
+                            ? `pipeline (${Array.isArray(image.videoMetadata.fluxPipelineSteps) ? (image.videoMetadata.fluxPipelineSteps as Array<{type:string}>).map(s => s.type).join('→') : '?'})`
                             : String(image.videoMetadata.fluxUpscale)}
                         </span>
                       )}
@@ -3240,11 +3242,27 @@ function CustomFluxPanel({
   const [refineStrength, setRefineStrength]     = useState(0.3)
   // Upscaling
   const [upscaleEnabled, setUpscaleEnabled]     = useState(false)
-  const [upscaleMethod, setUpscaleMethod]       = useState<'flux'|'esrgan'|'combo'>('esrgan')
+  const [upscaleMethod, setUpscaleMethod]       = useState<'flux'|'esrgan'|'combo'|'pipeline'>('esrgan')
   const [upscaleScale, setUpscaleScale]         = useState<2|4>(2)
   const [esrganModel, setEsrganModel]           = useState<'ultrasharp'|'x4plus'>('ultrasharp')
   const [comboOrder, setComboOrder]             = useState<'flux-first'|'esrgan-first'>('flux-first')
   const [fluxTileStrength, setFluxTileStrength] = useState(0.3)
+  // Custom pipeline steps
+  type PipelineStep = { type: 'flux' | 'esrgan'; upscaleFactor?: 1|2; strength?: number; model?: 'ultrasharp'|'x4plus'|'x2plus'; targetPx?: number }
+  const [pipelineSteps, setPipelineSteps] = useState<PipelineStep[]>([
+    { type: 'flux',   upscaleFactor: 2, strength: 0.35 },
+    { type: 'esrgan', model: 'ultrasharp', targetPx: 4096 },
+  ])
+  const updatePipelineStep = (i: number, patch: Partial<PipelineStep>) =>
+    setPipelineSteps(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s))
+  const removePipelineStep = (i: number) =>
+    setPipelineSteps(prev => prev.filter((_, idx) => idx !== i))
+  const addPipelineStep = (type: 'flux' | 'esrgan') =>
+    setPipelineSteps(prev => prev.length < 5
+      ? [...prev, type === 'flux'
+          ? { type: 'flux',   upscaleFactor: 2, strength: 0.35 }
+          : { type: 'esrgan', model: 'ultrasharp', targetPx: 4096 }]
+      : prev)
   // Post-processing
   const [adetailer, setAdetailer]               = useState(false)
   const [adetailerStrength, setAdetailerStrength] = useState(0.35)
@@ -3258,8 +3276,9 @@ function CustomFluxPanel({
 
   // Derived upscale param sent to the API
   const upscaleParam = !upscaleEnabled ? 'none'
-    : upscaleMethod === 'flux'   ? (upscaleScale === 2 ? '2k'        : '4k')
-    : upscaleMethod === 'esrgan' ? (upscaleScale === 2 ? '2k-esrgan' : '4k-esrgan')
+    : upscaleMethod === 'flux'     ? (upscaleScale === 2 ? '2k'        : '4k')
+    : upscaleMethod === 'esrgan'   ? (upscaleScale === 2 ? '2k-esrgan' : '4k-esrgan')
+    : upscaleMethod === 'pipeline' ? 'pipeline'
     : 'combo'
 
   // Auto-detect aspect ratio from first active ref image (always, not just when img2img is on)
@@ -3403,6 +3422,13 @@ function CustomFluxPanel({
       upscale_strength:   fluxTileStrength,
       esrgan_model:       upscaleEnabled ? esrganModel : undefined,
       combo_order:        comboOrder,
+      pipeline_steps:     upscaleParam === 'pipeline' ? pipelineSteps.map(s => ({
+        type:          s.type,
+        upscale_factor: s.upscaleFactor,
+        strength:      s.strength,
+        model:         s.model,
+        target_px:     s.targetPx,
+      })) : undefined,
       adetailer:          mode === 'runpod' ? adetailer      : false,
       adetailer_strength: adetailerStrength,
       gfpgan:             mode === 'runpod' ? gfpgan         : false,
@@ -3483,10 +3509,11 @@ function CustomFluxPanel({
         fluxSteps:        steps,
         fluxGuidance:     guidance,
         fluxSeed:         seed === -1 ? 'random' : seed,
-        fluxUpscale:      upscaleParam,
-        fluxEsrganModel:  (upscaleParam.includes('esrgan') || upscaleParam === 'combo') ? esrganModel : undefined,
-        fluxComboOrder:   upscaleParam === 'combo' ? comboOrder : undefined,
-        fluxTileStrength: upscaleParam !== 'none' && !upscaleParam.endsWith('-esrgan') ? fluxTileStrength : undefined,
+        fluxUpscale:         upscaleParam,
+        fluxEsrganModel:     (upscaleParam.includes('esrgan') || upscaleParam === 'combo') ? esrganModel : undefined,
+        fluxComboOrder:      upscaleParam === 'combo' ? comboOrder : undefined,
+        fluxTileStrength:    upscaleParam !== 'none' && !upscaleParam.endsWith('-esrgan') && upscaleParam !== 'pipeline' ? fluxTileStrength : undefined,
+        fluxPipelineSteps:   upscaleParam === 'pipeline' ? pipelineSteps : undefined,
         fluxRefine:       refine || undefined,
         fluxAdetailer:    adetailer || undefined,
         fluxGfpgan:       gfpgan || undefined,
@@ -3738,9 +3765,10 @@ function CustomFluxPanel({
               <span className="text-[10px] font-mono text-slate-500">Method</span>
               <div className="flex gap-1 flex-wrap">
                 {([
-                  { val: 'flux'   as const, label: 'Flux Tiling',  desc: 'faithful diffusion detail' },
-                  { val: 'esrgan' as const, label: 'ESRGAN',        desc: 'fast GAN texture' },
-                  { val: 'combo'  as const, label: 'Combo',         desc: 'both in sequence' },
+                  { val: 'flux'     as const, label: 'Flux Tiling' },
+                  { val: 'esrgan'   as const, label: 'ESRGAN'      },
+                  { val: 'combo'    as const, label: 'Combo'       },
+                  { val: 'pipeline' as const, label: 'Pipeline'    },
                 ]).map(({ val, label }) => (
                   <button key={val} onClick={() => setUpscaleMethod(val)}
                     className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
@@ -3754,8 +3782,8 @@ function CustomFluxPanel({
               </div>
             </div>
 
-            {/* Scale (hidden for combo — always 2×+2×=4× effective) */}
-            {upscaleMethod !== 'combo' && (
+            {/* Scale (hidden for combo and pipeline) */}
+            {upscaleMethod !== 'combo' && upscaleMethod !== 'pipeline' && (
               <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Scale</span>
                 <div className="flex gap-1">
@@ -3773,7 +3801,7 @@ function CustomFluxPanel({
               </div>
             )}
 
-            {/* ESRGAN model (ESRGAN or Combo) */}
+            {/* ESRGAN model (ESRGAN or Combo — not pipeline, which has per-step model) */}
             {(upscaleMethod === 'esrgan' || upscaleMethod === 'combo') && (
               <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Model</span>
@@ -3823,7 +3851,7 @@ function CustomFluxPanel({
               </div>
             )}
 
-            {/* Flux tile strength (Flux or Combo) */}
+            {/* Flux tile strength (Flux or Combo — pipeline has per-step strength) */}
             {(upscaleMethod === 'flux' || upscaleMethod === 'combo') && (
               <div className="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
                 <span className="text-[10px] font-mono text-violet-400/70">Tile str</span>
@@ -3834,9 +3862,117 @@ function CustomFluxPanel({
               </div>
             )}
 
+            {/* Pipeline step builder */}
+            {upscaleMethod === 'pipeline' && (
+              <div className="space-y-2 border-t border-white/5 pt-2">
+                {pipelineSteps.map((step, i) => (
+                  <div key={i} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono text-slate-400">Step {i + 1}</span>
+                      <div className="flex items-center gap-1.5">
+                        {/* Type toggle */}
+                        {(['flux', 'esrgan'] as const).map(t => (
+                          <button key={t} onClick={() => updatePipelineStep(i, { type: t })}
+                            className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                              step.type === t
+                                ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                                : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+                            }`}>
+                            {t === 'flux' ? 'Flux' : 'ESRGAN'}
+                          </button>
+                        ))}
+                        {pipelineSteps.length > 1 && (
+                          <button onClick={() => removePipelineStep(i)}
+                            className="text-[10px] text-slate-600 hover:text-red-400 transition-colors px-1">✕</button>
+                        )}
+                      </div>
+                    </div>
+                    {step.type === 'flux' && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Scale</span>
+                          <div className="flex gap-1">
+                            {([1, 2] as const).map(f => (
+                              <button key={f} onClick={() => updatePipelineStep(i, { upscaleFactor: f })}
+                                className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                                  step.upscaleFactor === f
+                                    ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                                    : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+                                }`}>
+                                {f}×
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Strength {(step.strength ?? 0.35).toFixed(2)}</span>
+                          <input type="range" min={0.1} max={0.9} step={0.05}
+                            value={step.strength ?? 0.35}
+                            onChange={e => updatePipelineStep(i, { strength: parseFloat(e.target.value) })}
+                            className="w-full accent-violet-400 cursor-pointer h-0.5" />
+                        </div>
+                      </div>
+                    )}
+                    {step.type === 'esrgan' && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Model</span>
+                          <div className="flex gap-1 flex-wrap">
+                            {([
+                              { v: 'ultrasharp' as const, l: 'UltraSharp' },
+                              { v: 'x4plus'     as const, l: 'RealESRGAN' },
+                              { v: 'x2plus'     as const, l: 'x2plus'     },
+                            ]).map(({ v, l }) => (
+                              <button key={v} onClick={() => updatePipelineStep(i, { model: v })}
+                                className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                                  step.model === v
+                                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-200'
+                                    : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+                                }`}>
+                                {l}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Target px (0 = native)</span>
+                          <div className="flex gap-1 flex-wrap">
+                            {([0, 2048, 2160, 4096] as const).map(px => (
+                              <button key={px} onClick={() => updatePipelineStep(i, { targetPx: px })}
+                                className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                                  step.targetPx === px
+                                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-200'
+                                    : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+                                }`}>
+                                {px === 0 ? 'native' : `${px}`}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {pipelineSteps.length < 5 && (
+                  <div className="flex gap-1.5 pt-0.5">
+                    <button onClick={() => addPipelineStep('flux')}
+                      className="px-2.5 py-1 text-[10px] rounded border border-dashed border-violet-500/30 text-violet-400/60 hover:border-violet-500/60 hover:text-violet-300 transition-colors">
+                      + Flux step
+                    </button>
+                    <button onClick={() => addPipelineStep('esrgan')}
+                      className="px-2.5 py-1 text-[10px] rounded border border-dashed border-amber-500/30 text-amber-400/60 hover:border-amber-500/60 hover:text-amber-300 transition-colors">
+                      + ESRGAN step
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Informational footer */}
             <p className="text-[10px] text-slate-600 border-t border-white/5 pt-2">
-              {upscaleMethod === 'combo'
+              {upscaleMethod === 'pipeline'
+                ? `${pipelineSteps.length}-step custom pipeline: ${pipelineSteps.map(s => s.type === 'flux' ? `Flux ${s.upscaleFactor ?? 2}×` : `ESRGAN (${s.model ?? 'ultrasharp'})`).join(' → ')}`
+                : upscaleMethod === 'combo'
                 ? `Flux 2× tiling → ESRGAN 2× (${esrganModel === 'ultrasharp' ? '4x-UltraSharp' : 'RealESRGAN'}) = effective 4× — faithful structure + GAN texture`
                 : upscaleMethod === 'flux'
                 ? `Flux diffusion tiling ${upscaleScale}× — accurate, prompt-guided detail, slower`
@@ -3881,14 +4017,17 @@ function CustomFluxPanel({
             </div>
             {activeRefImages.length > 0 ? (() => {
               const upscaleFactor = !upscaleEnabled ? 1
-                : upscaleMethod === 'combo' ? 4 : upscaleScale
+                : upscaleMethod === 'combo' ? 4
+                : upscaleMethod === 'pipeline' ? pipelineSteps.filter(s => s.type === 'flux').reduce((acc, s) => acc * (s.upscaleFactor ?? 2), 1)
+                : upscaleScale
               const baseW = autoBaseDims?.w ?? width
               const baseH = autoBaseDims?.h ?? height
               const finalW = baseW * upscaleFactor
               const finalH = baseH * upscaleFactor
               const upscaleLabel = !upscaleEnabled ? null
-                : upscaleMethod === 'flux'   ? `${upscaleScale}× Flux Tiling`
-                : upscaleMethod === 'esrgan' ? `${upscaleScale}× ${esrganModel === 'ultrasharp' ? 'UltraSharp' : 'RealESRGAN'}`
+                : upscaleMethod === 'flux'     ? `${upscaleScale}× Flux Tiling`
+                : upscaleMethod === 'esrgan'   ? `${upscaleScale}× ${esrganModel === 'ultrasharp' ? 'UltraSharp' : 'RealESRGAN'}`
+                : upscaleMethod === 'pipeline' ? `Pipeline (${pipelineSteps.map(s => s.type === 'flux' ? `Flux ${s.upscaleFactor ?? 2}×` : 'ESRGAN').join('→')})`
                 : `4× Combo (${comboOrder === 'flux-first' ? 'Flux→ESRGAN' : 'ESRGAN→Flux'})`
               return (
                 <div className="flex items-start gap-3 flex-wrap">

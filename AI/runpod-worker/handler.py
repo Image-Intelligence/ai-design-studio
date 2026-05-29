@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v35'
+HANDLER_VERSION = '2026-05-29-v36'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -903,6 +903,8 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     upscale_factor   = {'2k': 2, '4k': 4}.get(_up, 0)
     esrgan_factor    = {'2k-esrgan': 2, '4k-esrgan': 4}.get(_up, 0)
     do_combo         = (_up == 'combo')
+    pipeline_steps   = inp.get('pipeline_steps', [])        # list of {type, ...} dicts
+    do_pipeline      = bool(pipeline_steps) and _up == 'pipeline'
     esrgan_model     = inp.get('esrgan_model', 'x4plus')   # 'x4plus' | 'x2plus' | 'ultrasharp'
     combo_order      = inp.get('combo_order', 'flux-first') # 'flux-first' | 'esrgan-first'
     # ADetailer
@@ -918,7 +920,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     img2img_image_b64 = inp.get('img2img_image', '')
     img2img_strength  = float(inp.get('img2img_strength', 0.65))
     # Unconditional debug
-    print(f'[debug] upscale={upscale} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)} width={width} height={height}', flush=True)
+    print(f'[debug] upscale={upscale} do_pipeline={do_pipeline} n_pipeline_steps={len(pipeline_steps)} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)} width={width} height={height}', flush=True)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
@@ -1185,7 +1187,8 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
     # Load FluxImg2ImgPipeline for img2img/refine/tiled upscale/combo/adetailer (shares weights — no extra VRAM)
     pipe_i2i = None
-    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None or do_combo:
+    _pipeline_needs_flux = do_pipeline and any(str(s.get('type', '')).lower() == 'flux' for s in pipeline_steps)
+    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None or do_combo or _pipeline_needs_flux:
         try:
             from diffusers import FluxImg2ImgPipeline
             pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
@@ -1306,7 +1309,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
         # 5b. Pre-fetch UltraSharp from R2 if it will be used and isn't cached locally.
         # HuggingFace repo Kim2091/4x-UltraSharp is private — R2 is the reliable source.
-        if esrgan_model == 'ultrasharp' and (do_combo or esrgan_factor > 0):
+        _pipeline_uses_ultrasharp = do_pipeline and any(
+            str(s.get('model', '')).lower() == 'ultrasharp' for s in pipeline_steps
+            if str(s.get('type', '')).lower() == 'esrgan'
+        )
+        if esrgan_model == 'ultrasharp' and (do_combo or esrgan_factor > 0) or _pipeline_uses_ultrasharp:
             _us_local = '/workspace/models/esrgan/4x-UltraSharp.pth'
             if not os.path.exists(_us_local) or os.path.getsize(_us_local) < 10_000_000:
                 _us_r2_key = 'training/models/esrgan/4x-UltraSharp.pth'
@@ -1372,6 +1379,41 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             _flush_logs(r2, bucket, job_id, logs)
             image = _esrgan_upscale(image, esrgan_model, _outscale, logs)
             logs.append(f'[inference] ESRGAN done — {image.width}×{image.height}')
+            _flush_logs(r2, bucket, job_id, logs)
+
+        elif do_pipeline:
+            # Custom multi-step pipeline: each step is {type, ...}
+            # Flux step:  {type:'flux',   upscale_factor:1|2, strength:float}
+            # ESRGAN step:{type:'esrgan', model:str,          target_px:int}
+            _n_steps = len(pipeline_steps)
+            logs.append(f'[pipeline] Starting {_n_steps}-step custom pipeline...')
+            _flush_logs(r2, bucket, job_id, logs)
+            for _step_i, _step in enumerate(pipeline_steps):
+                _step_type = str(_step.get('type', 'flux')).lower()
+                _step_num  = _step_i + 1
+                if _step_type == 'flux':
+                    if pipe_i2i is None:
+                        logs.append(f'[pipeline] Step {_step_num}/{_n_steps} — Flux skipped (no img2img pipeline)')
+                        continue
+                    _sf = max(1, int(_step.get('upscale_factor', 2)))
+                    _ss = max(0.05, min(0.95, float(_step.get('strength', 0.35))))
+                    logs.append(f'[pipeline] Step {_step_num}/{_n_steps} — Flux {_sf}× tiling (strength={_ss:.2f})')
+                    _flush_logs(r2, bucket, job_id, logs)
+                    image = _tiled_img2img(pipe_i2i, image, prompt, _sf, _ss, steps, guidance, seed, logs)
+                    logs.append(f'[pipeline] Step {_step_num} done — {image.width}×{image.height}')
+                elif _step_type == 'esrgan':
+                    _sm  = str(_step.get('model', 'ultrasharp'))
+                    _tp  = int(_step.get('target_px', 0))
+                    _long = max(image.width, image.height)
+                    _esc  = max(1.0, _tp / _long) if _tp > 0 else 4.0
+                    logs.append(f'[pipeline] Step {_step_num}/{_n_steps} — ESRGAN ({_sm}) target={_tp}px outscale={_esc:.2f}')
+                    _flush_logs(r2, bucket, job_id, logs)
+                    image = _esrgan_upscale(image, _sm, _esc, logs)
+                    logs.append(f'[pipeline] Step {_step_num} done — {image.width}×{image.height}')
+                else:
+                    logs.append(f'[pipeline] Step {_step_num}/{_n_steps} — unknown type "{_step_type}", skipping')
+                _flush_logs(r2, bucket, job_id, logs)
+            logs.append(f'[pipeline] All {_n_steps} steps complete — final: {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
         # 6d. Optional ADetailer face fix
