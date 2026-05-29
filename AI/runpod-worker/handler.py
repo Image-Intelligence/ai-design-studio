@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v33'
+HANDLER_VERSION = '2026-05-29-v34'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -641,6 +641,9 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
         model_path  = '/workspace/models/esrgan/RealESRGAN_x4plus.pth'
         model_scale = 4
 
+    if outscale <= 0:
+        outscale = float(model_scale)
+        logs.append(f'[esrgan] Warning: outscale was ≤0, using native model scale {model_scale}')
     logs.append(f'[esrgan] {outscale:.2f}× upscale ({model_name})...')
 
     state_dict, has_conv_hr = _esrgan_load_state_dict(model_path, logs)
@@ -1331,17 +1334,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             return max(1.0, target / long_side)
 
         if do_combo and pipe_i2i is not None:
+            # Combo always targets ~4K (3840px long side) total.
+            # flux-first:   Flux 2× → ESRGAN finishes at 3840px long side.
+            # esrgan-first: ESRGAN targets 1920px long side → Flux 2× finishes at ~3840px.
+            _COMBO_FINAL_PX = 3840
             if combo_order == 'flux-first':
                 logs.append(f'[combo] Step 1/2 — Flux 2× tiling (strength={upscale_strength})...')
                 _flush_logs(r2, bucket, job_id, logs)
                 image = _tiled_img2img(pipe_i2i, image, prompt, 2, upscale_strength, steps, guidance, seed, logs)
-                _esc = _esrgan_target_outscale(image, _up)
-                logs.append(f'[combo] Step 2/2 — ESRGAN (outscale={_esc:.2f})...')
+                _esc = max(1.0, _COMBO_FINAL_PX / max(image.width, image.height))
+                logs.append(f'[combo] Step 2/2 — ESRGAN to {_COMBO_FINAL_PX}px (outscale={_esc:.2f})...')
                 _flush_logs(r2, bucket, job_id, logs)
                 image = _esrgan_upscale(image, esrgan_model, _esc, logs)
             else:  # esrgan-first
-                _esc = _esrgan_target_outscale(image, _up)
-                logs.append(f'[combo] Step 1/2 — ESRGAN (outscale={_esc:.2f})...')
+                _esrgan_target = _COMBO_FINAL_PX // 2   # 1920px — Flux 2× will finish at ~3840px
+                _esc = max(1.0, _esrgan_target / max(image.width, image.height))
+                logs.append(f'[combo] Step 1/2 — ESRGAN to {_esrgan_target}px (outscale={_esc:.2f})...')
                 _flush_logs(r2, bucket, job_id, logs)
                 image = _esrgan_upscale(image, esrgan_model, _esc, logs)
                 logs.append(f'[combo] Step 2/2 — Flux 2× tiling (strength={upscale_strength})...')
