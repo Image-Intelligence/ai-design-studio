@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v36'
+HANDLER_VERSION = '2026-05-29-v37'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -1405,7 +1405,8 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                     _sm  = str(_step.get('model', 'ultrasharp'))
                     _tp  = int(_step.get('target_px', 0))
                     _long = max(image.width, image.height)
-                    _esc  = max(1.0, _tp / _long) if _tp > 0 else 4.0
+                    _native = 2.0 if _sm == 'x2plus' else 4.0
+                    _esc  = max(1.0, _tp / _long) if _tp > 0 else _native
                     logs.append(f'[pipeline] Step {_step_num}/{_n_steps} — ESRGAN ({_sm}) target={_tp}px outscale={_esc:.2f}')
                     _flush_logs(r2, bucket, job_id, logs)
                     image = _esrgan_upscale(image, _sm, _esc, logs)

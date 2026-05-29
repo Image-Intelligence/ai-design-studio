@@ -3865,7 +3865,19 @@ function CustomFluxPanel({
             {/* Pipeline step builder */}
             {upscaleMethod === 'pipeline' && (
               <div className="space-y-2 border-t border-white/5 pt-2">
-                {pipelineSteps.map((step, i) => (
+                {pipelineSteps.map((step, i) => {
+                  // Compute the resolution entering this step so we can grey out downscale options
+                  let inputRes = Math.max(width, height)
+                  for (let j = 0; j < i; j++) {
+                    const s = pipelineSteps[j]
+                    if (s.type === 'flux') {
+                      inputRes *= (s.upscaleFactor ?? 2)
+                    } else {
+                      const tp = s.targetPx ?? 0
+                      inputRes = tp > 0 ? Math.max(inputRes, tp) : inputRes * (s.model === 'x2plus' ? 2 : 4)
+                    }
+                  }
+                  return (
                   <div key={i} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 space-y-1.5">
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-mono text-slate-400">Step {i + 1}</span>
@@ -3935,24 +3947,34 @@ function CustomFluxPanel({
                           </div>
                         </div>
                         <div>
-                          <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Target px (0 = native)</span>
+                          <span className="text-[9px] font-mono text-slate-600 block mb-0.5">
+                            Target px <span className="text-slate-700">(must exceed {Math.round(inputRes)}px)</span>
+                          </span>
                           <div className="flex gap-1 flex-wrap">
-                            {([0, 2048, 2160, 4096] as const).map(px => (
-                              <button key={px} onClick={() => updatePipelineStep(i, { targetPx: px })}
-                                className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
-                                  step.targetPx === px
-                                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-200'
-                                    : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
-                                }`}>
-                                {px === 0 ? 'native' : `${px}`}
-                              </button>
-                            ))}
+                            {([0, 2048, 3072, 4096] as const).map(px => {
+                              const tooSmall = px > 0 && px <= inputRes
+                              return (
+                                <button key={px}
+                                  onClick={() => !tooSmall && updatePipelineStep(i, { targetPx: px })}
+                                  disabled={tooSmall}
+                                  className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                                    tooSmall
+                                      ? 'opacity-25 cursor-not-allowed bg-white/[0.02] border-white/5 text-slate-600'
+                                      : step.targetPx === px
+                                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-200'
+                                      : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+                                  }`}>
+                                  {px === 0 ? 'native' : `${px}`}
+                                </button>
+                              )
+                            })}
                           </div>
                         </div>
                       </div>
                     )}
                   </div>
-                ))}
+                  )
+                })}
                 {pipelineSteps.length < 5 && (
                   <div className="flex gap-1.5 pt-0.5">
                     <button onClick={() => addPipelineStep('flux')}
