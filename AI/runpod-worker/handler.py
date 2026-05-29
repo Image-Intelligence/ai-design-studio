@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v32'
+HANDLER_VERSION = '2026-05-29-v33'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -537,12 +537,18 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
         return sd, has_hr
 
     # Format 4 — sequential wrapper (model.0 / model.1.sub.N.RDBN / model.M…)
+    # In some ESRGAN forks the trunk conv lives INSIDE the ShortcutBlock as model.1.sub.N
+    # (the last element of the sub-sequential, after the 23 RRDB blocks).  Those checkpoints
+    # produce model.1.sub.23.weight/.bias as plain Conv2d keys — not matching any RRDB pattern.
+    # The remaining model.N (N≥2) layers are then: upconv1, upconv2, HRconv, conv_last (4 total).
     if isinstance(loadnet, dict) and 'model.0.weight' in loadnet:
         print('[esrgan-diag] Format 4 detected: sequential model.0', flush=True)
         logs.append('[esrgan] Converting sequential-ESRGAN format → basicsr format')
         sd = {}
-        extra = {}  # model index → {param_suffix: tensor}
+        extra = {}           # model index → {param_suffix: tensor}
         unmatched = []
+        trunk_conv_in_sub = False   # True when trunk conv is model.1.sub.last
+
         for k, v in loadnet.items():
             if 'res_scale' in k:
                 continue
@@ -550,15 +556,22 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
             if m:
                 sd[f'conv_first.{m.group(1)}'] = v
                 continue
-            # Try with .0. Sequential wrapper
+            # RRDB body — with .0. Sequential wrapper around each Conv2d
             m = _re.match(r'^model\.1\.sub\.(\d+)\.(RDB\d+)\.conv(\d+)\.0\.(.+)$', k)
             if m:
                 sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
                 continue
-            # Try without .0. wrapper
+            # RRDB body — direct Conv2d (no .0. wrapper)
             m = _re.match(r'^model\.1\.sub\.(\d+)\.(RDB\d+)\.conv(\d+)\.(.+)$', k)
             if m:
                 sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
+                continue
+            # Trunk conv stored inside ShortcutBlock's sub-sequential (plain Conv2d, no RRDB pattern)
+            # e.g. model.1.sub.23.weight / model.1.sub.23.bias
+            m = _re.match(r'^model\.1\.sub\.(\d+)\.(.+)$', k)
+            if m:
+                sd[f'conv_body.{m.group(2)}'] = v
+                trunk_conv_in_sub = True
                 continue
             m = _re.match(r'^model\.(\d+)\.(.+)$', k)
             if m and int(m.group(1)) > 1:
@@ -569,18 +582,31 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
         num_extra = len(extra)
         if unmatched:
             print(f'[esrgan-diag] Format 4: {len(unmatched)} unmatched keys: {unmatched[:5]}', flush=True)
-        if num_extra <= 4:
-            targets  = ['conv_body', 'conv_up1', 'conv_up2', 'conv_last']
-            has_hr   = False
-            logs.append(f'[esrgan] {num_extra} extra conv layers — using legacy architecture (no conv_hr)')
+
+        if trunk_conv_in_sub:
+            # conv_body already populated from sub.N.  Remaining model.N layers are the
+            # upsample convs: upconv1, upconv2, HRconv (if present), conv_last.
+            if num_extra >= 4:
+                targets = ['conv_up1', 'conv_up2', 'conv_hr', 'conv_last']
+                has_hr  = True
+            else:
+                targets = ['conv_up1', 'conv_up2', 'conv_last']
+                has_hr  = False
         else:
-            targets  = ['conv_body', 'conv_up1', 'conv_up2', 'conv_hr', 'conv_last']
-            has_hr   = True
+            # trunk_conv is the first of the extra model.N layers
+            if num_extra >= 5:
+                targets = ['conv_body', 'conv_up1', 'conv_up2', 'conv_hr', 'conv_last']
+                has_hr  = True
+            else:
+                targets = ['conv_body', 'conv_up1', 'conv_up2', 'conv_last']
+                has_hr  = False
+
         for i, idx in enumerate(sorted(extra.keys())):
             if i < len(targets):
                 for param, v in extra[idx].items():
                     sd[f'{targets[i]}.{param}'] = v
-        print(f'[esrgan-diag] Format 4 conversion: {len(sd)} keys, {num_extra} extra layers, has_conv_hr={has_hr}', flush=True)
+
+        print(f'[esrgan-diag] Format 4: trunk_in_sub={trunk_conv_in_sub}, {num_extra} extra layers, has_conv_hr={has_hr}, sd_keys={len(sd)}', flush=True)
         return sd, has_hr
 
     # Unknown format — return raw; load_state_dict will surface the real error
