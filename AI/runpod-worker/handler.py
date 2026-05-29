@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v31'
+HANDLER_VERSION = '2026-05-29-v32'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -473,29 +473,50 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
     import torch
     import re as _re
 
-    loadnet = torch.load(model_path, map_location=torch.device('cpu'))
+    loadnet = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+
+    # Print raw top keys to stdout for diagnosis
+    if isinstance(loadnet, dict):
+        _top_keys = list(loadnet.keys())
+        print(f'[esrgan-diag] raw checkpoint top-level keys ({len(_top_keys)} total): {_top_keys[:15]}', flush=True)
+    else:
+        print(f'[esrgan-diag] checkpoint is not a dict — type: {type(loadnet)}', flush=True)
 
     # Format 1 — Real-ESRGAN wrapper (always has conv_hr in basicsr weights)
     if isinstance(loadnet, dict):
         if 'params_ema' in loadnet:
+            print('[esrgan-diag] Format 1a detected: params_ema wrapper', flush=True)
             return loadnet['params_ema'], True
         if 'params' in loadnet:
+            print('[esrgan-diag] Format 1b detected: params wrapper', flush=True)
             return loadnet['params'], True
 
     # Format 2 — already basicsr keys
     if isinstance(loadnet, dict) and 'conv_first.weight' in loadnet and 'body.0.rdb1.conv1.weight' in loadnet:
         has_hr = 'conv_hr.weight' in loadnet
+        print(f'[esrgan-diag] Format 2 detected: basicsr keys (has_conv_hr={has_hr})', flush=True)
         return loadnet, has_hr
 
     # Format 3 — original ESRGAN class (RRDB_trunk / trunk_conv / upconv / HRconv)
-    if isinstance(loadnet, dict) and 'RRDB_trunk.0.RDB1.conv1.0.weight' in loadnet:
+    # Try both with and without the .0. Sequential wrapper inside RRDB blocks
+    _has_rrdb_trunk = any(k.startswith('RRDB_trunk.') for k in (loadnet if isinstance(loadnet, dict) else []))
+    _has_seq_conv   = 'RRDB_trunk.0.RDB1.conv1.0.weight' in (loadnet if isinstance(loadnet, dict) else {})
+    _has_direct_conv = 'RRDB_trunk.0.RDB1.conv1.weight' in (loadnet if isinstance(loadnet, dict) else {})
+    if _has_rrdb_trunk:
+        print(f'[esrgan-diag] Format 3 detected: RRDB_trunk (seq_wrapper={_has_seq_conv} direct={_has_direct_conv})', flush=True)
         logs.append('[esrgan] Converting original-ESRGAN format → basicsr format')
         sd = {}
         has_hr = 'HRconv.weight' in loadnet
         for k, v in loadnet.items():
             if 'res_scale' in k:
                 continue
+            # Try with .0. Sequential wrapper
             m = _re.match(r'^RRDB_trunk\.(\d+)\.(RDB\d+)\.conv(\d+)\.0\.(.+)$', k)
+            if m:
+                sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
+                continue
+            # Try without .0. wrapper (direct Conv2d)
+            m = _re.match(r'^RRDB_trunk\.(\d+)\.(RDB\d+)\.conv(\d+)\.(.+)$', k)
             if m:
                 sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
                 continue
@@ -512,13 +533,16 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
                 sd[f'conv_hr.{m.group(1)}'] = v
                 continue
             sd[k] = v  # conv_first, conv_last map 1-to-1
+        print(f'[esrgan-diag] Format 3 conversion: {len(sd)} keys produced, has_conv_hr={has_hr}', flush=True)
         return sd, has_hr
 
     # Format 4 — sequential wrapper (model.0 / model.1.sub.N.RDBN / model.M…)
     if isinstance(loadnet, dict) and 'model.0.weight' in loadnet:
+        print('[esrgan-diag] Format 4 detected: sequential model.0', flush=True)
         logs.append('[esrgan] Converting sequential-ESRGAN format → basicsr format')
         sd = {}
         extra = {}  # model index → {param_suffix: tensor}
+        unmatched = []
         for k, v in loadnet.items():
             if 'res_scale' in k:
                 continue
@@ -526,32 +550,42 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
             if m:
                 sd[f'conv_first.{m.group(1)}'] = v
                 continue
+            # Try with .0. Sequential wrapper
             m = _re.match(r'^model\.1\.sub\.(\d+)\.(RDB\d+)\.conv(\d+)\.0\.(.+)$', k)
+            if m:
+                sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
+                continue
+            # Try without .0. wrapper
+            m = _re.match(r'^model\.1\.sub\.(\d+)\.(RDB\d+)\.conv(\d+)\.(.+)$', k)
             if m:
                 sd[f'body.{m.group(1)}.{m.group(2).lower()}.conv{m.group(3)}.{m.group(4)}'] = v
                 continue
             m = _re.match(r'^model\.(\d+)\.(.+)$', k)
             if m and int(m.group(1)) > 1:
                 extra.setdefault(int(m.group(1)), {})[m.group(2)] = v
+                continue
+            unmatched.append(k)
 
         num_extra = len(extra)
+        if unmatched:
+            print(f'[esrgan-diag] Format 4: {len(unmatched)} unmatched keys: {unmatched[:5]}', flush=True)
         if num_extra <= 4:
-            # Old ESRGAN — no conv_hr layer: conv_body, conv_up1, conv_up2, conv_last
             targets  = ['conv_body', 'conv_up1', 'conv_up2', 'conv_last']
             has_hr   = False
             logs.append(f'[esrgan] {num_extra} extra conv layers — using legacy architecture (no conv_hr)')
         else:
-            # Real-ESRGAN / basicsr style — includes conv_hr
             targets  = ['conv_body', 'conv_up1', 'conv_up2', 'conv_hr', 'conv_last']
             has_hr   = True
         for i, idx in enumerate(sorted(extra.keys())):
             if i < len(targets):
                 for param, v in extra[idx].items():
                     sd[f'{targets[i]}.{param}'] = v
+        print(f'[esrgan-diag] Format 4 conversion: {len(sd)} keys, {num_extra} extra layers, has_conv_hr={has_hr}', flush=True)
         return sd, has_hr
 
     # Unknown format — return raw; load_state_dict will surface the real error
     top = list(loadnet.keys())[:10] if isinstance(loadnet, dict) else str(type(loadnet))
+    print(f'[esrgan-diag] UNKNOWN FORMAT — top keys: {top}', flush=True)
     logs.append(f'[esrgan] WARNING: unrecognised checkpoint format, top keys: {top}')
     return loadnet, True
 
@@ -585,7 +619,9 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
 
     state_dict, has_conv_hr = _esrgan_load_state_dict(model_path, logs)
 
+    print(f'[esrgan-diag] has_conv_hr={has_conv_hr} model_scale={model_scale} model_name={model_name}', flush=True)
     if has_conv_hr:
+        print('[esrgan-diag] Using basicsr RRDBNet (with conv_hr)', flush=True)
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
                         num_block=23, num_grow_ch=32, scale=model_scale)
     else:
@@ -607,9 +643,16 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
                 feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode='nearest')))
                 feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode='nearest')))
                 return self.conv_last(feat)
+        print('[esrgan-diag] Using LegacyRRDBNet (no conv_hr)', flush=True)
         model = LegacyRRDBNet(scale=model_scale)
 
-    model.load_state_dict(state_dict, strict=True)
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    if incompatible.missing_keys:
+        print(f'[esrgan-diag] MISSING keys ({len(incompatible.missing_keys)}): {incompatible.missing_keys[:10]}', flush=True)
+    if incompatible.unexpected_keys:
+        print(f'[esrgan-diag] UNEXPECTED keys ({len(incompatible.unexpected_keys)}): {incompatible.unexpected_keys[:10]}', flush=True)
+    if not incompatible.missing_keys and not incompatible.unexpected_keys:
+        print('[esrgan-diag] load_state_dict: all keys matched perfectly', flush=True)
     model.eval()
     model = model.cuda().float()   # float32 — fp16 causes precision artifacts on ESRGAN
 
@@ -647,7 +690,9 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
 
     out = output.squeeze().cpu().clamp_(0, 1).numpy()
     out = np.transpose(out, (1, 2, 0))          # CHW → HWC
-    logs.append(f'[esrgan] Output stats: min={out.min():.4f} max={out.max():.4f} mean={out.mean():.4f} nans={np.isnan(out).sum()}')
+    _stats = f'min={out.min():.4f} max={out.max():.4f} mean={out.mean():.4f} nans={int(np.isnan(out).sum())}'
+    logs.append(f'[esrgan] Output stats: {_stats}')
+    print(f'[esrgan-diag] Output stats (post-clamp, pre-uint8): {_stats}', flush=True)
     out = (out * 255.0).round().astype(np.uint8)
 
     # Resize to the requested outscale (model ran at native scale, e.g. 4×)
