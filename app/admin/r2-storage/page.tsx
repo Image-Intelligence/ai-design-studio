@@ -522,21 +522,65 @@ export default function R2StoragePage() {
                 })}
               </div>
 
+              {/* Community / custom models already in R2 */}
+              {(() => {
+                const builtInNames = new Set<string>(ESRGAN_MODELS.map(m => m.filename))
+                const customFiles  = (filesByPrefix['training/models/esrgan/'] ?? []).filter(f => !builtInNames.has(f.name))
+                if (customFiles.length === 0) return null
+                return (
+                  <div className="space-y-2 pt-1">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-600">Community Models</p>
+                    {customFiles.map(file => {
+                      const job = jobs.find(j => j.targetKey === `training/models/esrgan/${file.name}`)
+                      return (
+                        <div key={file.key}
+                          className="flex items-center gap-4 px-4 py-3 rounded-xl border border-white/[0.07] bg-white/[0.02]">
+                          <div className={`w-2 h-2 rounded-full shrink-0 ${job ? 'bg-violet-400 animate-pulse' : 'bg-emerald-400'}`} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-semibold text-white truncate">{file.name}</p>
+                            <p className="text-[10px] text-slate-600 font-mono mt-0.5">
+                              {fmt(file.size_bytes)}
+                              {file.last_modified && ` · ${new Date(file.last_modified).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
+                            </p>
+                          </div>
+                          {job ? (
+                            <div className="text-[10px] font-mono text-violet-400 shrink-0">
+                              {job.status === 'starting'   ? 'Starting…'   :
+                               job.status === 'completing' ? 'Finishing…'  :
+                               job.status === 'done'       ? '✓ Done!'     :
+                               job.status === 'error'      ? 'Error'       :
+                               `${Math.round(job.completedParts / job.totalParts * 100)}%`}
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => deleteFile(file.key, 'training/models/esrgan/')}
+                              disabled={deleting.has(file.key)}
+                              className="p-1.5 rounded-lg hover:bg-red-500/10 text-slate-700 hover:text-red-400 transition-colors disabled:opacity-40 shrink-0">
+                              {deleting.has(file.key) ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
+
               {/* Upload arbitrary .pth */}
               <input
                 type="file"
                 accept=".pth"
+                multiple
                 className="hidden"
                 ref={el => { modelRefs.current['esrgan_custom'] = el }}
                 onChange={e => {
-                  const f = e.target.files?.[0]
-                  if (f) handleEsrganModelFile(f, f.name)
+                  if (e.target.files) Array.from(e.target.files).forEach(f => handleEsrganModelFile(f, f.name))
                   e.target.value = ''
                 }}
               />
               <button onClick={() => modelRefs.current['esrgan_custom']?.click()}
                 className="w-full py-2 rounded-xl border border-dashed border-white/[0.08] text-[11px] text-slate-600 hover:text-slate-400 hover:border-white/[0.15] transition-all flex items-center justify-center gap-1.5">
-                <Upload size={10} /> Upload custom .pth file
+                <Upload size={10} /> Upload community .pth model
               </button>
             </div>
           )}
@@ -665,8 +709,13 @@ export default function R2StoragePage() {
                   <code className="text-[10px] text-amber-500/70 font-mono">training/models/esrgan/{m.filename}</code>
                 </div>
               ))}
+              <div className="flex items-center gap-2">
+                <code className="text-[10px] text-violet-400/70 font-mono">training/models/esrgan/4x_foolhardy_Remacri.pth</code>
+                <span className="text-[9px] text-slate-700">← example community model</span>
+              </div>
               <p className="text-[10px] text-slate-700 mt-2">
                 These exact paths are expected by the RunPod worker. Uploading via the buttons above sets them automatically.
+                Community models are auto-downloaded to the worker on first use.
               </p>
             </div>
           )}
