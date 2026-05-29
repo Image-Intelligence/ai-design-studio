@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v39'
+HANDLER_VERSION = '2026-05-29-v40'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -637,9 +637,25 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     elif model_name == 'x2plus':
         model_path  = '/workspace/models/esrgan/RealESRGAN_x2plus.pth'
         model_scale = 2
-    else:
+    elif model_name == 'x4plus':
         model_path  = '/workspace/models/esrgan/RealESRGAN_x4plus.pth'
         model_scale = 4
+    else:
+        # Custom R2 model — filename stored under training/models/esrgan/ in the bucket.
+        # Scale is parsed from the filename prefix (e.g. '4x_Remacri.pth' → 4).
+        model_path  = f'/workspace/models/esrgan/{model_name}'
+        _sm = re.match(r'^(\d+)[xX]', model_name)
+        model_scale = int(_sm.group(1)) if _sm else 4
+        if not os.path.exists(model_path) or os.path.getsize(model_path) < 1_000_000:
+            _r2c = _r2()
+            _r2b = os.environ['R2_BUCKET_NAME']
+            _r2k = f'training/models/esrgan/{model_name}'
+            logs.append(f'[esrgan] Downloading custom model {model_name} from R2...')
+            print(f'[esrgan] Downloading {_r2k}...', flush=True)
+            os.makedirs('/workspace/models/esrgan', exist_ok=True)
+            if not _download(_r2c, _r2k, model_path, model_name, logs):
+                raise RuntimeError(f'Custom ESRGAN model not found in R2: {_r2k}')
+            print(f'[esrgan] Downloaded {model_name} OK', flush=True)
 
     if outscale <= 0:
         outscale = float(model_scale)
@@ -1341,6 +1357,25 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                     )
                 logs.append('[esrgan] 4x-UltraSharp cached locally.')
                 _flush_logs(r2, bucket, job_id, logs)
+
+        # 5b2. Pre-fetch any custom R2 ESRGAN models used in pipeline steps.
+        if do_pipeline:
+            _builtin_models = {'ultrasharp', 'x4plus', 'x2plus'}
+            for _ps in pipeline_steps:
+                if str(_ps.get('type', '')).lower() == 'esrgan':
+                    _pm = str(_ps.get('model', ''))
+                    if _pm and _pm not in _builtin_models:
+                        _pm_path = f'/workspace/models/esrgan/{_pm}'
+                        if not os.path.exists(_pm_path) or os.path.getsize(_pm_path) < 1_000_000:
+                            _pm_key = f'training/models/esrgan/{_pm}'
+                            logs.append(f'[esrgan] Pre-fetching custom model {_pm}...')
+                            _flush_logs(r2, bucket, job_id, logs)
+                            os.makedirs('/workspace/models/esrgan', exist_ok=True)
+                            if not _download(r2, _pm_key, _pm_path, _pm, logs):
+                                raise RuntimeError(f'Custom ESRGAN model not found in R2: {_pm_key}')
+                            logs.append(f'[esrgan] {_pm} cached.')
+                            print(f'[esrgan] Pre-fetched custom model {_pm}', flush=True)
+                            _flush_logs(r2, bucket, job_id, logs)
 
         # 5c. Upscaling (Flux tiling, ESRGAN, or Combo)
         # ESRGAN target resolutions: '2k-esrgan' → 2048px long side, '4k-esrgan' → 3840px long side.

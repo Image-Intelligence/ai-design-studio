@@ -3248,7 +3248,7 @@ function CustomFluxPanel({
   const [comboOrder, setComboOrder]             = useState<'flux-first'|'esrgan-first'>('flux-first')
   const [fluxTileStrength, setFluxTileStrength] = useState(0.3)
   // Custom pipeline steps
-  type PipelineStep = { type: 'flux' | 'esrgan'; upscaleFactor?: 1|2; strength?: number; model?: 'ultrasharp'|'x4plus'|'x2plus'; targetPx?: number }
+  type PipelineStep = { type: 'flux' | 'esrgan'; upscaleFactor?: 1|2; strength?: number; model?: string; targetPx?: number }
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStep[]>([
     { type: 'flux',   upscaleFactor: 2, strength: 0.35 },
     { type: 'esrgan', model: 'ultrasharp', targetPx: 4096 },
@@ -3306,6 +3306,15 @@ function CustomFluxPanel({
   const [modelsLoaded, setModelsLoaded]         = useState(false)
 
   const [modelsError, setModelsError] = useState<string | null>(null)
+
+  // Custom ESRGAN models in R2 (for pipeline steps)
+  const [r2EsrganModels, setR2EsrganModels] = useState<string[]>([])
+  useEffect(() => {
+    fetch('/api/admin/flux-inference/esrgan-models')
+      .then(r => r.json())
+      .then((d: { models: string[] }) => setR2EsrganModels(d.models ?? []))
+      .catch(() => {})
+  }, [])
 
   const refreshModels = useCallback(() => {
     setModelsLoaded(false)
@@ -3931,9 +3940,9 @@ function CustomFluxPanel({
                           <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Model</span>
                           <div className="flex gap-1 flex-wrap">
                             {([
-                              { v: 'ultrasharp' as const, l: 'UltraSharp' },
-                              { v: 'x4plus'     as const, l: 'RealESRGAN' },
-                              { v: 'x2plus'     as const, l: 'x2plus'     },
+                              { v: 'ultrasharp', l: 'UltraSharp' },
+                              { v: 'x4plus',     l: 'RealESRGAN' },
+                              { v: 'x2plus',     l: 'x2plus'     },
                             ]).map(({ v, l }) => (
                               <button key={v} onClick={() => updatePipelineStep(i, { model: v })}
                                 className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
@@ -3942,6 +3951,16 @@ function CustomFluxPanel({
                                     : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
                                 }`}>
                                 {l}
+                              </button>
+                            ))}
+                            {r2EsrganModels.map(m => (
+                              <button key={m} onClick={() => updatePipelineStep(i, { model: m })}
+                                className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                                  step.model === m
+                                    ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                                    : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+                                }`}>
+                                {m.replace(/\.pth$/i, '')}
                               </button>
                             ))}
                           </div>
