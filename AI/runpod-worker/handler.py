@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v28'
+HANDLER_VERSION = '2026-05-29-v29'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -605,7 +605,7 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
                 self.conv_last  = nn.Conv2d(nf, 3,  3, 1, 1)
                 self.lrelu      = nn.LeakyReLU(negative_slope=0.2, inplace=True)
             def forward(self, x):
-                feat = self.lrelu(self.conv_first(x))
+                feat = self.conv_first(x)          # no lrelu — matches original ESRGAN
                 feat = self.conv_body(self.body(feat)) + feat
                 feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode='nearest')))
                 feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode='nearest')))
