@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v37'
+HANDLER_VERSION = '2026-05-29-v38'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -1433,12 +1433,18 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
         # 7. Upload result
         out_path = os.path.join(run_dir, 'output.png')
+        print(f'[inference] Saving output — {image.width}×{image.height}', flush=True)
         image.save(out_path, format='PNG')
+        print(f'[inference] Uploading to R2 ({out_key})...', flush=True)
         logs.append(f'[inference] Uploading to R2 ({out_key})...')
         r2.upload_file(out_path, bucket, out_key)
         logs.append('[inference] Done.')
+        print('[inference] Upload complete.', flush=True)
 
     except Exception as e:
+        import traceback as _tb
+        print(f'[inference] *** EXCEPTION: {e}', flush=True)
+        _tb.print_exc()
         _inf_error = e
 
     finally:
