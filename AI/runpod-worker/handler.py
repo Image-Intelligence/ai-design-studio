@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-28-v27'
+HANDLER_VERSION = '2026-05-28-v28'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -556,17 +556,19 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
     return loadnet, True
 
 
-def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
+def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     """
     ESRGAN upscale.
     model_name: 'x4plus' | 'x2plus' | 'ultrasharp'
-    outscale:   target output scale factor (can differ from model's native scale)
+    outscale:   target output scale factor (float; can differ from model's native scale)
     """
     import numpy as np
     import cv2
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
+    import tempfile
+    import os as _os
     from PIL import Image
     from basicsr.archs.rrdbnet_arch import RRDBNet, RRDB
     from realesrgan import RealESRGANer
@@ -581,7 +583,7 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
         model_path  = '/workspace/models/esrgan/RealESRGAN_x4plus.pth'
         model_scale = 4
 
-    logs.append(f'[esrgan] {outscale}× upscale ({model_name})...')
+    logs.append(f'[esrgan] {outscale:.2f}× upscale ({model_name})...')
 
     state_dict, has_conv_hr = _esrgan_load_state_dict(model_path, logs)
 
@@ -591,7 +593,6 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
                         num_block=23, num_grow_ch=32, scale=model_scale)
     else:
         # Legacy ESRGAN architecture — no conv_hr layer between conv_up2 and conv_last.
-        # Defined inline to avoid an extra dependency.
         class LegacyRRDBNet(nn.Module):
             def __init__(self, scale):
                 super().__init__()
@@ -611,14 +612,20 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: int, logs: list):
                 return self.conv_last(feat)
         model = LegacyRRDBNet(scale=model_scale)
 
-    model.load_state_dict(state_dict, strict=True)
-    # Pass the real path string — realesrgan 0.3.0 calls model_path.startswith()
-    # before checking whether a pre-loaded model was provided, so None crashes.
-    # With model= set, the library skips re-loading the weights from disk.
-    upsampler = RealESRGANer(
-        scale=model_scale, model_path=model_path, model=model,
-        tile=512, tile_pad=32, pre_pad=0, half=True,
-    )
+    # realesrgan 0.3.0 always reloads weights from model_path — it uses model= only
+    # as an empty architecture shell and then calls model_path.startswith() + torch.load().
+    # Write our already-converted state dict to a temp file under 'params' so the
+    # library loads the right format into the right architecture.
+    _tmp_fd, _tmp_path = tempfile.mkstemp(suffix='.pth')
+    _os.close(_tmp_fd)
+    try:
+        torch.save({'params': state_dict}, _tmp_path)
+        upsampler = RealESRGANer(
+            scale=model_scale, model_path=_tmp_path, model=model,
+            tile=512, tile_pad=32, pre_pad=0, half=True,
+        )
+    finally:
+        _os.unlink(_tmp_path)
 
     img_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
     output_bgr, _ = upsampler.enhance(img_bgr, outscale=outscale)
