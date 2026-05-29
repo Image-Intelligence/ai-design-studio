@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v29'
+HANDLER_VERSION = '2026-05-29-v30'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -558,20 +558,18 @@ def _esrgan_load_state_dict(model_path: str, logs: list):
 
 def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     """
-    ESRGAN upscale.
+    ESRGAN upscale — custom tiled inference, no RealESRGANer dependency.
     model_name: 'x4plus' | 'x2plus' | 'ultrasharp'
-    outscale:   target output scale factor (float; can differ from model's native scale)
+    outscale:   target output scale (float; model runs at native scale, output resized)
     """
+    import math
     import numpy as np
     import cv2
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
-    import tempfile
-    import os as _os
     from PIL import Image
     from basicsr.archs.rrdbnet_arch import RRDBNet, RRDB
-    from realesrgan import RealESRGANer
 
     if model_name == 'ultrasharp':
         model_path  = '/workspace/models/esrgan/4x-UltraSharp.pth'
@@ -588,11 +586,10 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     state_dict, has_conv_hr = _esrgan_load_state_dict(model_path, logs)
 
     if has_conv_hr:
-        # Standard basicsr RRDBNet (Real-ESRGAN x4plus / x2plus)
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
                         num_block=23, num_grow_ch=32, scale=model_scale)
     else:
-        # Legacy ESRGAN architecture — no conv_hr layer between conv_up2 and conv_last.
+        # Legacy ESRGAN (sequential format, e.g. 4x-UltraSharp) — no conv_hr layer.
         class LegacyRRDBNet(nn.Module):
             def __init__(self, scale):
                 super().__init__()
@@ -605,31 +602,69 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
                 self.conv_last  = nn.Conv2d(nf, 3,  3, 1, 1)
                 self.lrelu      = nn.LeakyReLU(negative_slope=0.2, inplace=True)
             def forward(self, x):
-                feat = self.conv_first(x)          # no lrelu — matches original ESRGAN
+                feat = self.conv_first(x)
                 feat = self.conv_body(self.body(feat)) + feat
                 feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode='nearest')))
                 feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode='nearest')))
                 return self.conv_last(feat)
         model = LegacyRRDBNet(scale=model_scale)
 
-    # realesrgan 0.3.0 always reloads weights from model_path — it uses model= only
-    # as an empty architecture shell and then calls model_path.startswith() + torch.load().
-    # Write our already-converted state dict to a temp file under 'params' so the
-    # library loads the right format into the right architecture.
-    _tmp_fd, _tmp_path = tempfile.mkstemp(suffix='.pth')
-    _os.close(_tmp_fd)
-    try:
-        torch.save({'params': state_dict}, _tmp_path)
-        upsampler = RealESRGANer(
-            scale=model_scale, model_path=_tmp_path, model=model,
-            tile=512, tile_pad=32, pre_pad=0, half=True,
-        )
-    finally:
-        _os.unlink(_tmp_path)
+    model.load_state_dict(state_dict, strict=True)
+    model.eval()
+    model = model.cuda().half()
 
-    img_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-    output_bgr, _ = upsampler.enhance(img_bgr, outscale=outscale)
-    result = Image.fromarray(cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB))
+    # Channel convention:
+    #   basicsr / Real-ESRGAN (params_ema format, has_conv_hr=True)  → trained on RGB
+    #   original ESRGAN (sequential format, has_conv_hr=False)        → trained on BGR
+    # realesrgan's enhance() always converts BGR→RGB before the model, which is wrong
+    # for old-ESRGAN checkpoints like 4x-UltraSharp. We run inference ourselves so
+    # we can pass each model its expected channel order.
+    bgr_model = not has_conv_hr
+
+    img = np.array(image_pil, dtype=np.float32)  # HWC, RGB, 0-255
+    if bgr_model:
+        img = img[:, :, ::-1].copy()             # RGB → BGR
+    img /= 255.0
+    img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).half().unsqueeze(0).cuda()
+
+    h, w   = img_t.shape[2], img_t.shape[3]
+    TILE   = 512
+    PAD    = 32
+    out_h  = h * model_scale
+    out_w  = w * model_scale
+    output = img_t.new_zeros((1, 3, out_h, out_w))
+
+    tiles_x = math.ceil(w / TILE)
+    tiles_y = math.ceil(h / TILE)
+    logs.append(f'[esrgan] {tiles_x * tiles_y} tile(s) ({tiles_x}×{tiles_y})...')
+
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            x1 = tx * TILE;  x2 = min(x1 + TILE, w)
+            y1 = ty * TILE;  y2 = min(y1 + TILE, h)
+            x1p = max(x1 - PAD, 0);  x2p = min(x2 + PAD, w)
+            y1p = max(y1 - PAD, 0);  y2p = min(y2 + PAD, h)
+            tile_in = img_t[:, :, y1p:y2p, x1p:x2p]
+            with torch.no_grad():
+                tile_out = model(tile_in)
+            ox = (x1 - x1p) * model_scale;  tw = (x2 - x1) * model_scale
+            oy = (y1 - y1p) * model_scale;  th = (y2 - y1) * model_scale
+            output[:, :, y1*model_scale:y2*model_scale,
+                         x1*model_scale:x2*model_scale] = tile_out[:, :, oy:oy+th, ox:ox+tw]
+
+    out = output.squeeze().float().cpu().clamp_(0, 1).numpy()
+    out = np.transpose(out, (1, 2, 0))          # CHW → HWC
+    if bgr_model:
+        out = out[:, :, ::-1].copy()            # BGR → RGB
+    out = (out * 255.0).round().astype(np.uint8)
+
+    # Resize to the requested outscale (model ran at native scale, e.g. 4×)
+    if abs(outscale - model_scale) > 0.01:
+        interp = cv2.INTER_AREA if outscale < model_scale else cv2.INTER_LANCZOS4
+        out = cv2.resize(out, (int(round(w * outscale)), int(round(h * outscale))),
+                         interpolation=interp)
+
+    result = Image.fromarray(out)
     logs.append(f'[esrgan] Done — {result.width}×{result.height}')
     return result
 
