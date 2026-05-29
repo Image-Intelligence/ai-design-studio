@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v38'
+HANDLER_VERSION = '2026-05-29-v39'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -688,6 +688,15 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     # All ESRGAN variants expect RGB input.
     # Original ESRGAN test.py does img[:, :, [2, 1, 0]] to convert BGR→RGB before the model,
     # so sequential-format checkpoints (4x-UltraSharp) are also RGB-trained — no channel swap needed.
+    # pixel_unshuffle(scale=2) inside RRDBNet requires H and W both divisible by 2.
+    # Round odd dimensions up by 1px — imperceptible at typical resolutions.
+    if image_pil.width % 2 != 0 or image_pil.height % 2 != 0:
+        _ew = image_pil.width  + (image_pil.width  % 2)
+        _eh = image_pil.height + (image_pil.height % 2)
+        image_pil = image_pil.resize((_ew, _eh), Image.LANCZOS)
+        logs.append(f'[esrgan] Padded to even dims: {_ew}×{_eh}')
+        print(f'[esrgan] Padded odd-dim input to {_ew}×{_eh}', flush=True)
+
     img = np.array(image_pil, dtype=np.float32)  # HWC, RGB, 0-255
     img /= 255.0
     img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).float().unsqueeze(0).cuda()
@@ -727,8 +736,13 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     # Resize to the requested outscale (model ran at native scale, e.g. 4×)
     if abs(outscale - model_scale) > 0.01:
         interp = cv2.INTER_AREA if outscale < model_scale else cv2.INTER_LANCZOS4
-        out = cv2.resize(out, (int(round(w * outscale)), int(round(h * outscale))),
-                         interpolation=interp)
+        _ow = int(round(w * outscale))
+        _oh = int(round(h * outscale))
+        # Round up to even — pixel_unshuffle(scale=2) in the NEXT ESRGAN step would
+        # crash on an odd-dimension tile if we leave fractional-outscale results odd.
+        if _ow % 2 != 0: _ow += 1
+        if _oh % 2 != 0: _oh += 1
+        out = cv2.resize(out, (_ow, _oh), interpolation=interp)
 
     result = Image.fromarray(out)
     logs.append(f'[esrgan] Done — {result.width}×{result.height}')
