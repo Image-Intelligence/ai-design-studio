@@ -4038,14 +4038,34 @@ function CustomFluxPanel({
               <span className="text-[10px] text-slate-600">first active ref · activate in the Refs panel above</span>
             </div>
             {activeRefImages.length > 0 ? (() => {
-              const upscaleFactor = !upscaleEnabled ? 1
-                : upscaleMethod === 'combo' ? 4
-                : upscaleMethod === 'pipeline' ? pipelineSteps.filter(s => s.type === 'flux').reduce((acc, s) => acc * (s.upscaleFactor ?? 2), 1)
-                : upscaleScale
               const baseW = autoBaseDims?.w ?? width
               const baseH = autoBaseDims?.h ?? height
-              const finalW = baseW * upscaleFactor
-              const finalH = baseH * upscaleFactor
+              let finalW = baseW, finalH = baseH
+              if (upscaleEnabled) {
+                if (upscaleMethod === 'pipeline') {
+                  // Simulate each step to get the true final resolution
+                  for (const s of pipelineSteps) {
+                    if (s.type === 'flux') {
+                      const f = s.upscaleFactor ?? 2
+                      finalW *= f; finalH *= f
+                    } else {
+                      const tp = s.targetPx ?? 0
+                      if (tp > 0) {
+                        const scale = Math.max(1, tp / Math.max(finalW, finalH))
+                        finalW = Math.round(finalW * scale)
+                        finalH = Math.round(finalH * scale)
+                      } else {
+                        const ns = s.model === 'x2plus' ? 2 : 4
+                        finalW *= ns; finalH *= ns
+                      }
+                    }
+                  }
+                } else if (upscaleMethod === 'combo') {
+                  finalW *= 4; finalH *= 4
+                } else {
+                  finalW *= upscaleScale; finalH *= upscaleScale
+                }
+              }
               const upscaleLabel = !upscaleEnabled ? null
                 : upscaleMethod === 'flux'     ? `${upscaleScale}× Flux Tiling`
                 : upscaleMethod === 'esrgan'   ? `${upscaleScale}× ${esrganModel === 'ultrasharp' ? 'UltraSharp' : 'RealESRGAN'}`

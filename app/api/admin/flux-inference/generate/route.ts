@@ -158,7 +158,7 @@ export async function POST(req: Request) {
     seed?: number | null
     refine?: boolean
     refine_strength?: number
-    upscale?: 'none' | '2k' | '4k' | '2k-esrgan' | '4k-esrgan'
+    upscale?: string
     upscale_strength?: number
     adetailer?: boolean
     adetailer_strength?: number
@@ -170,6 +170,7 @@ export async function POST(req: Request) {
     combo_order?: string
     gfpgan?: boolean
     gfpgan_weight?: number
+    pipeline_steps?: Array<{ type: string; upscale_factor?: number; strength?: number; model?: string; target_px?: number }>
   }
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
@@ -205,6 +206,7 @@ export async function POST(req: Request) {
       combo_order:       body.combo_order       ?? 'flux-first',
       gfpgan:            body.gfpgan            ?? false,
       gfpgan_weight:     body.gfpgan_weight     ?? 0.8,
+      pipeline_steps:    body.pipeline_steps    ?? [],
     }
 
     const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {
