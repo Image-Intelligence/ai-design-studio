@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v34'
+HANDLER_VERSION = '2026-05-29-v35'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -1324,7 +1324,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         # 5c. Upscaling (Flux tiling, ESRGAN, or Combo)
         # ESRGAN target resolutions: '2k-esrgan' → 2048px long side, '4k-esrgan' → 3840px long side.
         # outscale is computed dynamically so the output always hits the target regardless of base size.
-        _ESRGAN_TARGET_PX = {'2k-esrgan': 2048, '4k-esrgan': 3840}
+        _ESRGAN_TARGET_PX = {'2k-esrgan': 2160, '4k-esrgan': 4096}
 
         def _esrgan_target_outscale(img, upscale_key: str) -> float:
             target = _ESRGAN_TARGET_PX.get(upscale_key, 0)
@@ -1337,7 +1337,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             # Combo always targets ~4K (3840px long side) total.
             # flux-first:   Flux 2× → ESRGAN finishes at 3840px long side.
             # esrgan-first: ESRGAN targets 1920px long side → Flux 2× finishes at ~3840px.
-            _COMBO_FINAL_PX = 3840
+            _COMBO_FINAL_PX = 4096
             if combo_order == 'flux-first':
                 logs.append(f'[combo] Step 1/2 — Flux 2× tiling (strength={upscale_strength})...')
                 _flush_logs(r2, bucket, job_id, logs)
