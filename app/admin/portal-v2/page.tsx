@@ -7,6 +7,14 @@ import ChatWidget from "@/components/ChatWidget"
 import { Image, Video, Type, ChevronDown, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload } from "lucide-react"
 
 // --- TYPES ---
+interface CNCondition {
+  id: string
+  mode: 'pose' | 'depth' | 'canny'
+  scale: number
+  imgB64: string
+  preview: string
+}
+
 interface UserData {
   id: number
   email: string
@@ -3273,13 +3281,23 @@ function CustomFluxPanel({
   const [ipScale, setIpScale]                   = useState(0.6)
   const [img2img, setImg2img]                   = useState(false)
   const [img2imgStrength, setImg2imgStrength]   = useState(0.65)
-  // ControlNet
-  const [controlnet, setControlnet]             = useState(false)
-  const [controlnetMode, setControlnetMode]     = useState<'pose'|'depth'|'canny'>('pose')
-  const [controlnetScale, setControlnetScale]   = useState(0.7)
-  const [controlnetImgB64, setControlnetImgB64] = useState('')
-  const [controlnetPreview, setControlnetPreview] = useState('')
-  const cnImageRef = useRef<HTMLInputElement>(null)
+  // ControlNet — up to 3 conditions, each with own mode/scale/image
+  const [controlnet, setControlnet]   = useState(false)
+  const [cnConditions, setCnConditions] = useState<CNCondition[]>([
+    { id: 'cn-0', mode: 'pose', scale: 0.7, imgB64: '', preview: '' },
+  ])
+  const cnRefsMap = useRef<Record<string, HTMLInputElement | null>>({})
+  const updateCn  = useCallback((id: string, patch: Partial<CNCondition>) =>
+    setCnConditions(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c)), [])
+  const removeCn  = (id: string) =>
+    setCnConditions(prev => prev.filter(c => c.id !== id))
+  const addCn     = () => {
+    if (cnConditions.length >= 3) return
+    const modes: Array<'pose' | 'depth' | 'canny'> = ['pose', 'depth', 'canny']
+    const used = cnConditions.map(c => c.mode)
+    const next  = modes.find(m => !used.includes(m)) ?? 'pose'
+    setCnConditions(prev => [...prev, { id: `cn-${Date.now()}`, mode: next, scale: 0.7, imgB64: '', preview: '' }])
+  }
   const [autoBaseDims, setAutoBaseDims]         = useState<{ w: number; h: number } | null>(null)
 
   // Derived upscale param sent to the API
@@ -3454,10 +3472,10 @@ function CustomFluxPanel({
       ip_adapter_scale:   ipScale,
       img2img_image:      '',              // filled below
       img2img_strength:   img2imgStrength,
-      controlnet:         mode === 'runpod' ? (controlnet && !!controlnetImgB64) : false,
-      controlnet_mode:    controlnetMode,
-      controlnet_scale:   controlnetScale,
-      controlnet_image:   controlnet && controlnetImgB64 ? controlnetImgB64 : '',
+      controlnet:            mode === 'runpod' && controlnet && cnConditions.some(c => !!c.imgB64),
+      controlnet_conditions: mode === 'runpod' && controlnet
+        ? cnConditions.filter(c => !!c.imgB64).map(c => ({ mode: c.mode, scale: c.scale, image: c.imgB64 }))
+        : [],
     }
 
     // img2img source: encode first active ref at 1024px (higher than IP-Adapter needs for structure preservation)
@@ -3710,85 +3728,95 @@ function CustomFluxPanel({
           </div>
         )}
 
-        {/* ControlNet configuration panel */}
+        {/* ControlNet configuration panel — up to 3 conditions */}
         {mode === 'runpod' && controlnet && (
           <div className="rounded-xl border border-sky-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-3">
-            <span className="text-[10px] font-mono text-sky-400/60 uppercase tracking-widest">ControlNet</span>
-
-            {/* Mode */}
-            <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
-              <span className="text-[10px] font-mono text-slate-500">Mode</span>
-              <div className="flex gap-1">
-                {([
-                  { val: 'pose'  as const, label: 'Pose',  desc: 'DWPose skeleton — locks body position and gesture' },
-                  { val: 'depth' as const, label: 'Depth', desc: 'MiDaS depth map — locks 3D structure and perspective' },
-                  { val: 'canny' as const, label: 'Canny', desc: 'Edge map — locks hard outlines and silhouettes' },
-                ]).map(({ val, label, desc }) => (
-                  <button key={val} onClick={() => setControlnetMode(val)} title={desc}
-                    className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
-                      controlnetMode === val
-                        ? 'bg-sky-500/20 border-sky-500/40 text-sky-200'
-                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
-                    }`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Scale */}
-            <div className="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-3">
-              <span className="text-[10px] font-mono text-slate-500">Scale</span>
-              <input type="range" min={0.1} max={1.0} step={0.05} value={controlnetScale}
-                onChange={e => setControlnetScale(parseFloat(e.target.value))}
-                className="w-full accent-sky-400 cursor-pointer h-0.5" />
-              <span className="text-[11px] font-mono text-sky-300 tabular-nums text-right">{controlnetScale.toFixed(2)}</span>
-            </div>
-
-            {/* Control image upload */}
-            <div className="space-y-2">
-              <p className="text-[10px] text-slate-500">
-                Upload a reference photo — {controlnetMode === 'pose' ? 'DWPose skeleton' : controlnetMode === 'depth' ? 'MiDaS depth map' : 'Canny edges'} will be extracted automatically.
-              </p>
-              <div className="flex items-center gap-3">
-                <button onClick={() => cnImageRef.current?.click()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/10 border border-sky-500/25 text-sky-300 text-[11px] hover:bg-sky-500/20 transition-all shrink-0">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-                  {controlnetImgB64 ? 'Replace' : 'Upload photo'}
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-sky-400/60 uppercase tracking-widest">ControlNet</span>
+              {cnConditions.length < 3 && (
+                <button onClick={addCn}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-sky-400 border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 transition-colors">
+                  <Plus size={9} /> Add condition
                 </button>
-                {controlnetPreview && (
-                  <>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={controlnetPreview} alt="Control" className="h-12 w-12 rounded-lg object-cover border border-sky-500/20" />
-                    <button onClick={() => { setControlnetImgB64(''); setControlnetPreview('') }}
-                      className="text-[10px] text-slate-600 hover:text-red-400 transition-colors">✕ Clear</button>
-                  </>
-                )}
-              </div>
-              {!controlnetImgB64 && (
-                <p className="text-[10px] text-amber-400/60">⚠ Upload a photo to activate ControlNet. Without it generation will proceed without control.</p>
               )}
-              <input ref={cnImageRef} type="file" accept="image/*" className="hidden"
-                onChange={e => {
-                  const file = e.target.files?.[0]
-                  if (!file) return
-                  const reader = new FileReader()
-                  reader.onload = ev => {
-                    const dataUrl = ev.target?.result as string
-                    setControlnetPreview(dataUrl)
-                    setControlnetImgB64(dataUrl.split(',')[1] ?? '')
-                  }
-                  reader.readAsDataURL(file)
-                  e.target.value = ''
-                }}
-              />
             </div>
 
-            <p className="text-[10px] text-slate-700 border-t border-white/5 pt-2">
-              {controlnetMode === 'pose'  && 'Pose mode: good for locking body stance, hand positions, and head angle. Use scale 0.6–0.8.'}
-              {controlnetMode === 'depth' && 'Depth mode: good for preserving 3D composition and preventing body morphing. Use scale 0.5–0.7.'}
-              {controlnetMode === 'canny' && 'Canny mode: locks hard edges and outlines. Best for architecture/clothing structure. Use scale 0.4–0.6.'}
-            </p>
+            {cnConditions.map((cond, idx) => (
+              <div key={cond.id} className={`space-y-2.5 ${idx > 0 ? 'border-t border-white/5 pt-2.5' : ''}`}>
+                {/* Row: index + mode buttons + remove */}
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-slate-600 shrink-0 w-4">#{idx + 1}</span>
+                  <div className="flex gap-1 flex-1">
+                    {(['pose', 'depth', 'canny'] as const).map(m => (
+                      <button key={m} onClick={() => updateCn(cond.id, { mode: m })}
+                        title={m === 'pose' ? 'DWPose skeleton' : m === 'depth' ? 'MiDaS depth map' : 'Canny edge map'}
+                        className={`px-2 py-0.5 text-[11px] rounded border transition-colors ${
+                          cond.mode === m
+                            ? 'bg-sky-500/20 border-sky-500/40 text-sky-200'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                        }`}>
+                        {m.charAt(0).toUpperCase() + m.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                  {cnConditions.length > 1 && (
+                    <button onClick={() => removeCn(cond.id)}
+                      className="text-slate-600 hover:text-red-400 transition-colors ml-1">
+                      <X size={11} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Scale slider */}
+                <div className="grid grid-cols-[4rem_1fr_2.5rem] items-center gap-2">
+                  <span className="text-[10px] font-mono text-slate-500">Scale</span>
+                  <input type="range" min={0.1} max={1.0} step={0.05} value={cond.scale}
+                    onChange={e => updateCn(cond.id, { scale: parseFloat(e.target.value) })}
+                    className="w-full accent-sky-400 cursor-pointer h-0.5" />
+                  <span className="text-[11px] font-mono text-sky-300 tabular-nums text-right">{cond.scale.toFixed(2)}</span>
+                </div>
+
+                {/* Image upload row */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={() => cnRefsMap.current[cond.id]?.click()}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/10 border border-sky-500/25 text-sky-300 text-[11px] hover:bg-sky-500/20 transition-all shrink-0">
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    {cond.imgB64 ? 'Replace' : 'Upload photo'}
+                  </button>
+                  {cond.preview ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={cond.preview} alt={`ctrl-${idx}`} className="h-10 w-10 rounded object-cover border border-sky-500/20 shrink-0" />
+                      <button onClick={() => updateCn(cond.id, { imgB64: '', preview: '' })}
+                        className="text-[10px] text-slate-600 hover:text-red-400 transition-colors">✕ Clear</button>
+                    </>
+                  ) : (
+                    <span className="text-[10px] text-amber-400/50">⚠ No image</span>
+                  )}
+                  <input ref={el => { cnRefsMap.current[cond.id] = el }} type="file" accept="image/*" className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      const reader = new FileReader()
+                      reader.onload = ev => {
+                        const dataUrl = ev.target?.result as string
+                        updateCn(cond.id, { preview: dataUrl, imgB64: dataUrl.split(',')[1] ?? '' })
+                      }
+                      reader.readAsDataURL(file)
+                      e.target.value = ''
+                    }}
+                  />
+                </div>
+
+                {/* Mode hint */}
+                <p className="text-[10px] text-slate-700">
+                  {cond.mode === 'pose'  && 'Pose: DWPose skeleton — locks body stance and hand positions. Scale 0.6–0.8.'}
+                  {cond.mode === 'depth' && 'Depth: MiDaS depth map — locks 3D composition and perspective. Scale 0.5–0.7.'}
+                  {cond.mode === 'canny' && 'Canny: edge map — locks hard outlines and silhouettes. Scale 0.4–0.6.'}
+                </p>
+              </div>
+            ))}
           </div>
         )}
 

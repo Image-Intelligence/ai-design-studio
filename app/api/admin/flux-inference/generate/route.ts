@@ -172,9 +172,7 @@ export async function POST(req: Request) {
     gfpgan_weight?: number
     pipeline_steps?: Array<{ type: string; upscale_factor?: number; strength?: number; model?: string; target_px?: number }>
     controlnet?: boolean
-    controlnet_mode?: string
-    controlnet_scale?: number
-    controlnet_image?: string
+    controlnet_conditions?: Array<{ mode: string; scale: number; image: string }>
   }
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
@@ -211,10 +209,8 @@ export async function POST(req: Request) {
       gfpgan:            body.gfpgan            ?? false,
       gfpgan_weight:     body.gfpgan_weight     ?? 0.8,
       pipeline_steps:    body.pipeline_steps    ?? [],
-      controlnet:        body.controlnet        ?? false,
-      controlnet_mode:   body.controlnet_mode   ?? 'pose',
-      controlnet_scale:  body.controlnet_scale  ?? 0.7,
-      controlnet_image:  body.controlnet_image  ?? '',
+      controlnet:             body.controlnet             ?? false,
+      controlnet_conditions:  body.controlnet_conditions  ?? [],
     }
 
     const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {
