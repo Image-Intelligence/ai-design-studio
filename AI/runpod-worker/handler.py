@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v45'
+HANDLER_VERSION = '2026-05-30-v46'
 
 # controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose (no from_pretrained / ONNX support).
 # OneTrainer's requirements.txt pins an old version. --no-deps --force-reinstall bypasses
@@ -70,6 +70,12 @@ except Exception:
     print(f'[startup] pip exit={_pip.returncode}', flush=True)
     if _pip.stderr.strip():
         print(f'[startup] pip stderr: {_pip.stderr.strip()[:400]}', flush=True)
+    # Install deps that --no-deps skipped (einops is required by controlnet_aux 0.0.9)
+    _pip2 = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '--quiet', 'einops'],
+        capture_output=True, text=True,
+    )
+    print(f'[startup] einops install exit={_pip2.returncode}', flush=True)
     # Evict all cached controlnet_aux submodules so the fresh version is used on next import
     for _k in [k for k in sys.modules if 'controlnet_aux' in k]:
         del sys.modules[_k]

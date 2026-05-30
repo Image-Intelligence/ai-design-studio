@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0"
 # --no-deps bypasses pip's constraint resolver so OneTrainer's old pin can't block it.
 # onnxruntime-gpu is needed by the ONNX DWPose detector; fall back to CPU build if unavailable.
 RUN pip install --no-cache-dir onnxruntime-gpu || pip install --no-cache-dir onnxruntime
+RUN pip install --no-cache-dir einops
 RUN pip install --no-cache-dir --no-deps --force-reinstall "controlnet_aux==0.0.9"
 
 # Pre-download DWPose and MiDaS models so cold starts don't pay the download cost.
