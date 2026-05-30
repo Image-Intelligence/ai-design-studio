@@ -49,7 +49,27 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v43'
+HANDLER_VERSION = '2026-05-30-v44'
+
+# controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose and has no from_pretrained.
+# OneTrainer's requirements.txt can pin an old version — self-heal by force-upgrading
+# once at startup if the old version is detected.
+try:
+    from controlnet_aux import DWposeDetector as _cna_check
+    if not hasattr(_cna_check, 'from_pretrained'):
+        raise ImportError('old')
+    del _cna_check
+except Exception:
+    print('[startup] controlnet_aux lacks ONNX-based DWPose — force-upgrading...', flush=True)
+    _pip = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '--upgrade', '--quiet', 'controlnet_aux>=0.0.7'],
+        capture_output=True, text=True,
+    )
+    print(f'[startup] pip upgrade exit={_pip.returncode} {_pip.stderr.strip()[:200]}', flush=True)
+    # Evict all cached controlnet_aux submodules so the fresh version is used on next import
+    for _k in [k for k in sys.modules if 'controlnet_aux' in k]:
+        del sys.modules[_k]
+    print('[startup] controlnet_aux upgraded — submodules cleared.', flush=True)
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')

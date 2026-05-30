@@ -17,8 +17,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install worker deps
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
-    realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan \
-    "controlnet_aux>=0.0.7" timm
+    realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan timm
+
+# Force-install ONNX-based controlnet_aux (>=0.0.7) in a separate step so it wins
+# over any older version pinned by OneTrainer's requirements.txt above.
+RUN pip install --no-cache-dir --upgrade "controlnet_aux>=0.0.7"
 
 # Pre-download DWPose and MiDaS models so cold starts don't pay the download cost.
 # These are small ONNX/checkpoint files (~1.2 GB total).
