@@ -49,11 +49,17 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v46'
+HANDLER_VERSION = '2026-05-30-v47'
 
-# controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose (no from_pretrained / ONNX support).
-# OneTrainer's requirements.txt pins an old version. --no-deps --force-reinstall bypasses
-# all pip constraint checking and overwrites the old package unconditionally.
+# controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose — no from_pretrained/ONNX support.
+# OneTrainer's requirements.txt pins an old version. We detect and self-heal at startup.
+import importlib.metadata as _imd
+try:
+    _cna_ver = _imd.version('controlnet-aux')
+except Exception:
+    _cna_ver = 'unknown'
+print(f'[startup] controlnet_aux installed version: {_cna_ver}', flush=True)
+
 try:
     from controlnet_aux import DWposeDetector as _cna_check
     if not hasattr(_cna_check, 'from_pretrained'):
@@ -61,32 +67,41 @@ try:
     del _cna_check
     print('[startup] controlnet_aux OK — ONNX DWPose available.', flush=True)
 except Exception:
-    print('[startup] Old controlnet_aux detected — force-installing 0.0.9 (--no-deps)...', flush=True)
+    print('[startup] Old/broken controlnet_aux — reinstalling 0.0.9...', flush=True)
+    # 1. Install all deps controlnet_aux 0.0.9 needs (before --no-deps install)
+    _pip_deps = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '--quiet',
+         'einops', 'scikit-image', 'imageio', 'onnxruntime-gpu'],
+        capture_output=True, text=True,
+    )
+    print(f'[startup] deps install exit={_pip_deps.returncode}', flush=True)
+    if _pip_deps.stderr.strip():
+        print(f'[startup] deps stderr: {_pip_deps.stderr.strip()[:300]}', flush=True)
+    # 2. Force-overwrite controlnet_aux package files (--no-deps skips constraint checks)
     _pip = subprocess.run(
         [sys.executable, '-m', 'pip', 'install',
          '--no-deps', '--force-reinstall', '--quiet', 'controlnet_aux==0.0.9'],
         capture_output=True, text=True,
     )
-    print(f'[startup] pip exit={_pip.returncode}', flush=True)
+    print(f'[startup] controlnet_aux reinstall exit={_pip.returncode}', flush=True)
     if _pip.stderr.strip():
-        print(f'[startup] pip stderr: {_pip.stderr.strip()[:400]}', flush=True)
-    # Install deps that --no-deps skipped (einops is required by controlnet_aux 0.0.9)
-    _pip2 = subprocess.run(
-        [sys.executable, '-m', 'pip', 'install', '--quiet', 'einops'],
-        capture_output=True, text=True,
-    )
-    print(f'[startup] einops install exit={_pip2.returncode}', flush=True)
-    # Evict all cached controlnet_aux submodules so the fresh version is used on next import
+        print(f'[startup] reinstall stderr: {_pip.stderr.strip()[:300]}', flush=True)
+    # 3. Invalidate Python's import filesystem cache so the new package is found
+    import importlib
+    importlib.invalidate_caches()
+    # 4. Evict all cached controlnet_aux submodules
     for _k in [k for k in sys.modules if 'controlnet_aux' in k]:
         del sys.modules[_k]
-    # Verify the upgrade worked
+    # 5. Verify
     try:
+        _cna_ver2 = _imd.version('controlnet-aux')
+        print(f'[startup] controlnet_aux version after reinstall: {_cna_ver2}', flush=True)
         from controlnet_aux import DWposeDetector as _cna_v2
         _ok = hasattr(_cna_v2, 'from_pretrained')
-        print(f'[startup] controlnet_aux after reinstall: from_pretrained={_ok}', flush=True)
+        print(f'[startup] from_pretrained={_ok}', flush=True)
         del _cna_v2
     except Exception as _ve:
-        print(f'[startup] Re-import failed: {_ve}', flush=True)
+        print(f'[startup] Post-reinstall verify failed: {_ve}', flush=True)
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
