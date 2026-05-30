@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install worker deps
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
     realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan \
-    controlnet_aux timm
+    "controlnet_aux>=0.0.7" timm
 
 # Pre-download DWPose and MiDaS models so cold starts don't pay the download cost.
 # These are small ONNX/checkpoint files (~1.2 GB total).

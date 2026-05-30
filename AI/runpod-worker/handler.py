@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v42'
+HANDLER_VERSION = '2026-05-30-v43'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -831,16 +831,26 @@ def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, l
 
     if mode == 'pose':
         from controlnet_aux import DWposeDetector
-        det    = DWposeDetector.from_pretrained(
-            'yzd-v/DWPose',
-            det_filename='yolox_l.onnx',
-            pose_filename='dw-ll_ucoco_384.onnx',
-        )
+        if hasattr(DWposeDetector, 'from_pretrained'):
+            det = DWposeDetector.from_pretrained(
+                'yzd-v/DWPose',
+                det_filename='yolox_l.onnx',
+                pose_filename='dw-ll_ucoco_384.onnx',
+            )
+        else:
+            # controlnet_aux <0.0.7: constructor takes direct file paths
+            from huggingface_hub import hf_hub_download
+            _det_path  = hf_hub_download('yzd-v/DWPose', filename='yolox_l.onnx')
+            _pose_path = hf_hub_download('yzd-v/DWPose', filename='dw-ll_ucoco_384.onnx')
+            det = DWposeDetector(_det_path, _pose_path)
         result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
 
     elif mode == 'depth':
         from controlnet_aux import MidasDetector
-        det    = MidasDetector.from_pretrained('lllyasviel/Annotators')
+        if hasattr(MidasDetector, 'from_pretrained'):
+            det = MidasDetector.from_pretrained('lllyasviel/Annotators')
+        else:
+            det = MidasDetector()
         result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
 
     elif mode == 'canny':
