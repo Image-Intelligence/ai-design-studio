@@ -3244,6 +3244,7 @@ function CustomFluxPanel({
   const [upscaleEnabled, setUpscaleEnabled]     = useState(false)
   const [upscaleMethod, setUpscaleMethod]       = useState<'flux'|'esrgan'|'combo'|'pipeline'>('esrgan')
   const [upscaleScale, setUpscaleScale]         = useState<2|4>(2)
+  const [fluxTarget,   setFluxTarget]           = useState<'2k'|'4k'|'5k'|'6k'|'8k'>('2k')
   const [esrganModel, setEsrganModel]           = useState<'ultrasharp'|'x4plus'>('ultrasharp')
   const [comboOrder, setComboOrder]             = useState<'flux-first'|'esrgan-first'>('flux-first')
   const [fluxTileStrength, setFluxTileStrength] = useState(0.3)
@@ -3276,7 +3277,7 @@ function CustomFluxPanel({
 
   // Derived upscale param sent to the API
   const upscaleParam = !upscaleEnabled ? 'none'
-    : upscaleMethod === 'flux'     ? (upscaleScale === 2 ? '2k'        : '4k')
+    : upscaleMethod === 'flux'     ? fluxTarget
     : upscaleMethod === 'esrgan'   ? (upscaleScale === 2 ? '2k-esrgan' : '4k-esrgan')
     : upscaleMethod === 'pipeline' ? 'pipeline'
     : 'combo'
@@ -3794,18 +3795,40 @@ function CustomFluxPanel({
             {/* Scale (hidden for combo and pipeline) */}
             {upscaleMethod !== 'combo' && upscaleMethod !== 'pipeline' && (
               <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
-                <span className="text-[10px] font-mono text-slate-500">Scale</span>
-                <div className="flex gap-1">
-                  {([2, 4] as const).map(s => (
-                    <button key={s} onClick={() => setUpscaleScale(s)}
-                      className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
-                        upscaleScale === s
-                          ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
-                          : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
-                      }`}>
-                      {s}×
-                    </button>
-                  ))}
+                <span className="text-[10px] font-mono text-slate-500">
+                  {upscaleMethod === 'flux' ? 'Target' : 'Scale'}
+                </span>
+                <div className="flex gap-1 flex-wrap">
+                  {upscaleMethod === 'flux' ? (
+                    ([
+                      { key: '2k' as const, label: '2×',  sub: '2048px long side' },
+                      { key: '4k' as const, label: '4×',  sub: '4096px long side' },
+                      { key: '5k' as const, label: '5K',  sub: '5120px long side' },
+                      { key: '6k' as const, label: '6K',  sub: '6144px long side' },
+                      { key: '8k' as const, label: '8K',  sub: '8192px long side' },
+                    ]).map(({ key, label, sub }) => (
+                      <button key={key} onClick={() => setFluxTarget(key)}
+                        title={sub}
+                        className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                          fluxTarget === key
+                            ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                        }`}>
+                        {label}
+                      </button>
+                    ))
+                  ) : (
+                    ([2, 4] as const).map(s => (
+                      <button key={s} onClick={() => setUpscaleScale(s)}
+                        className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+                          upscaleScale === s
+                            ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                        }`}>
+                        {s}×
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -4016,7 +4039,7 @@ function CustomFluxPanel({
                 : upscaleMethod === 'combo'
                 ? `Flux 2× tiling → ESRGAN 2× (${esrganModel === 'ultrasharp' ? '4x-UltraSharp' : 'RealESRGAN'}) = effective 4× — faithful structure + GAN texture`
                 : upscaleMethod === 'flux'
-                ? `Flux diffusion tiling ${upscaleScale}× — accurate, prompt-guided detail, slower`
+                ? `Flux diffusion tiling → ${fluxTarget.toUpperCase()} long side — accurate, prompt-guided detail, slower`
                 : `${esrganModel === 'ultrasharp' ? '4x-UltraSharp' : 'RealESRGAN'} ${upscaleScale}× — fast, adds high-freq texture, no diffusion`
               }
             </p>
@@ -4081,12 +4104,18 @@ function CustomFluxPanel({
                   }
                 } else if (upscaleMethod === 'combo') {
                   finalW *= 4; finalH *= 4
+                } else if (upscaleMethod === 'flux') {
+                  const fluxTargetPx = { '2k': 2048, '4k': 4096, '5k': 5120, '6k': 6144, '8k': 8192 }[fluxTarget] ?? 2048
+                  const longSide = Math.max(finalW, finalH)
+                  const scale = fluxTargetPx / longSide
+                  finalW = Math.round(finalW * scale)
+                  finalH = Math.round(finalH * scale)
                 } else {
                   finalW *= upscaleScale; finalH *= upscaleScale
                 }
               }
               const upscaleLabel = !upscaleEnabled ? null
-                : upscaleMethod === 'flux'     ? `${upscaleScale}× Flux Tiling`
+                : upscaleMethod === 'flux'     ? `Flux Tiling → ${fluxTarget.toUpperCase()}`
                 : upscaleMethod === 'esrgan'   ? `${upscaleScale}× ${esrganModel === 'ultrasharp' ? 'UltraSharp' : 'RealESRGAN'}`
                 : upscaleMethod === 'pipeline' ? `Pipeline (${pipelineSteps.map(s => s.type === 'flux' ? `Flux ${s.upscaleFactor ?? 2}×` : 'ESRGAN').join('→')})`
                 : `4× Combo (${comboOrder === 'flux-first' ? 'Flux→ESRGAN' : 'ESRGAN→Flux'})`

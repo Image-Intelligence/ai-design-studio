@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-29-v40'
+HANDLER_VERSION = '2026-05-30-v41'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -813,10 +813,12 @@ def _gfpgan_restore(image_pil, weight: float, logs: list):
 
 def _tiled_img2img(pipe_i2i, image_pil, prompt: str, upscale_factor: int,
                    strength: float, steps: int, guidance: float,
-                   seed, logs: list):
+                   seed, logs: list, target_px: int = 0):
     """
     Lanczos upscale then tiled img2img for detail enhancement.
     Tiles are 1024×1024 (Flux native resolution) with 128px feathered overlap.
+    If target_px > 0, scales so the long side equals target_px (aspect-ratio safe).
+    Otherwise multiplies dimensions by upscale_factor.
     """
     from PIL import Image
     import numpy as np
@@ -826,8 +828,14 @@ def _tiled_img2img(pipe_i2i, image_pil, prompt: str, upscale_factor: int,
     OVER = 128
     STEP = TILE - OVER
 
-    new_w = image_pil.width  * upscale_factor
-    new_h = image_pil.height * upscale_factor
+    if target_px > 0:
+        _long  = max(image_pil.width, image_pil.height)
+        _scale = target_px / _long
+        new_w  = max(1, round(image_pil.width  * _scale))
+        new_h  = max(1, round(image_pil.height * _scale))
+    else:
+        new_w = image_pil.width  * upscale_factor
+        new_h = image_pil.height * upscale_factor
     logs.append(f'[upscale] Lanczos {image_pil.width}×{image_pil.height} → {new_w}×{new_h}')
     big = image_pil.resize((new_w, new_h), Image.LANCZOS)
 
@@ -930,7 +938,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     upscale          = inp.get('upscale', 'none')
     upscale_strength = float(inp.get('upscale_strength', 0.3))
     _up              = str(upscale).lower()
-    upscale_factor   = {'2k': 2, '4k': 4}.get(_up, 0)
+    _FLUX_TARGET_PX  = {'2k': 2048, '4k': 4096, '5k': 5120, '6k': 6144, '8k': 8192}
+    flux_target_px   = _FLUX_TARGET_PX.get(_up, 0)   # target long-side px; 0 = not flux-tiling mode
+    upscale_factor   = flux_target_px                  # kept for pipe_i2i load gate (non-zero = needs flux)
     esrgan_factor    = {'2k-esrgan': 2, '4k-esrgan': 4}.get(_up, 0)
     do_combo         = (_up == 'combo')
     pipeline_steps   = inp.get('pipeline_steps', [])        # list of {type, ...} dicts
@@ -1414,10 +1424,10 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[combo] Done — {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
-        elif upscale_factor > 0 and pipe_i2i is not None:
-            logs.append(f'[inference] Flux tiled {upscale_factor}× (strength={upscale_strength})...')
+        elif flux_target_px > 0 and pipe_i2i is not None:
+            logs.append(f'[inference] Flux tiled → {flux_target_px}px long side (strength={upscale_strength})...')
             _flush_logs(r2, bucket, job_id, logs)
-            image = _tiled_img2img(pipe_i2i, image, prompt, upscale_factor, upscale_strength, steps, guidance, seed, logs)
+            image = _tiled_img2img(pipe_i2i, image, prompt, 1, upscale_strength, steps, guidance, seed, logs, target_px=flux_target_px)
             logs.append(f'[inference] Tiling done — {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
