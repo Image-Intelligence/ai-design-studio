@@ -3248,7 +3248,7 @@ function CustomFluxPanel({
   const [comboOrder, setComboOrder]             = useState<'flux-first'|'esrgan-first'>('flux-first')
   const [fluxTileStrength, setFluxTileStrength] = useState(0.3)
   // Custom pipeline steps
-  type PipelineStep = { type: 'flux' | 'esrgan'; upscaleFactor?: 1|2; strength?: number; model?: string; targetPx?: number }
+  type PipelineStep = { type: 'flux' | 'esrgan'; upscaleFactor?: 1|2|3|4; strength?: number; model?: string; targetPx?: number }
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStep[]>([
     { type: 'flux',   upscaleFactor: 2, strength: 0.35 },
     { type: 'esrgan', model: 'ultrasharp', targetPx: 4096 },
@@ -3913,7 +3913,7 @@ function CustomFluxPanel({
                         <div>
                           <span className="text-[9px] font-mono text-slate-600 block mb-0.5">Scale</span>
                           <div className="flex gap-1">
-                            {([1, 2] as const).map(f => (
+                            {([1, 2, 3, 4] as const).map(f => (
                               <button key={f} onClick={() => updatePipelineStep(i, { upscaleFactor: f })}
                                 className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
                                   step.upscaleFactor === f
@@ -3970,7 +3970,7 @@ function CustomFluxPanel({
                             Target px <span className="text-slate-700">(must exceed {Math.round(inputRes)}px)</span>
                           </span>
                           <div className="flex gap-1 flex-wrap">
-                            {([0, 2048, 3072, 4096] as const).map(px => {
+                            {([0, 2048, 3072, 4096, 6144, 8192] as const).map(px => {
                               const tooSmall = px > 0 && px <= inputRes
                               return (
                                 <button key={px}
