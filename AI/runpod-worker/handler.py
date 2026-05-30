@@ -49,27 +49,38 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v44'
+HANDLER_VERSION = '2026-05-30-v45'
 
-# controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose and has no from_pretrained.
-# OneTrainer's requirements.txt can pin an old version — self-heal by force-upgrading
-# once at startup if the old version is detected.
+# controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose (no from_pretrained / ONNX support).
+# OneTrainer's requirements.txt pins an old version. --no-deps --force-reinstall bypasses
+# all pip constraint checking and overwrites the old package unconditionally.
 try:
     from controlnet_aux import DWposeDetector as _cna_check
     if not hasattr(_cna_check, 'from_pretrained'):
         raise ImportError('old')
     del _cna_check
+    print('[startup] controlnet_aux OK — ONNX DWPose available.', flush=True)
 except Exception:
-    print('[startup] controlnet_aux lacks ONNX-based DWPose — force-upgrading...', flush=True)
+    print('[startup] Old controlnet_aux detected — force-installing 0.0.9 (--no-deps)...', flush=True)
     _pip = subprocess.run(
-        [sys.executable, '-m', 'pip', 'install', '--upgrade', '--quiet', 'controlnet_aux>=0.0.7'],
+        [sys.executable, '-m', 'pip', 'install',
+         '--no-deps', '--force-reinstall', '--quiet', 'controlnet_aux==0.0.9'],
         capture_output=True, text=True,
     )
-    print(f'[startup] pip upgrade exit={_pip.returncode} {_pip.stderr.strip()[:200]}', flush=True)
+    print(f'[startup] pip exit={_pip.returncode}', flush=True)
+    if _pip.stderr.strip():
+        print(f'[startup] pip stderr: {_pip.stderr.strip()[:400]}', flush=True)
     # Evict all cached controlnet_aux submodules so the fresh version is used on next import
     for _k in [k for k in sys.modules if 'controlnet_aux' in k]:
         del sys.modules[_k]
-    print('[startup] controlnet_aux upgraded — submodules cleared.', flush=True)
+    # Verify the upgrade worked
+    try:
+        from controlnet_aux import DWposeDetector as _cna_v2
+        _ok = hasattr(_cna_v2, 'from_pretrained')
+        print(f'[startup] controlnet_aux after reinstall: from_pretrained={_ok}', flush=True)
+        del _cna_v2
+    except Exception as _ve:
+        print(f'[startup] Re-import failed: {_ve}', flush=True)
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -851,26 +862,23 @@ def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, l
 
     if mode == 'pose':
         from controlnet_aux import DWposeDetector
-        if hasattr(DWposeDetector, 'from_pretrained'):
-            det = DWposeDetector.from_pretrained(
-                'yzd-v/DWPose',
-                det_filename='yolox_l.onnx',
-                pose_filename='dw-ll_ucoco_384.onnx',
+        if not hasattr(DWposeDetector, 'from_pretrained'):
+            raise RuntimeError(
+                'controlnet_aux is too old (no ONNX/from_pretrained). '
+                'The startup --force-reinstall failed — check [startup] logs above.'
             )
-        else:
-            # controlnet_aux <0.0.7: constructor takes direct file paths
-            from huggingface_hub import hf_hub_download
-            _det_path  = hf_hub_download('yzd-v/DWPose', filename='yolox_l.onnx')
-            _pose_path = hf_hub_download('yzd-v/DWPose', filename='dw-ll_ucoco_384.onnx')
-            det = DWposeDetector(_det_path, _pose_path)
+        det    = DWposeDetector.from_pretrained(
+            'yzd-v/DWPose',
+            det_filename='yolox_l.onnx',
+            pose_filename='dw-ll_ucoco_384.onnx',
+        )
         result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
 
     elif mode == 'depth':
         from controlnet_aux import MidasDetector
-        if hasattr(MidasDetector, 'from_pretrained'):
-            det = MidasDetector.from_pretrained('lllyasviel/Annotators')
-        else:
-            det = MidasDetector()
+        if not hasattr(MidasDetector, 'from_pretrained'):
+            raise RuntimeError('controlnet_aux is too old — check [startup] logs.')
+        det    = MidasDetector.from_pretrained('lllyasviel/Annotators')
         result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
 
     elif mode == 'canny':
