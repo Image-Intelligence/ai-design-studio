@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v41'
+HANDLER_VERSION = '2026-05-30-v42'
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -57,6 +57,7 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 _PIPE_CACHE:   dict = {}   # ckpt_path → FluxPipeline (reused across jobs on warm workers)
 _YOLO_CACHE:  dict = {}   # model_path → YOLO instance
 _GFPGAN_CACHE: dict = {}   # model_path → GFPGANer instance
+_CN_CACHE:    dict = {}   # 'union' → FluxControlNetModel (cached in VRAM after first load)
 print(f'[handler] loaded — version {HANDLER_VERSION}', flush=True)
 
 OT_DIR     = '/workspace/OneTrainer'
@@ -811,6 +812,54 @@ def _gfpgan_restore(image_pil, weight: float, logs: list):
     return restored_pil
 
 
+def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, logs: list):
+    """
+    Extract a ControlNet condition image from a PIL RGB image.
+      pose  → DWPose skeleton
+      depth → MiDaS depth map
+      canny → Canny edge map (OpenCV, no model needed)
+    Returns a PIL RGB image sized target_w × target_h.
+    """
+    from PIL import Image
+    import numpy as np
+
+    logs.append(f'[controlnet] Extracting {mode} condition ({image_pil.width}×{image_pil.height})...')
+    print(f'[controlnet] Extracting {mode}...', flush=True)
+
+    detect_res = 512
+    out_res    = max(target_w, target_h)
+
+    if mode == 'pose':
+        from controlnet_aux import DWposeDetector
+        det    = DWposeDetector.from_pretrained(
+            'yzd-v/DWPose',
+            det_filename='yolox_l.onnx',
+            pose_filename='dw-ll_ucoco_384.onnx',
+        )
+        result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
+
+    elif mode == 'depth':
+        from controlnet_aux import MidasDetector
+        det    = MidasDetector.from_pretrained('lllyasviel/Annotators')
+        result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
+
+    elif mode == 'canny':
+        import cv2
+        img_cv = cv2.cvtColor(np.array(image_pil.convert('RGB')), cv2.COLOR_RGB2BGR)
+        edges  = cv2.Canny(img_cv, 100, 200)
+        result = Image.fromarray(cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB))
+
+    else:
+        raise ValueError(f'[controlnet] Unknown mode: {mode}')
+
+    if not isinstance(result, Image.Image):
+        result = Image.fromarray(np.array(result))
+
+    result = result.convert('RGB').resize((target_w, target_h), Image.LANCZOS)
+    logs.append(f'[controlnet] Condition ready: {result.width}×{result.height}')
+    return result
+
+
 def _tiled_img2img(pipe_i2i, image_pil, prompt: str, upscale_factor: int,
                    strength: float, steps: int, guidance: float,
                    seed, logs: list, target_px: int = 0):
@@ -959,8 +1008,13 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # img2img from reference image
     img2img_image_b64 = inp.get('img2img_image', '')
     img2img_strength  = float(inp.get('img2img_strength', 0.65))
+    # ControlNet
+    controlnet_enabled  = bool(inp.get('controlnet', False))
+    controlnet_mode     = str(inp.get('controlnet_mode', 'pose')).lower()   # pose | depth | canny
+    controlnet_scale    = float(inp.get('controlnet_scale', 0.7))
+    controlnet_img_b64  = str(inp.get('controlnet_image', ''))
     # Unconditional debug
-    print(f'[debug] upscale={upscale} do_pipeline={do_pipeline} n_pipeline_steps={len(pipeline_steps)} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)} width={width} height={height}', flush=True)
+    print(f'[debug] upscale={upscale} do_pipeline={do_pipeline} n_pipeline_steps={len(pipeline_steps)} esrgan_model={esrgan_model} combo_order={combo_order} gfpgan={gfpgan_enabled} img2img={bool(img2img_image_b64)} ip_images={len(ip_image_keys)} controlnet={controlnet_enabled}/{controlnet_mode} width={width} height={height}', flush=True)
 
     print(f'[inference] Starting job {job_id} — handler {HANDLER_VERSION}', flush=True)
     logs.append(f'[inference] Starting job {job_id}')
@@ -981,6 +1035,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         except Exception as _i2i_dec_err:
             logs.append(f'[img2img] Warning: failed to decode source image ({_i2i_dec_err}). Falling back to text2img.')
             img2img_pil = None
+
+    # Decode ControlNet source image if provided
+    controlnet_src_pil = None
+    if controlnet_enabled and controlnet_img_b64:
+        try:
+            from PIL import Image as _PIL_cn
+            from io import BytesIO as _BIO_cn
+            import base64 as _b64_cn
+            _raw_cn = controlnet_img_b64
+            if ',' in _raw_cn:
+                _raw_cn = _raw_cn.split(',', 1)[1]
+            controlnet_src_pil = _PIL_cn.open(_BIO_cn(_b64_cn.b64decode(_raw_cn))).convert('RGB')
+            logs.append(f'[controlnet] Source image decoded: {controlnet_src_pil.width}×{controlnet_src_pil.height}')
+        except Exception as _cn_dec_err:
+            logs.append(f'[controlnet] Warning: failed to decode control image ({_cn_dec_err}). ControlNet disabled.')
+            controlnet_enabled = False
 
     # 1. Checkpoint — cached by filename so warm workers skip the download
     ckpt_filename = ckpt_key.split('/')[-1]
@@ -1303,6 +1373,56 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[ip_adapter] Warning: failed to load ({_ip_err}). Continuing without IP-Adapter.')
             _flush_logs(r2, bucket, job_id, logs)
 
+    # 5b. Load ControlNet if requested (only applies to t2i base generation — not img2img)
+    pipe_cn        = None
+    control_image  = None
+    controlnet_mode_int = {'canny': 0, 'depth': 2, 'pose': 4}.get(controlnet_mode, 4)
+    if controlnet_enabled and controlnet_src_pil is not None:
+        try:
+            CN_LOCAL_DIR = '/workspace/models/controlnet/flux-union'
+            CN_MODEL_ID  = 'InstantX/FLUX.1-dev-Controlnet-Union'
+
+            if 'union' not in _CN_CACHE:
+                from diffusers import FluxControlNetModel
+                from huggingface_hub import snapshot_download
+                import os as _os_cn
+                logs.append('[controlnet] Loading ControlNet Union model...')
+                _flush_logs(r2, bucket, job_id, logs)
+                if not _os_cn.path.exists(_os_cn.path.join(CN_LOCAL_DIR, 'config.json')):
+                    logs.append(f'[controlnet] Downloading {CN_MODEL_ID} (~3.5 GB)...')
+                    _flush_logs(r2, bucket, job_id, logs)
+                    print(f'[controlnet] Downloading {CN_MODEL_ID}...', flush=True)
+                    snapshot_download(CN_MODEL_ID, local_dir=CN_LOCAL_DIR)
+                    print('[controlnet] Download complete.', flush=True)
+                logs.append('[controlnet] Loading model weights...')
+                _flush_logs(r2, bucket, job_id, logs)
+                _cn_model = FluxControlNetModel.from_pretrained(CN_LOCAL_DIR, torch_dtype=torch.bfloat16).to('cuda')
+                _CN_CACHE['union'] = _cn_model
+                logs.append('[controlnet] ControlNet Union loaded and cached in VRAM.')
+            else:
+                _cn_model = _CN_CACHE['union']
+                logs.append('[controlnet] Using cached ControlNet Union model.')
+
+            # Wrap the base pipe — shares all transformer/VAE/encoder weights, only adds the CN adapter
+            from diffusers import FluxControlNetPipeline
+            pipe_cn = FluxControlNetPipeline(**pipe.components, controlnet=_cn_model)
+
+            # Extract condition image from the user-supplied source
+            control_image = _extract_control_image(
+                controlnet_src_pil, controlnet_mode, width, height, logs
+            )
+            logs.append(f'[controlnet] Ready — mode={controlnet_mode} (int={controlnet_mode_int}) scale={controlnet_scale}')
+            _flush_logs(r2, bucket, job_id, logs)
+
+        except Exception as _cn_err:
+            logs.append(f'[controlnet] Warning: setup failed ({_cn_err}) — falling back to standard generation.')
+            print(f'[controlnet] ERROR: {_cn_err}', flush=True)
+            import traceback as _cn_tb; _cn_tb.print_exc()
+            pipe_cn       = None
+            control_image = None
+            controlnet_enabled = False
+            _flush_logs(r2, bucket, job_id, logs)
+
     _inf_error: Exception | None = None
     try:
         # 6. Base generation (img2img or text2img)
@@ -1325,7 +1445,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                                       num_inference_steps=steps, guidance_scale=guidance, generator=gen)
             if ip_ref_image is not None:
                 _pipe_kwargs['ip_adapter_image'] = ip_ref_image
-            image = pipe(**_pipe_kwargs).images[0]
+            if pipe_cn is not None and control_image is not None:
+                _pipe_kwargs['control_image']                 = control_image
+                _pipe_kwargs['control_mode']                  = controlnet_mode_int
+                _pipe_kwargs['controlnet_conditioning_scale'] = controlnet_scale
+                logs.append(f'[controlnet] Generating with ControlNet ({controlnet_mode} mode, scale={controlnet_scale})...')
+                _flush_logs(r2, bucket, job_id, logs)
+                image = pipe_cn(**_pipe_kwargs).images[0]
+            else:
+                image = pipe(**_pipe_kwargs).images[0]
             logs.append('[inference] Base generation done.')
         _flush_logs(r2, bucket, job_id, logs)
 

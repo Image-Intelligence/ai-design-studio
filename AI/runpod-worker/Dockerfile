@@ -17,7 +17,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install worker deps
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
-    realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan
+    realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan \
+    controlnet_aux timm
+
+# Pre-download DWPose and MiDaS models so cold starts don't pay the download cost.
+# These are small ONNX/checkpoint files (~1.2 GB total).
+RUN python -c "\
+from controlnet_aux import DWposeDetector, MidasDetector; \
+print('Pre-downloading DWPose...', flush=True); \
+DWposeDetector.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx'); \
+print('Pre-downloading MiDaS...', flush=True); \
+MidasDetector.from_pretrained('lllyasviel/Annotators'); \
+print('Pre-download complete.', flush=True);" || echo "Warning: controlnet_aux pre-download failed — will retry at runtime"
 
 # Download Real-ESRGAN model weights
 RUN mkdir -p /workspace/models/esrgan && \
