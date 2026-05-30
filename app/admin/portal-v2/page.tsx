@@ -9059,6 +9059,7 @@ export default function PortalV2Page() {
     if (nb2PollingIntervals.current[requestId]) return
     let pollCount = 0
     let pollInFlight = false
+    let notFoundStreak = 0  // consecutive RunPod-404 responses (job purged or not yet registered)
     const interval = setInterval(async () => {
       if (pollInFlight) return
       pollInFlight = true
@@ -9087,8 +9088,29 @@ export default function PortalV2Page() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ requestId, falEndpoint, prompt, outputFormat, aspectRatio, quality, referenceImageUrls, ticketCost }),
+          signal: AbortSignal.timeout(15000),
         })
         const statusData = await statusRes.json()
+        // Track RunPod 404s — after enough consecutive misses past the initial window, the job is purged
+        if (statusData.notFound) {
+          notFoundStreak++
+          if (notFoundStreak >= 8 && pollCount > 24) {
+            clearInterval(interval)
+            delete nb2PollingIntervals.current[requestId]
+            try {
+              const stored = localStorage.getItem("pv2-pending-slots")
+              if (stored) {
+                const slots = JSON.parse(stored) as PendingSlot[]
+                localStorage.setItem("pv2-pending-slots", JSON.stringify(slots.filter(s => !slotIds.includes(s.slotId))))
+              }
+            } catch {}
+            slotIds.forEach(sid => handleUpdatePending(sid, { status: "failed", error: "RunPod job result expired — generation may have completed. Check the image in your R2 storage." }))
+            pollInFlight = false
+            return
+          }
+        } else {
+          notFoundStreak = 0
+        }
         if (statusData.status === "completed") {
           clearInterval(interval)
           delete nb2PollingIntervals.current[requestId]
@@ -9400,6 +9422,42 @@ export default function PortalV2Page() {
   // Use a ref so the poll closure always sees the latest pendingSlots without re-registering the interval
   const pendingSlotsRef = useRef(pendingSlots)
   useEffect(() => { pendingSlotsRef.current = pendingSlots }, [pendingSlots])
+
+  // When the tab becomes visible again (e.g. returning from a locked screen), immediately do a
+  // one-shot status check for any Flux RunPod slots that are still loading so they aren't stuck.
+  useEffect(() => {
+    const onVisibility = async () => {
+      if (document.visibilityState !== 'visible') return
+      const fluxSlots = pendingSlotsRef.current.filter(
+        s => s.status === 'loading' && s.modelId === 'custom-flux-lora' && s.nb2RequestId
+      )
+      for (const slot of fluxSlots) {
+        try {
+          const res = await fetch('/api/admin/flux-inference/nb2-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId: slot.nb2RequestId }),
+            signal: AbortSignal.timeout(10000),
+          })
+          const data = await res.json()
+          if (data.status === 'completed' && data.images?.length > 0) {
+            // Let the existing polling interval handle the completion on its next tick —
+            // just reset the interval so it fires immediately by clearing + restarting it.
+            const old = nb2PollingIntervals.current[slot.nb2RequestId!]
+            if (old) { clearInterval(old); delete nb2PollingIntervals.current[slot.nb2RequestId!] }
+            startNb2SlotPolling(
+              slot.nb2RequestId!, slot.nb2FalEndpoint ?? '', [slot.slotId],
+              slot.prompt, slot.nb2OutputFormat ?? 'png', slot.nb2AspectRatio ?? 'auto',
+              '/api/admin/flux-inference/nb2-status', slot.nb2Quality, slot.nb2TicketCost ?? 0,
+              slot.referenceImageUrls ?? []
+            )
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [startNb2SlotPolling])
 
   const MODEL_STATUS_URLS: Record<string, string> = {
     "nano-banana-pro-2": "/api/admin/nb2-status",

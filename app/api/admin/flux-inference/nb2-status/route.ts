@@ -18,9 +18,9 @@ export async function POST(req: Request) {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
   if (!res.ok) {
-    // 404 means RunPod doesn't have this job yet (brief registration delay after /run submit)
-    // or has already purged a completed job — treat as still processing rather than a hard fail.
-    if (res.status === 404) return NextResponse.json({ status: 'processing' })
+    // 404: either brief registration delay after /run submit, or job was purged post-completion.
+    // Return notFound:true so the client can count consecutive misses and give up gracefully.
+    if (res.status === 404) return NextResponse.json({ status: 'processing', notFound: true })
     return NextResponse.json({ status: 'failed', error: `RunPod HTTP ${res.status}` })
   }
 
