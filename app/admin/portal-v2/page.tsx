@@ -3259,7 +3259,7 @@ function CustomFluxPanel({
   const removePipelineStep = (i: number) =>
     setPipelineSteps(prev => prev.filter((_, idx) => idx !== i))
   const addPipelineStep = (type: 'flux' | 'esrgan') =>
-    setPipelineSteps(prev => prev.length < 5
+    setPipelineSteps(prev => prev.length < 10
       ? [...prev, type === 'flux'
           ? { type: 'flux',   upscaleFactor: 2, strength: 0.35 }
           : { type: 'esrgan', model: 'ultrasharp', targetPx: 4096 }]
@@ -4017,7 +4017,7 @@ function CustomFluxPanel({
                   </div>
                   )
                 })}
-                {pipelineSteps.length < 5 && (
+                {pipelineSteps.length < 10 && (
                   <div className="flex gap-1.5 pt-0.5">
                     <button onClick={() => addPipelineStep('flux')}
                       className="px-2.5 py-1 text-[10px] rounded border border-dashed border-violet-500/30 text-violet-400/60 hover:border-violet-500/60 hover:text-violet-300 transition-colors">
