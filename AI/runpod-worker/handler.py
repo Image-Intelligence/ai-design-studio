@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v60'
+HANDLER_VERSION = '2026-05-31-v61'
 
 import importlib
 
@@ -871,8 +871,15 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
 
     canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
     orig_h, orig_w = img_np.shape[:2]
-    sx = target_w / orig_w
-    sy = target_h / orig_h
+
+    # Letterbox: scale uniformly so the skeleton maintains the reference image's
+    # aspect ratio inside the target canvas (no stretching).
+    _kp_scale  = min(target_w / orig_w, target_h / orig_h)
+    _kp_off_x  = (target_w  - orig_w * _kp_scale) / 2.0
+    _kp_off_y  = (target_h  - orig_h * _kp_scale) / 2.0
+
+    def _kp_to_canvas(x, y):
+        return float(x * _kp_scale + _kp_off_x), float(y * _kp_scale + _kp_off_y)
 
     n_people = 0
     if results and results[0].keypoints is not None:
@@ -889,24 +896,41 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
         kp_radius  = max(2, round(4 * _cur_res / _ref_res))
         _CONF_THRESH = 0.25  # same as original COCO-17 code; 0.1 let in noisy detections
 
+        _COCO_KP_NAMES = [
+            'Nose','L-Eye','R-Eye','L-Ear','R-Ear',
+            'L-Shld','R-Shld','L-Elbow','R-Elbow','L-Wrist','R-Wrist',
+            'L-Hip','R-Hip','L-Knee','R-Knee','L-Ankle','R-Ankle',
+        ]
+
         for kps in kps_all:
-            # Build OpenPose-18 keypoints from COCO-17
+            # Log low-confidence joints so we can diagnose missing skeleton parts
+            _low = [_COCO_KP_NAMES[i] for i in range(17) if kps[i, 2] < _CONF_THRESH]
+            if _low:
+                msg = f'[controlnet] Low-conf joints (not drawn): {", ".join(_low)}'
+                print(msg, flush=True)
+                logs.append(msg)
+
+            # Build OpenPose-18 keypoints from COCO-17 using letterbox mapping
             op: list = []
             for op_i, coco_i in enumerate(_COCO_TO_OP18):
                 if coco_i is None:
                     # Neck = midpoint of L-Shoulder (COCO 5) and R-Shoulder (COCO 6)
                     ls, rs = kps[5], kps[6]
                     if ls[2] > _CONF_THRESH and rs[2] > _CONF_THRESH:
-                        op.append(((ls[0]+rs[0])/2*sx, (ls[1]+rs[1])/2*sy, min(ls[2], rs[2])))
+                        cx, cy = _kp_to_canvas((ls[0]+rs[0])/2, (ls[1]+rs[1])/2)
+                        op.append((cx, cy, min(ls[2], rs[2])))
                     elif ls[2] > _CONF_THRESH:
-                        op.append((ls[0]*sx, ls[1]*sy, ls[2]*0.5))
+                        cx, cy = _kp_to_canvas(ls[0], ls[1])
+                        op.append((cx, cy, float(ls[2]) * 0.5))
                     elif rs[2] > _CONF_THRESH:
-                        op.append((rs[0]*sx, rs[1]*sy, rs[2]*0.5))
+                        cx, cy = _kp_to_canvas(rs[0], rs[1])
+                        op.append((cx, cy, float(rs[2]) * 0.5))
                     else:
                         op.append((0.0, 0.0, 0.0))
                 else:
                     x, y, c = kps[coco_i]
-                    op.append((float(x*sx), float(y*sy), float(c)))
+                    cx, cy = _kp_to_canvas(x, y)
+                    op.append((cx, cy, float(c)))
 
             # Draw limbs as thick ovals (matches draw_bodypose visual style exactly)
             for limb_i, (a, b) in enumerate(_OP_LIMBS):
