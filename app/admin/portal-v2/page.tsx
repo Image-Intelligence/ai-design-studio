@@ -3215,6 +3215,175 @@ function AspectRatioPicker({
   )
 }
 
+// --- DOWNLOAD TO R2 PANEL ---
+
+function DownloadToR2Panel() {
+  const [url, setUrl]                   = useState('')
+  const [r2Key, setR2Key]               = useState('training/checkpoints/')
+  const [civitaiToken, setCivitaiToken] = useState('')
+  const [jobId, setJobId]               = useState<string | null>(null)
+  const [status, setStatus]             = useState<'idle' | 'submitting' | 'running' | 'done' | 'error'>('idle')
+  const [resultR2Key, setResultR2Key]   = useState<string | null>(null)
+  const [sizeMb, setSizeMb]             = useState<number | null>(null)
+  const [error, setError]               = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  useEffect(() => () => stopPolling(), [])
+
+  const startPolling = (id: string) => {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const res  = await fetch(`/api/admin/r2/download?job_id=${id}`)
+        const data = await res.json() as { status: string; r2Key?: string; sizeMb?: number; error?: string }
+        if (data.status === 'done') {
+          stopPolling()
+          setStatus('done')
+          setResultR2Key(data.r2Key ?? null)
+          setSizeMb(data.sizeMb ?? null)
+        } else if (data.status === 'error') {
+          stopPolling()
+          setStatus('error')
+          setError(data.error ?? 'Worker reported an error')
+        }
+      } catch { /* keep polling */ }
+    }, 4000)
+  }
+
+  const handleSubmit = async () => {
+    if (!url.trim() || !r2Key.trim()) return
+    setStatus('submitting')
+    setError(null)
+    setResultR2Key(null)
+    setSizeMb(null)
+    setJobId(null)
+    try {
+      const res  = await fetch('/api/admin/r2/download', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim(), r2Key: r2Key.trim(), civitaiToken: civitaiToken.trim() || undefined }),
+      })
+      const data = await res.json() as { job_id?: string; error?: string }
+      if (!res.ok || !data.job_id) throw new Error(data.error ?? 'Failed to submit job')
+      setJobId(data.job_id)
+      setStatus('running')
+      startPolling(data.job_id)
+    } catch (e) {
+      setStatus('error')
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    }
+  }
+
+  const handleReset = () => {
+    stopPolling()
+    setStatus('idle')
+    setJobId(null)
+    setResultR2Key(null)
+    setSizeMb(null)
+    setError(null)
+  }
+
+  const isRunning = status === 'submitting' || status === 'running'
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 space-y-4">
+      <div className="flex items-center gap-2.5 mb-1">
+        <div className="w-7 h-7 rounded-lg bg-sky-500/15 border border-sky-500/30 flex items-center justify-center shrink-0">
+          <Download size={14} className="text-sky-400" />
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold text-white leading-none">Download Model to R2</h3>
+          <p className="text-[11px] text-slate-500 mt-0.5">Worker downloads at ~245 MB/s directly into your R2 bucket</p>
+        </div>
+      </div>
+
+      {/* URL */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Download URL</label>
+        <input
+          value={url}
+          onChange={e => setUrl(e.target.value)}
+          placeholder="https://civitai.com/api/download/models/..."
+          disabled={isRunning}
+          className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50"
+        />
+      </div>
+
+      {/* R2 Key */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">R2 Destination Key</label>
+        <input
+          value={r2Key}
+          onChange={e => setR2Key(e.target.value)}
+          placeholder="training/checkpoints/my-model.safetensors"
+          disabled={isRunning}
+          className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50 font-mono text-xs"
+        />
+        <p className="text-[10px] text-slate-600">Use <span className="text-slate-400 font-mono">training/checkpoints/</span> for checkpoints or <span className="text-slate-400 font-mono">training/models/esrgan/</span> for upscalers</p>
+      </div>
+
+      {/* Civitai token (optional) */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Civitai API Token <span className="text-slate-600 normal-case">(optional — needed for gated models)</span></label>
+        <input
+          type="password"
+          value={civitaiToken}
+          onChange={e => setCivitaiToken(e.target.value)}
+          placeholder="Leave blank if not needed"
+          disabled={isRunning}
+          className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50"
+        />
+      </div>
+
+      {/* Action */}
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          onClick={handleSubmit}
+          disabled={isRunning || !url.trim() || !r2Key.trim()}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-sm font-semibold text-black"
+        >
+          {isRunning ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+          {status === 'submitting' ? 'Submitting...' : status === 'running' ? 'Downloading...' : 'Start Download'}
+        </button>
+        {status !== 'idle' && (
+          <button onClick={handleReset} className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            Reset
+          </button>
+        )}
+      </div>
+
+      {/* Status */}
+      {status === 'running' && jobId && (
+        <div className="flex items-center gap-2 text-xs text-sky-400 bg-sky-500/10 border border-sky-500/20 rounded-xl px-3 py-2.5">
+          <Loader2 size={12} className="animate-spin shrink-0" />
+          <span>Worker is downloading… Job ID: <span className="font-mono">{jobId}</span></span>
+        </div>
+      )}
+      {status === 'done' && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2.5 space-y-1">
+          <div className="flex items-center gap-2 text-xs text-emerald-400 font-semibold">
+            <CheckCircle size={12} />
+            Download complete{sizeMb ? ` — ${sizeMb.toFixed(0)} MB` : ''}
+          </div>
+          {resultR2Key && (
+            <p className="text-[11px] text-slate-400 font-mono break-all">{resultR2Key}</p>
+          )}
+        </div>
+      )}
+      {status === 'error' && (
+        <div className="flex items-start gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl px-3 py-2.5">
+          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // --- CUSTOM FLUX LORA PANEL ---
 
 type FluxLoraEntry = { id: string; name: string; key: string; strength: number }
@@ -10139,6 +10308,13 @@ export default function PortalV2Page() {
               onSelectToggle={handleSelectToggle}
             />
           </div>
+          {/* Download to R2 — admin only */}
+          {isAdminAccount && (
+            <div className="px-4 pb-2">
+              <DownloadToR2Panel />
+            </div>
+          )}
+
           {/* Custom Flux LoRA panel — replaces PromptBox for that model */}
           {selectedModel.isCustomFlux ? (
             <CustomFluxPanel
