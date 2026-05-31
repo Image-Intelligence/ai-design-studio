@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v51'
+HANDLER_VERSION = '2026-05-30-v52'
 
 # Pose extraction uses ultralytics YOLO (already installed).
 # controlnet_aux is still available for depth (MidasDetector) and edge (Canny).
@@ -911,9 +911,24 @@ def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, l
     out_res    = max(target_w, target_h)
 
     if mode == 'pose':
-        result = _yolo_pose_skeleton(image_pil, target_w, target_h, logs)
-        logs.append(f'[controlnet] Pose skeleton ready: {result.width}×{result.height}')
-        return result.convert('RGB')
+        try:
+            from controlnet_aux import DWposeDetector
+            if not hasattr(DWposeDetector, 'from_pretrained'):
+                raise ImportError('DWposeDetector.from_pretrained not available — using YOLO fallback')
+            print('[controlnet] Using DWPose (ONNX) for pose extraction...', flush=True)
+            det    = DWposeDetector.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx')
+            result = det(image_pil, detect_resolution=512, image_resolution=out_res)
+            logs.append('[controlnet] DWPose skeleton extracted.')
+            print('[controlnet] DWPose done.', flush=True)
+        except Exception as _dw_err:
+            print(f'[controlnet] DWPose failed ({_dw_err}), falling back to YOLO...', flush=True)
+            logs.append(f'[controlnet] DWPose failed ({_dw_err}) — using YOLO skeleton.')
+            result = _yolo_pose_skeleton(image_pil, target_w, target_h, logs)
+        if not isinstance(result, Image.Image):
+            result = Image.fromarray(np.array(result))
+        result = result.convert('RGB').resize((target_w, target_h), Image.LANCZOS)
+        logs.append(f'[controlnet] Pose condition ready: {result.width}×{result.height}')
+        return result
 
     elif mode == 'depth':
         try:

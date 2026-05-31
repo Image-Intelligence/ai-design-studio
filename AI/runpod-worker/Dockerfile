@@ -19,20 +19,25 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
     realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan timm
 
-# Install controlnet_aux deps and the package itself.
-# Pose extraction uses ultralytics YOLO (already above), NOT DWPose.
-# controlnet_aux is kept for MidasDetector (depth) and Canny (edge).
-RUN pip install --no-cache-dir einops scikit-image imageio
-RUN pip install --no-cache-dir --no-deps "controlnet_aux==0.0.9"
+# Install the HuggingFace fork of controlnet_aux from GitHub.
+# The PyPI release (0.0.9) uses mmdet/mmpose for DWPose and never had ONNX support.
+# The HF fork adds DWposeDetector.from_pretrained (ONNX-based) — what diffusers examples use.
+# Must come after OneTrainer's requirements.txt to override its old pin.
+RUN pip install --no-cache-dir einops scikit-image imageio && \
+    (pip install --no-cache-dir onnxruntime-gpu || pip install --no-cache-dir onnxruntime)
+RUN pip install --no-cache-dir "git+https://github.com/huggingface/controlnet_aux.git"
 
-# Pre-download YOLO pose model so cold starts don't pay the download cost (~6 MB).
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt'); print('YOLO pose model ready.')"
-
-# Pre-download MiDaS depth model via controlnet_aux (used for depth ControlNet mode).
+# Pre-download DWPose ONNX models (~1.2 GB) and MiDaS depth model.
 RUN python -c "\
-from controlnet_aux import MidasDetector; \
-det = MidasDetector() if not hasattr(MidasDetector, 'from_pretrained') else MidasDetector.from_pretrained('lllyasviel/Annotators'); \
-print('MiDaS model ready.');" || echo "Warning: MiDaS pre-download failed — will retry at runtime"
+from controlnet_aux import DWposeDetector, MidasDetector; \
+print('Pre-downloading DWPose ONNX models...', flush=True); \
+DWposeDetector.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx'); \
+print('Pre-downloading MiDaS...', flush=True); \
+MidasDetector.from_pretrained('lllyasviel/Annotators'); \
+print('ControlNet aux models ready.', flush=True);" || echo "Warning: pre-download failed — will retry at runtime"
+
+# Pre-download YOLO pose model (kept as fallback if DWPose fails at runtime).
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt'); print('YOLO pose model ready.')"
 
 # Download Real-ESRGAN model weights
 RUN mkdir -p /workspace/models/esrgan && \
