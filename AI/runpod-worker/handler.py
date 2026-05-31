@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v55'
+HANDLER_VERSION = '2026-05-30-v56'
 
 # Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
 # Install from GitHub at startup if the image has the old PyPI version.
@@ -1842,7 +1842,7 @@ def _handle_download_to_r2(job_id: str, inp: dict):
     print(f'[download] Fetching {url.split("token=")[0]}...', flush=True)  # don't log the token
     print(f'[download] Target R2 key: {r2_key}', flush=True)
 
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req, timeout=3600) as resp:
         content_length = resp.headers.get('Content-Length')
         total_mb = f'{int(content_length) / 1024**2:.0f} MB' if content_length else 'unknown size'
