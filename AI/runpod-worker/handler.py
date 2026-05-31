@@ -49,39 +49,48 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v57'
+HANDLER_VERSION = '2026-05-31-v58'
 
 # Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
-# Install from GitHub at startup if the image has the old PyPI version.
+# Without --force-reinstall pip skips when it sees controlnet-aux already installed.
 import importlib
 import importlib.metadata as _imd
 
 def _ensure_dwpose():
     try:
         from controlnet_aux import DWposeDetector as _D
-        if hasattr(_D, 'from_pretrained'):
-            print('[startup] DWPose OK — from_pretrained available.', flush=True)
+        _fp = hasattr(_D, 'from_pretrained')
+        _loc = getattr(sys.modules.get('controlnet_aux'), '__file__', 'unknown')
+        print(f'[startup] controlnet_aux loaded from {_loc}', flush=True)
+        print(f'[startup] DWposeDetector.from_pretrained={_fp}', flush=True)
+        if _fp:
             return
-    except Exception:
-        pass
-    print('[startup] Installing HuggingFace controlnet_aux fork (adds ONNX DWPose)...', flush=True)
+    except Exception as _e:
+        print(f'[startup] controlnet_aux import failed: {_e}', flush=True)
+
+    print('[startup] Installing HuggingFace controlnet_aux fork (--force-reinstall --no-deps)...', flush=True)
     _r = subprocess.run(
-        [sys.executable, '-m', 'pip', 'install', '--quiet',
+        [sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps',
          'git+https://github.com/huggingface/controlnet_aux.git'],
         capture_output=True, text=True,
     )
-    print(f'[startup] HF fork install exit={_r.returncode}', flush=True)
+    print(f'[startup] pip exit={_r.returncode}', flush=True)
+    # Print last 500 chars of stdout and stderr so we can see if pip succeeded
+    if _r.stdout.strip():
+        print(f'[startup] pip stdout: {_r.stdout.strip()[-500:]}', flush=True)
     if _r.stderr.strip():
-        print(f'[startup] stderr: {_r.stderr.strip()[-300:]}', flush=True)
+        print(f'[startup] pip stderr: {_r.stderr.strip()[-500:]}', flush=True)
+
     importlib.invalidate_caches()
     for _k in list(k for k in sys.modules if 'controlnet_aux' in k):
         del sys.modules[_k]
     try:
         from controlnet_aux import DWposeDetector as _D2
-        _ok = hasattr(_D2, 'from_pretrained')
-        print(f'[startup] DWPose from_pretrained={_ok}', flush=True)
+        _ok  = hasattr(_D2, 'from_pretrained')
+        _loc2 = getattr(sys.modules.get('controlnet_aux'), '__file__', 'unknown')
+        print(f'[startup] After reinstall — from_pretrained={_ok}, loc={_loc2}', flush=True)
     except Exception as _e:
-        print(f'[startup] verify failed: {_e}', flush=True)
+        print(f'[startup] verify import failed: {_e}', flush=True)
 
 _ensure_dwpose()
 
@@ -936,19 +945,63 @@ def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, l
     out_res    = max(target_w, target_h)
 
     if mode == 'pose':
+        result = None
+
+        # ── Approach 1: DWposeDetector.from_pretrained (HF fork classic) ──────
         try:
-            from controlnet_aux import DWposeDetector
-            if not hasattr(DWposeDetector, 'from_pretrained'):
-                raise ImportError('DWposeDetector.from_pretrained not available — using YOLO fallback')
-            print('[controlnet] Using DWPose (ONNX) for pose extraction...', flush=True)
-            det    = DWposeDetector.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx')
-            result = det(image_pil, detect_resolution=512, image_resolution=out_res)
-            logs.append('[controlnet] DWPose skeleton extracted.')
-            print('[controlnet] DWPose done.', flush=True)
-        except Exception as _dw_err:
-            print(f'[controlnet] DWPose failed ({_dw_err}), falling back to YOLO...', flush=True)
-            logs.append(f'[controlnet] DWPose failed ({_dw_err}) — using YOLO skeleton.')
+            from controlnet_aux import DWposeDetector as _DWP
+            _attrs = [a for a in dir(_DWP) if not a.startswith('_')]
+            print(f'[dwpose] DWposeDetector public attrs: {_attrs}', flush=True)
+            if hasattr(_DWP, 'from_pretrained'):
+                print('[dwpose] Approach 1: from_pretrained...', flush=True)
+                _det = _DWP.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx')
+                result = _det(image_pil, detect_resolution=512, image_resolution=out_res)
+                logs.append('[controlnet] DWPose (from_pretrained) skeleton extracted.')
+                print('[dwpose] Approach 1 succeeded.', flush=True)
+        except Exception as _e1:
+            print(f'[dwpose] Approach 1 failed: {_e1}', flush=True)
+
+        # ── Approach 2: DWposeDetector(det_ckpt=…, pose_ckpt=…) ─────────────
+        if result is None:
+            try:
+                from huggingface_hub import hf_hub_download as _hf_dl
+                from controlnet_aux import DWposeDetector as _DWP2
+                _det_path  = _hf_dl('yzd-v/DWPose', 'yolox_l.onnx')
+                _pose_path = _hf_dl('yzd-v/DWPose', 'dw-ll_ucoco_384.onnx')
+                print(f'[dwpose] Approach 2: direct ctor — det={_det_path}', flush=True)
+                _det = _DWP2(det_ckpt=_det_path, pose_ckpt=_pose_path)
+                result = _det(image_pil, detect_resolution=512, image_resolution=out_res)
+                logs.append('[controlnet] DWPose (direct ctor) skeleton extracted.')
+                print('[dwpose] Approach 2 succeeded.', flush=True)
+            except Exception as _e2:
+                print(f'[dwpose] Approach 2 failed: {_e2}', flush=True)
+
+        # ── Approach 3: Wholebody + draw_bodypose directly ───────────────────
+        if result is None:
+            try:
+                from huggingface_hub import hf_hub_download as _hf_dl
+                from controlnet_aux.dwpose.wholebody import Wholebody as _WB
+                from controlnet_aux.dwpose.util import draw_bodypose as _draw_bp
+                _det_path  = _hf_dl('yzd-v/DWPose', 'yolox_l.onnx')
+                _pose_path = _hf_dl('yzd-v/DWPose', 'dw-ll_ucoco_384.onnx')
+                print(f'[dwpose] Approach 3: Wholebody — det={_det_path}', flush=True)
+                _wb = _WB(_det_path, _pose_path)
+                _img_np = np.array(image_pil.convert('RGB'))
+                _candidate, _subset = _wb(_img_np)
+                _canvas = np.zeros_like(_img_np)
+                _canvas = _draw_bp(_canvas, _candidate, _subset)
+                result = Image.fromarray(_canvas)
+                logs.append('[controlnet] DWPose (Wholebody) skeleton extracted.')
+                print('[dwpose] Approach 3 succeeded.', flush=True)
+            except Exception as _e3:
+                print(f'[dwpose] Approach 3 failed: {_e3}', flush=True)
+
+        # ── Final fallback: YOLO ─────────────────────────────────────────────
+        if result is None:
+            print('[dwpose] All DWPose approaches failed — falling back to YOLO.', flush=True)
+            logs.append('[controlnet] DWPose unavailable — using YOLO skeleton.')
             result = _yolo_pose_skeleton(image_pil, target_w, target_h, logs)
+
         if not isinstance(result, Image.Image):
             result = Image.fromarray(np.array(result))
         result = result.convert('RGB').resize((target_w, target_h), Image.LANCZOS)
