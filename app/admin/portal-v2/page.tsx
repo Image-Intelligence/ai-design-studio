@@ -3219,7 +3219,7 @@ function AspectRatioPicker({
 
 function DownloadToR2Panel() {
   const [url, setUrl]                   = useState('')
-  const [r2Key, setR2Key]               = useState('training/checkpoints/')
+  const [r2Key, setR2Key]               = useState('')
   const [civitaiToken, setCivitaiToken] = useState('')
   const [jobId, setJobId]               = useState<string | null>(null)
   const [status, setStatus]             = useState<'idle' | 'submitting' | 'running' | 'done' | 'error'>('idle')
@@ -3319,7 +3319,7 @@ function DownloadToR2Panel() {
         <input
           value={r2Key}
           onChange={e => setR2Key(e.target.value)}
-          placeholder="training/checkpoints/my-model.safetensors"
+          placeholder="training/checkpoints/my-model.safetensors  ← must include filename"
           disabled={isRunning}
           className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50 font-mono text-xs"
         />
@@ -4478,7 +4478,7 @@ function CustomFluxPanel({
             <div className="w-px h-3 bg-white/10 shrink-0" />
 
             {/* Checkpoint picker */}
-            <div ref={ckptRef} className="relative shrink-0">
+            <div ref={ckptRef} className="relative shrink-0 flex items-center gap-1">
               <button onClick={() => setCkptOpen(v => !v)}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-medium transition-all ${
                   checkpoint
@@ -4487,6 +4487,10 @@ function CustomFluxPanel({
                 }`}>
                 {checkpointLabel}
                 <ChevronDown size={10} className={`transition-transform ${ckptOpen ? 'rotate-180' : ''}`} />
+              </button>
+              <button onClick={refreshModels} title="Refresh model list from R2"
+                className="p-1 rounded border border-white/10 bg-white/5 text-slate-500 hover:text-white hover:border-white/20 transition-all">
+                <RefreshCw size={10} className={!modelsLoaded ? 'animate-spin' : ''} />
               </button>
               {ckptOpen && (
                 <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[260px] rounded-xl bg-[#0e1018] border border-white/10 shadow-2xl overflow-hidden py-1 max-h-64 overflow-y-auto">
