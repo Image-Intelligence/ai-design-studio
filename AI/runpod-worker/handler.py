@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v62'
+HANDLER_VERSION = '2026-05-31-v63'
 
 import importlib
 
@@ -1602,9 +1602,17 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _cn_model = _CN_CACHE['union']
                 logs.append('[controlnet] Using cached ControlNet Union model.')
 
-            # Wrap the base pipe — shares all transformer/VAE/encoder weights, only adds the CN adapter
+            # Use from_pipe() — properly inherits LoRA processors, IP-Adapter state, and
+            # all other transformer hooks from the existing pipeline. Using **pipe.components
+            # reinitializes attention processors and can overwrite LoRA adapters, causing
+            # the fuzzy textures and quality degradation seen with **pipe.components.
             from diffusers import FluxControlNetPipeline
-            pipe_cn = FluxControlNetPipeline(**pipe.components, controlnet=_cn_model)
+            try:
+                pipe_cn = FluxControlNetPipeline.from_pipe(pipe, controlnet=_cn_model)
+                logs.append('[controlnet] Pipeline created via from_pipe (LoRA state preserved).')
+            except (AttributeError, TypeError) as _fp_err:
+                logs.append(f'[controlnet] from_pipe unavailable ({_fp_err}), falling back to **components.')
+                pipe_cn = FluxControlNetPipeline(**pipe.components, controlnet=_cn_model)
 
             # Extract condition map from each decoded source image
             import io as _io_cn
@@ -1679,14 +1687,18 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _pipe_kwargs['controlnet_conditioning_scale'] = ctrl_scales[0] if _n == 1 else ctrl_scales
                 logs.append(f'[controlnet] Generating with {_n} ControlNet condition(s)...')
                 _flush_logs(r2, bucket, job_id, logs)
-                # control_guidance_end=0.75: ControlNet guides first 75% of steps,
-                # then stops so the final steps are LoRA/prompt-only refinement.
-                # This preserves LoRA character sharpness while still following the pose.
+                # control_guidance_start=0.25, end=0.75: ControlNet only guides the
+                # middle 50% of steps. First 25% = LoRA establishes character.
+                # Last 25% = LoRA/prompt-only refinement for sharpness/detail.
                 try:
-                    image = pipe_cn(**_pipe_kwargs, control_guidance_end=0.75).images[0]
-                except TypeError:
-                    # Older diffusers build doesn't support control_guidance_end
-                    logs.append('[controlnet] control_guidance_end not supported — running full steps.')
+                    import diffusers as _dif_ver
+                    logs.append(f'[controlnet] diffusers version: {_dif_ver.__version__}')
+                    image = pipe_cn(**_pipe_kwargs,
+                                   control_guidance_start=0.25,
+                                   control_guidance_end=0.75).images[0]
+                    logs.append('[controlnet] Used control_guidance_start=0.25, end=0.75.')
+                except TypeError as _cg_err:
+                    logs.append(f'[controlnet] control_guidance params not supported ({_cg_err}) — running full steps.')
                     image = pipe_cn(**_pipe_kwargs).images[0]
             else:
                 image = pipe(**_pipe_kwargs).images[0]
