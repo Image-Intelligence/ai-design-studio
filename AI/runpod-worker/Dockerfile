@@ -19,24 +19,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir runpod boto3 tensorboard peft "diffusers>=0.31.0" \
     realesrgan opencv-python-headless ultralytics huggingface_hub gfpgan timm
 
-# Force-install ONNX-based controlnet_aux (0.0.9) in a separate step.
-# --no-deps bypasses pip's constraint resolver so OneTrainer's old pin can't block it.
-# onnxruntime-gpu is needed by the ONNX DWPose detector; fall back to CPU build if unavailable.
-# Install all deps that controlnet_aux 0.0.9 needs (before --no-deps install so they exist)
-RUN pip install --no-cache-dir einops scikit-image imageio && \
-    (pip install --no-cache-dir onnxruntime-gpu || pip install --no-cache-dir onnxruntime)
-# Force-overwrite controlnet_aux to ONNX-based 0.0.9, bypassing OneTrainer's old pin
-RUN pip install --no-cache-dir --no-deps --force-reinstall "controlnet_aux==0.0.9"
+# Install controlnet_aux deps and the package itself.
+# Pose extraction uses ultralytics YOLO (already above), NOT DWPose.
+# controlnet_aux is kept for MidasDetector (depth) and Canny (edge).
+RUN pip install --no-cache-dir einops scikit-image imageio
+RUN pip install --no-cache-dir --no-deps "controlnet_aux==0.0.9"
 
-# Pre-download DWPose and MiDaS models so cold starts don't pay the download cost.
-# These are small ONNX/checkpoint files (~1.2 GB total).
+# Pre-download YOLO pose model so cold starts don't pay the download cost (~6 MB).
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt'); print('YOLO pose model ready.')"
+
+# Pre-download MiDaS depth model via controlnet_aux (used for depth ControlNet mode).
 RUN python -c "\
-from controlnet_aux import DWposeDetector, MidasDetector; \
-print('Pre-downloading DWPose...', flush=True); \
-DWposeDetector.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx'); \
-print('Pre-downloading MiDaS...', flush=True); \
-MidasDetector.from_pretrained('lllyasviel/Annotators'); \
-print('Pre-download complete.', flush=True);" || echo "Warning: controlnet_aux pre-download failed — will retry at runtime"
+from controlnet_aux import MidasDetector; \
+det = MidasDetector() if not hasattr(MidasDetector, 'from_pretrained') else MidasDetector.from_pretrained('lllyasviel/Annotators'); \
+print('MiDaS model ready.');" || echo "Warning: MiDaS pre-download failed — will retry at runtime"
 
 # Download Real-ESRGAN model weights
 RUN mkdir -p /workspace/models/esrgan && \

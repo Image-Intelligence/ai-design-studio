@@ -49,59 +49,16 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v47'
+HANDLER_VERSION = '2026-05-30-v48'
 
-# controlnet_aux <0.0.7 uses mmdet/mmpose for DWPose — no from_pretrained/ONNX support.
-# OneTrainer's requirements.txt pins an old version. We detect and self-heal at startup.
+# Pose extraction uses ultralytics YOLO (already installed).
+# controlnet_aux is still available for depth (MidasDetector) and edge (Canny).
 import importlib.metadata as _imd
 try:
     _cna_ver = _imd.version('controlnet-aux')
 except Exception:
     _cna_ver = 'unknown'
-print(f'[startup] controlnet_aux installed version: {_cna_ver}', flush=True)
-
-try:
-    from controlnet_aux import DWposeDetector as _cna_check
-    if not hasattr(_cna_check, 'from_pretrained'):
-        raise ImportError('old')
-    del _cna_check
-    print('[startup] controlnet_aux OK — ONNX DWPose available.', flush=True)
-except Exception:
-    print('[startup] Old/broken controlnet_aux — reinstalling 0.0.9...', flush=True)
-    # 1. Install all deps controlnet_aux 0.0.9 needs (before --no-deps install)
-    _pip_deps = subprocess.run(
-        [sys.executable, '-m', 'pip', 'install', '--quiet',
-         'einops', 'scikit-image', 'imageio', 'onnxruntime-gpu'],
-        capture_output=True, text=True,
-    )
-    print(f'[startup] deps install exit={_pip_deps.returncode}', flush=True)
-    if _pip_deps.stderr.strip():
-        print(f'[startup] deps stderr: {_pip_deps.stderr.strip()[:300]}', flush=True)
-    # 2. Force-overwrite controlnet_aux package files (--no-deps skips constraint checks)
-    _pip = subprocess.run(
-        [sys.executable, '-m', 'pip', 'install',
-         '--no-deps', '--force-reinstall', '--quiet', 'controlnet_aux==0.0.9'],
-        capture_output=True, text=True,
-    )
-    print(f'[startup] controlnet_aux reinstall exit={_pip.returncode}', flush=True)
-    if _pip.stderr.strip():
-        print(f'[startup] reinstall stderr: {_pip.stderr.strip()[:300]}', flush=True)
-    # 3. Invalidate Python's import filesystem cache so the new package is found
-    import importlib
-    importlib.invalidate_caches()
-    # 4. Evict all cached controlnet_aux submodules
-    for _k in [k for k in sys.modules if 'controlnet_aux' in k]:
-        del sys.modules[_k]
-    # 5. Verify
-    try:
-        _cna_ver2 = _imd.version('controlnet-aux')
-        print(f'[startup] controlnet_aux version after reinstall: {_cna_ver2}', flush=True)
-        from controlnet_aux import DWposeDetector as _cna_v2
-        _ok = hasattr(_cna_v2, 'from_pretrained')
-        print(f'[startup] from_pretrained={_ok}', flush=True)
-        del _cna_v2
-    except Exception as _ve:
-        print(f'[startup] Post-reinstall verify failed: {_ve}', flush=True)
+print(f'[startup] controlnet_aux version: {_cna_ver} (pose uses YOLO, not DWPose)', flush=True)
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -864,12 +821,76 @@ def _gfpgan_restore(image_pil, weight: float, logs: list):
     return restored_pil
 
 
+# COCO-17 skeleton for OpenPose-style rendering (YOLO pose keypoint indices)
+_COCO_SKELETON = [
+    (15, 13), (13, 11), (16, 14), (14, 12),
+    (11, 12), (5, 11), (6, 12), (5, 6),
+    (5, 7), (6, 8), (7, 9), (8, 10),
+    (1, 2), (0, 1), (0, 2), (1, 3), (2, 4),
+    (0, 5), (0, 6),
+]
+_LIMB_COLORS = [
+    (0, 255, 0),    (0, 255, 85),   (0, 255, 170),  (0, 255, 255),
+    (0, 170, 255),  (0, 85, 255),   (0, 0, 255),    (85, 0, 255),
+    (170, 0, 255),  (255, 0, 255),  (255, 0, 170),  (255, 0, 85),
+    (255, 85, 0),   (255, 170, 0),  (255, 255, 0),  (170, 255, 0),
+    (85, 255, 0),   (255, 0, 0),    (0, 0, 255),
+]
+_KP_COLORS = [
+    (255, 0, 85),   (255, 0, 0),    (255, 85, 0),   (255, 170, 0),
+    (255, 255, 0),  (170, 255, 0),  (85, 255, 0),   (0, 255, 0),
+    (0, 255, 85),   (0, 255, 170),  (0, 255, 255),  (0, 170, 255),
+    (0, 85, 255),   (0, 0, 255),    (85, 0, 255),   (170, 0, 255),
+    (255, 0, 255),
+]
+
+
+def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
+    """Draw COCO-17 skeleton on a black canvas using ultralytics YOLO pose."""
+    import cv2
+    import numpy as np
+    from PIL import Image
+    from ultralytics import YOLO
+
+    model_key = 'yolov8n-pose'
+    if model_key not in _YOLO_CACHE:
+        logs.append('[controlnet] Loading yolov8n-pose model...')
+        _YOLO_CACHE[model_key] = YOLO('yolov8n-pose.pt')
+
+    model  = _YOLO_CACHE[model_key]
+    img_np = np.array(image_pil.convert('RGB'))
+    results = model(img_np, verbose=False)
+
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    orig_h, orig_w = img_np.shape[:2]
+    sx = target_w / orig_w
+    sy = target_h / orig_h
+
+    if results and results[0].keypoints is not None:
+        kps_all = results[0].keypoints.data.cpu().numpy()  # (N, 17, 3)
+        n_people = kps_all.shape[0]
+        logs.append(f'[controlnet] YOLO detected {n_people} person(s)')
+        for kps in kps_all:
+            for idx, (p1, p2) in enumerate(_COCO_SKELETON):
+                if kps[p1, 2] > 0.25 and kps[p2, 2] > 0.25:
+                    x1 = int(kps[p1, 0] * sx); y1 = int(kps[p1, 1] * sy)
+                    x2 = int(kps[p2, 0] * sx); y2 = int(kps[p2, 1] * sy)
+                    cv2.line(canvas, (x1, y1), (x2, y2), _LIMB_COLORS[idx], 3, cv2.LINE_AA)
+            for ki, (x, y, conf) in enumerate(kps):
+                if conf > 0.25:
+                    cv2.circle(canvas, (int(x * sx), int(y * sy)), 5, _KP_COLORS[ki], -1, cv2.LINE_AA)
+    else:
+        logs.append('[controlnet] YOLO: no keypoints detected — returning blank pose canvas')
+
+    return Image.fromarray(canvas)
+
+
 def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, logs: list):
     """
     Extract a ControlNet condition image from a PIL RGB image.
-      pose  → DWPose skeleton
-      depth → MiDaS depth map
-      canny → Canny edge map (OpenCV, no model needed)
+      pose  → YOLO-based OpenPose-style skeleton (black canvas)
+      depth → MiDaS depth map via controlnet_aux
+      canny → Canny edge map (OpenCV, no model)
     Returns a PIL RGB image sized target_w × target_h.
     """
     from PIL import Image
@@ -882,25 +903,20 @@ def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, l
     out_res    = max(target_w, target_h)
 
     if mode == 'pose':
-        from controlnet_aux import DWposeDetector
-        if not hasattr(DWposeDetector, 'from_pretrained'):
-            raise RuntimeError(
-                'controlnet_aux is too old (no ONNX/from_pretrained). '
-                'The startup --force-reinstall failed — check [startup] logs above.'
-            )
-        det    = DWposeDetector.from_pretrained(
-            'yzd-v/DWPose',
-            det_filename='yolox_l.onnx',
-            pose_filename='dw-ll_ucoco_384.onnx',
-        )
-        result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
+        result = _yolo_pose_skeleton(image_pil, target_w, target_h, logs)
+        logs.append(f'[controlnet] Pose skeleton ready: {result.width}×{result.height}')
+        return result.convert('RGB')
 
     elif mode == 'depth':
-        from controlnet_aux import MidasDetector
-        if not hasattr(MidasDetector, 'from_pretrained'):
-            raise RuntimeError('controlnet_aux is too old — check [startup] logs.')
-        det    = MidasDetector.from_pretrained('lllyasviel/Annotators')
-        result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
+        try:
+            from controlnet_aux import MidasDetector
+            if hasattr(MidasDetector, 'from_pretrained'):
+                det = MidasDetector.from_pretrained('lllyasviel/Annotators')
+            else:
+                det = MidasDetector()
+            result = det(image_pil, detect_resolution=detect_res, image_resolution=out_res)
+        except Exception as _depth_err:
+            raise RuntimeError(f'MiDaS depth extraction failed: {_depth_err}')
 
     elif mode == 'canny':
         import cv2
