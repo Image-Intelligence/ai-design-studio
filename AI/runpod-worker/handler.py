@@ -49,50 +49,9 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v58'
+HANDLER_VERSION = '2026-05-31-v59'
 
-# Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
-# Without --force-reinstall pip skips when it sees controlnet-aux already installed.
 import importlib
-import importlib.metadata as _imd
-
-def _ensure_dwpose():
-    try:
-        from controlnet_aux import DWposeDetector as _D
-        _fp = hasattr(_D, 'from_pretrained')
-        _loc = getattr(sys.modules.get('controlnet_aux'), '__file__', 'unknown')
-        print(f'[startup] controlnet_aux loaded from {_loc}', flush=True)
-        print(f'[startup] DWposeDetector.from_pretrained={_fp}', flush=True)
-        if _fp:
-            return
-    except Exception as _e:
-        print(f'[startup] controlnet_aux import failed: {_e}', flush=True)
-
-    print('[startup] Installing HuggingFace controlnet_aux fork (--force-reinstall --no-deps)...', flush=True)
-    _r = subprocess.run(
-        [sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps',
-         'git+https://github.com/huggingface/controlnet_aux.git'],
-        capture_output=True, text=True,
-    )
-    print(f'[startup] pip exit={_r.returncode}', flush=True)
-    # Print last 500 chars of stdout and stderr so we can see if pip succeeded
-    if _r.stdout.strip():
-        print(f'[startup] pip stdout: {_r.stdout.strip()[-500:]}', flush=True)
-    if _r.stderr.strip():
-        print(f'[startup] pip stderr: {_r.stderr.strip()[-500:]}', flush=True)
-
-    importlib.invalidate_caches()
-    for _k in list(k for k in sys.modules if 'controlnet_aux' in k):
-        del sys.modules[_k]
-    try:
-        from controlnet_aux import DWposeDetector as _D2
-        _ok  = hasattr(_D2, 'from_pretrained')
-        _loc2 = getattr(sys.modules.get('controlnet_aux'), '__file__', 'unknown')
-        print(f'[startup] After reinstall — from_pretrained={_ok}, loc={_loc2}', flush=True)
-    except Exception as _e:
-        print(f'[startup] verify import failed: {_e}', flush=True)
-
-_ensure_dwpose()
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -855,34 +814,47 @@ def _gfpgan_restore(image_pil, weight: float, logs: list):
     return restored_pil
 
 
-# COCO-17 skeleton for OpenPose-style rendering (YOLO pose keypoint indices)
-_COCO_SKELETON = [
-    (15, 13), (13, 11), (16, 14), (14, 12),
-    (11, 12), (5, 11), (6, 12), (5, 6),
-    (5, 7), (6, 8), (7, 9), (8, 10),
-    (1, 2), (0, 1), (0, 2), (1, 3), (2, 4),
-    (0, 5), (0, 6),
+# OpenPose-18 skeleton constants — this is the exact format ControlNet Union
+# (and most ControlNet pose models) were trained on.
+#
+# COCO-17 → OpenPose-18 mapping (None = computed, not directly from YOLO).
+# OP: 0=Nose 1=Neck 2=R-Shld 3=R-Elbow 4=R-Wrist 5=L-Shld 6=L-Elbow 7=L-Wrist
+#     8=R-Hip 9=R-Knee 10=R-Ankle 11=L-Hip 12=L-Knee 13=L-Ankle
+#     14=R-Eye 15=L-Eye 16=R-Ear 17=L-Ear
+_COCO_TO_OP18 = [0, None, 6, 8, 10, 5, 7, 9, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3]
+
+# 17 limb connections between OP-18 joint indices (matches draw_bodypose)
+_OP_LIMBS = [
+    (1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7),
+    (1, 8), (8, 9), (9, 10), (1, 11), (11, 12), (12, 13),
+    (1, 0), (0, 14), (14, 16), (0, 15), (15, 17),
 ]
-_LIMB_COLORS = [
-    (0, 255, 0),    (0, 255, 85),   (0, 255, 170),  (0, 255, 255),
-    (0, 170, 255),  (0, 85, 255),   (0, 0, 255),    (85, 0, 255),
-    (170, 0, 255),  (255, 0, 255),  (255, 0, 170),  (255, 0, 85),
-    (255, 85, 0),   (255, 170, 0),  (255, 255, 0),  (170, 255, 0),
-    (85, 255, 0),   (255, 0, 0),    (0, 0, 255),
+
+# Per-limb RGB colors — exactly matches controlnet_aux draw_bodypose
+_OP_LIMB_COLORS = [
+    (255, 0, 0),   (255, 85, 0),  (255, 170, 0), (255, 255, 0), (170, 255, 0),
+    (85, 255, 0),  (0, 255, 0),   (0, 255, 85),  (0, 255, 170), (0, 255, 255),
+    (0, 170, 255), (0, 85, 255),  (0, 0, 255),   (85, 0, 255),  (170, 0, 255),
+    (255, 0, 255), (255, 0, 170),
 ]
-_KP_COLORS = [
-    (255, 0, 85),   (255, 0, 0),    (255, 85, 0),   (255, 170, 0),
-    (255, 255, 0),  (170, 255, 0),  (85, 255, 0),   (0, 255, 0),
-    (0, 255, 85),   (0, 255, 170),  (0, 255, 255),  (0, 170, 255),
-    (0, 85, 255),   (0, 0, 255),    (85, 0, 255),   (170, 0, 255),
-    (255, 0, 255),
+
+# Per-joint RGB colors for 18 keypoints
+_OP_KP_COLORS = [
+    (255, 0, 85),  (255, 0, 0),   (255, 85, 0),  (255, 170, 0), (255, 255, 0),
+    (170, 255, 0), (85, 255, 0),  (0, 255, 0),   (0, 255, 85),  (0, 255, 170),
+    (0, 255, 255), (0, 170, 255), (0, 85, 255),  (0, 0, 255),   (85, 0, 255),
+    (170, 0, 255), (255, 0, 255), (255, 0, 170),
 ]
 
 
 def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
-    """Draw COCO-17 skeleton on a black canvas using ultralytics YOLO pose.
-    Raises RuntimeError if no person is detected so the caller can skip gracefully."""
+    """Extract OpenPose-18 skeleton on a black canvas using YOLO pose.
+
+    Converts COCO-17 keypoints (YOLO output) to OpenPose-18 format and draws
+    with the exact colors/style that ControlNet Union pose mode was trained on.
+    Raises RuntimeError if no person is detected."""
     import cv2
+    import math
     import numpy as np
     from PIL import Image
     from ultralytics import YOLO
@@ -904,19 +876,53 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
 
     n_people = 0
     if results and results[0].keypoints is not None:
-        kps_all = results[0].keypoints.data.cpu().numpy()  # (N, 17, 3)
+        kps_all = results[0].keypoints.data.cpu().numpy()  # (N, 17, 3): x, y, conf
         n_people = kps_all.shape[0]
         print(f'[controlnet] YOLO detected {n_people} person(s)', flush=True)
         logs.append(f'[controlnet] YOLO detected {n_people} person(s)')
+
+        stickwidth = 4
         for kps in kps_all:
-            for idx, (p1, p2) in enumerate(_COCO_SKELETON):
-                if kps[p1, 2] > 0.25 and kps[p2, 2] > 0.25:
-                    x1 = int(kps[p1, 0] * sx); y1 = int(kps[p1, 1] * sy)
-                    x2 = int(kps[p2, 0] * sx); y2 = int(kps[p2, 1] * sy)
-                    cv2.line(canvas, (x1, y1), (x2, y2), _LIMB_COLORS[idx], 3, cv2.LINE_AA)
-            for ki, (x, y, conf) in enumerate(kps):
-                if conf > 0.25:
-                    cv2.circle(canvas, (int(x * sx), int(y * sy)), 5, _KP_COLORS[ki], -1, cv2.LINE_AA)
+            # Build OpenPose-18 keypoints from COCO-17
+            op: list = []
+            for op_i, coco_i in enumerate(_COCO_TO_OP18):
+                if coco_i is None:
+                    # Neck = midpoint of L-Shoulder (COCO 5) and R-Shoulder (COCO 6)
+                    ls, rs = kps[5], kps[6]
+                    if ls[2] > 0.1 and rs[2] > 0.1:
+                        op.append(((ls[0]+rs[0])/2*sx, (ls[1]+rs[1])/2*sy, min(ls[2], rs[2])))
+                    elif ls[2] > 0.1:
+                        op.append((ls[0]*sx, ls[1]*sy, ls[2]*0.5))
+                    elif rs[2] > 0.1:
+                        op.append((rs[0]*sx, rs[1]*sy, rs[2]*0.5))
+                    else:
+                        op.append((0.0, 0.0, 0.0))
+                else:
+                    x, y, c = kps[coco_i]
+                    op.append((float(x*sx), float(y*sy), float(c)))
+
+            # Draw limbs as thick ovals (matches draw_bodypose visual style)
+            for limb_i, (a, b) in enumerate(_OP_LIMBS):
+                xa, ya, ca = op[a]
+                xb, yb, cb = op[b]
+                if ca < 0.1 or cb < 0.1:
+                    continue
+                xa, ya, xb, yb = int(xa), int(ya), int(xb), int(yb)
+                mx, my = (xa+xb)//2, (ya+yb)//2
+                length = int(((xa-xb)**2 + (ya-yb)**2)**0.5)
+                if length < 1:
+                    continue
+                angle  = int(math.degrees(math.atan2(ya-yb, xa-xb)))
+                poly   = cv2.ellipse2Poly((mx, my), (length//2, stickwidth), angle, 0, 360, 1)
+                cur    = canvas.copy()
+                cv2.fillConvexPoly(cur, poly, _OP_LIMB_COLORS[limb_i])
+                canvas = cv2.addWeighted(canvas, 0.4, cur, 0.6, 0)
+
+            # Draw keypoint circles
+            for ki, (x, y, c) in enumerate(op):
+                if c < 0.1:
+                    continue
+                cv2.circle(canvas, (int(x), int(y)), 4, _OP_KP_COLORS[ki], -1, cv2.LINE_AA)
 
     if n_people == 0:
         msg = '[controlnet] YOLO: no person detected in reference image — skipping pose condition'
@@ -947,59 +953,21 @@ def _extract_control_image(image_pil, mode: str, target_w: int, target_h: int, l
     if mode == 'pose':
         result = None
 
-        # ── Approach 1: DWposeDetector.from_pretrained (HF fork classic) ──────
+        # Try DWposeDetector.from_pretrained if ever available (properly rebuilt image)
         try:
             from controlnet_aux import DWposeDetector as _DWP
-            _attrs = [a for a in dir(_DWP) if not a.startswith('_')]
-            print(f'[dwpose] DWposeDetector public attrs: {_attrs}', flush=True)
             if hasattr(_DWP, 'from_pretrained'):
-                print('[dwpose] Approach 1: from_pretrained...', flush=True)
-                _det = _DWP.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx')
+                print('[controlnet] Using DWPose (from_pretrained)...', flush=True)
+                _det  = _DWP.from_pretrained('yzd-v/DWPose', det_filename='yolox_l.onnx', pose_filename='dw-ll_ucoco_384.onnx')
                 result = _det(image_pil, detect_resolution=512, image_resolution=out_res)
-                logs.append('[controlnet] DWPose (from_pretrained) skeleton extracted.')
-                print('[dwpose] Approach 1 succeeded.', flush=True)
-        except Exception as _e1:
-            print(f'[dwpose] Approach 1 failed: {_e1}', flush=True)
+                logs.append('[controlnet] DWPose skeleton extracted.')
+                print('[controlnet] DWPose done.', flush=True)
+        except Exception as _dw_err:
+            print(f'[controlnet] DWPose failed ({_dw_err}), using YOLO OpenPose-18...', flush=True)
 
-        # ── Approach 2: DWposeDetector(det_ckpt=…, pose_ckpt=…) ─────────────
+        # Fallback: YOLO → OpenPose-18 format (correct skeleton format for ControlNet)
         if result is None:
-            try:
-                from huggingface_hub import hf_hub_download as _hf_dl
-                from controlnet_aux import DWposeDetector as _DWP2
-                _det_path  = _hf_dl('yzd-v/DWPose', 'yolox_l.onnx')
-                _pose_path = _hf_dl('yzd-v/DWPose', 'dw-ll_ucoco_384.onnx')
-                print(f'[dwpose] Approach 2: direct ctor — det={_det_path}', flush=True)
-                _det = _DWP2(det_ckpt=_det_path, pose_ckpt=_pose_path)
-                result = _det(image_pil, detect_resolution=512, image_resolution=out_res)
-                logs.append('[controlnet] DWPose (direct ctor) skeleton extracted.')
-                print('[dwpose] Approach 2 succeeded.', flush=True)
-            except Exception as _e2:
-                print(f'[dwpose] Approach 2 failed: {_e2}', flush=True)
-
-        # ── Approach 3: Wholebody + draw_bodypose directly ───────────────────
-        if result is None:
-            try:
-                from huggingface_hub import hf_hub_download as _hf_dl
-                from controlnet_aux.dwpose.wholebody import Wholebody as _WB
-                from controlnet_aux.dwpose.util import draw_bodypose as _draw_bp
-                _det_path  = _hf_dl('yzd-v/DWPose', 'yolox_l.onnx')
-                _pose_path = _hf_dl('yzd-v/DWPose', 'dw-ll_ucoco_384.onnx')
-                print(f'[dwpose] Approach 3: Wholebody — det={_det_path}', flush=True)
-                _wb = _WB(_det_path, _pose_path)
-                _img_np = np.array(image_pil.convert('RGB'))
-                _candidate, _subset = _wb(_img_np)
-                _canvas = np.zeros_like(_img_np)
-                _canvas = _draw_bp(_canvas, _candidate, _subset)
-                result = Image.fromarray(_canvas)
-                logs.append('[controlnet] DWPose (Wholebody) skeleton extracted.')
-                print('[dwpose] Approach 3 succeeded.', flush=True)
-            except Exception as _e3:
-                print(f'[dwpose] Approach 3 failed: {_e3}', flush=True)
-
-        # ── Final fallback: YOLO ─────────────────────────────────────────────
-        if result is None:
-            print('[dwpose] All DWPose approaches failed — falling back to YOLO.', flush=True)
-            logs.append('[controlnet] DWPose unavailable — using YOLO skeleton.')
+            logs.append('[controlnet] Using YOLO → OpenPose-18 skeleton.')
             result = _yolo_pose_skeleton(image_pil, target_w, target_h, logs)
 
         if not isinstance(result, Image.Image):
