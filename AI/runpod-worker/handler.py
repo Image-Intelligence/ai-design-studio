@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v50'
+HANDLER_VERSION = '2026-05-30-v51'
 
 # Pose extraction uses ultralytics YOLO (already installed).
 # controlnet_aux is still available for depth (MidasDetector) and edge (Canny).
@@ -846,7 +846,8 @@ _KP_COLORS = [
 
 
 def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
-    """Draw COCO-17 skeleton on a black canvas using ultralytics YOLO pose."""
+    """Draw COCO-17 skeleton on a black canvas using ultralytics YOLO pose.
+    Raises RuntimeError if no person is detected so the caller can skip gracefully."""
     import cv2
     import numpy as np
     from PIL import Image
@@ -854,6 +855,7 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
 
     model_key = 'yolov8n-pose'
     if model_key not in _YOLO_CACHE:
+        print('[controlnet] Loading yolov8n-pose model...', flush=True)
         logs.append('[controlnet] Loading yolov8n-pose model...')
         _YOLO_CACHE[model_key] = YOLO('yolov8n-pose.pt')
 
@@ -866,9 +868,11 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
     sx = target_w / orig_w
     sy = target_h / orig_h
 
+    n_people = 0
     if results and results[0].keypoints is not None:
         kps_all = results[0].keypoints.data.cpu().numpy()  # (N, 17, 3)
         n_people = kps_all.shape[0]
+        print(f'[controlnet] YOLO detected {n_people} person(s)', flush=True)
         logs.append(f'[controlnet] YOLO detected {n_people} person(s)')
         for kps in kps_all:
             for idx, (p1, p2) in enumerate(_COCO_SKELETON):
@@ -879,8 +883,12 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
             for ki, (x, y, conf) in enumerate(kps):
                 if conf > 0.25:
                     cv2.circle(canvas, (int(x * sx), int(y * sy)), 5, _KP_COLORS[ki], -1, cv2.LINE_AA)
-    else:
-        logs.append('[controlnet] YOLO: no keypoints detected — returning blank pose canvas')
+
+    if n_people == 0:
+        msg = '[controlnet] YOLO: no person detected in reference image — skipping pose condition'
+        print(msg, flush=True)
+        logs.append(msg)
+        raise RuntimeError('YOLO detected no person in the pose reference image. Use a clearer photo of a person.')
 
     return Image.fromarray(canvas)
 
@@ -1501,11 +1509,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             # Extract condition map from each decoded source image
             for _cond in _decoded_cn_conditions:
-                _ci_img = _extract_control_image(_cond['pil'], _cond['mode'], width, height, logs)
-                ctrl_images.append(_ci_img)
-                ctrl_modes.append(_CN_MODE_INT.get(_cond['mode'], 4))
-                ctrl_scales.append(_cond['scale'])
-                logs.append(f"[controlnet] Extracted {_cond['mode']} condition — scale={_cond['scale']}")
+                try:
+                    _ci_img = _extract_control_image(_cond['pil'], _cond['mode'], width, height, logs)
+                    ctrl_images.append(_ci_img)
+                    ctrl_modes.append(_CN_MODE_INT.get(_cond['mode'], 4))
+                    ctrl_scales.append(_cond['scale'])
+                    logs.append(f"[controlnet] Extracted {_cond['mode']} condition — scale={_cond['scale']}")
+                except Exception as _cond_err:
+                    print(f"[controlnet] Skipping {_cond['mode']} condition: {_cond_err}", flush=True)
+                    logs.append(f"[controlnet] Skipped {_cond['mode']} condition: {_cond_err}")
 
             logs.append(f'[controlnet] Ready — {len(ctrl_images)} condition(s)')
             _flush_logs(r2, bucket, job_id, logs)
