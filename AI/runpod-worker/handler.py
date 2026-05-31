@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v63'
+HANDLER_VERSION = '2026-05-31-v64'
 
 import importlib
 
@@ -1613,6 +1613,20 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             except (AttributeError, TypeError) as _fp_err:
                 logs.append(f'[controlnet] from_pipe unavailable ({_fp_err}), falling back to **components.')
                 pipe_cn = FluxControlNetPipeline(**pipe.components, controlnet=_cn_model)
+
+            # Free PyTorch's reserved-but-unallocated pool before the joint
+            # Flux+ControlNet forward pass (fixes border-case CUDA OOM where
+            # ~38 MiB is reserved but not yet allocated — empty_cache releases it).
+            gc.collect()
+            torch.cuda.empty_cache()
+            try:
+                pipe_cn.enable_attention_slicing(1)
+                logs.append('[controlnet] Attention slicing enabled (reduces peak VRAM).')
+            except Exception as _as_err:
+                logs.append(f'[controlnet] Attention slicing not available: {_as_err}')
+            _free_mb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1e6
+            logs.append(f'[controlnet] Free VRAM before inference: ~{_free_mb:.0f} MB')
+            _flush_logs(r2, bucket, job_id, logs)
 
             # Extract condition map from each decoded source image
             import io as _io_cn
