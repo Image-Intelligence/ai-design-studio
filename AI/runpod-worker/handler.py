@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v61'
+HANDLER_VERSION = '2026-05-31-v62'
 
 import importlib
 
@@ -1237,7 +1237,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             try:
                 _raw_cn = _cond_b64.split(',', 1)[1] if ',' in _cond_b64 else _cond_b64
                 _pil_cn = _PIL_cn.open(_BIO_cn(_b64_cn.b64decode(_raw_cn))).convert('RGB')
-                logs.append(f'[controlnet] Condition {_ci + 1} decoded: mode={_cond_mode} scale={_cond_scale} size={_pil_cn.width}×{_pil_cn.height}')
+                _cond_mirror = bool(_cond.get('mirror', False))
+                if _cond_mirror:
+                    _pil_cn = _pil_cn.transpose(_PIL_cn.FLIP_LEFT_RIGHT)
+                    logs.append(f'[controlnet] Condition {_ci + 1} mirrored horizontally.')
+                logs.append(f'[controlnet] Condition {_ci + 1} decoded: mode={_cond_mode} scale={_cond_scale} mirror={_cond_mirror} size={_pil_cn.width}×{_pil_cn.height}')
                 _decoded_cn_conditions.append({'mode': _cond_mode, 'scale': _cond_scale, 'pil': _pil_cn})
             except Exception as _cn_dec_err:
                 logs.append(f'[controlnet] Warning: condition {_ci + 1} decode failed ({_cn_dec_err}) — skipped.')
@@ -1675,7 +1679,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _pipe_kwargs['controlnet_conditioning_scale'] = ctrl_scales[0] if _n == 1 else ctrl_scales
                 logs.append(f'[controlnet] Generating with {_n} ControlNet condition(s)...')
                 _flush_logs(r2, bucket, job_id, logs)
-                image = pipe_cn(**_pipe_kwargs).images[0]
+                # control_guidance_end=0.75: ControlNet guides first 75% of steps,
+                # then stops so the final steps are LoRA/prompt-only refinement.
+                # This preserves LoRA character sharpness while still following the pose.
+                try:
+                    image = pipe_cn(**_pipe_kwargs, control_guidance_end=0.75).images[0]
+                except TypeError:
+                    # Older diffusers build doesn't support control_guidance_end
+                    logs.append('[controlnet] control_guidance_end not supported — running full steps.')
+                    image = pipe_cn(**_pipe_kwargs).images[0]
             else:
                 image = pipe(**_pipe_kwargs).images[0]
             logs.append('[inference] Base generation done.')

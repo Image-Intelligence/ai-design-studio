@@ -11,6 +11,7 @@ interface CNCondition {
   id: string
   mode: 'pose' | 'depth' | 'canny'
   scale: number
+  mirror: boolean
   imgB64: string
   preview: string
 }
@@ -3453,7 +3454,7 @@ function CustomFluxPanel({
   // ControlNet — up to 3 conditions, each with own mode/scale/image
   const [controlnet, setControlnet]   = useState(false)
   const [cnConditions, setCnConditions] = useState<CNCondition[]>([
-    { id: 'cn-0', mode: 'pose', scale: 0.7, imgB64: '', preview: '' },
+    { id: 'cn-0', mode: 'pose', scale: 0.35, mirror: false, imgB64: '', preview: '' },
   ])
   const cnRefsMap = useRef<Record<string, HTMLInputElement | null>>({})
   const updateCn  = useCallback((id: string, patch: Partial<CNCondition>) =>
@@ -3465,7 +3466,7 @@ function CustomFluxPanel({
     const modes: Array<'pose' | 'depth' | 'canny'> = ['pose', 'depth', 'canny']
     const used = cnConditions.map(c => c.mode)
     const next  = modes.find(m => !used.includes(m)) ?? 'pose'
-    setCnConditions(prev => [...prev, { id: `cn-${Date.now()}`, mode: next, scale: 0.7, imgB64: '', preview: '' }])
+    setCnConditions(prev => [...prev, { id: `cn-${Date.now()}`, mode: next, scale: 0.35, mirror: false, imgB64: '', preview: '' }])
   }
   const [autoBaseDims, setAutoBaseDims]         = useState<{ w: number; h: number } | null>(null)
 
@@ -3643,7 +3644,7 @@ function CustomFluxPanel({
       img2img_strength:   img2imgStrength,
       controlnet:            mode === 'runpod' && controlnet && cnConditions.some(c => !!c.imgB64),
       controlnet_conditions: mode === 'runpod' && controlnet
-        ? cnConditions.filter(c => !!c.imgB64).map(c => ({ mode: c.mode, scale: c.scale, image: c.imgB64 }))
+        ? cnConditions.filter(c => !!c.imgB64).map(c => ({ mode: c.mode, scale: c.scale, mirror: c.mirror, image: c.imgB64 }))
         : [],
     }
 
@@ -3941,7 +3942,7 @@ function CustomFluxPanel({
                   )}
                 </div>
 
-                {/* Scale slider */}
+                {/* Scale slider + Mirror toggle */}
                 <div className="grid grid-cols-[4rem_1fr_2.5rem] items-center gap-2">
                   <span className="text-[10px] font-mono text-slate-500">Scale</span>
                   <input type="range" min={0.1} max={1.0} step={0.05} value={cond.scale}
@@ -3949,6 +3950,18 @@ function CustomFluxPanel({
                     className="w-full accent-sky-400 cursor-pointer h-0.5" />
                   <span className="text-[11px] font-mono text-sky-300 tabular-nums text-right">{cond.scale.toFixed(2)}</span>
                 </div>
+                {cond.mode === 'pose' && (
+                  <button
+                    onClick={() => updateCn(cond.id, { mirror: !cond.mirror })}
+                    title="Mirror the reference image horizontally — use if the generated pose is flipped (e.g. selfie photos)"
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] border transition-colors ${
+                      cond.mirror
+                        ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
+                        : 'border-white/10 bg-white/5 text-slate-500 hover:text-white hover:border-white/20'
+                    }`}>
+                    ↔ Mirror reference
+                  </button>
+                )}
 
                 {/* Image upload row */}
                 <div className="flex items-center gap-2 flex-wrap">
