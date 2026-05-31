@@ -3768,6 +3768,7 @@ function CustomFluxPanel({
   const [configOpen, setConfigOpen]     = useState(false)
   const [loraOpen, setLoraOpen]         = useState(false)
   const [ckptOpen, setCkptOpen]         = useState(false)
+  const [downloadOpen, setDownloadOpen] = useState(false)
   const ckptRef      = useRef<HTMLDivElement>(null)
   const loraRef      = useRef<HTMLDivElement>(null)  // button
   const loraPanelRef = useRef<HTMLDivElement>(null)  // panel
@@ -3816,6 +3817,9 @@ function CustomFluxPanel({
             <button onClick={() => setError(null)} className="ml-auto text-red-500/60 hover:text-red-400"><X size={10} /></button>
           </div>
         )}
+
+        {/* Download to R2 panel — collapsible */}
+        {downloadOpen && <DownloadToR2Panel />}
 
         {/* Config panel — collapsible */}
         {configOpen && (
@@ -4615,6 +4619,17 @@ function CustomFluxPanel({
                       : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
                   }`}>
                   ControlNet
+                </button>
+                {/* Download to R2 toggle */}
+                <button onClick={() => setDownloadOpen(v => !v)}
+                  title="Download a model URL directly into R2 via the RunPod worker"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    downloadOpen
+                      ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  <Download size={11} />
+                  DL→R2
                 </button>
               </>
             )}
@@ -10308,13 +10323,6 @@ export default function PortalV2Page() {
               onSelectToggle={handleSelectToggle}
             />
           </div>
-          {/* Download to R2 — admin only */}
-          {isAdminAccount && (
-            <div className="px-4 pb-2">
-              <DownloadToR2Panel />
-            </div>
-          )}
-
           {/* Custom Flux LoRA panel — replaces PromptBox for that model */}
           {selectedModel.isCustomFlux ? (
             <CustomFluxPanel
