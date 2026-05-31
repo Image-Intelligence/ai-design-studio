@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v59'
+HANDLER_VERSION = '2026-05-31-v60'
 
 import importlib
 
@@ -881,7 +881,14 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
         print(f'[controlnet] YOLO detected {n_people} person(s)', flush=True)
         logs.append(f'[controlnet] YOLO detected {n_people} person(s)')
 
-        stickwidth = 4
+        # DWPose reference output is at detect_resolution=512; stickwidth=4 at 512px.
+        # Scale proportionally so skeleton thickness matches training data at any resolution.
+        _ref_res   = 512
+        _cur_res   = min(target_w, target_h)
+        stickwidth = max(2, round(4 * _cur_res / _ref_res))
+        kp_radius  = max(2, round(4 * _cur_res / _ref_res))
+        _CONF_THRESH = 0.25  # same as original COCO-17 code; 0.1 let in noisy detections
+
         for kps in kps_all:
             # Build OpenPose-18 keypoints from COCO-17
             op: list = []
@@ -889,11 +896,11 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
                 if coco_i is None:
                     # Neck = midpoint of L-Shoulder (COCO 5) and R-Shoulder (COCO 6)
                     ls, rs = kps[5], kps[6]
-                    if ls[2] > 0.1 and rs[2] > 0.1:
+                    if ls[2] > _CONF_THRESH and rs[2] > _CONF_THRESH:
                         op.append(((ls[0]+rs[0])/2*sx, (ls[1]+rs[1])/2*sy, min(ls[2], rs[2])))
-                    elif ls[2] > 0.1:
+                    elif ls[2] > _CONF_THRESH:
                         op.append((ls[0]*sx, ls[1]*sy, ls[2]*0.5))
-                    elif rs[2] > 0.1:
+                    elif rs[2] > _CONF_THRESH:
                         op.append((rs[0]*sx, rs[1]*sy, rs[2]*0.5))
                     else:
                         op.append((0.0, 0.0, 0.0))
@@ -901,28 +908,31 @@ def _yolo_pose_skeleton(image_pil, target_w: int, target_h: int, logs: list):
                     x, y, c = kps[coco_i]
                     op.append((float(x*sx), float(y*sy), float(c)))
 
-            # Draw limbs as thick ovals (matches draw_bodypose visual style)
+            # Draw limbs as thick ovals (matches draw_bodypose visual style exactly)
             for limb_i, (a, b) in enumerate(_OP_LIMBS):
                 xa, ya, ca = op[a]
                 xb, yb, cb = op[b]
-                if ca < 0.1 or cb < 0.1:
+                if ca < _CONF_THRESH or cb < _CONF_THRESH:
                     continue
                 xa, ya, xb, yb = int(xa), int(ya), int(xb), int(yb)
                 mx, my = (xa+xb)//2, (ya+yb)//2
                 length = int(((xa-xb)**2 + (ya-yb)**2)**0.5)
-                if length < 1:
+                if length < 3:
                     continue
-                angle  = int(math.degrees(math.atan2(ya-yb, xa-xb)))
-                poly   = cv2.ellipse2Poly((mx, my), (length//2, stickwidth), angle, 0, 360, 1)
+                half_len = max(1, length // 2)
+                angle    = int(math.degrees(math.atan2(ya-yb, xa-xb)))
+                poly     = cv2.ellipse2Poly((mx, my), (half_len, stickwidth), angle, 0, 360, 1)
+                if poly is None or len(poly) < 3:
+                    continue
                 cur    = canvas.copy()
                 cv2.fillConvexPoly(cur, poly, _OP_LIMB_COLORS[limb_i])
                 canvas = cv2.addWeighted(canvas, 0.4, cur, 0.6, 0)
 
             # Draw keypoint circles
             for ki, (x, y, c) in enumerate(op):
-                if c < 0.1:
+                if c < _CONF_THRESH:
                     continue
-                cv2.circle(canvas, (int(x), int(y)), 4, _OP_KP_COLORS[ki], -1, cv2.LINE_AA)
+                cv2.circle(canvas, (int(x), int(y)), kp_radius, _OP_KP_COLORS[ki], -1, cv2.LINE_AA)
 
     if n_people == 0:
         msg = '[controlnet] YOLO: no person detected in reference image — skipping pose condition'
@@ -1569,13 +1579,32 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             pipe_cn = FluxControlNetPipeline(**pipe.components, controlnet=_cn_model)
 
             # Extract condition map from each decoded source image
+            import io as _io_cn
             for _cond in _decoded_cn_conditions:
                 try:
                     _ci_img = _extract_control_image(_cond['pil'], _cond['mode'], width, height, logs)
                     ctrl_images.append(_ci_img)
                     ctrl_modes.append(_CN_MODE_INT.get(_cond['mode'], 4))
                     ctrl_scales.append(_cond['scale'])
-                    logs.append(f"[controlnet] Extracted {_cond['mode']} condition — scale={_cond['scale']}")
+                    _sc = _cond['scale']
+                    logs.append(f"[controlnet] Extracted {_cond['mode']} condition — scale={_sc}")
+                    if _sc > 0.5:
+                        logs.append(f"[controlnet] WARNING: scale={_sc} is high — quality degrades above 0.5 (especially with LoRA). Try 0.2–0.4.")
+                        print(f"[controlnet] WARNING: high scale={_sc}", flush=True)
+
+                    # Save condition image to R2 so it can be inspected
+                    try:
+                        _ci_buf = _io_cn.BytesIO()
+                        _ci_img.save(_ci_buf, format='WEBP', quality=90)
+                        _ci_buf.seek(0)
+                        _ci_dbg_key = f'debug/cn_{_cond["mode"]}_{job_id}.webp'
+                        r2.upload_fileobj(_ci_buf, bucket, _ci_dbg_key,
+                                          ExtraArgs={'ContentType': 'image/webp'})
+                        logs.append(f"[controlnet] Condition image saved → R2 key: {_ci_dbg_key}")
+                        print(f'[controlnet] Skeleton saved to R2: {_ci_dbg_key}', flush=True)
+                    except Exception as _ci_sv_err:
+                        logs.append(f'[controlnet] Could not save condition preview: {_ci_sv_err}')
+
                 except Exception as _cond_err:
                     print(f"[controlnet] Skipping {_cond['mode']} condition: {_cond_err}", flush=True)
                     logs.append(f"[controlnet] Skipped {_cond['mode']} condition: {_cond_err}")
