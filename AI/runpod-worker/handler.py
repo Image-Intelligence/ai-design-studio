@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v48'
+HANDLER_VERSION = '2026-05-30-v49'
 
 # Pose extraction uses ultralytics YOLO (already installed).
 # controlnet_aux is still available for depth (MidasDetector) and edge (Canny).
@@ -1544,9 +1544,10 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 _pipe_kwargs['ip_adapter_image'] = ip_ref_image
             if pipe_cn is not None and ctrl_images:
                 _n = len(ctrl_images)
-                _pipe_kwargs['control_image']                 = ctrl_images[0]  if _n == 1 else ctrl_images
-                _pipe_kwargs['control_mode']                  = ctrl_modes[0]   if _n == 1 else ctrl_modes
-                _pipe_kwargs['controlnet_conditioning_scale'] = ctrl_scales[0]  if _n == 1 else ctrl_scales
+                # Union model expects lists for all three params (even single condition)
+                _pipe_kwargs['control_image']                 = ctrl_images
+                _pipe_kwargs['control_mode']                  = ctrl_modes
+                _pipe_kwargs['controlnet_conditioning_scale'] = ctrl_scales
                 logs.append(f'[controlnet] Generating with {_n} ControlNet condition(s)...')
                 _flush_logs(r2, bucket, job_id, logs)
                 image = pipe_cn(**_pipe_kwargs).images[0]
