@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v53'
+HANDLER_VERSION = '2026-05-30-v54'
 
 # Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
 # Install from GitHub at startup if the image has the old PyPI version.
@@ -1817,6 +1817,56 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     return {'success': True, 'output_r2_key': out_key, 'logs': logs}
 
 
+def _handle_download_to_r2(job_id: str, inp: dict):
+    """
+    Download a URL and upload the bytes directly to R2.
+    Input: { action, url, r2_key, headers? }
+    """
+    import urllib.request
+    url     = inp.get('url', '')
+    r2_key  = inp.get('r2_key', '')
+    hdrs    = inp.get('headers', {})
+    bucket  = os.environ['R2_BUCKET_NAME']
+    r2      = _r2()
+
+    if not url or not r2_key:
+        return {'success': False, 'error': 'url and r2_key are required'}
+
+    print(f'[download] Fetching {url}', flush=True)
+    print(f'[download] Target R2 key: {r2_key}', flush=True)
+
+    req = urllib.request.Request(url, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=3600) as resp:
+        content_length = resp.headers.get('Content-Length')
+        total_mb = f'{int(content_length) / 1024**2:.0f} MB' if content_length else 'unknown size'
+        print(f'[download] Size: {total_mb}', flush=True)
+
+        # Stream in chunks and collect — multipart upload would be better for huge
+        # files but boto3 managed upload handles that automatically via upload_fileobj
+        import io
+        chunk_size  = 16 * 1024 * 1024  # 16 MB
+        downloaded  = 0
+        buf         = io.BytesIO()
+        while True:
+            chunk = resp.read(chunk_size)
+            if not chunk:
+                break
+            buf.write(chunk)
+            downloaded += len(chunk)
+            if downloaded % (256 * 1024 * 1024) < chunk_size:  # log every ~256 MB
+                print(f'[download] {downloaded / 1024**2:.0f} MB downloaded...', flush=True)
+
+    total_downloaded = downloaded / 1024**2
+    print(f'[download] Download complete: {total_downloaded:.0f} MB', flush=True)
+
+    buf.seek(0)
+    print(f'[download] Uploading to R2 at {r2_key}...', flush=True)
+    r2.upload_fileobj(buf, bucket, r2_key)
+    print(f'[download] Upload complete.', flush=True)
+
+    return {'success': True, 'r2_key': r2_key, 'size_mb': round(total_downloaded, 1)}
+
+
 def handler(job):
     inp      = job['input']
     job_id   = job['id']
@@ -1827,6 +1877,11 @@ def handler(job):
     # dispatch inference jobs
     if inp.get('action') == 'inference':
         return _handle_inference(job['id'], inp)
+
+    # download a URL and store it directly in R2 (bypasses slow home networks)
+    if inp.get('action') == 'download_to_r2':
+        return _handle_download_to_r2(job['id'], inp)
+
 
     run_name = inp.get('run_name', 'Training Run')
     config   = dict(inp['config'])
