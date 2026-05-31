@@ -49,16 +49,41 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v52'
+HANDLER_VERSION = '2026-05-30-v53'
 
-# Pose extraction uses ultralytics YOLO (already installed).
-# controlnet_aux is still available for depth (MidasDetector) and edge (Canny).
+# Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
+# Install from GitHub at startup if the image has the old PyPI version.
+import importlib
 import importlib.metadata as _imd
-try:
-    _cna_ver = _imd.version('controlnet-aux')
-except Exception:
-    _cna_ver = 'unknown'
-print(f'[startup] controlnet_aux version: {_cna_ver} (pose uses YOLO, not DWPose)', flush=True)
+
+def _ensure_dwpose():
+    try:
+        from controlnet_aux import DWposeDetector as _D
+        if hasattr(_D, 'from_pretrained'):
+            print('[startup] DWPose OK — from_pretrained available.', flush=True)
+            return
+    except Exception:
+        pass
+    print('[startup] Installing HuggingFace controlnet_aux fork (adds ONNX DWPose)...', flush=True)
+    _r = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '--quiet',
+         'git+https://github.com/huggingface/controlnet_aux.git'],
+        capture_output=True, text=True,
+    )
+    print(f'[startup] HF fork install exit={_r.returncode}', flush=True)
+    if _r.stderr.strip():
+        print(f'[startup] stderr: {_r.stderr.strip()[-300:]}', flush=True)
+    importlib.invalidate_caches()
+    for _k in list(k for k in sys.modules if 'controlnet_aux' in k):
+        del sys.modules[_k]
+    try:
+        from controlnet_aux import DWposeDetector as _D2
+        _ok = hasattr(_D2, 'from_pretrained')
+        print(f'[startup] DWPose from_pretrained={_ok}', flush=True)
+    except Exception as _e:
+        print(f'[startup] verify failed: {_e}', flush=True)
+
+_ensure_dwpose()
 
 # Must be set before any CUDA allocations — prevents fragmentation OOM on warm workers
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
