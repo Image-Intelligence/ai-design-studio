@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v56'
+HANDLER_VERSION = '2026-05-31-v57'
 
 # Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
 # Install from GitHub at startup if the image has the old PyPI version.
@@ -1821,10 +1821,11 @@ def _handle_download_to_r2(job_id: str, inp: dict):
     """
     Download a URL and upload the bytes directly to R2.
     Input: { action, url, r2_key, civitai_token? }
-    Civitai requires the token as ?token= query param, not a Bearer header.
     """
-    import urllib.request
+    import io
     import urllib.parse
+    import requests as _req
+
     url            = inp.get('url', '')
     r2_key         = inp.get('r2_key', '')
     civitai_token  = inp.get('civitai_token', '') or ''
@@ -1834,33 +1835,40 @@ def _handle_download_to_r2(job_id: str, inp: dict):
     if not url or not r2_key:
         return {'success': False, 'error': 'url and r2_key are required'}
 
-    # Civitai (and mirrors) authenticate via ?token= query param
+    # Append token as query param (civitai.com and mirrors authenticate this way)
     if civitai_token:
         sep = '&' if '?' in url else '?'
         url = f'{url}{sep}token={urllib.parse.quote(civitai_token)}'
 
-    print(f'[download] Fetching {url.split("token=")[0]}...', flush=True)  # don't log the token
+    # Build a base URL for logging (strip token value)
+    log_url = url.split('token=')[0] + ('token=***' if civitai_token else '')
+    print(f'[download] Fetching: {log_url}', flush=True)
     print(f'[download] Target R2 key: {r2_key}', flush=True)
 
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=3600) as resp:
-        content_length = resp.headers.get('Content-Length')
-        total_mb = f'{int(content_length) / 1024**2:.0f} MB' if content_length else 'unknown size'
-        print(f'[download] Size: {total_mb}', flush=True)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': url.split('/api/')[0] + '/' if '/api/' in url else url,
+    }
 
-        # Stream in chunks and collect — multipart upload would be better for huge
-        # files but boto3 managed upload handles that automatically via upload_fileobj
-        import io
-        chunk_size  = 16 * 1024 * 1024  # 16 MB
-        downloaded  = 0
-        buf         = io.BytesIO()
-        while True:
-            chunk = resp.read(chunk_size)
+    with _req.get(url, headers=headers, stream=True, timeout=3600, allow_redirects=True) as resp:
+        if not resp.ok:
+            raise RuntimeError(f'HTTP {resp.status_code} {resp.reason} from {log_url}')
+
+        content_length = resp.headers.get('Content-Length')
+        total_mb_str = f'{int(content_length) / 1024**2:.0f} MB' if content_length else 'unknown size'
+        print(f'[download] Size: {total_mb_str}', flush=True)
+
+        chunk_size = 16 * 1024 * 1024  # 16 MB
+        downloaded = 0
+        buf = io.BytesIO()
+        for chunk in resp.iter_content(chunk_size=chunk_size):
             if not chunk:
-                break
+                continue
             buf.write(chunk)
             downloaded += len(chunk)
-            if downloaded % (256 * 1024 * 1024) < chunk_size:  # log every ~256 MB
+            if downloaded % (256 * 1024 * 1024) < chunk_size:
                 print(f'[download] {downloaded / 1024**2:.0f} MB downloaded...', flush=True)
 
     total_downloaded = downloaded / 1024**2
