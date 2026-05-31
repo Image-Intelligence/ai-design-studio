@@ -16,14 +16,11 @@ export async function POST(req: Request) {
   if (!url || !r2Key)
     return NextResponse.json({ error: 'url and r2Key are required' }, { status: 400 })
 
-  const headers: Record<string, string> = {}
-  if (civitaiToken) headers['Authorization'] = `Bearer ${civitaiToken}`
-
   const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {
     method:  'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      input: { action: 'download_to_r2', url, r2_key: r2Key, headers },
+      input: { action: 'download_to_r2', url, r2_key: r2Key, civitai_token: civitaiToken || undefined },
     }),
   })
 

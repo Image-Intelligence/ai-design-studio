@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-30-v54'
+HANDLER_VERSION = '2026-05-30-v55'
 
 # Ensure DWposeDetector.from_pretrained is available (needs HF fork, not PyPI 0.0.9).
 # Install from GitHub at startup if the image has the old PyPI version.
@@ -1820,22 +1820,29 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 def _handle_download_to_r2(job_id: str, inp: dict):
     """
     Download a URL and upload the bytes directly to R2.
-    Input: { action, url, r2_key, headers? }
+    Input: { action, url, r2_key, civitai_token? }
+    Civitai requires the token as ?token= query param, not a Bearer header.
     """
     import urllib.request
-    url     = inp.get('url', '')
-    r2_key  = inp.get('r2_key', '')
-    hdrs    = inp.get('headers', {})
+    import urllib.parse
+    url            = inp.get('url', '')
+    r2_key         = inp.get('r2_key', '')
+    civitai_token  = inp.get('civitai_token', '') or ''
     bucket  = os.environ['R2_BUCKET_NAME']
     r2      = _r2()
 
     if not url or not r2_key:
         return {'success': False, 'error': 'url and r2_key are required'}
 
-    print(f'[download] Fetching {url}', flush=True)
+    # Civitai (and mirrors) authenticate via ?token= query param
+    if civitai_token:
+        sep = '&' if '?' in url else '?'
+        url = f'{url}{sep}token={urllib.parse.quote(civitai_token)}'
+
+    print(f'[download] Fetching {url.split("token=")[0]}...', flush=True)  # don't log the token
     print(f'[download] Target R2 key: {r2_key}', flush=True)
 
-    req = urllib.request.Request(url, headers=hdrs)
+    req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=3600) as resp:
         content_length = resp.headers.get('Content-Length')
         total_mb = f'{int(content_length) / 1024**2:.0f} MB' if content_length else 'unknown size'
