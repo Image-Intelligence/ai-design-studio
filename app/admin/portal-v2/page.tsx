@@ -3385,6 +3385,321 @@ function DownloadToR2Panel() {
   )
 }
 
+// --- STENCIL MODAL ---
+type StencilMode = 'crop' | 'inpaint'
+type StencilResult = { mode: 'crop'; image: string } | { mode: 'inpaint'; image: string; mask: string }
+
+function StencilModal({
+  onClose,
+  onApply,
+  targetW = 1024,
+  targetH = 1024,
+}: {
+  onClose: () => void
+  onApply: (result: StencilResult) => void
+  targetW?: number
+  targetH?: number
+}) {
+  const canvasRef    = useRef<HTMLCanvasElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const srcImgRef    = useRef<HTMLImageElement | null>(null)
+
+  const [imgLoaded, setImgLoaded] = useState(false)
+  const [mode, setMode]           = useState<StencilMode>('crop')
+  const [padding, setPadding]     = useState(20)
+  const [sel, setSel]             = useState({ x: 0, y: 0, w: 512, h: 512 })
+  const selRef = useRef(sel)
+  useEffect(() => { selRef.current = sel }, [sel])
+
+  const dtRef = useRef({ scale: 1, offX: 0, offY: 0, imgW: 0, imgH: 0 })
+
+  type DragOp = 'none' | 'move' | 'new' | 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w'
+  const dragRef = useRef<{ op: DragOp; cx0: number; cy0: number; sel0: typeof sel }>({
+    op: 'none', cx0: 0, cy0: 0, sel0: { x: 0, y: 0, w: 0, h: 0 },
+  })
+  const HANDLE = 8
+
+  const loadFile = (file: File) => {
+    const url = URL.createObjectURL(file)
+    const img = new window.Image()
+    img.onload = () => {
+      srcImgRef.current = img
+      const sw = Math.round(Math.min(img.naturalWidth  * 0.6, 1024))
+      const sh = Math.round(Math.min(img.naturalHeight * 0.6, 1024))
+      setSel({ x: Math.round((img.naturalWidth - sw) / 2), y: Math.round((img.naturalHeight - sh) / 2), w: sw, h: sh })
+      setImgLoaded(true)
+      URL.revokeObjectURL(url)
+    }
+    img.src = url
+  }
+
+  const i2c = (ix: number, iy: number) => {
+    const d = dtRef.current
+    return { x: d.offX + ix * d.scale, y: d.offY + iy * d.scale }
+  }
+  const c2i = (cx: number, cy: number) => {
+    const d = dtRef.current
+    return { x: (cx - d.offX) / d.scale, y: (cy - d.offY) / d.scale }
+  }
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    const img    = srcImgRef.current
+    if (!canvas || !img) return
+    const ctx = canvas.getContext('2d')!
+    const cW = canvas.width, cH = canvas.height
+    const imgW = img.naturalWidth, imgH = img.naturalHeight
+    const scale = Math.min(cW / imgW, cH / imgH)
+    const offX  = (cW - imgW * scale) / 2
+    const offY  = (cH - imgH * scale) / 2
+    dtRef.current = { scale, offX, offY, imgW, imgH }
+
+    ctx.clearRect(0, 0, cW, cH)
+    ctx.drawImage(img, offX, offY, imgW * scale, imgH * scale)
+
+    const s = selRef.current
+    const sx = offX + s.x * scale, sy = offY + s.y * scale
+    const sw = s.w * scale,        sh = s.h * scale
+
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'
+    ctx.fillRect(0, 0, cW, sy)
+    ctx.fillRect(0, sy + sh, cW, cH - sy - sh)
+    ctx.fillRect(0, sy, sx, sh)
+    ctx.fillRect(sx + sw, sy, cW - sx - sw, sh)
+
+    const color = mode === 'inpaint' ? '#f59e0b' : '#38bdf8'
+    ctx.strokeStyle = color
+    ctx.lineWidth   = 1.5
+    ctx.setLineDash([5, 3])
+    ctx.strokeRect(sx, sy, sw, sh)
+    ctx.setLineDash([])
+
+    const handles: [number, number][] = [
+      [sx, sy], [sx + sw / 2, sy], [sx + sw, sy],
+      [sx, sy + sh / 2], [sx + sw, sy + sh / 2],
+      [sx, sy + sh], [sx + sw / 2, sy + sh], [sx + sw, sy + sh],
+    ]
+    ctx.fillStyle = color
+    for (const [hx, hy] of handles) ctx.fillRect(hx - HANDLE, hy - HANDLE, HANDLE * 2, HANDLE * 2)
+
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'
+    ctx.fillRect(sx, sy - 18, 100, 16)
+    ctx.fillStyle = color
+    ctx.font = '11px monospace'
+    ctx.fillText(`${Math.round(s.w)} × ${Math.round(s.h)}`, sx + 4, sy - 5)
+
+    if (mode === 'inpaint' && padding > 0) {
+      const pad = padding / 100
+      const px = Math.max(0, s.x - s.w * pad), py = Math.max(0, s.y - s.h * pad)
+      const pw = Math.min(imgW - px, s.w * (1 + 2 * pad)), ph = Math.min(imgH - py, s.h * (1 + 2 * pad))
+      const { x: cpx, y: cpy } = i2c(px, py)
+      ctx.strokeStyle = 'rgba(245,158,11,0.4)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 3])
+      ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
+      ctx.setLineDash([])
+    }
+  }, [mode, padding]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !srcImgRef.current) return
+    const img  = srcImgRef.current
+    const maxW = canvas.parentElement?.clientWidth ?? 600
+    const sc   = Math.min(maxW / img.naturalWidth, 400 / img.naturalHeight, 1)
+    canvas.width  = Math.round(img.naturalWidth  * sc)
+    canvas.height = Math.round(img.naturalHeight * sc)
+    draw()
+  }, [imgLoaded, draw])
+
+  useEffect(() => { if (imgLoaded) draw() }, [sel, imgLoaded, draw])
+
+  const getHandle = (cx: number, cy: number): DragOp => {
+    const s = selRef.current
+    const d = dtRef.current
+    const sx = d.offX + s.x * d.scale, sy = d.offY + s.y * d.scale
+    const sw = s.w * d.scale,          sh = s.h * d.scale
+    const near = (a: number, b: number) => Math.abs(a - b) <= HANDLE + 2
+    if (near(cx, sx) && near(cy, sy))          return 'nw'
+    if (near(cx, sx + sw) && near(cy, sy))     return 'ne'
+    if (near(cx, sx) && near(cy, sy + sh))     return 'sw'
+    if (near(cx, sx + sw) && near(cy, sy + sh)) return 'se'
+    if (near(cx, sx + sw / 2) && near(cy, sy)) return 'n'
+    if (near(cx, sx + sw / 2) && near(cy, sy + sh)) return 's'
+    if (near(cx, sx) && near(cy, sy + sh / 2)) return 'w'
+    if (near(cx, sx + sw) && near(cy, sy + sh / 2)) return 'e'
+    if (cx > sx && cx < sx + sw && cy > sy && cy < sy + sh) return 'move'
+    return 'none'
+  }
+
+  const getCanvasXY = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current!
+    const r = canvas.getBoundingClientRect()
+    return {
+      cx: (e.clientX - r.left) * (canvas.width / r.width),
+      cy: (e.clientY - r.top)  * (canvas.height / r.height),
+    }
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    canvasRef.current!.setPointerCapture(e.pointerId)
+    const { cx, cy } = getCanvasXY(e)
+    const op = getHandle(cx, cy)
+    dragRef.current = { op: op === 'none' ? 'new' : op, cx0: cx, cy0: cy, sel0: { ...selRef.current } }
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const d = dragRef.current
+    if (d.op === 'none') return
+    const { cx, cy } = getCanvasXY(e)
+    const dt = dtRef.current
+    const { imgW, imgH, scale } = dt
+    const dx = (cx - d.cx0) / scale, dy = (cy - d.cy0) / scale
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
+    const s0 = d.sel0
+    const MIN = 32
+
+    if (d.op === 'new') {
+      const { x: ix, y: iy }   = c2i(cx, cy)
+      const { x: ix0, y: iy0 } = c2i(d.cx0, d.cy0)
+      setSel({
+        x: Math.round(clamp(Math.min(ix, ix0), 0, imgW)),
+        y: Math.round(clamp(Math.min(iy, iy0), 0, imgH)),
+        w: Math.round(clamp(Math.abs(ix - ix0), MIN, imgW)),
+        h: Math.round(clamp(Math.abs(iy - iy0), MIN, imgH)),
+      })
+      return
+    }
+    if (d.op === 'move') {
+      setSel({ ...s0, x: Math.round(clamp(s0.x + dx, 0, imgW - s0.w)), y: Math.round(clamp(s0.y + dy, 0, imgH - s0.h)) })
+      return
+    }
+    let { x, y, w, h } = s0
+    if (d.op === 'nw' || d.op === 'w' || d.op === 'sw') { const nx = clamp(x + dx, 0, x + w - MIN); w -= nx - x; x = nx }
+    if (d.op === 'ne' || d.op === 'e' || d.op === 'se') { w = clamp(w + dx, MIN, imgW - x) }
+    if (d.op === 'nw' || d.op === 'n' || d.op === 'ne') { const ny = clamp(y + dy, 0, y + h - MIN); h -= ny - y; y = ny }
+    if (d.op === 'sw' || d.op === 's' || d.op === 'se') { h = clamp(h + dy, MIN, imgH - y) }
+    setSel({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) })
+  }
+
+  const onPointerUp = () => { dragRef.current.op = 'none' }
+
+  const handleApply = () => {
+    const img = srcImgRef.current
+    if (!img) return
+    const { x, y, w, h } = selRef.current
+    const imgW = img.naturalWidth, imgH = img.naturalHeight
+
+    if (mode === 'crop') {
+      const outW = Math.max(8, Math.round(w / 8) * 8)
+      const outH = Math.max(8, Math.round(h / 8) * 8)
+      const c = document.createElement('canvas')
+      c.width = outW; c.height = outH
+      c.getContext('2d')!.drawImage(img, x, y, w, h, 0, 0, outW, outH)
+      onApply({ mode: 'crop', image: c.toDataURL('image/jpeg', 0.92) })
+    } else {
+      const pad = padding / 100
+      const rx  = Math.max(0, x - w * pad),  ry  = Math.max(0, y - h * pad)
+      const rw  = Math.min(imgW - rx, w * (1 + 2 * pad)), rh = Math.min(imgH - ry, h * (1 + 2 * pad))
+      const sc  = Math.min(targetW / rw, targetH / rh)
+      const outW = Math.max(8, Math.round(rw * sc / 8) * 8)
+      const outH = Math.max(8, Math.round(rh * sc / 8) * 8)
+
+      const ic = document.createElement('canvas')
+      ic.width = outW; ic.height = outH
+      const ictx = ic.getContext('2d')!
+      ictx.fillStyle = '#808080'; ictx.fillRect(0, 0, outW, outH)
+      ictx.drawImage(img, rx, ry, rw, rh, 0, 0, outW, outH)
+
+      const mc = document.createElement('canvas')
+      mc.width = outW; mc.height = outH
+      const mctx = mc.getContext('2d')!
+      mctx.fillStyle = 'black'; mctx.fillRect(0, 0, outW, outH)
+      mctx.fillStyle = 'white'
+      mctx.fillRect(Math.floor((x - rx) * sc), Math.floor((y - ry) * sc), Math.ceil(w * sc), Math.ceil(h * sc))
+
+      onApply({ mode: 'inpaint', image: ic.toDataURL('image/jpeg', 0.92), mask: mc.toDataURL('image/png') })
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      <div className="relative w-full max-w-2xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-white">Stencil</span>
+            <div className="flex rounded-md overflow-hidden border border-white/10">
+              {(['crop', 'inpaint'] as StencilMode[]).map(m => (
+                <button key={m} onClick={() => setMode(m)}
+                  className={`px-3 py-1 text-[11px] font-medium transition-colors ${mode === m ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                  {m === 'crop' ? '✂ Crop' : '◻ Inpaint'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {!imgLoaded ? (
+            <div onClick={() => fileInputRef.current?.click()}
+              className="flex flex-col items-center justify-center gap-3 h-48 border-2 border-dashed border-white/10 rounded-xl cursor-pointer hover:border-white/20 transition-colors">
+              <Upload size={24} className="text-slate-600" />
+              <span className="text-sm text-slate-500">Click to load image</span>
+              <span className="text-[10px] text-slate-700">Any size — canvas scales to fit</span>
+            </div>
+          ) : (
+            <div className="relative w-full rounded-xl overflow-hidden border border-white/10 bg-black/30 cursor-crosshair select-none">
+              <canvas ref={canvasRef} className="w-full block" style={{ touchAction: 'none' }}
+                onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
+            </div>
+          )}
+
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) loadFile(f); e.target.value = '' }} />
+
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3 flex-wrap">
+              {imgLoaded && (
+                <span className="text-[11px] font-mono text-slate-500">{sel.w} × {sel.h} px</span>
+              )}
+              {mode === 'inpaint' && imgLoaded && (
+                <label className="flex items-center gap-1.5 text-[11px] text-amber-400/70">
+                  Context
+                  <input type="range" min={0} max={80} step={5} value={padding}
+                    onChange={e => setPadding(+e.target.value)} className="w-20 accent-amber-400" />
+                  {padding}%
+                </label>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {imgLoaded && (
+                <button onClick={() => { setImgLoaded(false); srcImgRef.current = null }}
+                  className="px-3 py-1.5 text-[11px] rounded-lg border border-white/10 bg-white/5 text-slate-400 hover:text-white transition-all">
+                  Change image
+                </button>
+              )}
+              <button onClick={handleApply} disabled={!imgLoaded}
+                className={`px-4 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${imgLoaded
+                  ? mode === 'crop' ? 'bg-sky-500 hover:bg-sky-400 text-black' : 'bg-amber-500 hover:bg-amber-400 text-black'
+                  : 'bg-white/5 text-slate-600 cursor-not-allowed border border-white/10'}`}>
+                {mode === 'crop' ? '✂ Cut' : '◻ Apply Mask'}
+              </button>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-slate-600">
+            {mode === 'crop'
+              ? 'Crop: the selected region is extracted and used as the img2img source. Drag the box or pull handles to adjust.'
+              : 'Inpaint: FLUX regenerates only the bright selection. The padded area provides blending context. Drag or resize the selection.'}
+          </p>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 // --- CUSTOM FLUX LORA PANEL ---
 
 type FluxLoraEntry = { id: string; name: string; key: string; strength: number }
@@ -3395,16 +3710,23 @@ function CustomFluxPanel({
   onStartNb2Polling,
   onPrependImage,
   activeRefImages = [],
+  promptOverride,
 }: {
   onAddPending:      (slot: PendingSlot) => void
   onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[], videoMetadata?: Record<string, unknown>) => void
   onPrependImage:    (img: ImageItem) => void
   activeRefImages?:  RefImage[]
+  promptOverride?:   { text: string; version: number }
 }) {
   const [mode, setMode]               = useState<FluxMode>('runpod')
   const [checkpoint, setCheckpoint]   = useState('')
   const [loras, setLoras]             = useState<FluxLoraEntry[]>([{ id: `lora-${Date.now()}`, name: '', key: '', strength: 1.0 }])
   const [prompt, setPrompt]           = useState('')
+  const _promptOverrideVersion = promptOverride?.version ?? 0
+  useEffect(() => {
+    if (_promptOverrideVersion > 0 && promptOverride?.text) setPrompt(promptOverride.text)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_promptOverrideVersion])
   const [steps, setSteps]             = useState(20)
   const [guidance, setGuidance]       = useState(3.5)
   const [seed, setSeed]               = useState(-1)
@@ -3451,6 +3773,13 @@ function CustomFluxPanel({
   const [ipScale, setIpScale]                   = useState(0.6)
   const [img2img, setImg2img]                   = useState(false)
   const [img2imgStrength, setImg2imgStrength]   = useState(0.65)
+  // Stencil / inpaint
+  const [stencilOpen,     setStencilOpen]     = useState(false)
+  const [stencilCropB64,  setStencilCropB64]  = useState('')
+  const [inpaintMode,     setInpaintMode]     = useState(false)
+  const [inpaintImageB64, setInpaintImageB64] = useState('')
+  const [inpaintMaskB64,  setInpaintMaskB64]  = useState('')
+  const [inpaintStrength, setInpaintStrength] = useState(0.85)
   // ControlNet — up to 3 conditions, each with own mode/scale/image
   const [controlnet, setControlnet]   = useState(false)
   const [cnConditions, setCnConditions] = useState<CNCondition[]>([
@@ -3600,6 +3929,20 @@ function CustomFluxPanel({
 
   const canGenerate = !generating && !!checkpoint && prompt.trim().length > 0
 
+  const handleStencilApply = useCallback((result: StencilResult) => {
+    setStencilOpen(false)
+    if (result.mode === 'crop') {
+      setStencilCropB64(result.image)
+      setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64('')
+      setImg2img(true)
+    } else {
+      setInpaintMode(true)
+      setInpaintImageB64(result.image)
+      setInpaintMaskB64(result.mask)
+      setStencilCropB64('')
+    }
+  }, [])
+
   const handleGenerate = async () => {
     if (!canGenerate) return
     setGenerating(true)
@@ -3642,6 +3985,9 @@ function CustomFluxPanel({
       ip_adapter_scale:   ipScale,
       img2img_image:      '',              // filled below
       img2img_strength:   img2imgStrength,
+      inpaint_image:    mode === 'runpod' && inpaintMode ? inpaintImageB64 : '',
+      inpaint_mask:     mode === 'runpod' && inpaintMode ? inpaintMaskB64  : '',
+      inpaint_strength: inpaintStrength,
       controlnet:            mode === 'runpod' && controlnet && cnConditions.some(c => !!c.imgB64),
       controlnet_conditions: mode === 'runpod' && controlnet
         ? cnConditions.filter(c => !!c.imgB64).map(c => ({ mode: c.mode, scale: c.scale, mirror: c.mirror, image: c.imgB64 }))
@@ -3649,27 +3995,31 @@ function CustomFluxPanel({
     }
 
     // img2img source: encode first active ref at 1024px (higher than IP-Adapter needs for structure preservation)
-    if (mode === 'runpod' && img2img && activeRefImages.length > 0) {
-      try {
-        const ref = activeRefImages[0]
-        let encoded: string
-        if (ref.file) {
-          encoded = await compressFileToDataUrl(ref.file, 1024, 0.92)
-        } else if (ref.url.startsWith('data:')) {
-          const r = await fetch(ref.url)
-          encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
-        } else {
-          const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(ref.url)}`
-          const r = await fetch(proxyUrl)
-          if (!r.ok) throw new Error(`Failed to load ref image (${r.status})`)
-          encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
+    if (mode === 'runpod' && !inpaintMode) {
+      if (stencilCropB64) {
+        body.img2img_image = stencilCropB64
+      } else if (img2img && activeRefImages.length > 0) {
+        try {
+          const ref = activeRefImages[0]
+          let encoded: string
+          if (ref.file) {
+            encoded = await compressFileToDataUrl(ref.file, 1024, 0.92)
+          } else if (ref.url.startsWith('data:')) {
+            const r = await fetch(ref.url)
+            encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
+          } else {
+            const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(ref.url)}`
+            const r = await fetch(proxyUrl)
+            if (!r.ok) throw new Error(`Failed to load ref image (${r.status})`)
+            encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
+          }
+          body.img2img_image = encoded
+          console.log('[img2img] encoded source image, size:', `${Math.round(encoded.length / 1024)}KB`)
+        } catch (e) {
+          setError(`img2img: failed to encode source image — ${String(e)}`)
+          setGenerating(false)
+          return
         }
-        body.img2img_image = encoded
-        console.log('[img2img] encoded source image, size:', `${Math.round(encoded.length / 1024)}KB`)
-      } catch (e) {
-        setError(`img2img: failed to encode source image — ${String(e)}`)
-        setGenerating(false)
-        return
       }
     }
 
@@ -4379,6 +4729,60 @@ function CustomFluxPanel({
           </div>
         )}
 
+        {/* Stencil crop result preview */}
+        {mode === 'runpod' && stencilCropB64 && (
+          <div className="rounded-xl border border-sky-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-sky-400/60 uppercase tracking-widest">Stencil Crop · img2img Source</span>
+              <button onClick={() => { setStencilCropB64(''); setImg2img(false) }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-red-400 border border-white/10 hover:border-red-500/30 transition-all">
+                <X size={9} /> Clear
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={stencilCropB64} alt="crop" className="w-14 h-14 rounded-md object-cover border border-sky-500/30 shrink-0" />
+              <div className="flex flex-col gap-1.5 min-w-0">
+                <span className="text-[10px] text-slate-400">Cropped region will seed img2img diffusion</span>
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  Strength
+                  <input type="range" min={0.1} max={1} step={0.05} value={img2imgStrength}
+                    onChange={e => setImg2imgStrength(+e.target.value)} className="w-24 accent-sky-400" />
+                  <span className="font-mono text-sky-300">{img2imgStrength.toFixed(2)}</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Stencil inpaint preview */}
+        {mode === 'runpod' && inpaintMode && (
+          <div className="rounded-xl border border-amber-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-amber-400/60 uppercase tracking-widest">Inpaint Mask Active</span>
+              <button onClick={() => { setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64('') }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-red-400 border border-white/10 hover:border-red-500/30 transition-all">
+                <X size={9} /> Clear
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={inpaintImageB64} alt="source" className="w-14 h-14 rounded-md object-cover border border-amber-500/30 shrink-0" />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={inpaintMaskB64}  alt="mask"   className="w-14 h-14 rounded-md object-cover border border-amber-500/20 shrink-0 bg-black" />
+              <div className="flex flex-col gap-1.5 min-w-0">
+                <span className="text-[10px] text-slate-400">FLUX regenerates only the white masked region</span>
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  Strength
+                  <input type="range" min={0.1} max={1} step={0.05} value={inpaintStrength}
+                    onChange={e => setInpaintStrength(+e.target.value)} className="w-24 accent-amber-400" />
+                  <span className="font-mono text-amber-300">{inpaintStrength.toFixed(2)}</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* img2img: shows which ref will be used as the starting image */}
         {mode === 'runpod' && img2img && (
           <div className="rounded-xl border border-indigo-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
@@ -4617,6 +5021,16 @@ function CustomFluxPanel({
                   }`}>
                   i2i
                 </button>
+                {/* Stencil tool */}
+                <button onClick={() => setStencilOpen(true)}
+                  title="Stencil — crop a region for img2img, or paint an inpaint mask"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    (stencilCropB64 || inpaintMode)
+                      ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                  }`}>
+                  ✂ Stencil
+                </button>
                 {/* Upscaling toggle */}
                 <button onClick={() => setUpscaleEnabled(v => !v)}
                   title="Configure upscaling pipeline"
@@ -4679,6 +5093,16 @@ function CustomFluxPanel({
           </div>
         </div>
       </div>
+
+      {/* Stencil modal */}
+      {stencilOpen && (
+        <StencilModal
+          onClose={() => setStencilOpen(false)}
+          onApply={handleStencilApply}
+          targetW={width}
+          targetH={height}
+        />
+      )}
     </div>
   )
 }
@@ -10347,6 +10771,7 @@ export default function PortalV2Page() {
               onStartNb2Polling={startNb2SlotPolling}
               onPrependImage={handlePrependImage}
               activeRefImages={refLibrary.filter(img => activeRefIds.includes(img.id)).slice(0, 3)}
+              promptOverride={promptOverride}
             />
           ) : (
           <PromptBox

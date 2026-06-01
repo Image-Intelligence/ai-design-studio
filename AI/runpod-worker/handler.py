@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-05-31-v64'
+HANDLER_VERSION = '2026-06-01-v65'
 
 import importlib
 
@@ -1186,6 +1186,10 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # img2img from reference image
     img2img_image_b64 = inp.get('img2img_image', '')
     img2img_strength  = float(inp.get('img2img_strength', 0.65))
+    # Inpainting — region-selective regeneration with a mask
+    inpaint_image_b64 = inp.get('inpaint_image', '')
+    inpaint_mask_b64  = inp.get('inpaint_mask',  '')
+    inpaint_strength  = float(inp.get('inpaint_strength', 0.85))
     # ControlNet — multi-condition
     controlnet_enabled    = bool(inp.get('controlnet', False))
     controlnet_conditions = inp.get('controlnet_conditions', [])             # [{mode, scale, image}]
@@ -1220,6 +1224,24 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         except Exception as _i2i_dec_err:
             logs.append(f'[img2img] Warning: failed to decode source image ({_i2i_dec_err}). Falling back to text2img.')
             img2img_pil = None
+
+    # Decode inpaint source image and mask
+    inpaint_pil      = None
+    inpaint_mask_pil = None
+    if inpaint_image_b64 and str(inpaint_image_b64).startswith('data:image/') and \
+       inpaint_mask_b64  and str(inpaint_mask_b64).startswith('data:image/'):
+        try:
+            from PIL import Image as _PIL_ip
+            from io import BytesIO as _BIO_ip
+            import base64 as _b64_ip
+            _img_data  = inpaint_image_b64.split(',', 1)[1]
+            _mask_data = inpaint_mask_b64.split(',', 1)[1]
+            inpaint_pil      = _PIL_ip.open(_BIO_ip(_b64_ip.b64decode(_img_data))).convert('RGB')
+            inpaint_mask_pil = _PIL_ip.open(_BIO_ip(_b64_ip.b64decode(_mask_data))).convert('L')
+            logs.append(f'[inpaint] Source {inpaint_pil.width}×{inpaint_pil.height}, mask {inpaint_mask_pil.width}×{inpaint_mask_pil.height} decoded.')
+        except Exception as _ip_dec_err:
+            logs.append(f'[inpaint] Warning: failed to decode inpaint images ({_ip_dec_err}) — skipping.')
+            inpaint_pil = None; inpaint_mask_pil = None
 
     # Decode ControlNet source images (one per condition)
     _decoded_cn_conditions = []   # [{mode, scale, pil}]
@@ -1504,6 +1526,18 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inference] Warning: FluxImg2ImgPipeline unavailable ({_i2i_err}). Refine/upscale skipped.')
         _flush_logs(r2, bucket, job_id, logs)
 
+    # Load FluxInpaintPipeline if an inpaint mask was provided
+    pipe_inpaint = None
+    if inpaint_pil is not None and inpaint_mask_pil is not None:
+        try:
+            from diffusers import FluxInpaintPipeline
+            pipe_inpaint = FluxInpaintPipeline.from_pipe(pipe)
+            gc.collect(); torch.cuda.empty_cache()
+            logs.append('[inpaint] FluxInpaintPipeline ready.')
+        except Exception as _ip_pipe_err:
+            logs.append(f'[inpaint] Warning: FluxInpaintPipeline unavailable ({_ip_pipe_err}) — falling back to standard generation.')
+        _flush_logs(r2, bucket, job_id, logs)
+
     # 5. Load IP-Adapter if reference images provided
     ip_adapter_loaded = False
     ip_ref_image      = None
@@ -1676,7 +1710,22 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     try:
         # 6. Base generation (img2img or text2img)
         gen = torch.Generator('cuda').manual_seed(int(seed)) if seed is not None else None
-        if img2img_pil is not None and pipe_i2i is not None:
+        if inpaint_pil is not None and inpaint_mask_pil is not None and pipe_inpaint is not None:
+            logs.append(f'[inpaint] Inpainting masked region — strength={inpaint_strength} ({steps} steps)...')
+            _flush_logs(r2, bucket, job_id, logs)
+            image = pipe_inpaint(
+                prompt=prompt,
+                image=inpaint_pil,
+                mask_image=inpaint_mask_pil,
+                height=inpaint_pil.height,
+                width=inpaint_pil.width,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=gen,
+                strength=inpaint_strength,
+            ).images[0]
+            logs.append(f'[inpaint] Done — {image.width}×{image.height}.')
+        elif img2img_pil is not None and pipe_i2i is not None:
             logs.append(f'[img2img] Starting from reference image — strength={img2img_strength} ({steps} steps)...')
             _flush_logs(r2, bucket, job_id, logs)
             _base_kwargs: dict = dict(prompt=prompt, image=img2img_pil,
