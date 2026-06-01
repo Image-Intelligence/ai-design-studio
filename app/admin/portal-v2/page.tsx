@@ -3387,6 +3387,7 @@ function DownloadToR2Panel() {
 
 // --- STENCIL MODAL ---
 type StencilMode = 'crop' | 'inpaint'
+type StencilSelMode = 'rect' | 'lasso'
 type StencilResult = { mode: 'crop'; image: string } | { mode: 'inpaint'; image: string; mask: string }
 
 function StencilModal({
@@ -3406,10 +3407,19 @@ function StencilModal({
 
   const [imgLoaded, setImgLoaded] = useState(false)
   const [mode, setMode]           = useState<StencilMode>('crop')
+  const [selMode, setSelMode]     = useState<StencilSelMode>('rect')
   const [padding, setPadding]     = useState(20)
   const [sel, setSel]             = useState({ x: 0, y: 0, w: 512, h: 512 })
-  const selRef = useRef(sel)
+  const [lassoDirty, setLassoDirty] = useState(0) // bumped when a lasso path is completed
+
+  // Refs readable inside draw / RAF without stale closures
+  const selRef     = useRef(sel)
+  const selModeRef = useRef<StencilSelMode>('rect')
+  const lassoRef   = useRef<{ x: number; y: number }[]>([])
+  const lassoDrawingRef = useRef(false)
+  const rafRef     = useRef<number | null>(null)
   useEffect(() => { selRef.current = sel }, [sel])
+  useEffect(() => { selModeRef.current = selMode }, [selMode])
 
   const dtRef = useRef({ scale: 1, offX: 0, offY: 0, imgW: 0, imgH: 0 })
 
@@ -3424,6 +3434,8 @@ function StencilModal({
     const img = new window.Image()
     img.onload = () => {
       srcImgRef.current = img
+      lassoRef.current = []
+      setLassoDirty(0)
       const sw = Math.round(Math.min(img.naturalWidth  * 0.6, 1024))
       const sh = Math.round(Math.min(img.naturalHeight * 0.6, 1024))
       setSel({ x: Math.round((img.naturalWidth - sw) / 2), y: Math.round((img.naturalHeight - sh) / 2), w: sw, h: sh })
@@ -3442,12 +3454,24 @@ function StencilModal({
     return { x: (cx - d.offX) / d.scale, y: (cy - d.offY) / d.scale }
   }
 
+  // Build a canvas 2D path from lasso points (image coords)
+  const buildLassoPath = (ctx: CanvasRenderingContext2D, pts: { x: number; y: number }[], close: boolean) => {
+    if (pts.length < 2) return
+    ctx.beginPath()
+    for (let i = 0; i < pts.length; i++) {
+      const { x, y } = i2c(pts[i].x, pts[i].y)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    if (close) ctx.closePath()
+  }
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     const img    = srcImgRef.current
     if (!canvas || !img) return
-    const ctx = canvas.getContext('2d')!
-    const cW = canvas.width, cH = canvas.height
+    const ctx  = canvas.getContext('2d')!
+    const cW   = canvas.width, cH = canvas.height
     const imgW = img.naturalWidth, imgH = img.naturalHeight
     const scale = Math.min(cW / imgW, cH / imgH)
     const offX  = (cW - imgW * scale) / 2
@@ -3457,47 +3481,101 @@ function StencilModal({
     ctx.clearRect(0, 0, cW, cH)
     ctx.drawImage(img, offX, offY, imgW * scale, imgH * scale)
 
-    const s = selRef.current
-    const sx = offX + s.x * scale, sy = offY + s.y * scale
-    const sw = s.w * scale,        sh = s.h * scale
+    const isLasso  = selModeRef.current === 'lasso'
+    const pts      = lassoRef.current
+    const hasLasso = isLasso && pts.length > 1
+    const color    = mode === 'inpaint' ? '#f59e0b' : '#38bdf8'
 
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'
-    ctx.fillRect(0, 0, cW, sy)
-    ctx.fillRect(0, sy + sh, cW, cH - sy - sh)
-    ctx.fillRect(0, sy, sx, sh)
-    ctx.fillRect(sx + sw, sy, cW - sx - sw, sh)
-
-    const color = mode === 'inpaint' ? '#f59e0b' : '#38bdf8'
-    ctx.strokeStyle = color
-    ctx.lineWidth   = 1.5
-    ctx.setLineDash([5, 3])
-    ctx.strokeRect(sx, sy, sw, sh)
-    ctx.setLineDash([])
-
-    const handles: [number, number][] = [
-      [sx, sy], [sx + sw / 2, sy], [sx + sw, sy],
-      [sx, sy + sh / 2], [sx + sw, sy + sh / 2],
-      [sx, sy + sh], [sx + sw / 2, sy + sh], [sx + sw, sy + sh],
-    ]
-    ctx.fillStyle = color
-    for (const [hx, hy] of handles) ctx.fillRect(hx - HANDLE, hy - HANDLE, HANDLE * 2, HANDLE * 2)
-
-    ctx.fillStyle = 'rgba(0,0,0,0.7)'
-    ctx.fillRect(sx, sy - 18, 100, 16)
-    ctx.fillStyle = color
-    ctx.font = '11px monospace'
-    ctx.fillText(`${Math.round(s.w)} × ${Math.round(s.h)}`, sx + 4, sy - 5)
-
-    if (mode === 'inpaint' && padding > 0) {
-      const pad = padding / 100
-      const px = Math.max(0, s.x - s.w * pad), py = Math.max(0, s.y - s.h * pad)
-      const pw = Math.min(imgW - px, s.w * (1 + 2 * pad)), ph = Math.min(imgH - py, s.h * (1 + 2 * pad))
-      const { x: cpx, y: cpy } = i2c(px, py)
-      ctx.strokeStyle = 'rgba(245,158,11,0.4)'
-      ctx.lineWidth = 1
-      ctx.setLineDash([3, 3])
-      ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
+    if (isLasso && hasLasso) {
+      // Dark overlay over entire canvas
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'
+      ctx.fillRect(0, 0, cW, cH)
+      // Re-draw image clipped to the lasso path so it shows bright inside
+      ctx.save()
+      buildLassoPath(ctx, pts, !lassoDrawingRef.current)
+      ctx.clip()
+      ctx.drawImage(img, offX, offY, imgW * scale, imgH * scale)
+      ctx.restore()
+      // Lasso border
+      ctx.strokeStyle = color
+      ctx.lineWidth   = 1.5
+      ctx.setLineDash([5, 3])
+      buildLassoPath(ctx, pts, !lassoDrawingRef.current)
+      ctx.stroke()
       ctx.setLineDash([])
+      // Show closing line hint while drawing
+      if (lassoDrawingRef.current && pts.length > 2) {
+        const first = i2c(pts[0].x, pts[0].y)
+        const last  = i2c(pts[pts.length - 1].x, pts[pts.length - 1].y)
+        ctx.strokeStyle = 'rgba(245,158,11,0.25)'
+        ctx.lineWidth   = 1
+        ctx.setLineDash([3, 4])
+        ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(first.x, first.y); ctx.stroke()
+        ctx.setLineDash([])
+      }
+      // Dimension label using bounding box of lasso
+      const minX = Math.min(...pts.map(p => p.x)), maxX = Math.max(...pts.map(p => p.x))
+      const minY = Math.min(...pts.map(p => p.y)), maxY = Math.max(...pts.map(p => p.y))
+      const { x: lx, y: ly } = i2c(minX, minY)
+      ctx.fillStyle = 'rgba(0,0,0,0.7)'
+      ctx.fillRect(lx, ly - 18, 110, 16)
+      ctx.fillStyle = color
+      ctx.font = '11px monospace'
+      ctx.fillText(`${Math.round(maxX - minX)} × ${Math.round(maxY - minY)}`, lx + 4, ly - 5)
+      // Context padding outline (bounding box + padding)
+      if (mode === 'inpaint' && padding > 0 && !lassoDrawingRef.current) {
+        const bW = maxX - minX, bH = maxY - minY
+        const pad = padding / 100
+        const px = Math.max(0, minX - bW * pad), py = Math.max(0, minY - bH * pad)
+        const pw = Math.min(imgW - px, bW * (1 + 2 * pad)), ph = Math.min(imgH - py, bH * (1 + 2 * pad))
+        const { x: cpx, y: cpy } = i2c(px, py)
+        ctx.strokeStyle = 'rgba(245,158,11,0.35)'
+        ctx.lineWidth = 1; ctx.setLineDash([3, 3])
+        ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
+        ctx.setLineDash([])
+      }
+    } else if (!isLasso) {
+      // Rect mode — existing 4-rect overlay + handles
+      const s  = selRef.current
+      const sx = offX + s.x * scale, sy = offY + s.y * scale
+      const sw = s.w * scale,        sh = s.h * scale
+
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'
+      ctx.fillRect(0, 0, cW, sy)
+      ctx.fillRect(0, sy + sh, cW, cH - sy - sh)
+      ctx.fillRect(0, sy, sx, sh)
+      ctx.fillRect(sx + sw, sy, cW - sx - sw, sh)
+
+      ctx.strokeStyle = color
+      ctx.lineWidth   = 1.5
+      ctx.setLineDash([5, 3])
+      ctx.strokeRect(sx, sy, sw, sh)
+      ctx.setLineDash([])
+
+      const handles: [number, number][] = [
+        [sx, sy], [sx + sw / 2, sy], [sx + sw, sy],
+        [sx, sy + sh / 2], [sx + sw, sy + sh / 2],
+        [sx, sy + sh], [sx + sw / 2, sy + sh], [sx + sw, sy + sh],
+      ]
+      ctx.fillStyle = color
+      for (const [hx, hy] of handles) ctx.fillRect(hx - HANDLE, hy - HANDLE, HANDLE * 2, HANDLE * 2)
+
+      ctx.fillStyle = 'rgba(0,0,0,0.7)'
+      ctx.fillRect(sx, sy - 18, 100, 16)
+      ctx.fillStyle = color
+      ctx.font = '11px monospace'
+      ctx.fillText(`${Math.round(s.w)} × ${Math.round(s.h)}`, sx + 4, sy - 5)
+
+      if (mode === 'inpaint' && padding > 0) {
+        const pad = padding / 100
+        const px = Math.max(0, s.x - s.w * pad), py = Math.max(0, s.y - s.h * pad)
+        const pw = Math.min(imgW - px, s.w * (1 + 2 * pad)), ph = Math.min(imgH - py, s.h * (1 + 2 * pad))
+        const { x: cpx, y: cpy } = i2c(px, py)
+        ctx.strokeStyle = 'rgba(245,158,11,0.4)'
+        ctx.lineWidth = 1; ctx.setLineDash([3, 3])
+        ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
+        ctx.setLineDash([])
+      }
     }
   }, [mode, padding]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3513,7 +3591,7 @@ function StencilModal({
     draw()
   }, [imgLoaded, draw])
 
-  useEffect(() => { if (imgLoaded) draw() }, [sel, imgLoaded, draw])
+  useEffect(() => { if (imgLoaded) draw() }, [sel, selMode, lassoDirty, imgLoaded, draw])
 
   const getHandle = (cx: number, cy: number): DragOp => {
     const s = selRef.current
@@ -3521,13 +3599,13 @@ function StencilModal({
     const sx = d.offX + s.x * d.scale, sy = d.offY + s.y * d.scale
     const sw = s.w * d.scale,          sh = s.h * d.scale
     const near = (a: number, b: number) => Math.abs(a - b) <= HANDLE + 2
-    if (near(cx, sx) && near(cy, sy))          return 'nw'
-    if (near(cx, sx + sw) && near(cy, sy))     return 'ne'
-    if (near(cx, sx) && near(cy, sy + sh))     return 'sw'
+    if (near(cx, sx) && near(cy, sy))           return 'nw'
+    if (near(cx, sx + sw) && near(cy, sy))      return 'ne'
+    if (near(cx, sx) && near(cy, sy + sh))      return 'sw'
     if (near(cx, sx + sw) && near(cy, sy + sh)) return 'se'
-    if (near(cx, sx + sw / 2) && near(cy, sy)) return 'n'
+    if (near(cx, sx + sw / 2) && near(cy, sy))  return 'n'
     if (near(cx, sx + sw / 2) && near(cy, sy + sh)) return 's'
-    if (near(cx, sx) && near(cy, sy + sh / 2)) return 'w'
+    if (near(cx, sx) && near(cy, sy + sh / 2))  return 'w'
     if (near(cx, sx + sw) && near(cy, sy + sh / 2)) return 'e'
     if (cx > sx && cx < sx + sw && cy > sy && cy < sy + sh) return 'move'
     return 'none'
@@ -3542,14 +3620,41 @@ function StencilModal({
     }
   }
 
+  const scheduleDraw = () => {
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => { rafRef.current = null; draw() })
+  }
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     canvasRef.current!.setPointerCapture(e.pointerId)
     const { cx, cy } = getCanvasXY(e)
+
+    if (selModeRef.current === 'lasso') {
+      const pt = c2i(cx, cy)
+      lassoRef.current = [{ x: Math.round(pt.x), y: Math.round(pt.y) }]
+      lassoDrawingRef.current = true
+      setLassoDirty(0)
+      draw()
+      return
+    }
+
     const op = getHandle(cx, cy)
     dragRef.current = { op: op === 'none' ? 'new' : op, cx0: cx, cy0: cy, sel0: { ...selRef.current } }
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (selModeRef.current === 'lasso') {
+      if (!lassoDrawingRef.current) return
+      const { cx, cy } = getCanvasXY(e)
+      const pt = c2i(cx, cy)
+      const last = lassoRef.current[lassoRef.current.length - 1]
+      // Min distance in image px to avoid redundant points (improves perf + mask quality)
+      if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 3) return
+      lassoRef.current.push({ x: Math.round(pt.x), y: Math.round(pt.y) })
+      scheduleDraw()
+      return
+    }
+
     const d = dragRef.current
     if (d.op === 'none') return
     const { cx, cy } = getCanvasXY(e)
@@ -3583,7 +3688,28 @@ function StencilModal({
     setSel({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) })
   }
 
-  const onPointerUp = () => { dragRef.current.op = 'none' }
+  const onPointerUp = () => {
+    if (selModeRef.current === 'lasso' && lassoDrawingRef.current) {
+      lassoDrawingRef.current = false
+      const pts = lassoRef.current
+      if (pts.length > 2) {
+        // Update sel bounding box for dimension display and padding calc
+        const minX = Math.min(...pts.map(p => p.x)), maxX = Math.max(...pts.map(p => p.x))
+        const minY = Math.min(...pts.map(p => p.y)), maxY = Math.max(...pts.map(p => p.y))
+        setSel({ x: minX, y: minY, w: maxX - minX, h: maxY - minY })
+        setLassoDirty(v => v + 1)
+      }
+      draw()
+      return
+    }
+    dragRef.current.op = 'none'
+  }
+
+  const clearLasso = () => {
+    lassoRef.current = []
+    setLassoDirty(0)
+    draw()
+  }
 
   const handleApply = () => {
     const img = srcImgRef.current
@@ -3592,53 +3718,89 @@ function StencilModal({
     const imgW = img.naturalWidth, imgH = img.naturalHeight
 
     if (mode === 'crop') {
+      // Crop always uses rect selection
       const outW = Math.max(8, Math.round(w / 8) * 8)
       const outH = Math.max(8, Math.round(h / 8) * 8)
       const c = document.createElement('canvas')
       c.width = outW; c.height = outH
       c.getContext('2d')!.drawImage(img, x, y, w, h, 0, 0, outW, outH)
       onApply({ mode: 'crop', image: c.toDataURL('image/jpeg', 0.92) })
-    } else {
-      const pad = padding / 100
-      const rx  = Math.max(0, x - w * pad),  ry  = Math.max(0, y - h * pad)
-      const rw  = Math.min(imgW - rx, w * (1 + 2 * pad)), rh = Math.min(imgH - ry, h * (1 + 2 * pad))
-      const sc  = Math.min(targetW / rw, targetH / rh)
-      const outW = Math.max(8, Math.round(rw * sc / 8) * 8)
-      const outH = Math.max(8, Math.round(rh * sc / 8) * 8)
-
-      const ic = document.createElement('canvas')
-      ic.width = outW; ic.height = outH
-      const ictx = ic.getContext('2d')!
-      ictx.fillStyle = '#808080'; ictx.fillRect(0, 0, outW, outH)
-      ictx.drawImage(img, rx, ry, rw, rh, 0, 0, outW, outH)
-
-      const mc = document.createElement('canvas')
-      mc.width = outW; mc.height = outH
-      const mctx = mc.getContext('2d')!
-      mctx.fillStyle = 'black'; mctx.fillRect(0, 0, outW, outH)
-      mctx.fillStyle = 'white'
-      mctx.fillRect(Math.floor((x - rx) * sc), Math.floor((y - ry) * sc), Math.ceil(w * sc), Math.ceil(h * sc))
-
-      onApply({ mode: 'inpaint', image: ic.toDataURL('image/jpeg', 0.92), mask: mc.toDataURL('image/png') })
+      return
     }
+
+    // Inpaint — compute padded region from bounding box (works for both rect and lasso)
+    const pad = padding / 100
+    const rx   = Math.max(0, x - w * pad), ry = Math.max(0, y - h * pad)
+    const rw   = Math.min(imgW - rx, w * (1 + 2 * pad)), rh = Math.min(imgH - ry, h * (1 + 2 * pad))
+    const sc   = Math.min(targetW / rw, targetH / rh)
+    const outW = Math.max(8, Math.round(rw * sc / 8) * 8)
+    const outH = Math.max(8, Math.round(rh * sc / 8) * 8)
+
+    // Source image (the padded region scaled to output dims)
+    const ic = document.createElement('canvas')
+    ic.width = outW; ic.height = outH
+    const ictx = ic.getContext('2d')!
+    ictx.fillStyle = '#808080'; ictx.fillRect(0, 0, outW, outH)
+    ictx.drawImage(img, rx, ry, rw, rh, 0, 0, outW, outH)
+
+    // Mask canvas — white = regenerate, black = keep
+    const mc = document.createElement('canvas')
+    mc.width = outW; mc.height = outH
+    const mctx = mc.getContext('2d')!
+    mctx.fillStyle = 'black'; mctx.fillRect(0, 0, outW, outH)
+    mctx.fillStyle = 'white'
+
+    const pts = lassoRef.current
+    if (selModeRef.current === 'lasso' && pts.length > 2) {
+      // Freehand path mask — transform lasso points into output canvas coordinates
+      mctx.beginPath()
+      for (let i = 0; i < pts.length; i++) {
+        const mx = (pts[i].x - rx) * sc
+        const my = (pts[i].y - ry) * sc
+        if (i === 0) mctx.moveTo(mx, my)
+        else mctx.lineTo(mx, my)
+      }
+      mctx.closePath()
+      mctx.fill()
+    } else {
+      // Rectangle mask
+      mctx.fillRect(Math.floor((x - rx) * sc), Math.floor((y - ry) * sc), Math.ceil(w * sc), Math.ceil(h * sc))
+    }
+
+    onApply({ mode: 'inpaint', image: ic.toDataURL('image/jpeg', 0.92), mask: mc.toDataURL('image/png') })
   }
+
+  const canApply = imgLoaded && (mode === 'crop' || selMode === 'rect' || lassoDirty > 0)
 
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-2xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 shrink-0">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <span className="text-sm font-semibold text-white">Stencil</span>
+            {/* Crop / Inpaint */}
             <div className="flex rounded-md overflow-hidden border border-white/10">
               {(['crop', 'inpaint'] as StencilMode[]).map(m => (
-                <button key={m} onClick={() => setMode(m)}
+                <button key={m} onClick={() => { setMode(m); if (m === 'crop') setSelMode('rect') }}
                   className={`px-3 py-1 text-[11px] font-medium transition-colors ${mode === m ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
                   {m === 'crop' ? '✂ Crop' : '◻ Inpaint'}
                 </button>
               ))}
             </div>
+            {/* Rect / Lasso — only in inpaint mode */}
+            {mode === 'inpaint' && (
+              <div className="flex rounded-md overflow-hidden border border-white/10">
+                {(['rect', 'lasso'] as StencilSelMode[]).map(sm => (
+                  <button key={sm}
+                    onClick={() => { setSelMode(sm); lassoRef.current = []; setLassoDirty(0); draw() }}
+                    className={`px-3 py-1 text-[11px] font-medium transition-colors ${selMode === sm ? 'bg-amber-500/20 text-amber-300' : 'text-slate-500 hover:text-slate-300'}`}>
+                    {sm === 'rect' ? '▭ Rect' : '✏ Lasso'}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors shrink-0 ml-2"><X size={16} /></button>
         </div>
 
         <div className="p-4 space-y-3 overflow-y-auto flex-1">
@@ -3661,7 +3823,10 @@ function StencilModal({
 
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 flex-wrap">
-              {imgLoaded && (
+              {imgLoaded && lassoDirty > 0 && (
+                <span className="text-[11px] font-mono text-slate-500">{sel.w} × {sel.h} px</span>
+              )}
+              {imgLoaded && selMode === 'rect' && (
                 <span className="text-[11px] font-mono text-slate-500">{sel.w} × {sel.h} px</span>
               )}
               {mode === 'inpaint' && imgLoaded && (
@@ -3672,16 +3837,22 @@ function StencilModal({
                   {padding}%
                 </label>
               )}
+              {selMode === 'lasso' && lassoDirty > 0 && (
+                <button onClick={clearLasso}
+                  className="text-[10px] text-slate-600 hover:text-red-400 transition-colors">
+                  ✕ Clear lasso
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {imgLoaded && (
-                <button onClick={() => { setImgLoaded(false); srcImgRef.current = null }}
+                <button onClick={() => { setImgLoaded(false); srcImgRef.current = null; lassoRef.current = []; setLassoDirty(0) }}
                   className="px-3 py-1.5 text-[11px] rounded-lg border border-white/10 bg-white/5 text-slate-400 hover:text-white transition-all">
                   Change image
                 </button>
               )}
-              <button onClick={handleApply} disabled={!imgLoaded}
-                className={`px-4 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${imgLoaded
+              <button onClick={handleApply} disabled={!canApply}
+                className={`px-4 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${canApply
                   ? mode === 'crop' ? 'bg-sky-500 hover:bg-sky-400 text-black' : 'bg-amber-500 hover:bg-amber-400 text-black'
                   : 'bg-white/5 text-slate-600 cursor-not-allowed border border-white/10'}`}>
                 {mode === 'crop' ? '✂ Cut' : '◻ Apply Mask'}
@@ -3692,7 +3863,9 @@ function StencilModal({
           <p className="text-[10px] text-slate-600">
             {mode === 'crop'
               ? 'Crop: the selected region is extracted and used as the img2img source. Drag the box or pull handles to adjust.'
-              : 'Inpaint: FLUX regenerates only the bright selection. The padded area provides blending context. Drag or resize the selection.'}
+              : selMode === 'lasso'
+                ? 'Lasso: hold and drag to trace any shape — a silhouette, a face, an object. Release to close the path. FLUX regenerates only the traced region.'
+                : 'Rect: FLUX regenerates only the bright selected rectangle. The padded context area helps with blending at the edges.'}
           </p>
         </div>
       </div>
