@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-06-01-v65'
+HANDLER_VERSION = '2026-06-01-v66'
 
 import importlib
 
@@ -1517,7 +1517,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # Load FluxImg2ImgPipeline for img2img/refine/tiled upscale/combo/adetailer (shares weights — no extra VRAM)
     pipe_i2i = None
     _pipeline_needs_flux = do_pipeline and any(str(s.get('type', '')).lower() == 'flux' for s in pipeline_steps)
-    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None or do_combo or _pipeline_needs_flux:
+    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None or inpaint_pil is not None or do_combo or _pipeline_needs_flux:
         try:
             from diffusers import FluxImg2ImgPipeline
             pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
@@ -1526,17 +1526,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inference] Warning: FluxImg2ImgPipeline unavailable ({_i2i_err}). Refine/upscale skipped.')
         _flush_logs(r2, bucket, job_id, logs)
 
-    # Load FluxInpaintPipeline if an inpaint mask was provided
-    pipe_inpaint = None
-    if inpaint_pil is not None and inpaint_mask_pil is not None:
-        try:
-            from diffusers import FluxInpaintPipeline
-            pipe_inpaint = FluxInpaintPipeline.from_pipe(pipe)
-            gc.collect(); torch.cuda.empty_cache()
-            logs.append('[inpaint] FluxInpaintPipeline ready.')
-        except Exception as _ip_pipe_err:
-            logs.append(f'[inpaint] Warning: FluxInpaintPipeline unavailable ({_ip_pipe_err}) — falling back to standard generation.')
-        _flush_logs(r2, bucket, job_id, logs)
+    # Inpaint uses pipe_i2i (img2img + numpy mask composite) — no separate pipeline needed
 
     # 5. Load IP-Adapter if reference images provided
     ip_adapter_loaded = False
@@ -1710,20 +1700,29 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     try:
         # 6. Base generation (img2img or text2img)
         gen = torch.Generator('cuda').manual_seed(int(seed)) if seed is not None else None
-        if inpaint_pil is not None and inpaint_mask_pil is not None and pipe_inpaint is not None:
-            logs.append(f'[inpaint] Inpainting masked region — strength={inpaint_strength} ({steps} steps)...')
+        if inpaint_pil is not None and inpaint_mask_pil is not None and pipe_i2i is not None:
+            logs.append(f'[inpaint] img2img crop + mask composite — strength={inpaint_strength} ({steps} steps)...')
             _flush_logs(r2, bucket, job_id, logs)
-            image = pipe_inpaint(
+            _inpainted_raw = pipe_i2i(
                 prompt=prompt,
                 image=inpaint_pil,
-                mask_image=inpaint_mask_pil,
-                height=inpaint_pil.height,
-                width=inpaint_pil.width,
+                strength=inpaint_strength,
                 num_inference_steps=steps,
                 guidance_scale=guidance,
                 generator=gen,
-                strength=inpaint_strength,
+                width=inpaint_pil.width,
+                height=inpaint_pil.height,
             ).images[0]
+            # Composite: paste img2img result only inside the lasso mask.
+            # white (255) = replace with generated, black (0) = keep original pixel.
+            # This gives pixel-perfect background preservation regardless of model drift.
+            import numpy as _np_ip
+            _img_arr  = _np_ip.array(_inpainted_raw).astype(_np_ip.float32)
+            _orig_arr = _np_ip.array(inpaint_pil).astype(_np_ip.float32)
+            _mask_f   = _np_ip.array(inpaint_mask_pil).astype(_np_ip.float32) / 255.0
+            _mask_rgb = _np_ip.stack([_mask_f, _mask_f, _mask_f], axis=-1)
+            _result   = _img_arr * _mask_rgb + _orig_arr * (1.0 - _mask_rgb)
+            image     = Image.fromarray(_result.astype(_np_ip.uint8))
             logs.append(f'[inpaint] Done — {image.width}×{image.height}.')
         elif img2img_pil is not None and pipe_i2i is not None:
             logs.append(f'[img2img] Starting from reference image — strength={img2img_strength} ({steps} steps)...')
