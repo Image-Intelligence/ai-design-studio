@@ -3388,7 +3388,18 @@ function DownloadToR2Panel() {
 // --- STENCIL MODAL ---
 type StencilMode = 'crop' | 'inpaint'
 type StencilSelMode = 'rect' | 'lasso'
-type StencilResult = { mode: 'crop'; image: string } | { mode: 'inpaint'; image: string; mask: string }
+type InpaintJobMeta = {
+  image:  string   // base64 JPEG crop for this shape
+  mask:   string   // base64 PNG mask (white = regenerate)
+  cropX:  number   // rx — left edge of padded crop in original image pixels
+  cropY:  number   // ry — top edge
+  cropW:  number   // rw — width of padded crop in original pixels
+  cropH:  number   // rh — height of padded crop in original pixels
+}
+type StencilResult =
+  | { mode: 'crop'; image: string }
+  | { mode: 'inpaint'; image: string; mask: string }
+  | { mode: 'inpaint-multi'; jobs: InpaintJobMeta[]; originalB64: string; imgW: number; imgH: number }
 
 function StencilModal({
   onClose,
@@ -3404,6 +3415,7 @@ function StencilModal({
   const canvasRef    = useRef<HTMLCanvasElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const srcImgRef    = useRef<HTMLImageElement | null>(null)
+  const origB64Ref   = useRef('')   // compressed original image for compositing
 
   const [imgLoaded, setImgLoaded] = useState(false)
   const [mode, setMode]           = useState<StencilMode>('crop')
@@ -3411,16 +3423,19 @@ function StencilModal({
   const [padding, setPadding]     = useState(20)
   const [sel, setSel]             = useState({ x: 0, y: 0, w: 512, h: 512 })
   const [lassoDirty, setLassoDirty] = useState(0) // bumped when a lasso path is completed
+  const [perShape, setPerShape]   = useState(false) // run a separate inpaint job per lasso shape
 
   // Refs readable inside draw / RAF without stale closures
   const selRef     = useRef(sel)
   const selModeRef = useRef<StencilSelMode>('rect')
+  const perShapeRef = useRef(false)
   const lassoRef      = useRef<{ x: number; y: number }[]>([])
   const lassoPathsRef = useRef<{ x: number; y: number }[][]>([])
   const lassoDrawingRef = useRef(false)
   const rafRef     = useRef<number | null>(null)
   useEffect(() => { selRef.current = sel }, [sel])
   useEffect(() => { selModeRef.current = selMode }, [selMode])
+  useEffect(() => { perShapeRef.current = perShape }, [perShape])
 
   const dtRef = useRef({ scale: 1, offX: 0, offY: 0, imgW: 0, imgH: 0 })
 
@@ -3438,6 +3453,14 @@ function StencilModal({
       lassoRef.current = []
       lassoPathsRef.current = []
       setLassoDirty(0)
+      // Store a compressed copy (max 1536px) for multi-shape compositing
+      const ORIG_MAX = 1536
+      const origSc = Math.min(1, ORIG_MAX / img.naturalWidth, ORIG_MAX / img.naturalHeight)
+      const oc = document.createElement('canvas')
+      oc.width  = Math.round(img.naturalWidth  * origSc)
+      oc.height = Math.round(img.naturalHeight * origSc)
+      oc.getContext('2d')!.drawImage(img, 0, 0, oc.width, oc.height)
+      origB64Ref.current = oc.toDataURL('image/jpeg', 0.92)
       const sw = Math.round(Math.min(img.naturalWidth  * 0.6, 1024))
       const sh = Math.round(Math.min(img.naturalHeight * 0.6, 1024))
       setSel({ x: Math.round((img.naturalWidth - sw) / 2), y: Math.round((img.naturalHeight - sh) / 2), w: sw, h: sh })
@@ -3551,15 +3574,31 @@ function StencilModal({
         ctx.font = '11px monospace'
         ctx.fillText(`${Math.round(maxX - minX)} × ${Math.round(maxY - minY)}`, lx + 4, ly - 5)
         if (mode === 'inpaint' && padding > 0) {
-          const bW = maxX - minX, bH = maxY - minY
           const pad = padding / 100
-          const px = Math.max(0, minX - bW * pad), py = Math.max(0, minY - bH * pad)
-          const pw = Math.min(imgW - px, bW * (1 + 2 * pad)), ph = Math.min(imgH - py, bH * (1 + 2 * pad))
-          const { x: cpx, y: cpy } = i2c(px, py)
-          ctx.strokeStyle = 'rgba(245,158,11,0.35)'
-          ctx.lineWidth = 1; ctx.setLineDash([3, 3])
-          ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
-          ctx.setLineDash([])
+          if (perShapeRef.current && committed.length > 1) {
+            // Individual context window per shape
+            for (const path of committed) {
+              const bx = Math.min(...path.map(p => p.x)), bX = Math.max(...path.map(p => p.x))
+              const by = Math.min(...path.map(p => p.y)), bY = Math.max(...path.map(p => p.y))
+              const bW = bX - bx, bH = bY - by
+              const px = Math.max(0, bx - bW * pad), py = Math.max(0, by - bH * pad)
+              const pw = Math.min(imgW - px, bW * (1 + 2 * pad)), ph = Math.min(imgH - py, bH * (1 + 2 * pad))
+              const { x: cpx, y: cpy } = i2c(px, py)
+              ctx.strokeStyle = 'rgba(245,158,11,0.6)'
+              ctx.lineWidth = 1; ctx.setLineDash([3, 3])
+              ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
+              ctx.setLineDash([])
+            }
+          } else {
+            const bW = maxX - minX, bH = maxY - minY
+            const px = Math.max(0, minX - bW * pad), py = Math.max(0, minY - bH * pad)
+            const pw = Math.min(imgW - px, bW * (1 + 2 * pad)), ph = Math.min(imgH - py, bH * (1 + 2 * pad))
+            const { x: cpx, y: cpy } = i2c(px, py)
+            ctx.strokeStyle = 'rgba(245,158,11,0.35)'
+            ctx.lineWidth = 1; ctx.setLineDash([3, 3])
+            ctx.strokeRect(cpx, cpy, pw * scale, ph * scale)
+            ctx.setLineDash([])
+          }
         }
       }
     } else if (!isLasso) {
@@ -3619,7 +3658,7 @@ function StencilModal({
     draw()
   }, [imgLoaded, draw])
 
-  useEffect(() => { if (imgLoaded) draw() }, [sel, selMode, lassoDirty, imgLoaded, draw])
+  useEffect(() => { if (imgLoaded) draw() }, [sel, selMode, lassoDirty, imgLoaded, draw, perShape])
 
   const getHandle = (cx: number, cy: number): DragOp => {
     const s = selRef.current
@@ -3794,6 +3833,44 @@ function StencilModal({
     mctx.fillStyle = 'black'; mctx.fillRect(0, 0, outW, outH)
     mctx.fillStyle = 'white'
 
+    // Per-shape mode: generate a separate crop+mask per committed lasso path
+    if (perShapeRef.current && selModeRef.current === 'lasso' && lassoPathsRef.current.length > 1) {
+      const jobs: InpaintJobMeta[] = []
+      for (const path of lassoPathsRef.current) {
+        if (path.length < 3) continue
+        const bx = Math.min(...path.map(p => p.x)), bX = Math.max(...path.map(p => p.x))
+        const by = Math.min(...path.map(p => p.y)), bY = Math.max(...path.map(p => p.y))
+        const bw = bX - bx, bh = bY - by
+        const pad = padding / 100
+        const jrx = Math.max(0, bx - bw * pad), jry = Math.max(0, by - bh * pad)
+        const jrw = Math.min(imgW - jrx, bw * (1 + 2 * pad)), jrh = Math.min(imgH - jry, bh * (1 + 2 * pad))
+        const jsc = Math.min(targetW / jrw, targetH / jrh)
+        const jW  = Math.max(8, Math.round(jrw * jsc / 8) * 8)
+        const jH  = Math.max(8, Math.round(jrh * jsc / 8) * 8)
+        const jic = document.createElement('canvas')
+        jic.width = jW; jic.height = jH
+        const jictx = jic.getContext('2d')!
+        jictx.fillStyle = '#808080'; jictx.fillRect(0, 0, jW, jH)
+        jictx.drawImage(img, jrx, jry, jrw, jrh, 0, 0, jW, jH)
+        const jmc = document.createElement('canvas')
+        jmc.width = jW; jmc.height = jH
+        const jmctx = jmc.getContext('2d')!
+        jmctx.fillStyle = 'black'; jmctx.fillRect(0, 0, jW, jH)
+        jmctx.fillStyle = 'white'
+        jmctx.beginPath()
+        for (let i = 0; i < path.length; i++) {
+          const mx = (path[i].x - jrx) * jsc
+          const my = (path[i].y - jry) * jsc
+          if (i === 0) jmctx.moveTo(mx, my)
+          else jmctx.lineTo(mx, my)
+        }
+        jmctx.closePath(); jmctx.fill()
+        jobs.push({ image: jic.toDataURL('image/jpeg', 0.92), mask: jmc.toDataURL('image/png'), cropX: jrx, cropY: jry, cropW: jrw, cropH: jrh })
+      }
+      onApply({ mode: 'inpaint-multi', jobs, originalB64: origB64Ref.current, imgW, imgH })
+      return
+    }
+
     if (selModeRef.current === 'lasso' && lassoPathsRef.current.length > 0) {
       // Fill each committed lasso shape onto the mask
       for (const path of lassoPathsRef.current) {
@@ -3881,6 +3958,14 @@ function StencilModal({
                   <input type="range" min={0} max={80} step={5} value={padding}
                     onChange={e => setPadding(+e.target.value)} className="w-20 accent-amber-400" />
                   {padding}%
+                </label>
+              )}
+              {mode === 'inpaint' && selMode === 'lasso' && lassoDirty > 1 && (
+                <label className="flex items-center gap-1.5 text-[11px] text-amber-400/70 cursor-pointer select-none">
+                  <input type="checkbox" checked={perShape} onChange={e => setPerShape(e.target.checked)}
+                    className="accent-amber-400" />
+                  Per-shape context
+                  <span className="text-slate-600">({lassoDirty} jobs)</span>
                 </label>
               )}
               {selMode === 'lasso' && lassoDirty > 0 && (
@@ -4003,12 +4088,16 @@ function CustomFluxPanel({
   const [img2img, setImg2img]                   = useState(false)
   const [img2imgStrength, setImg2imgStrength]   = useState(0.65)
   // Stencil / inpaint
-  const [stencilOpen,     setStencilOpen]     = useState(false)
-  const [stencilCropB64,  setStencilCropB64]  = useState('')
-  const [inpaintMode,     setInpaintMode]     = useState(false)
-  const [inpaintImageB64, setInpaintImageB64] = useState('')
-  const [inpaintMaskB64,  setInpaintMaskB64]  = useState('')
-  const [inpaintStrength, setInpaintStrength] = useState(0.85)
+  const [stencilOpen,       setStencilOpen]       = useState(false)
+  const [stencilCropB64,    setStencilCropB64]    = useState('')
+  const [inpaintMode,       setInpaintMode]       = useState(false)
+  const [inpaintImageB64,   setInpaintImageB64]   = useState('')
+  const [inpaintMaskB64,    setInpaintMaskB64]    = useState('')
+  const [inpaintStrength,   setInpaintStrength]   = useState(0.85)
+  // Multi-shape inpaint queue (per-shape context mode)
+  const [inpaintJobs,       setInpaintJobs]       = useState<InpaintJobMeta[] | null>(null)
+  const [inpaintOriginalB64, setInpaintOriginalB64] = useState('')
+  const [inpaintImgDims,    setInpaintImgDims]    = useState<{ w: number; h: number } | null>(null)
   // ControlNet — up to 3 conditions, each with own mode/scale/image
   const [controlnet, setControlnet]   = useState(false)
   const [cnConditions, setCnConditions] = useState<CNCondition[]>([
@@ -4163,17 +4252,107 @@ function CustomFluxPanel({
     if (result.mode === 'crop') {
       setStencilCropB64(result.image)
       setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64('')
+      setInpaintJobs(null); setInpaintOriginalB64(''); setInpaintImgDims(null)
       setImg2img(true)
+    } else if (result.mode === 'inpaint-multi') {
+      setInpaintMode(true)
+      setInpaintJobs(result.jobs)
+      setInpaintOriginalB64(result.originalB64)
+      setInpaintImgDims({ w: result.imgW, h: result.imgH })
+      setInpaintImageB64(result.jobs[0].image)
+      setInpaintMaskB64(result.jobs[0].mask)
+      setStencilCropB64('')
     } else {
       setInpaintMode(true)
       setInpaintImageB64(result.image)
       setInpaintMaskB64(result.mask)
+      setInpaintJobs(null); setInpaintOriginalB64(''); setInpaintImgDims(null)
       setStencilCropB64('')
     }
   }, [])
 
+  const runMultiInpaint = async () => {
+    const jobs = inpaintJobs!
+    const dims = inpaintImgDims!
+    setGenerating(true); setError(null); setResultUrl(null)
+    const reqWidth  = autoBaseDims?.w ?? width
+    const reqHeight = autoBaseDims?.h ?? height
+    const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+    const baseBody = {
+      mode, prompt: prompt.trim(), checkpoint,
+      loras: loras.filter(l => l.key).map(l => ({ name: l.name, key: l.key, r2_key: l.key, strength: l.strength })),
+      width: reqWidth, height: reqHeight, steps, guidance,
+      seed: seed === -1 ? null : seed,
+      refine: mode === 'runpod' ? refine : false, refine_strength: refineStrength,
+      upscale: 'none', upscale_strength: fluxTileStrength,
+      adetailer: false, adetailer_strength: adetailerStrength,
+      gfpgan: false, gfpgan_weight: gfpganWeight,
+      ip_adapter_images: [] as string[], ip_adapter_scale: ipScale,
+      img2img_image: '', img2img_strength: img2imgStrength,
+      controlnet: false, controlnet_conditions: [] as unknown[],
+      inpaint_strength: inpaintStrength,
+    }
+    // Composite canvas starts as the compressed original
+    let compositeB64 = inpaintOriginalB64
+    const compScale = Math.min(1, 1536 / dims.w, 1536 / dims.h)
+    const compW = Math.round(dims.w * compScale), compH = Math.round(dims.h * compScale)
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i]
+      setStatus(`Inpainting shape ${i + 1} / ${jobs.length}`)
+      const res = await fetch('/api/admin/flux-inference/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
+        body: JSON.stringify({ ...baseBody, inpaint_image: job.image, inpaint_mask: job.mask }),
+      })
+      const data = await res.json() as { mode: string; job_id?: string; error?: string }
+      if (!res.ok || data.error || !data.job_id) {
+        setError(`Shape ${i + 1}: ${data.error ?? 'Submission failed'}`); setGenerating(false); return
+      }
+      // Poll until this job completes
+      let resultUrl: string | null = null
+      for (let a = 0; a < 240; a++) {
+        await new Promise(r => setTimeout(r, 3000))
+        const pr = await fetch('/api/admin/flux-inference/nb2-status', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requestId: data.job_id }),
+        })
+        const pd = await pr.json() as { status: string; images?: { url: string }[]; error?: string; notFound?: boolean }
+        if (pd.status === 'completed' && pd.images?.[0]?.url) { resultUrl = pd.images[0].url; break }
+        if (pd.status === 'failed') { setError(`Shape ${i + 1}: ${pd.error ?? 'Job failed'}`); setGenerating(false); return }
+      }
+      if (!resultUrl) { setError(`Shape ${i + 1}: timed out`); setGenerating(false); return }
+      // Composite result onto the growing canvas
+      const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(resultUrl)}`
+      const blob = await fetch(proxyUrl).then(r => r.blob())
+      const blobUrl = URL.createObjectURL(blob)
+      await new Promise<void>((resolve, reject) => {
+        const baseImg = new window.Image()
+        baseImg.onload = () => {
+          const c = document.createElement('canvas'); c.width = compW; c.height = compH
+          const ctx = c.getContext('2d')!; ctx.drawImage(baseImg, 0, 0)
+          const patchImg = new window.Image()
+          patchImg.onload = () => {
+            const px = Math.round(job.cropX * compScale), py = Math.round(job.cropY * compScale)
+            const pw = Math.round(job.cropW * compScale), ph = Math.round(job.cropH * compScale)
+            ctx.drawImage(patchImg, px, py, pw, ph)
+            compositeB64 = c.toDataURL('image/jpeg', 0.93)
+            URL.revokeObjectURL(blobUrl); resolve()
+          }
+          patchImg.onerror = reject; patchImg.src = blobUrl
+        }
+        baseImg.onerror = reject; baseImg.src = compositeB64
+      })
+    }
+    const ckptShort = checkpoint.split('/').pop()?.replace(/\.[^.]+$/, '') ?? checkpoint
+    setResultUrl(compositeB64)
+    onPrependImage({ id: Date.now(), imageUrl: compositeB64, prompt: prompt.trim(), model: 'custom-flux-lora', createdAt: new Date().toISOString(),
+      videoMetadata: { fluxCheckpoint: ckptShort, fluxWidth: reqWidth, fluxHeight: reqHeight, fluxSteps: steps, fluxGuidance: guidance, fluxSeed: seed === -1 ? 'random' : seed, fluxLoras: loras.filter(l => l.key).map(l => l.name || l.key.split('/').pop() || ''), fluxInpaintShapes: jobs.length } as Record<string, unknown> })
+    setGenerating(false); setStatus('')
+  }
+
   const handleGenerate = async () => {
     if (!canGenerate) return
+    if (inpaintJobs && inpaintJobs.length > 1) return runMultiInpaint()
     setGenerating(true)
     setError(null)
     setResultUrl(null)
@@ -4988,8 +5167,10 @@ function CustomFluxPanel({
         {mode === 'runpod' && inpaintMode && (
           <div className="rounded-xl border border-amber-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-amber-400/60 uppercase tracking-widest">Inpaint Mask Active</span>
-              <button onClick={() => { setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64('') }}
+              <span className="text-[10px] font-mono text-amber-400/60 uppercase tracking-widest">
+                {inpaintJobs ? `Inpaint · ${inpaintJobs.length} shapes (per-shape jobs)` : 'Inpaint Mask Active'}
+              </span>
+              <button onClick={() => { setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64(''); setInpaintJobs(null); setInpaintOriginalB64(''); setInpaintImgDims(null) }}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-red-400 border border-white/10 hover:border-red-500/30 transition-all">
                 <X size={9} /> Clear
               </button>
