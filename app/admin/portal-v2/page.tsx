@@ -3506,7 +3506,8 @@ function StencilModal({
     if (!canvas || !srcImgRef.current) return
     const img  = srcImgRef.current
     const maxW = canvas.parentElement?.clientWidth ?? 600
-    const sc   = Math.min(maxW / img.naturalWidth, 400 / img.naturalHeight, 1)
+    const maxH = Math.floor(window.innerHeight * 0.55)
+    const sc   = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1)
     canvas.width  = Math.round(img.naturalWidth  * sc)
     canvas.height = Math.round(img.naturalHeight * sc)
     draw()
@@ -3624,8 +3625,8 @@ function StencilModal({
 
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-2xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+      <div className="relative w-full max-w-2xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 shrink-0">
           <div className="flex items-center gap-3">
             <span className="text-sm font-semibold text-white">Stencil</span>
             <div className="flex rounded-md overflow-hidden border border-white/10">
@@ -3640,7 +3641,7 @@ function StencilModal({
           <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
         </div>
 
-        <div className="p-4 space-y-3">
+        <div className="p-4 space-y-3 overflow-y-auto flex-1">
           {!imgLoaded ? (
             <div onClick={() => fileInputRef.current?.click()}
               className="flex flex-col items-center justify-center gap-3 h-48 border-2 border-dashed border-white/10 rounded-xl cursor-pointer hover:border-white/20 transition-colors">
@@ -3649,8 +3650,8 @@ function StencilModal({
               <span className="text-[10px] text-slate-700">Any size — canvas scales to fit</span>
             </div>
           ) : (
-            <div className="relative w-full rounded-xl overflow-hidden border border-white/10 bg-black/30 cursor-crosshair select-none">
-              <canvas ref={canvasRef} className="w-full block" style={{ touchAction: 'none' }}
+            <div className="relative w-full rounded-xl overflow-hidden border border-white/10 bg-black/30 cursor-crosshair select-none flex items-center justify-center">
+              <canvas ref={canvasRef} className="block max-w-full" style={{ touchAction: 'none' }}
                 onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
             </div>
           )}
