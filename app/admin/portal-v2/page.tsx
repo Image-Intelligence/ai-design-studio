@@ -619,6 +619,7 @@ function GroupedTaskbarDropdown({
   label,
   icon: Icon,
   groups,
+  adminGroups,
   open,
   onToggle,
   onSelect,
@@ -630,6 +631,7 @@ function GroupedTaskbarDropdown({
   label: string
   icon: React.ElementType
   groups: { label: string; type: string; accent: string; dot: string; items: string[] }[]
+  adminGroups?: { label: string; type: string; accent: string; dot: string; items: string[] }[]
   open: boolean
   onToggle: () => void
   onSelect?: (item: string) => void
@@ -725,6 +727,47 @@ function GroupedTaskbarDropdown({
                 </div>
               </div>
             ))}
+
+            {/* Admin Models — full-width block containing subsections */}
+            {adminGroups && adminGroups.length > 0 && (
+              <div className="col-span-2 mt-0.5 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.03] overflow-hidden">
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-cyan-500/10">
+                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 shrink-0" />
+                  <span className="text-[9px] font-bold tracking-widest uppercase text-cyan-400">Admin Models</span>
+                  <span className="text-[8px] text-slate-600">· admin only</span>
+                </div>
+                <div className="p-2 grid grid-cols-2 gap-x-2">
+                  {adminGroups.map((sub) => (
+                    <div key={sub.label}>
+                      <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
+                        <span className={`text-[9px] font-bold tracking-widest uppercase leading-none ${sub.accent}`}>{sub.label}</span>
+                        <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
+                      </div>
+                      <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
+                        {sub.items.map((item) => (
+                          <button
+                            key={item}
+                            onClick={() => { onSelect?.(item); onToggle() }}
+                            className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
+                              activeItem === item
+                                ? "bg-white/8 text-white font-medium"
+                                : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                            }`}
+                          >
+                            <span className="truncate leading-tight">{item}</span>
+                            <span className="shrink-0 flex items-center gap-1">
+                              {activeItem === item && <span className="w-1 h-1 rounded-full bg-cyan-400" />}
+                              {itemCosts?.[item] && <CostBadge tier={itemCosts[item]} />}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Footer — explains the cost symbols plainly */}
@@ -11191,7 +11234,8 @@ export default function PortalV2Page() {
             <GroupedTaskbarDropdown
               label="Image"
               icon={Image}
-              groups={isAdminAccount ? [...IMAGE_MODEL_GROUPS, ...ADMIN_IMAGE_MODEL_GROUPS] : IMAGE_MODEL_GROUPS}
+              groups={IMAGE_MODEL_GROUPS}
+              adminGroups={isAdminAccount ? ADMIN_IMAGE_MODEL_GROUPS : undefined}
               open={openDropdown === "image"}
               onToggle={() => toggle("image")}
               onSelect={handleSelectImageModel}
