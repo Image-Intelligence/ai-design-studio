@@ -3891,7 +3891,15 @@ function StencilModal({
       mctx.fillRect(Math.floor((x - rx) * sc), Math.floor((y - ry) * sc), Math.ceil(w * sc), Math.ceil(h * sc))
     }
 
-    onApply({ mode: 'inpaint', image: ic.toDataURL('image/jpeg', 0.92), mask: mc.toDataURL('image/png') })
+    // Always emit inpaint-multi (even for a single shape) so the client composites
+    // the result back onto the original image at the correct crop position.
+    onApply({
+      mode: 'inpaint-multi',
+      jobs: [{ image: ic.toDataURL('image/jpeg', 0.92), mask: mc.toDataURL('image/png'), cropX: rx, cropY: ry, cropW: rw, cropH: rh, prompt: '' }],
+      originalB64: origB64Ref.current,
+      imgW,
+      imgH,
+    })
   }
 
   const canApply = imgLoaded && (mode === 'crop' || selMode === 'rect' || lassoDirty > 0)
@@ -4301,7 +4309,7 @@ function CustomFluxPanel({
     const compW = Math.round(dims.w * compScale), compH = Math.round(dims.h * compScale)
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i]
-      setStatus(`Inpainting shape ${i + 1} / ${jobs.length}`)
+      setStatus(jobs.length > 1 ? `Inpainting shape ${i + 1} / ${jobs.length}` : 'Inpainting…')
       const shapePrompt = job.prompt.trim()
       const fullPrompt  = shapePrompt ? `${shapePrompt}, ${baseBody.prompt}` : baseBody.prompt
       const res = await fetch('/api/admin/flux-inference/generate', {
@@ -4357,7 +4365,7 @@ function CustomFluxPanel({
 
   const handleGenerate = async () => {
     if (!canGenerate) return
-    if (inpaintJobs && inpaintJobs.length > 1) return runMultiInpaint()
+    if (inpaintJobs && inpaintJobs.length >= 1) return runMultiInpaint()
     setGenerating(true)
     setError(null)
     setResultUrl(null)
@@ -5173,32 +5181,26 @@ function CustomFluxPanel({
           <div className="rounded-xl border border-amber-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-mono text-amber-400/60 uppercase tracking-widest">
-                {inpaintJobs ? `Inpaint · ${inpaintJobs.length} shapes (per-shape jobs)` : 'Inpaint Mask Active'}
+                {inpaintJobs && inpaintJobs.length > 1 ? `Inpaint · ${inpaintJobs.length} shapes (per-shape jobs)` : 'Inpaint Mask Active'}
               </span>
               <button onClick={() => { setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64(''); setInpaintJobs(null); setInpaintOriginalB64(''); setInpaintImgDims(null) }}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-red-400 border border-white/10 hover:border-red-500/30 transition-all">
                 <X size={9} /> Clear
               </button>
             </div>
-            {inpaintJobs ? (
-              // Per-shape mode: show a row per job
+            {inpaintJobs && inpaintJobs.length > 1 ? (
+              // Multi-shape: show a row per job
               <div className="space-y-2">
                 {inpaintJobs.map((job, i) => (
-                  <div key={i} className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[9px] font-mono text-amber-400/50 w-12 shrink-0">Shape {i + 1}</span>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={job.image} alt={`shape ${i + 1}`} className="w-10 h-10 rounded object-cover border border-amber-500/30 shrink-0" />
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={job.mask}  alt={`mask ${i + 1}`}  className="w-10 h-10 rounded object-cover border border-amber-500/20 shrink-0 bg-black" />
-                      <input
-                        type="text"
-                        value={job.prompt}
-                        onChange={e => updateJobPrompt(i, e.target.value)}
-                        placeholder="describe this region… (prepends to base prompt)"
-                        className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded px-2 py-1 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-amber-500/40"
-                      />
-                    </div>
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono text-amber-400/50 w-12 shrink-0">Shape {i + 1}</span>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={job.image} alt={`shape ${i + 1}`} className="w-10 h-10 rounded object-cover border border-amber-500/30 shrink-0" />
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={job.mask}  alt={`mask ${i + 1}`}  className="w-10 h-10 rounded object-cover border border-amber-500/20 shrink-0 bg-black" />
+                    <input type="text" value={job.prompt} onChange={e => updateJobPrompt(i, e.target.value)}
+                      placeholder="describe this region… (prepends to base prompt)"
+                      className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded px-2 py-1 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-amber-500/40" />
                   </div>
                 ))}
                 <div className="flex items-center gap-3 pt-0.5">
@@ -5212,13 +5214,18 @@ function CustomFluxPanel({
                 </div>
               </div>
             ) : (
+              // Single shape (or no jobs yet)
               <div className="flex items-center gap-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inpaintImageB64} alt="source" className="w-14 h-14 rounded-md object-cover border border-amber-500/30 shrink-0" />
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={inpaintMaskB64}  alt="mask"   className="w-14 h-14 rounded-md object-cover border border-amber-500/20 shrink-0 bg-black" />
-                <div className="flex flex-col gap-1.5 min-w-0">
-                  <span className="text-[10px] text-slate-400">FLUX regenerates only the white masked region</span>
+                {inpaintJobs?.[0] && (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={inpaintJobs[0].image} alt="source" className="w-14 h-14 rounded-md object-cover border border-amber-500/30 shrink-0" />
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={inpaintJobs[0].mask}  alt="mask"   className="w-14 h-14 rounded-md object-cover border border-amber-500/20 shrink-0 bg-black" />
+                  </>
+                )}
+                <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+                  <span className="text-[10px] text-slate-400">Generates inside the selected region, composited back onto your original image</span>
                   <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
                     Strength
                     <input type="range" min={0.1} max={1} step={0.05} value={inpaintStrength}
