@@ -5452,8 +5452,9 @@ function CustomFluxPanel({
                       <button onClick={refreshModels} className="text-[10px] text-slate-500 hover:text-white flex items-center gap-1"><RefreshCw size={10} />Retry</button>
                     </div>
                   ) : (() => {
-                    const devCkpts  = checkpoints.filter(c => !/fill/i.test(c.key))
-                    const fillCkpts = checkpoints.filter(c => /fill/i.test(c.key))
+                    const fillCkpts    = checkpoints.filter(c => /fill/i.test(c.key))
+                    const kontextCkpts = checkpoints.filter(c => /kontext/i.test(c.key))
+                    const devCkpts     = checkpoints.filter(c => !/fill/i.test(c.key) && !/kontext/i.test(c.key))
                     const Section = ({ label, accent, items }: { label: string; accent: string; items: typeof checkpoints }) => (
                       <div>
                         <div className={`px-3 py-1.5 flex items-center gap-1.5 border-b border-white/5 ${accent}`}>
@@ -5476,6 +5477,8 @@ function CustomFluxPanel({
                         <Section label="Flux 1 Dev" accent="text-amber-400/70" items={devCkpts} />
                         <div className="border-t border-white/5" />
                         <Section label="Flux Fill" accent="text-emerald-400/70" items={fillCkpts} />
+                        <div className="border-t border-white/5" />
+                        <Section label="Flux 1 Kontext" accent="text-violet-400/70" items={kontextCkpts} />
                       </>
                     )
                   })()}
