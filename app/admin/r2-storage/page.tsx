@@ -120,6 +120,7 @@ export default function R2StoragePage() {
   const [jobs,          setJobs]          = useState<UploadJob[]>([])
   const [deleting,      setDeleting]      = useState<Set<string>>(new Set())
   const [dragOver,      setDragOver]      = useState(false)
+  const [ckptType,      setCkptType]      = useState<'dev' | 'fill' | 'kontext'>('dev')
 
   const jobsRef        = useRef<UploadJob[]>([])
   const fileInputRef   = useRef<HTMLInputElement>(null)
@@ -260,6 +261,20 @@ export default function R2StoragePage() {
   function handleFiles(files: FileList | null, prefix: string) {
     if (!files) return
     Array.from(files).forEach(f => uploadFile(f, `${prefix}${f.name}`, prefix))
+  }
+
+  function handleCheckpointFiles(files: FileList | null) {
+    if (!files) return
+    const prefix = 'training/checkpoints/'
+    Array.from(files).forEach(f => {
+      let filename = f.name
+      if (ckptType === 'fill' && !/fill/i.test(filename)) {
+        filename = `flux-fill-${filename}`
+      } else if (ckptType === 'kontext' && !/kontext/i.test(filename)) {
+        filename = `flux-kontext-${filename}`
+      }
+      uploadFile(f, `${prefix}${filename}`, prefix)
+    })
   }
 
   function handleModelFile(file: File, filename: string) {
@@ -585,6 +600,49 @@ export default function R2StoragePage() {
             </div>
           )}
 
+          {/* ── Checkpoint type selector ── */}
+          {activeTab === 'checkpoints' && (
+            <div className="rounded-2xl border border-white/[0.08] bg-[#0f0f1a] p-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600 mb-1">Upload Destination</p>
+              <p className="text-[11px] text-slate-500 mb-3 leading-snug">
+                Select which section this checkpoint will appear in on the Flux pipeline.
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { id: 'dev'     as const, label: 'Flux 1 Dev',    accent: 'amber',   desc: 'Base dev checkpoints' },
+                  { id: 'fill'    as const, label: 'Flux Fill',      accent: 'emerald', desc: 'Inpainting / fill' },
+                  { id: 'kontext' as const, label: 'Flux 1 Kontext', accent: 'violet',  desc: 'Context-aware models' },
+                ]).map(opt => (
+                  <button
+                    key={opt.id}
+                    onClick={() => setCkptType(opt.id)}
+                    className={`flex flex-col items-start gap-1 px-3 py-2.5 rounded-xl border transition-all text-left ${
+                      ckptType === opt.id
+                        ? opt.accent === 'amber'
+                          ? 'border-amber-500/50 bg-amber-500/10'
+                          : opt.accent === 'emerald'
+                          ? 'border-emerald-500/50 bg-emerald-500/10'
+                          : 'border-violet-500/50 bg-violet-500/10'
+                        : 'border-white/[0.08] hover:border-white/[0.15]'
+                    }`}
+                  >
+                    <span className={`text-[11px] font-semibold ${
+                      ckptType === opt.id
+                        ? opt.accent === 'amber' ? 'text-amber-300' : opt.accent === 'emerald' ? 'text-emerald-300' : 'text-violet-300'
+                        : 'text-slate-400'
+                    }`}>{opt.label}</span>
+                    <span className="text-[9px] text-slate-600">{opt.desc}</span>
+                  </button>
+                ))}
+              </div>
+              {ckptType !== 'dev' && (
+                <p className="text-[10px] text-slate-600 mt-2.5 leading-snug">
+                  Files without <code className="text-slate-500">"{ckptType === 'fill' ? 'fill' : 'kontext'}"</code> in the name will be auto-prefixed with <code className="text-slate-500">"{ckptType === 'fill' ? 'flux-fill-' : 'flux-kontext-'}"</code>.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* ── Upload zone (all tabs except models and loras) ── */}
           {activeTab !== 'models' && !currentTab.readOnly && (
             <div
@@ -593,7 +651,8 @@ export default function R2StoragePage() {
               onDrop={e => {
                 e.preventDefault()
                 setDragOver(false)
-                handleFiles(e.dataTransfer.files, currentTab.prefix)
+                if (activeTab === 'checkpoints') handleCheckpointFiles(e.dataTransfer.files)
+                else handleFiles(e.dataTransfer.files, currentTab.prefix)
               }}
               onClick={() => fileInputRef.current?.click()}
               className={`rounded-2xl border-2 border-dashed p-10 flex flex-col items-center justify-center gap-3 cursor-pointer transition-all select-none ${
@@ -611,8 +670,12 @@ export default function R2StoragePage() {
                   {dragOver ? 'Drop to upload' : 'Drop files here or click to browse'}
                 </p>
                 <p className="text-[11px] text-slate-600 mt-1">
-                  {activeTab === 'checkpoints' && 'Accepts .safetensors · .ckpt · .pt — large files supported'}
-                  {activeTab === 'datasets'    && 'Accepts .zip — create a zip of your images + caption .txt files'}
+                  {activeTab === 'checkpoints' && (
+                    ckptType === 'fill'    ? 'Uploading as Flux Fill — accepts .safetensors · .ckpt · .pt' :
+                    ckptType === 'kontext' ? 'Uploading as Flux 1 Kontext — accepts .safetensors · .ckpt · .pt' :
+                                            'Uploading as Flux 1 Dev — accepts .safetensors · .ckpt · .pt'
+                  )}
+                  {activeTab === 'datasets' && 'Accepts .zip — create a zip of your images + caption .txt files'}
                 </p>
               </div>
               <input
@@ -621,7 +684,11 @@ export default function R2StoragePage() {
                 multiple
                 accept={currentTab.accept ?? undefined}
                 className="hidden"
-                onChange={e => { handleFiles(e.target.files, currentTab.prefix); e.target.value = '' }}
+                onChange={e => {
+                  if (activeTab === 'checkpoints') handleCheckpointFiles(e.target.files)
+                  else handleFiles(e.target.files, currentTab.prefix)
+                  e.target.value = ''
+                }}
               />
             </div>
           )}
@@ -668,6 +735,21 @@ export default function R2StoragePage() {
                           {file.last_modified && ` · ${new Date(file.last_modified).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
                         </p>
                       </div>
+                      {activeTab === 'checkpoints' && (() => {
+                        const isFill    = /fill/i.test(file.key)
+                        const isKontext = /kontext/i.test(file.key)
+                        const label = isFill ? 'Flux Fill' : isKontext ? 'Flux 1 Kontext' : 'Flux 1 Dev'
+                        const cls   = isFill
+                          ? 'text-emerald-400/70 bg-emerald-500/10 border-emerald-500/20'
+                          : isKontext
+                          ? 'text-violet-400/70 bg-violet-500/10 border-violet-500/20'
+                          : 'text-amber-400/70 bg-amber-500/10 border-amber-500/20'
+                        return (
+                          <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${cls}`}>
+                            {label}
+                          </span>
+                        )
+                      })()}
 
                       {job && (
                         <div className="text-[10px] text-violet-400 font-mono shrink-0">
