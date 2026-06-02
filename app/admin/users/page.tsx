@@ -121,6 +121,10 @@ export default function AdminUsersPage() {
   const [revokeDone, setRevokeDone] = useState<{ revokedCount: number; excludedCount: number } | null>(null)
   const revokePreviewTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Repair reserved state
+  const [repairingReserved, setRepairingReserved] = useState(false)
+  const [repairReservedResult, setRepairReservedResult] = useState<string | null>(null)
+
   useEffect(() => {
     const authStatus = localStorage.getItem("multiverse-admin-auth")
     const savedPassword = sessionStorage.getItem("admin-password")
@@ -563,6 +567,46 @@ export default function AdminUsersPage() {
                 </button>
               </div>
             </div>
+          )}
+        </div>
+
+        {/* Repair Corrupted Reserved Balances */}
+        <div className="mb-3 rounded-xl border border-orange-500/15 bg-orange-500/[0.02] overflow-hidden px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={12} className="text-orange-400/70" />
+              <div>
+                <span className="text-xs font-bold text-orange-400/80">Repair Negative Reserved Balances</span>
+                <p className="text-[10px] text-slate-600 mt-0.5">Resets any user whose reserved field went negative (allows free generations). Run after resetting ticket balances.</p>
+              </div>
+            </div>
+            <button
+              onClick={async () => {
+                setRepairingReserved(true)
+                setRepairReservedResult(null)
+                try {
+                  const pass = sessionStorage.getItem('admin-password') ?? ''
+                  const res = await fetch('/api/admin/repair-reserved', {
+                    method: 'POST',
+                    headers: pass ? { 'x-admin-password': pass } : {},
+                  })
+                  const data = await res.json()
+                  setRepairReservedResult(data.message ?? 'Done')
+                } catch {
+                  setRepairReservedResult('Failed — check console')
+                } finally {
+                  setRepairingReserved(false)
+                }
+              }}
+              disabled={repairingReserved}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-500/[0.08] border border-orange-500/20 text-orange-400 hover:bg-orange-500/[0.15] disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0 ml-4"
+            >
+              {repairingReserved ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+              Repair
+            </button>
+          </div>
+          {repairReservedResult && (
+            <p className="mt-2 text-[11px] text-orange-300/70">{repairReservedResult}</p>
           )}
         </div>
 

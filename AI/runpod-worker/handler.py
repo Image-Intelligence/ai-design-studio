@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-06-01-v66'
+HANDLER_VERSION = '2026-06-02-v67'
 
 import importlib
 
@@ -1190,6 +1190,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     inpaint_image_b64 = inp.get('inpaint_image', '')
     inpaint_mask_b64  = inp.get('inpaint_mask',  '')
     inpaint_strength  = float(inp.get('inpaint_strength', 0.85))
+    use_flux_fill     = bool(inp.get('use_flux_fill', False))
     # ControlNet — multi-condition
     controlnet_enabled    = bool(inp.get('controlnet', False))
     controlnet_conditions = inp.get('controlnet_conditions', [])             # [{mode, scale, image}]
@@ -1297,10 +1298,13 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # 3. Load pipeline — cache by checkpoint path so warm workers skip the reload.
     # LoRA weights are saved before each job and restored after, so the cached
     # pipeline is always clean at the start of a new job.
+    # FluxFillPipeline has a different transformer architecture (extra inpaint channels)
+    # so it gets its own cache slot even for the same checkpoint file.
     global _PIPE_CACHE
+    ckpt_cache_key = f'{ckpt_path}::fill' if use_flux_fill else ckpt_path
 
-    if ckpt_path in _PIPE_CACHE:
-        pipe = _PIPE_CACHE[ckpt_path]
+    if ckpt_cache_key in _PIPE_CACHE:
+        pipe = _PIPE_CACHE[ckpt_cache_key]
         logs.append('[inference] Pipeline cache hit — reusing loaded model.')
         _flush_logs(r2, bucket, job_id, logs)
     else:
@@ -1315,11 +1319,20 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         _flush_logs(r2, bucket, job_id, logs)
 
         try:
-            # Happy path: checkpoint includes all components
-            pipe = FluxPipeline.from_single_file(ckpt_path, torch_dtype=torch.bfloat16)
-            logs.append('[inference] Full pipeline loaded from checkpoint.')
+            # Happy path: checkpoint includes all components.
+            # FluxFillPipeline has a different transformer architecture (extra input channels
+            # for the masked image) — it must be loaded with its own pipeline class.
+            if use_flux_fill:
+                from diffusers import FluxFillPipeline as _FluxFillPipeline
+                pipe = _FluxFillPipeline.from_single_file(ckpt_path, torch_dtype=torch.bfloat16)
+                logs.append('[inference] Full FluxFillPipeline loaded from checkpoint.')
+            else:
+                pipe = FluxPipeline.from_single_file(ckpt_path, torch_dtype=torch.bfloat16)
+                logs.append('[inference] Full pipeline loaded from checkpoint.')
 
         except Exception as _first_err:
+            if use_flux_fill:
+                raise  # Fill requires a full pipeline checkpoint; no transformer-only fallback
             _COMPONENT_ERRORS = ('CLIPTextModel', 'AutoencoderKL', 'T5EncoderModel', 'SingleFileComponentError')
             if not any(x in str(_first_err) for x in _COMPONENT_ERRORS):
                 raise  # unexpected error — surface it
@@ -1409,14 +1422,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             pipe = pipe.to('cuda')
         except torch.cuda.OutOfMemoryError as _oom:
             # Partial load may have consumed VRAM — purge and surface the error
-            _PIPE_CACHE.pop(ckpt_path, None)
+            _PIPE_CACHE.pop(ckpt_cache_key, None)
             gc.collect()
             torch.cuda.empty_cache()
             raise RuntimeError(
                 f'CUDA OOM moving pipeline to GPU: {_oom}. '
                 f'VRAM free after cleanup: {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB'
             ) from _oom
-        _PIPE_CACHE[ckpt_path] = pipe
+        _PIPE_CACHE[ckpt_cache_key] = pipe
         logs.append('[inference] Pipeline ready (cached for reuse).')
         _flush_logs(r2, bucket, job_id, logs)
 
@@ -1517,7 +1530,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # Load FluxImg2ImgPipeline for img2img/refine/tiled upscale/combo/adetailer (shares weights — no extra VRAM)
     pipe_i2i = None
     _pipeline_needs_flux = do_pipeline and any(str(s.get('type', '')).lower() == 'flux' for s in pipeline_steps)
-    if refine or upscale_factor > 0 or adetailer or img2img_pil is not None or inpaint_pil is not None or do_combo or _pipeline_needs_flux:
+    # Fill pipeline handles inpainting natively — no separate img2img pipeline needed for that.
+    _needs_i2i = refine or upscale_factor > 0 or adetailer or img2img_pil is not None or do_combo or _pipeline_needs_flux
+    if not use_flux_fill:
+        _needs_i2i = _needs_i2i or (inpaint_pil is not None)
+    if _needs_i2i:
         try:
             from diffusers import FluxImg2ImgPipeline
             pipe_i2i = FluxImg2ImgPipeline(**pipe.components)
@@ -1700,30 +1717,46 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     try:
         # 6. Base generation (img2img or text2img)
         gen = torch.Generator('cuda').manual_seed(int(seed)) if seed is not None else None
-        if inpaint_pil is not None and inpaint_mask_pil is not None and pipe_i2i is not None:
-            logs.append(f'[inpaint] img2img crop + mask composite — strength={inpaint_strength} ({steps} steps)...')
-            _flush_logs(r2, bucket, job_id, logs)
-            _inpainted_raw = pipe_i2i(
-                prompt=prompt,
-                image=inpaint_pil,
-                strength=inpaint_strength,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                generator=gen,
-                width=inpaint_pil.width,
-                height=inpaint_pil.height,
-            ).images[0]
-            # Composite: paste img2img result only inside the lasso mask.
-            # white (255) = replace with generated, black (0) = keep original pixel.
-            # This gives pixel-perfect background preservation regardless of model drift.
-            import numpy as _np_ip
-            _img_arr  = _np_ip.array(_inpainted_raw).astype(_np_ip.float32)
-            _orig_arr = _np_ip.array(inpaint_pil).astype(_np_ip.float32)
-            _mask_f   = _np_ip.array(inpaint_mask_pil).astype(_np_ip.float32) / 255.0
-            _mask_rgb = _np_ip.stack([_mask_f, _mask_f, _mask_f], axis=-1)
-            _result   = _img_arr * _mask_rgb + _orig_arr * (1.0 - _mask_rgb)
-            image     = Image.fromarray(_result.astype(_np_ip.uint8))
-            logs.append(f'[inpaint] Done — {image.width}×{image.height}.')
+        if inpaint_pil is not None and inpaint_mask_pil is not None:
+            if use_flux_fill:
+                # FluxFillPipeline: trained for inpainting — sees context around the mask
+                # and fills the masked region coherently. No composite step needed.
+                logs.append(f'[inpaint] FluxFillPipeline native fill — {steps} steps, guidance={guidance}...')
+                _flush_logs(r2, bucket, job_id, logs)
+                image = pipe(
+                    prompt=prompt,
+                    image=inpaint_pil,
+                    mask_image=inpaint_mask_pil,
+                    height=inpaint_pil.height,
+                    width=inpaint_pil.width,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=gen,
+                ).images[0]
+                logs.append(f'[inpaint] FluxFill done — {image.width}×{image.height}.')
+            elif pipe_i2i is not None:
+                # Flux Dev / non-Fill: img2img the crop then composite with the lasso mask.
+                # white (255) = replace with generated, black (0) = keep original pixel.
+                logs.append(f'[inpaint] img2img crop + mask composite — strength={inpaint_strength} ({steps} steps)...')
+                _flush_logs(r2, bucket, job_id, logs)
+                _inpainted_raw = pipe_i2i(
+                    prompt=prompt,
+                    image=inpaint_pil,
+                    strength=inpaint_strength,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=gen,
+                    width=inpaint_pil.width,
+                    height=inpaint_pil.height,
+                ).images[0]
+                import numpy as _np_ip
+                _img_arr  = _np_ip.array(_inpainted_raw).astype(_np_ip.float32)
+                _orig_arr = _np_ip.array(inpaint_pil).astype(_np_ip.float32)
+                _mask_f   = _np_ip.array(inpaint_mask_pil).astype(_np_ip.float32) / 255.0
+                _mask_rgb = _np_ip.stack([_mask_f, _mask_f, _mask_f], axis=-1)
+                _result   = _img_arr * _mask_rgb + _orig_arr * (1.0 - _mask_rgb)
+                image     = Image.fromarray(_result.astype(_np_ip.uint8))
+                logs.append(f'[inpaint] Done — {image.width}×{image.height}.')
         elif img2img_pil is not None and pipe_i2i is not None:
             logs.append(f'[img2img] Starting from reference image — strength={img2img_strength} ({steps} steps)...')
             _flush_logs(r2, bucket, job_id, logs)

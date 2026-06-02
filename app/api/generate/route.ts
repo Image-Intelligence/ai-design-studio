@@ -157,9 +157,11 @@ export async function POST(request: Request) {
       where: { userId: user.id }
     })
 
-    // Effective available balance = balance minus any tickets already reserved for
-    // in-flight async jobs. This prevents over-committing when multiple jobs fire rapidly.
-    const effectiveBalance = (ticketRecord?.balance || 0) - (ticketRecord?.reserved || 0)
+    // Effective available balance = balance minus any tickets reserved for in-flight jobs.
+    // Clamp reserved to >= 0: a negative reserved field (from a bug or race) would otherwise
+    // inflate the effective balance and allow generations with 0 tickets.
+    const reservedSafe = Math.max(0, ticketRecord?.reserved ?? 0)
+    const effectiveBalance = (ticketRecord?.balance ?? 0) - reservedSafe
     if (!skipTickets && effectiveBalance < ticketCost) {
       return NextResponse.json(
         { error: `Insufficient tickets. Need ${ticketCost} ticket(s), but you have ${effectiveBalance}.` },
@@ -1400,18 +1402,25 @@ export async function POST(request: Request) {
       console.log(`Image ${i + 1} saved to database: ${savedImage.id}`)
     }
 
-    // Consume tickets (only once, even for multi-image) - skip for admin mode
+    // Consume tickets (only once, even for multi-image) - skip for admin mode.
+    // Atomic WHERE balance >= cost prevents going negative even if a concurrent
+    // request slipped through the earlier balance check.
     let updatedTicket = ticketRecord
     if (!skipTickets) {
       console.log(`Consuming ${ticketCost} ticket(s)...`)
-      updatedTicket = await prisma.ticket.update({
-        where: { userId: user.id },
-        data: {
-          balance: { decrement: ticketCost },
-          totalUsed: { increment: ticketCost },
-        },
-      })
-      console.log('Tickets consumed. New balance:', updatedTicket?.balance)
+      const affected = await prisma.$executeRaw`
+        UPDATE "Ticket"
+        SET balance = balance - ${ticketCost}, "totalUsed" = "totalUsed" + ${ticketCost}
+        WHERE "userId" = ${user.id} AND balance >= ${ticketCost}
+      `
+      if (affected === 0) {
+        // Balance was depleted between the earlier check and now (race condition).
+        // Image already generated and saved — log but don't charge negative.
+        console.error(`[generate] Atomic deduction failed for user ${user.id} — balance depleted mid-request. Image: ${uploadedImages[0]?.url}`)
+      } else {
+        console.log('Tickets consumed.')
+      }
+      updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
     } else {
       console.log('🔓 ADMIN MODE: Skipping ticket deduction')
     }

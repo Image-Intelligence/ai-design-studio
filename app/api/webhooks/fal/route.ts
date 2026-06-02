@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
 import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
+import { releaseReservedTickets } from '@/lib/ticket-gate'
 
 // FAL.ai calls this endpoint when an async job completes or fails.
 // We must return 200 quickly — FAL.ai will retry on non-200 responses.
@@ -92,12 +93,8 @@ export async function POST(request: Request) {
 
       await Promise.all([
         // Release the reservation — balance was never decremented so no refund needed.
-        prisma.ticket.update({
-          where: { userId: queueItem.userId },
-          data: {
-            reserved: { decrement: queueItem.ticketCost }
-          }
-        }),
+        // GREATEST(0,...) ensures reserved never goes negative (which would inflate balance checks).
+        releaseReservedTickets(queueItem.userId, queueItem.ticketCost),
         // Mark queue item failed
         prisma.generationQueue.update({
           where: { id: queueItem.id },
@@ -138,10 +135,7 @@ export async function POST(request: Request) {
       if (images.length === 0) {
         console.error('Webhook payload has no images:', JSON.stringify(payload).substring(0, 300))
         await Promise.all([
-          prisma.ticket.update({
-            where: { userId: queueItem.userId },
-            data: { reserved: { decrement: queueItem.ticketCost } }
-          }),
+          releaseReservedTickets(queueItem.userId, queueItem.ticketCost),
           prisma.generationQueue.update({
             where: { id: queueItem.id },
             data: {
@@ -247,10 +241,7 @@ export async function POST(request: Request) {
       if (uploadedImages.length === 0) {
         // All image downloads/uploads failed
         await Promise.all([
-          prisma.ticket.update({
-            where: { userId: queueItem.userId },
-            data: { reserved: { decrement: queueItem.ticketCost } }
-          }),
+          releaseReservedTickets(queueItem.userId, queueItem.ticketCost),
           prisma.generationQueue.update({
             where: { id: queueItem.id },
             data: {
@@ -277,21 +268,19 @@ export async function POST(request: Request) {
       // Finalize tickets — this is the FIRST and ONLY balance deduction.
       // The generate route only reserved tickets; the actual spend happens here
       // once FAL.ai confirms the image was successfully delivered.
+      // GREATEST(0, reserved - cost) ensures reserved never goes negative.
       if (!isAdminMode) {
-        await prisma.ticket.update({
-          where: { userId: queueItem.userId },
-          data: {
-            balance: { decrement: queueItem.ticketCost },   // First (and only) deduction
-            reserved: { decrement: queueItem.ticketCost },  // Release reservation
-            totalUsed: { increment: queueItem.ticketCost }  // Record lifetime usage
-          }
-        })
+        await prisma.$executeRaw`
+          UPDATE "Ticket"
+          SET
+            balance     = balance - ${queueItem.ticketCost},
+            reserved    = GREATEST(0, reserved - ${queueItem.ticketCost}),
+            "totalUsed" = "totalUsed" + ${queueItem.ticketCost}
+          WHERE "userId" = ${queueItem.userId}
+        `
       } else {
         // Admin mode — just clear the reservation without charging
-        await prisma.ticket.update({
-          where: { userId: queueItem.userId },
-          data: { reserved: { decrement: queueItem.ticketCost } }
-        })
+        await releaseReservedTickets(queueItem.userId, queueItem.ticketCost)
       }
 
       // Mark queue item completed with the primary result URL and image ID

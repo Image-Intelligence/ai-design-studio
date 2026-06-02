@@ -109,51 +109,20 @@ export async function POST(req: NextRequest) {
 
     // jobId is declared above the try block so it's accessible in the catch handler
 
-    // RESERVE tickets immediately to prevent race conditions
+    // Atomically reserve tickets — checks (balance - max(0, reserved)) >= cost in one SQL
+    // statement so concurrent requests cannot both pass with 0 effective balance.
     console.log('🔒 Attempting to reserve tickets...');
-
-    try {
-      // Use atomic update to check available balance and reserve tickets in one operation
-      const updatedTickets = await prisma.ticket.update({
-        where: { userId: userId },
-        data: {
-          reserved: { increment: ticketCost }
-        }
-      });
-
-      // Calculate available balance (balance - reserved)
-      const availableTickets = updatedTickets.balance - updatedTickets.reserved;
-
-      console.log(`📊 Ticket status: balance=${updatedTickets.balance}, reserved=${updatedTickets.reserved}, available=${availableTickets}`);
-
-      // Check if they have enough available tickets AFTER reservation
-      if (availableTickets < 0) {
-        // Not enough tickets - release the reservation
-        await prisma.ticket.update({
-          where: { userId: userId },
-          data: {
-            reserved: { decrement: ticketCost }
-          }
-        });
-
-        console.log(`❌ Insufficient available tickets. Need ${ticketCost}, have ${availableTickets + ticketCost} available`);
+    {
+      const { reserveGenerationTickets } = await import('@/lib/ticket-gate')
+      const reserveResult = await reserveGenerationTickets(userId, sessionUser.email!, ticketCost)
+      if (!reserveResult.ok) {
+        console.log(`❌ Insufficient tickets. Need ${reserveResult.need}, have ${reserveResult.have}`);
         return NextResponse.json(
-          {
-            success: false,
-            error: `Insufficient tickets. You have ${availableTickets + ticketCost} available, but ${updatedTickets.reserved - ticketCost} are reserved for pending generations.`
-          },
+          { success: false, error: `Insufficient tickets. Need ${reserveResult.need}, you have ${reserveResult.have}.` },
           { status: 400 }
-        );
+        )
       }
-
-      console.log(`✅ Reserved ${ticketCost} tickets (${availableTickets} remain available)`);
-    } catch (err) {
-      // User doesn't have a ticket record yet
-      console.log('❌ No ticket record found for user');
-      return NextResponse.json(
-        { success: false, error: 'No tickets found. Please purchase tickets first.' },
-        { status: 400 }
-      );
+      console.log(`✅ Reserved ${ticketCost} tickets`);
     }
 
     // Track this generation in the DB so loading placeholders survive page refreshes
@@ -771,16 +740,18 @@ export async function POST(req: NextRequest) {
 
     const primaryBlobUrl = allBlobUrls[0];
 
-    // Deduct tickets from user balance AND release reservation (once, regardless of image count)
+    // Deduct tickets from user balance AND release reservation (once, regardless of image count).
+    // Use GREATEST(0, ...) on reserved so it can never go negative, which would inflate
+    // the effective balance check and allow subsequent free generations.
     console.log(`💸 Deducting ${ticketCost} tickets and releasing reservation...`);
-    await prisma.ticket.update({
-      where: { userId: userId },
-      data: {
-        balance: { decrement: ticketCost },
-        reserved: { decrement: ticketCost },
-        totalUsed: { increment: ticketCost }
-      }
-    });
+    await prisma.$executeRaw`
+      UPDATE "Ticket"
+      SET
+        balance    = balance - ${ticketCost},
+        reserved   = GREATEST(0, reserved - ${ticketCost}),
+        "totalUsed" = "totalUsed" + ${ticketCost}
+      WHERE "userId" = ${userId}
+    `;
     console.log('✅ Tickets deducted and reservation released');
 
     // Save all images to GeneratedImage table
@@ -876,16 +847,13 @@ export async function POST(req: NextRequest) {
                                error.message?.toLowerCase().includes('blocked') ||
                                error.message?.toLowerCase().includes('policy');
 
-    // ALWAYS release the ticket reservation on error (tickets weren't actually used)
+    // ALWAYS release the ticket reservation on error (tickets weren't actually used).
+    // Use releaseReservedTickets (GREATEST floor) so reserved never goes negative.
     if (userId && ticketCost) {
       try {
         console.log(`🔓 Releasing ${ticketCost} reserved tickets due to generation failure...`);
-        await prisma.ticket.update({
-          where: { userId: userId },
-          data: {
-            reserved: { decrement: ticketCost } // Release reservation, keep balance
-          }
-        });
+        const { releaseReservedTickets } = await import('@/lib/ticket-gate')
+        await releaseReservedTickets(userId, ticketCost)
         console.log('✅ Reserved tickets released - balance unchanged');
       } catch (releaseError) {
         console.error('❌ Failed to release reserved tickets:', releaseError);

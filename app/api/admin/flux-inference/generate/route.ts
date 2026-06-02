@@ -173,6 +173,10 @@ export async function POST(req: Request) {
     pipeline_steps?: Array<{ type: string; upscale_factor?: number; strength?: number; model?: string; target_px?: number }>
     controlnet?: boolean
     controlnet_conditions?: Array<{ mode: string; scale: number; image: string }>
+    inpaint_image?: string
+    inpaint_mask?: string
+    inpaint_strength?: number
+    use_flux_fill?: boolean
   }
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
@@ -211,6 +215,10 @@ export async function POST(req: Request) {
       pipeline_steps:    body.pipeline_steps    ?? [],
       controlnet:             body.controlnet             ?? false,
       controlnet_conditions:  body.controlnet_conditions  ?? [],
+      inpaint_image:          body.inpaint_image          ?? '',
+      inpaint_mask:           body.inpaint_mask           ?? '',
+      inpaint_strength:       body.inpaint_strength       ?? 0.85,
+      use_flux_fill:          body.use_flux_fill          ?? false,
     }
 
     const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {

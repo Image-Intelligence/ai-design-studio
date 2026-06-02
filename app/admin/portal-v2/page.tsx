@@ -4030,12 +4030,16 @@ type FluxMode = 'local' | 'runpod'
 
 function CustomFluxPanel({
   onAddPending,
+  onUpdatePending,
+  onRemovePending,
   onStartNb2Polling,
   onPrependImage,
   activeRefImages = [],
   promptOverride,
 }: {
   onAddPending:      (slot: PendingSlot) => void
+  onUpdatePending:   (slotId: string, update: Partial<PendingSlot>) => void
+  onRemovePending:   (slotId: string) => void
   onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[], videoMetadata?: Record<string, unknown>) => void
   onPrependImage:    (img: ImageItem) => void
   activeRefImages?:  RefImage[]
@@ -4043,6 +4047,7 @@ function CustomFluxPanel({
 }) {
   const [mode, setMode]               = useState<FluxMode>('runpod')
   const [checkpoint, setCheckpoint]   = useState('')
+  const isFluxFill = /fill/i.test(checkpoint)
   const [loras, setLoras]             = useState<FluxLoraEntry[]>([{ id: `lora-${Date.now()}`, name: '', key: '', strength: 1.0 }])
   const [prompt, setPrompt]           = useState('')
   const _promptOverrideVersion = promptOverride?.version ?? 0
@@ -4285,6 +4290,8 @@ function CustomFluxPanel({
   const runMultiInpaint = async () => {
     const jobs = inpaintJobs!
     const dims = inpaintImgDims!
+    const inpaintSlotId = `inpaint-${Date.now()}`
+    onAddPending({ slotId: inpaintSlotId, status: 'loading', prompt: prompt.trim() || 'Inpainting…', modelId: 'custom-flux-lora' })
     setGenerating(true); setError(null); setResultUrl(null)
     const reqWidth  = autoBaseDims?.w ?? width
     const reqHeight = autoBaseDims?.h ?? height
@@ -4315,11 +4322,13 @@ function CustomFluxPanel({
       const res = await fetch('/api/admin/flux-inference/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
-        body: JSON.stringify({ ...baseBody, prompt: fullPrompt, inpaint_image: job.image, inpaint_mask: job.mask }),
+        body: JSON.stringify({ ...baseBody, prompt: fullPrompt, inpaint_image: job.image, inpaint_mask: job.mask, use_flux_fill: isFluxFill }),
       })
       const data = await res.json() as { mode: string; job_id?: string; error?: string }
       if (!res.ok || data.error || !data.job_id) {
-        setError(`Shape ${i + 1}: ${data.error ?? 'Submission failed'}`); setGenerating(false); return
+        const errMsg = `Shape ${i + 1}: ${data.error ?? 'Submission failed'}`
+        onUpdatePending(inpaintSlotId, { status: 'failed', error: errMsg })
+        setError(errMsg); setGenerating(false); return
       }
       // Poll until this job completes
       let resultUrl: string | null = null
@@ -4331,9 +4340,17 @@ function CustomFluxPanel({
         })
         const pd = await pr.json() as { status: string; images?: { url: string }[]; error?: string; notFound?: boolean }
         if (pd.status === 'completed' && pd.images?.[0]?.url) { resultUrl = pd.images[0].url; break }
-        if (pd.status === 'failed') { setError(`Shape ${i + 1}: ${pd.error ?? 'Job failed'}`); setGenerating(false); return }
+        if (pd.status === 'failed') {
+          const errMsg = `Shape ${i + 1}: ${pd.error ?? 'Job failed'}`
+          onUpdatePending(inpaintSlotId, { status: 'failed', error: errMsg })
+          setError(errMsg); setGenerating(false); return
+        }
       }
-      if (!resultUrl) { setError(`Shape ${i + 1}: timed out`); setGenerating(false); return }
+      if (!resultUrl) {
+        const errMsg = `Shape ${i + 1}: timed out`
+        onUpdatePending(inpaintSlotId, { status: 'failed', error: errMsg })
+        setError(errMsg); setGenerating(false); return
+      }
       // Composite result onto the growing canvas
       const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(resultUrl)}`
       const blob = await fetch(proxyUrl).then(r => r.blob())
@@ -4357,6 +4374,7 @@ function CustomFluxPanel({
       })
     }
     const ckptShort = checkpoint.split('/').pop()?.replace(/\.[^.]+$/, '') ?? checkpoint
+    onRemovePending(inpaintSlotId)
     setResultUrl(compositeB64)
     onPrependImage({ id: Date.now(), imageUrl: compositeB64, prompt: prompt.trim(), model: 'custom-flux-lora', createdAt: new Date().toISOString(),
       videoMetadata: { fluxCheckpoint: ckptShort, fluxWidth: reqWidth, fluxHeight: reqHeight, fluxSteps: steps, fluxGuidance: guidance, fluxSeed: seed === -1 ? 'random' : seed, fluxLoras: loras.filter(l => l.key).map(l => l.name || l.key.split('/').pop() || ''), fluxInpaintShapes: jobs.length } as Record<string, unknown> })
@@ -5180,9 +5198,14 @@ function CustomFluxPanel({
         {mode === 'runpod' && inpaintMode && (
           <div className="rounded-xl border border-amber-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-amber-400/60 uppercase tracking-widest">
-                {inpaintJobs && inpaintJobs.length > 1 ? `Inpaint · ${inpaintJobs.length} shapes (per-shape jobs)` : 'Inpaint Mask Active'}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-amber-400/60 uppercase tracking-widest">
+                  {inpaintJobs && inpaintJobs.length > 1 ? `Inpaint · ${inpaintJobs.length} shapes (per-shape jobs)` : 'Inpaint Mask Active'}
+                </span>
+                {isFluxFill && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Flux Fill</span>
+                )}
+              </div>
               <button onClick={() => { setInpaintMode(false); setInpaintImageB64(''); setInpaintMaskB64(''); setInpaintJobs(null); setInpaintOriginalB64(''); setInpaintImgDims(null) }}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-red-400 border border-white/10 hover:border-red-500/30 transition-all">
                 <X size={9} /> Clear
@@ -5204,12 +5227,16 @@ function CustomFluxPanel({
                   </div>
                 ))}
                 <div className="flex items-center gap-3 pt-0.5">
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                    Strength
-                    <input type="range" min={0.1} max={1} step={0.05} value={inpaintStrength}
-                      onChange={e => setInpaintStrength(+e.target.value)} className="w-24 accent-amber-400" />
-                    <span className="font-mono text-amber-300">{inpaintStrength.toFixed(2)}</span>
-                  </label>
+                  {isFluxFill ? (
+                    <span className="text-[10px] text-emerald-400/60">Flux Fill — no strength needed, model handles context natively</span>
+                  ) : (
+                    <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                      Strength
+                      <input type="range" min={0.1} max={1} step={0.05} value={inpaintStrength}
+                        onChange={e => setInpaintStrength(+e.target.value)} className="w-24 accent-amber-400" />
+                      <span className="font-mono text-amber-300">{inpaintStrength.toFixed(2)}</span>
+                    </label>
+                  )}
                   <span className="text-[10px] text-slate-600">base prompt applies to all shapes</span>
                 </div>
               </div>
@@ -5225,13 +5252,19 @@ function CustomFluxPanel({
                   </>
                 )}
                 <div className="flex flex-col gap-1.5 min-w-0 flex-1">
-                  <span className="text-[10px] text-slate-400">Generates inside the selected region, composited back onto your original image</span>
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                    Strength
-                    <input type="range" min={0.1} max={1} step={0.05} value={inpaintStrength}
-                      onChange={e => setInpaintStrength(+e.target.value)} className="w-24 accent-amber-400" />
-                    <span className="font-mono text-amber-300">{inpaintStrength.toFixed(2)}</span>
-                  </label>
+                  <span className="text-[10px] text-slate-400">
+                    {isFluxFill
+                      ? 'Flux Fill — the model sees context around the mask and fills it coherently'
+                      : 'Generates inside the selected region, composited back onto your original image'}
+                  </span>
+                  {!isFluxFill && (
+                    <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                      Strength
+                      <input type="range" min={0.1} max={1} step={0.05} value={inpaintStrength}
+                        onChange={e => setInpaintStrength(+e.target.value)} className="w-24 accent-amber-400" />
+                      <span className="font-mono text-amber-300">{inpaintStrength.toFixed(2)}</span>
+                    </label>
+                  )}
                 </div>
               </div>
             )}
@@ -11223,6 +11256,8 @@ export default function PortalV2Page() {
           {selectedModel.isCustomFlux ? (
             <CustomFluxPanel
               onAddPending={handleAddPending}
+              onUpdatePending={handleUpdatePending}
+              onRemovePending={handleRemovePending}
               onStartNb2Polling={startNb2SlotPolling}
               onPrependImage={handlePrependImage}
               activeRefImages={refLibrary.filter(img => activeRefIds.includes(img.id)).slice(0, 3)}
