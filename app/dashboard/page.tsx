@@ -466,7 +466,10 @@ export default function DashboardPage() {
 
         {/* Quick Message */}
         <div className="rounded-2xl border border-white/6 bg-white/2 backdrop-blur-sm p-5">
-          <p className="text-[11px] font-mono text-slate-600 uppercase tracking-widest mb-3">Quick Message</p>
+          <p className="text-[11px] font-mono text-slate-600 uppercase tracking-widest mb-1">Quick Message</p>
+          <p className="text-[11px] text-slate-600 mb-3 leading-snug">
+            Messages sent here are <span className="text-slate-500">anonymous</span>. For account-level concerns or support, please use the <span className="text-fuchsia-400/80">Feedback</span> button above.
+          </p>
           <div className="flex gap-2">
             <input
               value={echoMessage}
