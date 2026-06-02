@@ -507,8 +507,8 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
 ]
 const ADMIN_IMAGE_MODEL_GROUPS = [
-  { label: "Admin Models", type: "local · PC must be running", accent: "text-cyan-400",   dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
-  { label: "Upscalers",    type: "enhance & enlarge images",   accent: "text-slate-400",  dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
+  { label: "RunPod",    type: "local · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
+  { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
   VIDEO_MODEL_CONFIGS.map(m => [m.name, VIDEO_MODEL_COST[m.id] ?? "$$"])
@@ -7071,7 +7071,7 @@ function PromptBox({
 
                   {/* 2-col grid of company sections */}
                   <div className="p-2.5 grid grid-cols-2 gap-x-2 gap-y-2 overflow-y-auto max-h-[360px]">
-                    {(isAdminAccount ? [...IMAGE_MODEL_GROUPS, ...ADMIN_IMAGE_MODEL_GROUPS] : IMAGE_MODEL_GROUPS).map((group) => (
+                    {IMAGE_MODEL_GROUPS.map((group) => (
                       <div key={group.label}>
                         <div className="flex items-center gap-1.5 px-1.5 pb-1">
                           <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
@@ -7103,6 +7103,51 @@ function PromptBox({
                         </div>
                       </div>
                     ))}
+
+                    {/* Admin Models — full-width block with RunPod + Upscalers subsections */}
+                    {isAdminAccount && (
+                      <div className="col-span-2 mt-0.5 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.03] overflow-hidden">
+                        <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-cyan-500/10">
+                          <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 shrink-0" />
+                          <span className="text-[9px] font-bold tracking-widest uppercase text-cyan-400">Admin Models</span>
+                          <span className="text-[8px] text-slate-600">· admin only</span>
+                        </div>
+                        <div className="p-2 grid grid-cols-2 gap-x-2">
+                          {ADMIN_IMAGE_MODEL_GROUPS.map((sub) => (
+                            <div key={sub.label}>
+                              <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
+                                <span className={`text-[9px] font-bold tracking-widest uppercase leading-none ${sub.accent}`}>{sub.label}</span>
+                                <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
+                              </div>
+                              <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
+                                {sub.items.map((item) => {
+                                  const cfg = IMAGE_MODEL_CONFIGS.find((m) => m.name === item)
+                                  const isActive = model.name === item
+                                  return (
+                                    <button
+                                      key={item}
+                                      onClick={() => { if (cfg) { onModelChange(cfg); setShowModelPicker(false) } }}
+                                      className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
+                                        isActive
+                                          ? "bg-white/8 text-white font-medium"
+                                          : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                                      }`}
+                                    >
+                                      <span className="truncate leading-tight">{item}</span>
+                                      <span className="shrink-0 flex items-center gap-1">
+                                        {isActive && <span className="w-1 h-1 rounded-full bg-cyan-400" />}
+                                        {IMAGE_MODEL_COST_BY_NAME[item] && <CostBadge tier={IMAGE_MODEL_COST_BY_NAME[item]} />}
+                                      </span>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Footer */}
