@@ -12,7 +12,7 @@ export default function TermsPage() {
         <h1 className="text-4xl font-bold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400">
           Terms of Service
         </h1>
-        <p className="text-slate-400 mb-8">Last Updated: February 27, 2026 | Version 4.0</p>
+        <p className="text-slate-400 mb-8">Last Updated: June 2, 2026 | Version 4.1</p>
 
         <div className="space-y-8 text-slate-300">
           <section>
@@ -30,41 +30,57 @@ export default function TermsPage() {
           <section>
             <h2 className="text-2xl font-bold mb-4 text-cyan-400">2. Service Description</h2>
             <p className="mb-4">
-              AI Design Studio provides AI-powered image generation services using third-party artificial intelligence models and APIs.
-              Our service currently offers multiple AI models accessed through:
+              AI Design Studio is a unified AI creative platform that provides access to multiple state-of-the-art AI image and video
+              generation models through a single interface. The platform is accessed via the AI Design Studio web application and
+              is powered by third-party AI providers including fal.ai, OpenAI, Google, and ByteDance.
             </p>
-            <ul className="list-disc list-inside space-y-2 ml-4">
-              <li><strong>Image Generation</strong> — AI-powered image models via fal.ai and Google Gemini API:</li>
-              <ul className="list-disc list-inside space-y-1 ml-8">
-                <li>NanoBanana Cluster (Google Gemini 2.5 Flash) — 2 images per use</li>
-                <li>NanoBanana Pro (Google Gemini 3 Pro) — Premium quality image generation</li>
-                <li>SeeDream 4.5 (ByteDance) — High-quality image generation</li>
-                <li>FLUX 2 (Black Forest Labs) — Photorealistic image generation</li>
-                <li>Pro Scanner v3 (Google Gemini 3 Pro) — Direct API, no filtering</li>
-                <li>Flash Scanner v2.5 (Google Gemini 2.5 Flash) — Fast direct API generation</li>
-              </ul>
-              <li><strong>Video Generation</strong> — AI-powered video models via fal.ai:</li>
-              <ul className="list-disc list-inside space-y-1 ml-8">
-                <li>Kling 3.0 (Kuaishou) — Text-to-video generation with optional audio, 3–15 seconds</li>
-              </ul>
-              <li><strong>AI Design Studio Tools</strong> — Advanced canvas-based creative tools:</li>
-              <ul className="list-disc list-inside space-y-1 ml-8">
-                <li>Canvas Scanner — Infinite pan/zoom canvas with concurrent multi-image generation</li>
-                <li>Composition Canvas — Multi-layer AI composition with inpainting and 4K export</li>
-                <li>Scanner Canvas — AI drawing and painting canvas with brush-based generation</li>
-              </ul>
+
+            <h3 className="text-xl font-semibold mb-3 text-purple-400">2.1 Image Generation</h3>
+            <p className="mb-2">The following image generation models are currently available to users:</p>
+            <ul className="list-disc list-inside space-y-1 ml-4 mb-4">
+              <li><strong>NanoBanana Pro 2</strong> (Google Gemini) — High-quality image generation up to 4K</li>
+              <li><strong>SeeDream 4.5</strong> (ByteDance) — Photorealistic and stylized image generation</li>
+              <li><strong>FLUX.1 Dev</strong> (Black Forest Labs) — High-fidelity text-to-image generation</li>
+              <li><strong>Wan 2.7 Pro</strong> — Advanced image generation with reference support</li>
+              <li><strong>ChatGPT Images 2.0</strong> (OpenAI) — Instruction-following image generation</li>
+              <li><strong>Z-Image Base / Z-Image Turbo</strong> — Fast and versatile image generation</li>
             </ul>
+
+            <h3 className="text-xl font-semibold mb-3 text-purple-400">2.2 Video Generation</h3>
+            <p className="mb-2">The following video generation models are currently available to users:</p>
+            <ul className="list-disc list-inside space-y-1 ml-4 mb-4">
+              <li><strong>WAN 2.5</strong> — Text-to-video and image-to-video generation</li>
+              <li><strong>SeeDance 1.5</strong> — High-quality video generation with audio support</li>
+              <li><strong>SeeDance 2.0 / SeeDance 2.0 Fast</strong> — Advanced video generation in multiple resolutions</li>
+              <li><strong>Kling 3.0</strong> (Kuaishou) — Text-to-video with optional AI audio, 3–15 seconds</li>
+              <li><strong>Kling v3 Motion</strong> — Motion-controlled video generation</li>
+              <li><strong>Happy Horse</strong> — Stylized video generation</li>
+              <li><strong>Lipsync v3</strong> — AI-powered lip sync for existing video</li>
+            </ul>
+
+            <h3 className="text-xl font-semibold mb-3 text-purple-400">2.3 Platform Features</h3>
+            <p className="mb-2">The AI Design Studio interface provides the following capabilities:</p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
+              <li><strong>Unified Generation Feed</strong> — All generated images and videos appear in a live session feed with real-time status updates</li>
+              <li><strong>Reference Image Support</strong> — Upload reference images to guide and influence generation output</li>
+              <li><strong>Multi-Queue Generation</strong> — Submit multiple generation jobs concurrently across different models</li>
+              <li><strong>My Images Gallery</strong> — Persistent cloud storage of all your past generations, accessible at any time</li>
+              <li><strong>Prompt Controls</strong> — Per-model configuration including resolution, aspect ratio, duration, quality, and model-specific parameters</li>
+              <li><strong>Content Safety Controls</strong> — Built-in content safety filtering on applicable models to maintain platform compliance</li>
+            </ul>
+
             <p className="mt-4 font-semibold text-yellow-400">
-              IMPORTANT: The Service includes experimental AI technology that may sometimes provide inaccurate, inappropriate, or
-              offensive content. Generated images and suggestions should never be relied upon as professional advice for medical, legal,
-              financial, or safety-critical purposes.
+              IMPORTANT: The Service includes experimental AI technology that may sometimes produce inaccurate, unexpected, or
+              unintended content. Generated outputs should never be relied upon as professional advice for medical, legal,
+              financial, or safety-critical purposes. Model availability is subject to change without notice.
             </p>
             <p className="mt-4">By using this Service, you acknowledge that:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>All outputs are generated by artificial intelligence and may be imperfect or unexpected</li>
-              <li>Images may contain invisible digital watermarks or metadata identifying their AI origin</li>
-              <li>Model availability and pricing are subject to change</li>
-              <li>AI models have inherent limitations and biases</li>
+              <li>Generated content may contain invisible digital watermarks or metadata identifying its AI origin</li>
+              <li>Model availability, features, and pricing are subject to change</li>
+              <li>AI models have inherent limitations, biases, and may produce inconsistent results</li>
+              <li>Certain models apply content safety filtering which cannot be disabled by standard users</li>
             </ul>
           </section>
 
@@ -104,36 +120,49 @@ export default function TermsPage() {
 
             <h3 className="text-xl font-semibold mb-3 text-purple-400">5.1 Ticket System</h3>
             <p className="mb-4">
-              The Service operates on a ticket-based system. Each image generation request consumes tickets based on the model and
-              settings used:
+              The Service operates on a ticket-based system. Each generation request consumes tickets based on the model, quality
+              setting, resolution, and duration selected. Costs below reflect standard settings; higher quality or resolution
+              options increase the ticket cost accordingly.
             </p>
-            <ul className="list-disc list-inside space-y-1 ml-4 text-sm">
-              <li><strong>Image Models:</strong></li>
-              <ul className="list-disc list-inside space-y-1 ml-8">
-                <li><strong>NanoBanana Cluster:</strong> 2 tickets (generates 2 images)</li>
-                <li><strong>NanoBanana Pro (2K):</strong> 5 tickets per generation</li>
-                <li><strong>NanoBanana Pro (4K):</strong> 10 tickets per generation</li>
-                <li><strong>SeeDream 4.5 (2K/4K):</strong> 2 tickets per generation</li>
-                <li><strong>FLUX 2:</strong> 1 ticket per generation</li>
-                <li><strong>Pro Scanner v3 (2K):</strong> 5 tickets per generation</li>
-                <li><strong>Pro Scanner v3 (4K):</strong> 10 tickets per generation</li>
-                <li><strong>Flash Scanner v2.5:</strong> 1 ticket per generation</li>
-              </ul>
-              <li><strong>Video Models (Kling 3.0):</strong> Tickets charged per second of video duration</li>
-              <ul className="list-disc list-inside space-y-1 ml-8">
-                <li>Without audio: 6 tickets per second (e.g., 5s = 30 tickets, 10s = 60 tickets)</li>
-                <li>With audio: 8 tickets per second (e.g., 5s = 40 tickets, 10s = 80 tickets)</li>
-                <li>Duration options: 3–15 seconds in 1-second increments</li>
-              </ul>
+
+            <p className="mb-2 font-semibold text-slate-200">Image Generation Models:</p>
+            <ul className="list-disc list-inside space-y-1 ml-4 text-sm mb-4">
+              <li><strong>NanoBanana Pro:</strong> 7 tickets (2K) · 14 tickets (4K)</li>
+              <li><strong>NanoBanana Pro 2:</strong> 7 tickets (2K) · 12 tickets (4K) per image</li>
+              <li><strong>SeeDream 4.5:</strong> 2 tickets (2K) · 4 tickets (4K)</li>
+              <li><strong>FLUX.1 Dev:</strong> 2–8 tickets (varies by quality and use of reference images)</li>
+              <li><strong>Wan 2.7 Pro:</strong> 4 tickets per generation</li>
+              <li><strong>ChatGPT Images 2.0:</strong> 1–15 tickets (varies by quality and resolution)</li>
+              <li><strong>Z-Image Base:</strong> 1 ticket (1K) · 4 tickets (2K) · 15 tickets (4K)</li>
+              <li><strong>Z-Image Turbo:</strong> 1–17 tickets (varies by quality and LoRA usage)</li>
             </ul>
-            <p className="mt-2 text-sm text-yellow-400">Pricing is subject to change. Ticket costs are deducted at the time of generation and are non-refundable once consumed.</p>
+
+            <p className="mb-2 font-semibold text-slate-200">Video Generation Models:</p>
+            <ul className="list-disc list-inside space-y-1 ml-4 text-sm mb-4">
+              <li><strong>WAN 2.5:</strong> 7–40 tickets (varies by resolution and duration)
+                <ul className="list-disc list-inside ml-6 mt-1 space-y-0.5">
+                  <li>480p: 7 tickets (5s) · 14 tickets (10s)</li>
+                  <li>720p: 13 tickets (5s) · 26 tickets (10s)</li>
+                  <li>1080p: 20 tickets (5s) · 40 tickets (10s)</li>
+                </ul>
+              </li>
+              <li><strong>SeeDance 1.5:</strong> Varies by duration, resolution, and audio — approximately 1–45 tickets</li>
+              <li><strong>SeeDance 2.0:</strong> Approximately 15 tickets/second × resolution multiplier (0.5–2.25×)</li>
+              <li><strong>SeeDance 2.0 Fast:</strong> Approximately 12 tickets/second × resolution multiplier (0.5–2.25×)</li>
+              <li><strong>Kling 3.0:</strong> 6 tickets/second without audio · 8 tickets/second with audio (3–15 seconds)</li>
+              <li><strong>Kling v3 Motion:</strong> 6 tickets/second, up to 30 seconds</li>
+              <li><strong>Happy Horse:</strong> 7 tickets/second (720p) · 12 tickets/second (1080p)</li>
+              <li><strong>Lipsync v3:</strong> Minimum 10 tickets · 6 tickets/second of source video</li>
+            </ul>
+
+            <p className="mt-2 text-sm text-yellow-400">Ticket costs are deducted at the time of a successful generation and are non-refundable once consumed. Pricing is subject to change with notice.</p>
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.2 Dev Tier Subscriptions</h3>
-            <p className="mb-4">We offer recurring subscription plans ("Dev Tier") with billing through Lemon Squeezy:</p>
+            <p className="mb-4">We offer recurring subscription plans ("Dev Tier") that provide periodic ticket allocations and a discount on one-time ticket purchases:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
-              <li><strong>Biweekly Plan:</strong> $20 USD every 2 weeks - 250 tickets per cycle</li>
-              <li><strong>Monthly Plan:</strong> $40 USD per month - 500 tickets per cycle</li>
-              <li><strong>Yearly Plan:</strong> $480 USD per year - 500 tickets per month (6,000 tickets annually)</li>
+              <li><strong>Biweekly Plan:</strong> $20 USD every 2 weeks — 250 tickets per cycle</li>
+              <li><strong>Monthly Plan:</strong> $40 USD per month — 500 tickets per cycle</li>
+              <li><strong>Yearly Plan:</strong> $480 USD per year — 500 tickets per month (6,000 tickets annually, allocated upfront)</li>
             </ul>
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.3 Subscription Terms</h3>
@@ -149,14 +178,15 @@ export default function TermsPage() {
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.4 Payment Processing</h3>
             <p className="mb-4">
-              All payments are processed through <strong>Lemon Squeezy</strong>, which acts as our Merchant of Record. This means Lemon Squeezy
-              is the seller of record for all transactions, handles tax compliance and remittance, and manages payment processing
-              on our behalf. By making a purchase, you agree to{' '}
-              <a href="https://www.lemonsqueezy.com/terms" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Lemon Squeezy's Terms of Service</a>{' '}
-              and{' '}
-              <a href="https://www.lemonsqueezy.com/privacy" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Privacy Policy</a>.
-              We are not responsible for any issues arising from Lemon Squeezy's payment processing services, including but not limited to
-              payment failures, security breaches, or unauthorized transactions.
+              All payments are processed through <strong>CCBill</strong>, a third-party payment processing service. CCBill manages
+              payment authorization, billing, and transaction security on our behalf. By completing a purchase, you agree to
+              CCBill's applicable terms and privacy policy. We are not responsible for any issues arising from CCBill's payment
+              processing services, including but not limited to payment failures, security incidents, or unauthorized transactions.
+            </p>
+            <p className="mb-4">
+              If you have a billing dispute or question about a charge, please contact us at{' '}
+              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>{' '}
+              before initiating a chargeback. Chargebacks initiated without prior contact may result in immediate account suspension.
             </p>
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.5 One-Time Ticket Purchases</h3>
@@ -176,29 +206,72 @@ export default function TermsPage() {
 
           <section className="border-2 border-red-500/30 bg-red-500/5 p-6 rounded-lg">
             <h2 className="text-2xl font-bold mb-4 text-red-400">6. Prohibited Use Policy</h2>
-            <p className="mb-4 font-bold">You agree NOT to use the Service to generate or create:</p>
-            <ul className="list-disc list-inside space-y-2 ml-4">
-              <li><strong>Child sexual abuse material (CSAM)</strong> - Any content depicting, sexualizing, or endangering minors</li>
-              <li><strong>Non-consensual intimate imagery</strong> - Deepfakes or intimate images of real people without consent</li>
-              <li><strong>Hate speech or harassment</strong> - Content targeting individuals based on protected characteristics</li>
-              <li><strong>Violence or dangerous activities</strong> - Graphic violence, self-harm, or instructions for illegal activities</li>
-              <li><strong>Intellectual property infringement</strong> - Copyrighted characters, trademarks, or logos without authorization</li>
-              <li><strong>Fraud or impersonation</strong> - Fake documents, misleading medical/legal content, or identity theft</li>
-              <li><strong>Illegal content</strong> - Any content that violates applicable laws or regulations</li>
-              <li><strong>Spam or malware</strong> - Mass-generated content or malicious code</li>
+            <p className="mb-4">
+              This Service operates under requirements established by our payment processor (CCBill) and the applicable card brand
+              standards of Visa, Mastercard, and Discover. The following prohibitions apply to all users without exception.
+            </p>
+
+            <h3 className="text-lg font-semibold mb-2 mt-4 text-red-300">6.1 Non-Consensual Use of Image or Likeness</h3>
+            <p className="mb-3">
+              You may not use this Service to generate content depicting any real, identifiable person unless verifiable consent
+              from that person has been established and is on record. This includes but is not limited to:
+            </p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-3">
+              <li>Deepfakes or synthetic media portraying a real person's image or likeness without their explicit consent</li>
+              <li>Intimate, sexual, or compromising depictions of any real person without documented consent</li>
+              <li>Any content where the subject's identity is recognizable and no consent record exists</li>
             </ul>
-            <p className="mt-4">Additionally, you agree NOT to:</p>
+            <p className="mb-3 text-sm text-slate-400">
+              Per card brand requirements: if content includes the image or strong likeness of an actual person who has not
+              provided consent, such content is considered a violation of Visa, Mastercard, and Discover standards and must not be
+              published or must be removed immediately. Where consent is disputed, resolution must be handled by a neutral
+              arbitrator at the content creator's expense.
+            </p>
+
+            <h3 className="text-lg font-semibold mb-2 mt-4 text-red-300">6.2 Absolutely Prohibited Content Categories</h3>
+            <p className="mb-3 font-bold">You agree NOT to use the Service to generate or create any content involving:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
-              <li>Reverse engineer, extract, or attempt to recreate the underlying AI models</li>
-              <li>Bypass or attempt to bypass content filtering or safety features</li>
-              <li>Use the Service for safety-critical applications (medical devices, autonomous vehicles, etc.)</li>
-              <li>Use the Service to develop competing AI models or services</li>
+              <li><strong>Minors</strong> — Any sexual, suggestive, or exploitative content depicting individuals under 18 years of age, including animated, illustrated, or simulated depictions; content depicting subjects in diapers or in childlike scenarios is also prohibited</li>
+              <li><strong>Non-consensual scenarios</strong> — Content depicting sexual activity or intimacy involving individuals who are asleep, unconscious, coerced, or otherwise non-consenting</li>
+              <li><strong>Deepfakes of real persons</strong> — Synthetic media that replaces or fabricates the likeness of a real, identifiable individual without their documented consent</li>
+              <li><strong>Incest</strong> — Any content depicting or simulating sexual activity between family members</li>
+              <li><strong>Bestiality or animal cruelty</strong> — Sexual content involving animals, or any depiction of animal cruelty</li>
+              <li><strong>Watersports</strong> — Content depicting urination in a sexual context</li>
+              <li><strong>Violence, abduction, or snuff</strong> — Graphic violence, murder, abduction scenarios, or fantasy snuff content</li>
+              <li><strong>Substance-facilitated scenarios</strong> — Sexual content involving individuals depicted as under the influence of drugs, alcohol, or hypnosis</li>
+              <li><strong>Prostitution or escorting</strong> — Content soliciting, simulating, or promoting paid sexual services</li>
+              <li><strong>Polygamy scenarios</strong> — Content framed around or promoting polygamous arrangements in a sexual context</li>
+              <li><strong>Hate speech or targeted harassment</strong> — Content targeting individuals or groups based on race, religion, gender, sexuality, national origin, or other protected characteristics</li>
+              <li><strong>Instructions for illegal activity</strong> — Content providing guidance for building weapons, engaging in criminal acts, or any other illegal conduct</li>
+              <li><strong>Professional advice</strong> — Content presented as or intended to substitute for medical, legal, financial, gambling, or other licensed professional advice</li>
+            </ul>
+
+            <h3 className="text-lg font-semibold mb-2 mt-6 text-red-300">6.3 Copyright and Intellectual Property</h3>
+            <p className="mb-3">
+              Copyright infringement is strictly prohibited. You may not use this Service to generate content that reproduces,
+              imitates, or incorporates copyrighted material without the rights holder's permission. This includes:
+            </p>
+            <ul className="list-disc list-inside space-y-2 ml-4">
+              <li>Reproducing or closely imitating copyrighted images, artwork, characters, or designs</li>
+              <li>Generating content that incorporates protected trademarks or logos without authorization</li>
+              <li>Repurposing or creating derivative works from copyrighted material without a license</li>
+            </ul>
+
+            <h3 className="text-lg font-semibold mb-2 mt-6 text-red-300">6.4 Platform Integrity</h3>
+            <p className="mb-2">Additionally, you agree NOT to:</p>
+            <ul className="list-disc list-inside space-y-2 ml-4">
+              <li>Attempt to bypass, circumvent, or disable any content safety filters or platform restrictions</li>
+              <li>Reverse engineer, extract, or replicate the underlying AI models or platform code</li>
+              <li>Use the Service for safety-critical applications (medical devices, autonomous systems, etc.)</li>
+              <li>Use the Service to develop or train competing AI models or services</li>
               <li>Submit sensitive personal information, confidential data, or protected health information</li>
-              <li>Violate the acceptable use policies of our third-party AI providers</li>
+              <li>Violate the acceptable use policies of any third-party AI providers used by this Service</li>
             </ul>
-            <p className="mt-4 font-bold text-red-400 text-lg">
+
+            <p className="mt-6 font-bold text-red-400 text-lg">
               ⚠️ Violation of this Prohibited Use Policy will result in immediate permanent account termination without refund of
-              remaining tickets or subscription fees.
+              remaining tickets or subscription fees. We reserve the right to report violations to applicable authorities and
+              card networks.
             </p>
           </section>
 
@@ -450,7 +523,7 @@ export default function TermsPage() {
               </a>
             </p>
             <p className="text-sm text-slate-400">
-              Response time: We aim to respond within 3 business days. Support is provided in English only.
+              Support is provided in English only. Response times may vary.
             </p>
           </section>
 
