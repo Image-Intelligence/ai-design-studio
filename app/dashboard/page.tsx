@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, Video, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle } from "lucide-react"
+import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -209,50 +209,6 @@ export default function DashboardPage() {
   const ADMIN_EMAILS = ["dirtysecretai@gmail.com", "promptandprotocol@gmail.com"]
   const isAdmin = ADMIN_EMAILS.includes(user.email)
 
-  const tools = [
-    {
-      id: 'portal-v2',
-      label: 'AI Design Studio',
-      sublabel: 'Portal V2',
-      href: '/',
-      icon: Sparkles,
-      accent: 'text-cyan-400',
-      border: 'border-cyan-500/20 hover:border-cyan-400/50',
-      bg: 'bg-cyan-500/5',
-      iconBg: 'bg-cyan-500/15',
-      btnClass: 'bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300',
-      badge: 'NEW',
-      maintenance: false,
-    },
-    {
-      id: 'main-scanner',
-      label: 'Legacy Scanner (Main)',
-      sublabel: 'Classic',
-      href: '/scanner',
-      icon: ImageIcon,
-      accent: 'text-violet-400',
-      border: 'border-violet-500/20 hover:border-violet-400/50',
-      bg: 'bg-violet-500/5',
-      iconBg: 'bg-violet-500/15',
-      btnClass: 'bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/30 text-violet-300',
-      badge: null,
-      maintenance: true,
-    },
-    {
-      id: 'video-scanner',
-      label: 'Video Scanner',
-      sublabel: 'Dedicated',
-      href: '/video-scanner',
-      icon: Video,
-      accent: 'text-orange-400',
-      border: 'border-orange-500/20 hover:border-orange-400/50',
-      bg: 'bg-orange-500/5',
-      iconBg: 'bg-orange-500/15',
-      btnClass: 'bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/30 text-orange-300',
-      badge: null,
-      maintenance: isMaintenanceMode,
-    },
-  ]
 
   return (
     <>
@@ -396,53 +352,31 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Tools */}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          {tools.map((tool) => {
-            const Icon = tool.icon
-            if (tool.maintenance) {
-              return (
-                <div key={tool.id} className="rounded-2xl border border-yellow-500/20 bg-yellow-500/5 p-4 flex flex-col relative">
-                  <span className="absolute top-3 right-3 text-[9px] font-black px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
-                    MAINTENANCE
-                  </span>
-                  <div className="flex items-center gap-2.5 mb-2">
-                    <div className="w-8 h-8 rounded-xl bg-yellow-500/10 flex items-center justify-center shrink-0">
-                      <Icon size={16} className="text-yellow-400/60" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-black text-yellow-400/70">{tool.label}</p>
-                      <p className="text-[10px] text-slate-600 font-mono">{tool.sublabel}</p>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-600 mt-auto">Temporarily offline</p>
-                </div>
-              )
-            }
-            return (
-              <Link key={tool.id} href={tool.href}>
-                <div className={`group rounded-2xl border ${tool.border} ${tool.bg} backdrop-blur-sm p-4 flex flex-col h-full transition-all duration-200 hover:shadow-xl cursor-pointer relative`}>
-                  {tool.badge && (
-                    <span className="absolute top-3 right-3 text-[9px] font-black px-2 py-0.5 rounded-full bg-cyan-500 text-black">
-                      {tool.badge}
+        {/* AI Design Studio */}
+        <div className="mb-4">
+          <Link href="/">
+            <div className="group rounded-2xl border border-cyan-500/20 hover:border-cyan-400/50 bg-cyan-500/5 backdrop-blur-sm p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 transition-all duration-200 hover:shadow-xl cursor-pointer">
+              <div className="w-12 h-12 rounded-2xl bg-cyan-500/15 flex items-center justify-center shrink-0">
+                <Sparkles size={22} className="text-cyan-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-base font-black text-cyan-400 mb-1">AI Design Studio</p>
+                <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                  Your full creative workspace — generate images and videos with 20+ AI models, train custom LoRA styles, upscale artwork, and manage your entire generation pipeline in one place.
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {["20+ Models", "Custom LoRA Training", "Image & Video", "Upscaling", "Reference Images", "Canvas Editor"].map(tag => (
+                    <span key={tag} className="text-[9px] font-mono text-cyan-400/70 bg-cyan-500/10 border border-cyan-500/15 px-2 py-0.5 rounded-full">
+                      {tag}
                     </span>
-                  )}
-                  <div className="flex items-center gap-2.5 mb-2">
-                    <div className={`w-8 h-8 rounded-xl ${tool.iconBg} flex items-center justify-center shrink-0`}>
-                      <Icon size={16} className={tool.accent} />
-                    </div>
-                    <div>
-                      <p className={`text-sm font-black ${tool.accent}`}>{tool.label}</p>
-                      <p className="text-[10px] text-slate-600 font-mono">{tool.sublabel}</p>
-                    </div>
-                  </div>
-                  <button className={`mt-auto w-full flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-semibold transition-all ${tool.btnClass}`}>
-                    Open <ArrowRight size={10} />
-                  </button>
+                  ))}
                 </div>
-              </Link>
-            )
-          })}
+              </div>
+              <button className="shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold transition-all">
+                Open Studio <ArrowRight size={11} />
+              </button>
+            </div>
+          </Link>
         </div>
 
         {/* Bottom row: Account + Shop */}
