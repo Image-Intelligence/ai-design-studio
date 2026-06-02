@@ -5441,7 +5441,7 @@ function CustomFluxPanel({
                 <RefreshCw size={10} className={!modelsLoaded ? 'animate-spin' : ''} />
               </button>
               {ckptOpen && (
-                <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[260px] rounded-xl bg-[#0e1018] border border-white/10 shadow-2xl overflow-hidden py-1 max-h-64 overflow-y-auto">
+                <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[280px] rounded-xl bg-[#0e1018] border border-white/10 shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
                   {!modelsLoaded ? (
                     <div className="px-3 py-2 text-[11px] text-slate-500 flex items-center gap-2">
                       <Loader2 size={11} className="animate-spin shrink-0" />Loading...
@@ -5451,23 +5451,34 @@ function CustomFluxPanel({
                       <div className="text-[11px] text-red-400 break-all">{modelsError}</div>
                       <button onClick={refreshModels} className="text-[10px] text-slate-500 hover:text-white flex items-center gap-1"><RefreshCw size={10} />Retry</button>
                     </div>
-                  ) : checkpoints.length === 0 ? (
-                    <div className="px-3 py-2 text-[11px] text-slate-500 flex items-center justify-between gap-2">
-                      <span>{mode === 'local' ? 'ComfyUI not running' : 'No checkpoints in R2'}</span>
-                      {mode === 'runpod' && (
-                        <button onClick={refreshModels} className="text-slate-500 hover:text-white transition-colors" title="Refresh">
-                          <RefreshCw size={11} />
-                        </button>
-                      )}
-                    </div>
-                  ) : checkpoints.map(c => (
-                    <button key={c.key} onClick={() => { setCheckpoint(c.key); setCkptOpen(false) }}
-                      className={`w-full text-left px-3 py-2 text-[11px] transition-colors truncate ${
-                        checkpoint === c.key ? 'text-cyan-300 bg-cyan-500/10' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'
-                      }`}>
-                      {c.name}
-                    </button>
-                  ))}
+                  ) : (() => {
+                    const devCkpts  = checkpoints.filter(c => !/fill/i.test(c.key))
+                    const fillCkpts = checkpoints.filter(c => /fill/i.test(c.key))
+                    const Section = ({ label, accent, items }: { label: string; accent: string; items: typeof checkpoints }) => (
+                      <div>
+                        <div className={`px-3 py-1.5 flex items-center gap-1.5 border-b border-white/5 ${accent}`}>
+                          <span className="text-[9px] font-bold tracking-widest uppercase">{label}</span>
+                        </div>
+                        {items.length === 0 ? (
+                          <div className="px-3 py-2 text-[11px] text-slate-600 italic">No models yet</div>
+                        ) : items.map(c => (
+                          <button key={c.key} onClick={() => { setCheckpoint(c.key); setCkptOpen(false) }}
+                            className={`w-full text-left px-3 py-2 text-[11px] transition-colors truncate ${
+                              checkpoint === c.key ? 'text-cyan-300 bg-cyan-500/10' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'
+                            }`}>
+                            {c.name}
+                          </button>
+                        ))}
+                      </div>
+                    )
+                    return (
+                      <>
+                        <Section label="Flux 1 Dev" accent="text-amber-400/70" items={devCkpts} />
+                        <div className="border-t border-white/5" />
+                        <Section label="Flux Fill" accent="text-emerald-400/70" items={fillCkpts} />
+                      </>
+                    )
+                  })()}
                 </div>
               )}
             </div>
