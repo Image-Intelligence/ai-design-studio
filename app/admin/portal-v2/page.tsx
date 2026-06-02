@@ -7562,13 +7562,17 @@ function PromptBox({
 
             {/* Safety Checker toggle — SeeDream 4.5, WAN 2.7 Pro, FLUX 1 Dev */}
             {(model.id === "seedream-4.5" || model.id === "wan-2.7-pro" || model.id === "flux-1-dev") && (() => {
-              const safetyOn = model.id === "seedream-4.5" ? seedreamSafetyChecker : model.id === "wan-2.7-pro" ? wanSafetyChecker : fluxDevSafetyChecker
+              const safetyOn = isAdminAccount
+                ? (model.id === "seedream-4.5" ? seedreamSafetyChecker : model.id === "wan-2.7-pro" ? wanSafetyChecker : fluxDevSafetyChecker)
+                : true
               const setSafety = model.id === "seedream-4.5" ? setSeedreamSafetyChecker : model.id === "wan-2.7-pro" ? setWanSafetyChecker : setFluxDevSafetyChecker
               return (
                 <>
                   <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
                   <button
+                    disabled={!isAdminAccount}
                     onClick={() => {
+                      if (!isAdminAccount) return
                       if (safetyOn) {
                         setSafetyAgeConfirmed(false)
                         setSafetyConfirmCallback(() => () => setSafety(false))
@@ -7577,14 +7581,16 @@ function PromptBox({
                         setSafety(true)
                       }
                     }}
+                    title={isAdminAccount ? undefined : "Content safety filtering is required for all generations. This helps ensure the platform remains safe and compliant."}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
                       safetyOn
                         ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
                         : "border-red-500/20 bg-red-500/[0.06] text-red-400 hover:bg-red-500/10"
-                    }`}
+                    } ${!isAdminAccount ? "cursor-default opacity-70" : ""}`}
                   >
                     <Eye size={11} />
                     Safety {safetyOn ? "ON" : "OFF"}
+                    {!isAdminAccount && <span className="text-[9px] text-emerald-400/50 font-mono">· required</span>}
                   </button>
                 </>
               )
