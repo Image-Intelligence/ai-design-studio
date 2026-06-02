@@ -362,10 +362,10 @@ export default function DashboardPage() {
               <div className="flex-1 min-w-0">
                 <p className="text-base font-black text-cyan-400 mb-1">AI Design Studio</p>
                 <p className="text-xs text-slate-400 leading-relaxed mb-3">
-                  Your full creative workspace — generate images and videos with 20+ AI models, train custom LoRA styles, upscale artwork, and manage your entire generation pipeline in one place.
+                  Your full creative workspace — generate images and videos with 20+ AI models, use reference images to guide your generations, and manage your entire session history in one place.
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {["20+ Models", "Custom LoRA Training", "Image & Video", "Upscaling", "Reference Images", "Canvas Editor"].map(tag => (
+                  {["20+ Models", "Image Generation", "Video Generation", "Reference Images", "Session History", "Multi-Queue"].map(tag => (
                     <span key={tag} className="text-[9px] font-mono text-cyan-400/70 bg-cyan-500/10 border border-cyan-500/15 px-2 py-0.5 rounded-full">
                       {tag}
                     </span>
