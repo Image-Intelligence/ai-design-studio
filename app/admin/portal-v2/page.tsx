@@ -3822,20 +3822,19 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           )}
         </div>
 
-        {/* Canvas area */}
-        <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-black/20">
-          {!loaded ? (
-            <div className="flex items-center gap-2 text-slate-600 text-sm">
+        {/* Canvas area — canvas is always in the DOM so the load useEffect can find canvasRef */}
+        <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-black/20 relative">
+          {!loaded && (
+            <div className="absolute inset-0 flex items-center justify-center gap-2 text-slate-600 text-sm z-10">
               <Loader2 size={16} className="animate-spin" /> Loading…
             </div>
-          ) : (
-            <div className="relative inline-block rounded-lg overflow-hidden shadow-xl">
-              <canvas ref={canvasRef} className="block max-w-full"
-                style={{ cursor: tool === 'crop' ? 'crosshair' : tool === 'shape' ? 'crosshair' : 'cell', touchAction: 'none' }}
-                onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
-              <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none block" />
-            </div>
           )}
+          <div className={`relative inline-block rounded-lg overflow-hidden shadow-xl transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}>
+            <canvas ref={canvasRef} className="block max-w-full"
+              style={{ cursor: tool === 'crop' ? 'crosshair' : tool === 'shape' ? 'crosshair' : 'cell', touchAction: 'none' }}
+              onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
+            <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none block" />
+          </div>
         </div>
 
         {/* Crop apply banner */}
