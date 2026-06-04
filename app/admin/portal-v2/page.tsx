@@ -12304,10 +12304,10 @@ export default function PortalV2Page() {
           isQueued={!!(pendingDetail.queueJobId && !pendingDetail.nb2RequestId)}
           onClose={() => setPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setPendingDetail(null) }}
-          onDismiss={() => {
+          onDismiss={isAdminAccount ? () => {
             if (pendingDetail.nb2RequestId) cancelNb2SlotPolling(pendingDetail.nb2RequestId)
             handleRemovePending(pendingDetail.slotId)
-          }}
+          } : undefined}
         />
       )}
 
@@ -12323,11 +12323,11 @@ export default function PortalV2Page() {
           isQueued={!!(videoPendingDetail.queueJobId && !videoPendingDetail.requestId)}
           onClose={() => setVideoPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setVideoPendingDetail(null) }}
-          onDismiss={() => {
+          onDismiss={isAdminAccount ? () => {
             const interval = videoPollingIntervals.current[videoPendingDetail.slotId]
             if (interval) { clearInterval(interval); delete videoPollingIntervals.current[videoPendingDetail.slotId] }
             setVideoPendingSlots(prev => prev.filter(s => s.slotId !== videoPendingDetail.slotId))
-          }}
+          } : undefined}
         />
       )}
       <ChatWidget sideTabOnly={scannerMode === "video"} />
