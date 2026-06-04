@@ -4427,9 +4427,10 @@ function CustomFluxPanel({
       if (!res.ok || data.error || !data.job_id) {
         setError(data.error ?? 'Submission failed'); setGenerating(false); setStatus(''); return
       }
-      // Add a real pending slot — parent polling handles completion and adds to feed
+      // Add a real pending slot and start parent polling — non-blocking
+      const inpaintSlotId = `flux-inpaint-${Date.now()}`
       onAddPending({
-        slotId:         `flux-inpaint-${Date.now()}`,
+        slotId:         inpaintSlotId,
         status:         'loading',
         prompt:         fullPrompt,
         modelId:        'custom-flux-lora',
@@ -4437,6 +4438,7 @@ function CustomFluxPanel({
         nb2FalEndpoint: '',
         nb2StatusUrl:   '/api/admin/flux-inference/nb2-status',
       })
+      onStartNb2Polling(data.job_id, '', [inpaintSlotId], fullPrompt, 'png', `${baseBody.width}x${baseBody.height}`, '/api/admin/flux-inference/nb2-status', undefined, 0, [], {})
       setGenerating(false); setStatus('')
       return
     }
