@@ -3489,6 +3489,24 @@ function DownloadToR2Panel() {
   )
 }
 
+// Builds a full-size mask canvas from a crop-sized mask + its position in the original image.
+// The returned data URL has white only where the lasso region was, black everywhere else.
+function buildFullSizeMask(
+  cropMaskB64: string,
+  cropX: number, cropY: number, cropW: number, cropH: number,
+  fullW: number, fullH: number,
+): Promise<string> {
+  return new Promise(resolve => {
+    const canvas = document.createElement('canvas')
+    canvas.width = fullW; canvas.height = fullH
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = 'black'; ctx.fillRect(0, 0, fullW, fullH)
+    const img = new Image()
+    img.onload = () => { ctx.drawImage(img, cropX, cropY, cropW, cropH); resolve(canvas.toDataURL('image/png')) }
+    img.src = cropMaskB64
+  })
+}
+
 // --- STENCIL MODAL ---
 type StencilMode = 'crop' | 'inpaint'
 type StencilSelMode = 'rect' | 'lasso'
@@ -4418,10 +4436,18 @@ function CustomFluxPanel({
       const job = jobs[0]
       const shapePrompt = job.prompt.trim()
       const fullPrompt  = shapePrompt ? `${shapePrompt}, ${baseBody.prompt}` : baseBody.prompt
+
+      // For FluxFill (and standard inpaint), the model needs the full original image so it has
+      // surrounding context. Build a full-size mask with the lasso region in white.
+      const dims = inpaintImgDims!
+      const fullMask = await buildFullSizeMask(job.mask, job.cropX, job.cropY, job.cropW, job.cropH, dims.w, dims.h)
+      const fullW = Math.round(dims.w / 8) * 8
+      const fullH = Math.round(dims.h / 8) * 8
+
       const res = await fetch('/api/admin/flux-inference/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
-        body: JSON.stringify({ ...baseBody, prompt: fullPrompt, inpaint_image: job.image, inpaint_mask: job.mask, use_flux_fill: isFluxFill }),
+        body: JSON.stringify({ ...baseBody, width: fullW, height: fullH, prompt: fullPrompt, inpaint_image: inpaintOriginalB64, inpaint_mask: fullMask, use_flux_fill: isFluxFill }),
       })
       const data = await res.json() as { mode: string; job_id?: string; error?: string }
       if (!res.ok || data.error || !data.job_id) {
@@ -4438,7 +4464,7 @@ function CustomFluxPanel({
         nb2FalEndpoint: '',
         nb2StatusUrl:   '/api/admin/flux-inference/nb2-status',
       })
-      onStartNb2Polling(data.job_id, '', [inpaintSlotId], fullPrompt, 'png', `${baseBody.width}x${baseBody.height}`, '/api/admin/flux-inference/nb2-status', undefined, 0, [], {})
+      onStartNb2Polling(data.job_id, '', [inpaintSlotId], fullPrompt, 'png', `${fullW}x${fullH}`, '/api/admin/flux-inference/nb2-status', undefined, 0, [], {})
       setGenerating(false); setStatus('')
       return
     }
