@@ -3518,6 +3518,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const [hasCropSel, setHasCropSel] = useState(false)
   const [loaded,     setLoaded]     = useState(false)
   const [histLen,    setHistLen]    = useState(1)
+  const [fitMode,    setFitMode]    = useState<'fit' | 'native'>('fit')
 
   // Load image into canvas on mount.
   // HTTPS images (Vercel Blob, R2, etc.) taint the canvas when drawn directly, which causes
@@ -3544,7 +3545,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           const snap = document.createElement('canvas')
           snap.width = w; snap.height = h
           snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
-          historyRef.current = [snap.toDataURL('image/png')]
+          historyRef.current = [snap.toDataURL('image/jpeg', 0.97)]
           setHistLen(1)
         } catch {
           historyRef.current = [] // tainted — undo/reset unavailable
@@ -3582,7 +3583,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
 
   const pushHistory = () => {
     try {
-      const url = canvasRef.current!.toDataURL('image/png')
+      const url = canvasRef.current!.toDataURL('image/jpeg', 0.97)
       historyRef.current = [...historyRef.current, url]
       setHistLen(historyRef.current.length)
     } catch { /* tainted canvas — skip snapshot */ }
@@ -3805,7 +3806,24 @@ function RefImageEditorModal({ image, onApply, onClose }: {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.08] shrink-0">
           <span className="text-sm font-semibold text-white">Edit Reference</span>
-          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
+          <div className="flex items-center gap-2">
+            {/* Fit / Full-size toggle */}
+            <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
+              <button
+                onClick={() => setFitMode('fit')}
+                title="Fit to window"
+                className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${fitMode === 'fit' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                Fit
+              </button>
+              <button
+                onClick={() => setFitMode('native')}
+                title="Full resolution (scroll to pan)"
+                className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${fitMode === 'native' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                Full
+              </button>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
+          </div>
         </div>
 
         {/* Toolbar */}
@@ -3876,17 +3894,24 @@ function RefImageEditorModal({ image, onApply, onClose }: {
         </div>
 
         {/* Canvas area — canvas is always in the DOM so the load useEffect can find canvasRef */}
-        <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-black/20 relative">
+        <div className={`flex-1 p-4 bg-black/20 relative ${fitMode === 'fit' ? 'flex items-center justify-center overflow-hidden' : 'overflow-auto'}`}>
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center gap-2 text-slate-600 text-sm z-10">
               <Loader2 size={16} className="animate-spin" /> Loading…
             </div>
           )}
           <div className={`relative inline-block rounded-lg overflow-hidden shadow-xl transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}>
-            <canvas ref={canvasRef} className="block max-w-full"
-              style={{ cursor: tool === 'crop' ? 'crosshair' : tool === 'shape' ? 'crosshair' : 'cell', touchAction: 'none' }}
+            <canvas ref={canvasRef}
+              style={{
+                display: 'block',
+                touchAction: 'none',
+                cursor: tool === 'crop' || tool === 'shape' ? 'crosshair' : 'cell',
+                // Fit mode: shrink to fit container while preserving aspect ratio
+                ...(fitMode === 'fit' ? { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)', objectFit: 'contain' } : {}),
+              }}
               onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
-            <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none block" />
+            <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none block"
+              style={fitMode === 'fit' ? { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)' } : {}} />
           </div>
         </div>
 
