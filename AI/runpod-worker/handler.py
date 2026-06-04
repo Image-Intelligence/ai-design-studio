@@ -277,8 +277,9 @@ _TRANSFORMER_CONFIG = {
     "pooled_projection_dim": 768,
 }
 
-# FluxFill transformer — in_channels=384 (BFL flux1-fill-dev.safetensors actual value)
-# Packs noisy latent + masked image latent + mask conditioning into 384 channels.
+# FluxFill transformer — in_channels=384, out_channels=64 (BFL flux1-fill-dev.safetensors)
+# Takes 384 input channels (noisy latent + masked image + mask packed together)
+# but outputs only 64 channels (denoised latent prediction, same as Flux Dev).
 _FLUX_FILL_TRANSFORMER_CONFIG = {
     "_class_name": "FluxTransformer2DModel",
     "_diffusers_version": "0.30.0.dev0",
@@ -286,6 +287,7 @@ _FLUX_FILL_TRANSFORMER_CONFIG = {
     "axes_dims_rope": [16, 56, 56],
     "guidance_embeds": True,
     "in_channels": 384,
+    "out_channels": 64,
     "joint_attention_dim": 4096,
     "num_attention_heads": 24,
     "num_layers": 19,
