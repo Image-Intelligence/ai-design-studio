@@ -3530,8 +3530,10 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     const drawToCanvas = (src: string) => {
       const img = document.createElement('img')
       img.onload = () => {
-        const maxW = 720, maxH = 500
-        const scale = Math.min(1, maxW / img.width, maxH / img.height)
+        // Use full native resolution (capped at 4096 to prevent OOM on huge images).
+        // CSS scales the canvas to fit the modal; getPos() corrects for the ratio.
+        const maxRes = 4096
+        const scale = Math.min(1, maxRes / img.width, maxRes / img.height)
         const w = Math.round(img.width * scale)
         const h = Math.round(img.height * scale)
         canvas.width = w; canvas.height = h
@@ -3542,7 +3544,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           const snap = document.createElement('canvas')
           snap.width = w; snap.height = h
           snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
-          historyRef.current = [snap.toDataURL('image/jpeg', 0.95)]
+          historyRef.current = [snap.toDataURL('image/png')]
           setHistLen(1)
         } catch {
           historyRef.current = [] // tainted — undo/reset unavailable
@@ -3580,7 +3582,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
 
   const pushHistory = () => {
     try {
-      const url = canvasRef.current!.toDataURL('image/jpeg', 0.85)
+      const url = canvasRef.current!.toDataURL('image/png')
       historyRef.current = [...historyRef.current, url]
       setHistLen(historyRef.current.length)
     } catch { /* tainted canvas — skip snapshot */ }
@@ -3798,7 +3800,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
 
   return createPortal(
     <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-2xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[95vh]">
+      <div className="relative w-full max-w-4xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[95vh]">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.08] shrink-0">
