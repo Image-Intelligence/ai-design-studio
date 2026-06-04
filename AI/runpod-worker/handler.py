@@ -2028,15 +2028,7 @@ def _handle_download_to_r2(job_id: str, inp: dict):
     if not url or not r2_key:
         return {'success': False, 'error': 'url and r2_key are required'}
 
-    # Append token as query param (civitai.com and mirrors authenticate this way)
-    if civitai_token:
-        sep = '&' if '?' in url else '?'
-        url = f'{url}{sep}token={urllib.parse.quote(civitai_token)}'
-
-    # Build a base URL for logging (strip token value)
-    log_url = url.split('token=')[0] + ('token=***' if civitai_token else '')
-    print(f'[download] Fetching: {log_url}', flush=True)
-    print(f'[download] Target R2 key: {r2_key}', flush=True)
+    is_hf = 'huggingface.co' in url
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -2044,6 +2036,22 @@ def _handle_download_to_r2(job_id: str, inp: dict):
         'Accept-Language': 'en-US,en;q=0.9',
         'Referer': url.split('/api/')[0] + '/' if '/api/' in url else url,
     }
+
+    if civitai_token:
+        if is_hf:
+            # HuggingFace gated models require Authorization header, not a query param
+            headers['Authorization'] = f'Bearer {civitai_token}'
+            log_url = f'{url} [auth: Bearer ***]'
+        else:
+            # CivitAI and mirrors authenticate via ?token= query param
+            sep = '&' if '?' in url else '?'
+            url = f'{url}{sep}token={urllib.parse.quote(civitai_token)}'
+            log_url = url.split('token=')[0] + 'token=***'
+    else:
+        log_url = url
+
+    print(f'[download] Fetching: {log_url}', flush=True)
+    print(f'[download] Target R2 key: {r2_key}', flush=True)
 
     with _req.get(url, headers=headers, stream=True, timeout=3600, allow_redirects=True) as resp:
         if not resp.ok:
