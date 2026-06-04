@@ -3526,7 +3526,6 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   // Fix: fetch HTTPS URLs as a blob first → create a same-origin blob URL → no canvas taint.
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return
-    let blobUrlToRevoke: string | null = null
 
     const drawToCanvas = (src: string) => {
       const img = document.createElement('img')
@@ -3540,7 +3539,6 @@ function RefImageEditorModal({ image, onApply, onClose }: {
         canvas.width = w; canvas.height = h
         overlayRef.current!.width = w; overlayRef.current!.height = h
         canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
-        if (blobUrlToRevoke) { URL.revokeObjectURL(blobUrlToRevoke); blobUrlToRevoke = null }
         try {
           const snap = document.createElement('canvas')
           snap.width = w; snap.height = h
@@ -3548,7 +3546,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           historyRef.current = [snap.toDataURL('image/jpeg', 0.97)]
           setHistLen(1)
         } catch {
-          historyRef.current = [] // tainted — undo/reset unavailable
+          historyRef.current = []
           setHistLen(0)
         }
         setLoaded(true)
@@ -3558,14 +3556,9 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     }
 
     if (image.url.startsWith('http')) {
-      // Fetch as blob to get a same-origin blob URL — prevents canvas taint entirely
-      fetch(image.url)
-        .then(r => r.blob())
-        .then(blob => {
-          blobUrlToRevoke = URL.createObjectURL(blob)
-          drawToCanvas(blobUrlToRevoke)
-        })
-        .catch(() => drawToCanvas(image.url)) // fetch failed, try direct (may taint)
+      // Use the server-side proxy URL directly as img.src.
+      // Same-origin URLs (/api/...) never taint a canvas — no fetch/blob step needed.
+      drawToCanvas(`/api/admin/image-proxy?url=${encodeURIComponent(image.url)}`)
     } else {
       // blob: or data: — already same-origin, no taint risk
       drawToCanvas(image.url)
