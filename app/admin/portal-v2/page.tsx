@@ -3428,17 +3428,20 @@ function DownloadToR2Panel() {
         )}
       </div>
 
-      {/* Civitai token (optional) */}
+      {/* Auth token */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Civitai API Token <span className="text-slate-600 normal-case">(optional — needed for gated models)</span></label>
+        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Auth Token <span className="text-slate-600 normal-case">(optional)</span></label>
         <input
           type="password"
           value={civitaiToken}
           onChange={e => setCivitaiToken(e.target.value)}
-          placeholder="Leave blank if not needed"
+          placeholder="HuggingFace token (hf_…) or CivitAI API key"
           disabled={isRunning}
           className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50"
         />
+        <p className="text-[10px] text-slate-600 leading-snug">
+          HuggingFace gated models also require accepting the license at <span className="text-slate-500">huggingface.co</span> before the token will work.
+        </p>
       </div>
 
       {/* Action */}
