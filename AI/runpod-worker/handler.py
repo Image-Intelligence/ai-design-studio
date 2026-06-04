@@ -1332,6 +1332,18 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             # for the masked image) — it must be loaded with its own pipeline class.
             if use_flux_fill:
                 from diffusers import FluxFillPipeline as _FluxFillPipeline
+                # from_single_file still fetches pipeline config from HF Hub even when
+                # weights are local — authenticate so gated repo access works.
+                _hf_token = os.environ.get('HF_TOKEN', '') or os.environ.get('HUGGING_FACE_HUB_TOKEN', '')
+                if _hf_token:
+                    try:
+                        import huggingface_hub as _hfh
+                        _hfh.login(token=_hf_token, add_to_git_credential=False)
+                        logs.append('[inference] HF Hub authenticated for FluxFill config fetch.')
+                    except Exception as _hf_err:
+                        logs.append(f'[inference] HF login warning: {_hf_err}')
+                else:
+                    logs.append('[inference] Warning: HF_TOKEN not set — FluxFill config fetch may fail on gated repo.')
                 pipe = _FluxFillPipeline.from_single_file(ckpt_path, torch_dtype=torch.bfloat16)
                 logs.append('[inference] Full FluxFillPipeline loaded from checkpoint.')
             else:
