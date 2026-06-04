@@ -277,14 +277,15 @@ _TRANSFORMER_CONFIG = {
     "pooled_projection_dim": 768,
 }
 
-# FluxFill transformer has in_channels=128 (64 latent + 64 for masked image/mask concat)
+# FluxFill transformer — in_channels=384 (BFL flux1-fill-dev.safetensors actual value)
+# Packs noisy latent + masked image latent + mask conditioning into 384 channels.
 _FLUX_FILL_TRANSFORMER_CONFIG = {
     "_class_name": "FluxTransformer2DModel",
     "_diffusers_version": "0.30.0.dev0",
     "attention_head_dim": 128,
     "axes_dims_rope": [16, 56, 56],
     "guidance_embeds": True,
-    "in_channels": 128,
+    "in_channels": 384,
     "joint_attention_dim": 4096,
     "num_attention_heads": 24,
     "num_layers": 19,
@@ -1417,7 +1418,7 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
 
             # Use embedded configs written to a temp dir — works on any image version.
             _vae_cfg_dir = _get_embedded_config_dir('flux1dev_vae_config', _VAE_CONFIG)
-            # FluxFill transformer uses in_channels=128 (extra 64 for masked image + mask)
+            # FluxFill transformer uses in_channels=384 (BFL checkpoint's actual x_embedder dim)
             _trans_cfg    = _FLUX_FILL_TRANSFORMER_CONFIG if use_flux_fill else _TRANSFORMER_CONFIG
             _trans_name   = 'flux1fill_transformer_config' if use_flux_fill else 'flux1dev_transformer_config'
             _trans_cfg_dir = _get_embedded_config_dir(_trans_name, _trans_cfg)
