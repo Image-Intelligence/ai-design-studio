@@ -4531,6 +4531,7 @@ function CustomFluxPanel({
       inpaint_image:    mode === 'runpod' && inpaintMode ? inpaintImageB64 : '',
       inpaint_mask:     mode === 'runpod' && inpaintMode ? inpaintMaskB64  : '',
       inpaint_strength: inpaintStrength,
+      use_flux_fill:    isFluxFill,
       controlnet:            mode === 'runpod' && controlnet && cnConditions.some(c => !!c.imgB64),
       controlnet_conditions: mode === 'runpod' && controlnet
         ? cnConditions.filter(c => !!c.imgB64).map(c => ({ mode: c.mode, scale: c.scale, mirror: c.mirror, image: c.imgB64 }))
@@ -5269,6 +5270,19 @@ function CustomFluxPanel({
             ) : (
               <p className="text-[11px] text-slate-600 italic">No active reference images — activate some in the Refs panel to use IP-Adapter</p>
             )}
+          </div>
+        )}
+
+        {/* Flux Fill hint — shown when fill checkpoint is selected but no mask is active */}
+        {mode === 'runpod' && isFluxFill && !inpaintMode && !stencilCropB64 && (
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 flex items-start gap-3">
+            <span className="text-emerald-400 text-base leading-none mt-0.5">◻</span>
+            <div>
+              <p className="text-[11px] font-semibold text-emerald-300 leading-none mb-1">Flux Fill selected</p>
+              <p className="text-[10px] text-slate-500 leading-snug">
+                Use the <span className="text-sky-400">✂ Stencil</span> tool in <span className="text-white">Inpaint</span> mode to upload an image and paint the region you want to fill. Without a mask, Flux Fill will generate onto a blank canvas.
+              </p>
+            </div>
           </div>
         )}
 

@@ -1244,6 +1244,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inpaint] Warning: failed to decode inpaint images ({_ip_dec_err}) — skipping.')
             inpaint_pil = None; inpaint_mask_pil = None
 
+    # FluxFill text2img fallback: when fill model is selected but no mask was provided,
+    # synthesize a blank canvas + all-white mask so the model generates freely.
+    if use_flux_fill and inpaint_pil is None:
+        from PIL import Image as _PIL_ff
+        inpaint_pil      = _PIL_ff.new('RGB', (width, height), (0, 0, 0))
+        inpaint_mask_pil = _PIL_ff.new('L',   (width, height), 255)
+        logs.append(f'[inpaint] FluxFill: no mask provided — generating full frame ({width}×{height}).')
+
     # Decode ControlNet source images (one per condition)
     _decoded_cn_conditions = []   # [{mode, scale, pil}]
     if controlnet_enabled and controlnet_conditions:
