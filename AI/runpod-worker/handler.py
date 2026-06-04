@@ -277,6 +277,22 @@ _TRANSFORMER_CONFIG = {
     "pooled_projection_dim": 768,
 }
 
+# FluxFill transformer has in_channels=128 (64 latent + 64 for masked image/mask concat)
+_FLUX_FILL_TRANSFORMER_CONFIG = {
+    "_class_name": "FluxTransformer2DModel",
+    "_diffusers_version": "0.30.0.dev0",
+    "attention_head_dim": 128,
+    "axes_dims_rope": [16, 56, 56],
+    "guidance_embeds": True,
+    "in_channels": 128,
+    "joint_attention_dim": 4096,
+    "num_attention_heads": 24,
+    "num_layers": 19,
+    "num_single_layers": 38,
+    "patch_size": 1,
+    "pooled_projection_dim": 768,
+}
+
 _EMBEDDED_CONFIGS_DIR = None  # populated on first call to _get_embedded_config_dir()
 
 def _get_embedded_config_dir(name: str, config_dict: dict) -> str:
@@ -1351,14 +1367,14 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 logs.append('[inference] Full pipeline loaded from checkpoint.')
 
         except Exception as _first_err:
-            if use_flux_fill:
-                raise  # Fill requires a full pipeline checkpoint; no transformer-only fallback
             _COMPONENT_ERRORS = ('CLIPTextModel', 'AutoencoderKL', 'T5EncoderModel', 'SingleFileComponentError')
             if not any(x in str(_first_err) for x in _COMPONENT_ERRORS):
                 raise  # unexpected error — surface it
 
-            # Transformer-only checkpoint (common with community Flux models).
-            logs.append('[inference] Checkpoint is transformer-only — fetching CLIP/T5/VAE from R2...')
+            # Transformer-only checkpoint — same fallback for both Flux Dev and Flux Fill.
+            # FluxFill transformer just has in_channels=128 instead of 64.
+            _pipe_label = 'FluxFill' if use_flux_fill else 'Flux'
+            logs.append(f'[inference] {_pipe_label} checkpoint is transformer-only — fetching CLIP/T5/VAE from R2...')
             _flush_logs(r2, bucket, job_id, logs)
 
             clip_path = os.path.join(MODELS_DIR, 'clip_l.safetensors')
@@ -1400,10 +1416,13 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             tokenizer_2 = AutoTokenizer.from_pretrained('google/t5-v1_1-xxl')
 
             # Use embedded configs written to a temp dir — works on any image version.
-            _vae_cfg_dir   = _get_embedded_config_dir('flux1dev_vae_config', _VAE_CONFIG)
-            _trans_cfg_dir = _get_embedded_config_dir('flux1dev_transformer_config', _TRANSFORMER_CONFIG)
+            _vae_cfg_dir = _get_embedded_config_dir('flux1dev_vae_config', _VAE_CONFIG)
+            # FluxFill transformer uses in_channels=128 (extra 64 for masked image + mask)
+            _trans_cfg    = _FLUX_FILL_TRANSFORMER_CONFIG if use_flux_fill else _TRANSFORMER_CONFIG
+            _trans_name   = 'flux1fill_transformer_config' if use_flux_fill else 'flux1dev_transformer_config'
+            _trans_cfg_dir = _get_embedded_config_dir(_trans_name, _trans_cfg)
             logs.append(f'[inference] VAE config dir: {_vae_cfg_dir}')
-            logs.append(f'[inference] Transformer config dir: {_trans_cfg_dir}')
+            logs.append(f'[inference] Transformer config dir ({_trans_name}): {_trans_cfg_dir}')
             _flush_logs(r2, bucket, job_id, logs)
 
             # VAE — pass local config dir so from_single_file never hits HF
@@ -1422,16 +1441,29 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                 num_train_timesteps=1000, shift=3.0, use_dynamic_shifting=True
             )
 
-            logs.append('[inference] Assembling FluxPipeline from components...')
-            pipe = FluxPipeline(
-                scheduler=scheduler,
-                text_encoder=clip,
-                tokenizer=tokenizer,
-                text_encoder_2=t5,
-                tokenizer_2=tokenizer_2,
-                vae=vae,
-                transformer=transformer,
-            )
+            if use_flux_fill:
+                from diffusers import FluxFillPipeline as _FluxFillPip
+                logs.append('[inference] Assembling FluxFillPipeline from components...')
+                pipe = _FluxFillPip(
+                    scheduler=scheduler,
+                    text_encoder=clip,
+                    tokenizer=tokenizer,
+                    text_encoder_2=t5,
+                    tokenizer_2=tokenizer_2,
+                    vae=vae,
+                    transformer=transformer,
+                )
+            else:
+                logs.append('[inference] Assembling FluxPipeline from components...')
+                pipe = FluxPipeline(
+                    scheduler=scheduler,
+                    text_encoder=clip,
+                    tokenizer=tokenizer,
+                    text_encoder_2=t5,
+                    tokenizer_2=tokenizer_2,
+                    vae=vae,
+                    transformer=transformer,
+                )
 
         # Clear any fragmentation from previous failed jobs before moving to VRAM
         gc.collect()
