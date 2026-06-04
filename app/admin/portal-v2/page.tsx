@@ -3504,6 +3504,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const isDrawingRef = useRef(false)
   const lastPtRef    = useRef<{ x: number; y: number } | null>(null)
   const blurPtsRef   = useRef<{ x: number; y: number }[]>([])
+  const blurSnapRef  = useRef<HTMLCanvasElement | null>(null)  // snapshot at blur stroke start
   const startPtRef   = useRef<{ x: number; y: number } | null>(null)
   const cropRectRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
 
@@ -3612,6 +3613,11 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       ctx.beginPath(); ctx.moveTo(pos.x, pos.y)
     } else if (tool === 'blur') {
       blurPtsRef.current = [pos]
+      // Snapshot the canvas at stroke start — all blur is applied relative to this
+      const snap = document.createElement('canvas')
+      snap.width = canvas.width; snap.height = canvas.height
+      snap.getContext('2d')!.drawImage(canvas, 0, 0)
+      blurSnapRef.current = snap
     } else if (tool === 'shape' || tool === 'crop') {
       startPtRef.current = pos
       setHasCropSel(false)
@@ -3641,12 +3647,43 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       ctx.lineTo(pos.x, pos.y); ctx.stroke()
     } else if (tool === 'blur') {
       blurPtsRef.current.push(pos)
-      // Show a soft blue tint preview over brushed area
-      octx.clearRect(0, 0, overlay.width, overlay.height)
-      blurPtsRef.current.forEach(pt => {
-        octx.beginPath(); octx.arc(pt.x, pt.y, brushSize / 2, 0, Math.PI * 2)
-        octx.fillStyle = 'rgba(100,160,255,0.12)'; octx.fill()
-      })
+      // Real-time blur: restore snapshot, then apply scale-down→up blur clipped to stroke path.
+      // Works on all browsers including old iOS Safari (no ctx.filter needed).
+      const snap = blurSnapRef.current; if (!snap) return
+      const pts = blurPtsRef.current; const br = brushSize / 2
+      // Compute bounding box of stroke + brush radius
+      const bx1 = Math.max(0, Math.min(...pts.map(p => p.x)) - br)
+      const by1 = Math.max(0, Math.min(...pts.map(p => p.y)) - br)
+      const bx2 = Math.min(canvas.width,  Math.max(...pts.map(p => p.x)) + br)
+      const by2 = Math.min(canvas.height, Math.max(...pts.map(p => p.y)) + br)
+      const bw = bx2 - bx1, bh = by2 - by1
+      if (bw < 1 || bh < 1) return
+      // Restore only the bounding-box region from the snapshot (fast)
+      ctx.drawImage(snap, bx1, by1, bw, bh, bx1, by1, bw, bh)
+      // Scale down → up: downscale factor controls blur strength
+      const factor = Math.max(3, blurRadius)
+      const sw = Math.max(1, Math.round(bw / factor))
+      const sh = Math.max(1, Math.round(bh / factor))
+      const tiny = document.createElement('canvas')
+      tiny.width = sw; tiny.height = sh
+      const tctx = tiny.getContext('2d')!
+      tctx.imageSmoothingEnabled = true
+      tctx.drawImage(snap, bx1, by1, bw, bh, 0, 0, sw, sh)
+      // Second pass: downscale again for a smoother result
+      const tiny2 = document.createElement('canvas')
+      tiny2.width = sw; tiny2.height = sh
+      const tctx2 = tiny2.getContext('2d')!
+      tctx2.imageSmoothingEnabled = true
+      tctx2.drawImage(tiny, 0, 0, sw, sh, 0, 0, sw, sh)
+      // Clip to brush path and upscale back onto the main canvas
+      ctx.save()
+      ctx.beginPath()
+      pts.forEach(p => { ctx.arc(p.x, p.y, br, 0, Math.PI * 2) })
+      ctx.clip()
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+      ctx.drawImage(tiny2, 0, 0, sw, sh, bx1, by1, bw, bh)
+      ctx.restore()
     } else if (tool === 'crop' || tool === 'shape') {
       const sp = startPtRef.current; if (!sp) return
       octx.clearRect(0, 0, overlay.width, overlay.height)
@@ -3679,19 +3716,9 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     if (tool === 'draw' || tool === 'erase') {
       pushHistory()
     } else if (tool === 'blur') {
-      const canvas = canvasRef.current!
-      const ctx = canvas.getContext('2d')!
-      // Render a blurred copy of the canvas, clip to brushed path, composite back
-      const off = document.createElement('canvas')
-      off.width = canvas.width; off.height = canvas.height
-      const offCtx = off.getContext('2d')!
-      offCtx.filter = `blur(${blurRadius}px)`
-      offCtx.drawImage(canvas, 0, 0)
-      ctx.save()
-      ctx.beginPath()
-      blurPtsRef.current.forEach(pt => { ctx.arc(pt.x, pt.y, brushSize / 2, 0, Math.PI * 2) })
-      ctx.clip(); ctx.drawImage(off, 0, 0); ctx.restore()
-      clearOverlay(); blurPtsRef.current = []
+      // Blur was already applied live in onPointerMove — just commit and clean up
+      blurPtsRef.current = []
+      blurSnapRef.current = null
       pushHistory()
     } else if (tool === 'shape') {
       // Commit shape overlay to main canvas
