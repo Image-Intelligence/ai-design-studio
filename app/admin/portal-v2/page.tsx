@@ -3263,7 +3263,8 @@ function AspectRatioPicker({
 
 function DownloadToR2Panel() {
   const [url, setUrl]                   = useState('')
-  const [r2Key, setR2Key]               = useState('')
+  const [ckptSection, setCkptSection]   = useState<'dev' | 'fill' | 'kontext' | 'esrgan'>('dev')
+  const [modelName, setModelName]       = useState('')
   const [civitaiToken, setCivitaiToken] = useState('')
   const [jobId, setJobId]               = useState<string | null>(null)
   const [status, setStatus]             = useState<'idle' | 'submitting' | 'running' | 'done' | 'error'>('idle')
@@ -3271,6 +3272,18 @@ function DownloadToR2Panel() {
   const [sizeMb, setSizeMb]             = useState<number | null>(null)
   const [error, setError]               = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Auto-build R2 key from section + name
+  const computedR2Key = (() => {
+    const name = modelName.trim()
+    if (!name) return ''
+    const defaultExt = ckptSection === 'esrgan' ? '.pth' : '.safetensors'
+    const fname = name.includes('.') ? name : `${name}${defaultExt}`
+    if (ckptSection === 'fill')    return `training/checkpoints/flux-fill-${fname}`
+    if (ckptSection === 'kontext') return `training/checkpoints/flux-kontext-${fname}`
+    if (ckptSection === 'esrgan')  return `training/models/esrgan/${fname}`
+    return `training/checkpoints/${fname}`
+  })()
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -3299,7 +3312,7 @@ function DownloadToR2Panel() {
   }
 
   const handleSubmit = async () => {
-    if (!url.trim() || !r2Key.trim()) return
+    if (!url.trim() || !computedR2Key) return
     setStatus('submitting')
     setError(null)
     setResultR2Key(null)
@@ -3309,7 +3322,7 @@ function DownloadToR2Panel() {
       const res  = await fetch('/api/admin/r2/download', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), r2Key: r2Key.trim(), civitaiToken: civitaiToken.trim() || undefined }),
+        body: JSON.stringify({ url: url.trim(), r2Key: computedR2Key, civitaiToken: civitaiToken.trim() || undefined }),
       })
       const data = await res.json() as { job_id?: string; error?: string }
       if (!res.ok || !data.job_id) throw new Error(data.error ?? 'Failed to submit job')
@@ -3332,6 +3345,15 @@ function DownloadToR2Panel() {
   }
 
   const isRunning = status === 'submitting' || status === 'running'
+
+  const SECTIONS = [
+    { id: 'dev'     as const, label: 'Flux 1 Dev',    accent: 'amber',   desc: 'Base dev checkpoints' },
+    { id: 'fill'    as const, label: 'Flux Fill',      accent: 'emerald', desc: 'Inpainting / fill' },
+    { id: 'kontext' as const, label: 'Flux 1 Kontext', accent: 'violet',  desc: 'Context-aware' },
+    { id: 'esrgan'  as const, label: 'ESRGAN',         accent: 'orange',  desc: 'Upscale models' },
+  ]
+
+  const activeSection = SECTIONS.find(s => s.id === ckptSection)!
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 space-y-4">
@@ -3357,17 +3379,53 @@ function DownloadToR2Panel() {
         />
       </div>
 
-      {/* R2 Key */}
+      {/* Destination section */}
+      <div className="space-y-2">
+        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Destination</label>
+        <div className="grid grid-cols-4 gap-1.5">
+          {SECTIONS.map(s => {
+            const isActive = ckptSection === s.id
+            const colorMap: Record<string, string> = {
+              amber:   isActive ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'   : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
+              emerald: isActive ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
+              violet:  isActive ? 'border-violet-500/50 bg-violet-500/10 text-violet-300'  : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
+              orange:  isActive ? 'border-orange-500/50 bg-orange-500/10 text-orange-300'  : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
+            }
+            return (
+              <button
+                key={s.id}
+                onClick={() => setCkptSection(s.id)}
+                disabled={isRunning}
+                className={`flex flex-col items-start gap-0.5 px-2.5 py-2 rounded-xl border transition-all text-left disabled:opacity-50 ${colorMap[s.accent]}`}
+              >
+                <span className="text-[11px] font-semibold leading-tight">{s.label}</span>
+                <span className="text-[9px] text-slate-600 leading-tight">{s.desc}</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Model name */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">R2 Destination Key</label>
+        <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Model Filename</label>
         <input
-          value={r2Key}
-          onChange={e => setR2Key(e.target.value)}
-          placeholder="training/checkpoints/my-model.safetensors  ← must include filename"
+          value={modelName}
+          onChange={e => setModelName(e.target.value)}
+          placeholder={ckptSection === 'esrgan' ? 'my-upscaler.pth' : 'my-checkpoint.safetensors'}
           disabled={isRunning}
-          className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50 font-mono text-xs"
+          className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50"
         />
-        <p className="text-[10px] text-slate-600">Use <span className="text-slate-400 font-mono">training/checkpoints/</span> for checkpoints or <span className="text-slate-400 font-mono">training/models/esrgan/</span> for upscalers</p>
+        {computedR2Key && (
+          <p className="text-[10px] text-slate-600 font-mono break-all">
+            → <span className={`${
+              ckptSection === 'fill'    ? 'text-emerald-400/70' :
+              ckptSection === 'kontext' ? 'text-violet-400/70'  :
+              ckptSection === 'esrgan'  ? 'text-orange-400/70'  :
+                                          'text-amber-400/70'
+            }`}>{computedR2Key}</span>
+          </p>
+        )}
       </div>
 
       {/* Civitai token (optional) */}
@@ -3387,7 +3445,7 @@ function DownloadToR2Panel() {
       <div className="flex items-center gap-3 pt-1">
         <button
           onClick={handleSubmit}
-          disabled={isRunning || !url.trim() || !r2Key.trim()}
+          disabled={isRunning || !url.trim() || !computedR2Key}
           className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-sm font-semibold text-black"
         >
           {isRunning ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
