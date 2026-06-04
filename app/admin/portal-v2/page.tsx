@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload } from "lucide-react"
+import { Image, Video, Type, ChevronDown, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets } from "lucide-react"
 
 // --- TYPES ---
 interface CNCondition {
@@ -3489,6 +3489,381 @@ function DownloadToR2Panel() {
   )
 }
 
+// --- REF IMAGE EDITOR ---
+type EditorTool = 'draw' | 'erase' | 'blur' | 'shape' | 'crop'
+type ShapeKind  = 'rect' | 'circle'
+
+function RefImageEditorModal({ image, onApply, onClose }: {
+  image: RefImage
+  onApply: (newUrl: string) => void
+  onClose: () => void
+}) {
+  const canvasRef  = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
+  const historyRef  = useRef<string[]>([])
+  const isDrawingRef = useRef(false)
+  const lastPtRef    = useRef<{ x: number; y: number } | null>(null)
+  const blurPtsRef   = useRef<{ x: number; y: number }[]>([])
+  const startPtRef   = useRef<{ x: number; y: number } | null>(null)
+  const cropRectRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+
+  const [tool,       setTool]       = useState<EditorTool>('draw')
+  const [brushSize,  setBrushSize]  = useState(20)
+  const [drawColor,  setDrawColor]  = useState('#ffffff')
+  const [blurRadius, setBlurRadius] = useState(10)
+  const [shapeKind,  setShapeKind]  = useState<ShapeKind>('rect')
+  const [shapeFill,  setShapeFill]  = useState(true)
+  const [shapeColor, setShapeColor] = useState('#ffffff')
+  const [hasCropSel, setHasCropSel] = useState(false)
+  const [loaded,     setLoaded]     = useState(false)
+  const [histLen,    setHistLen]    = useState(1)
+
+  // Load image into canvas on mount
+  useEffect(() => {
+    const canvas = canvasRef.current; if (!canvas) return
+    const img = document.createElement('img')
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      const maxW = 720, maxH = 500
+      const scale = Math.min(1, maxW / img.width, maxH / img.height)
+      const w = Math.round(img.width * scale)
+      const h = Math.round(img.height * scale)
+      canvas.width = w; canvas.height = h
+      const overlay = overlayRef.current!
+      overlay.width = w; overlay.height = h
+      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+      historyRef.current = [canvas.toDataURL()]
+      setHistLen(1); setLoaded(true)
+    }
+    img.src = image.url
+  }, [image.url])
+
+  const getPos = (e: React.PointerEvent) => {
+    const canvas = canvasRef.current!
+    const r = canvas.getBoundingClientRect()
+    return {
+      x: (e.clientX - r.left) * canvas.width  / r.width,
+      y: (e.clientY - r.top)  * canvas.height / r.height,
+    }
+  }
+
+  const pushHistory = () => {
+    const url = canvasRef.current!.toDataURL()
+    historyRef.current = [...historyRef.current, url]
+    setHistLen(historyRef.current.length)
+  }
+
+  const restoreFrame = (url: string) => {
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+    const img = document.createElement('img')
+    img.onload = () => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0) }
+    img.src = url
+  }
+
+  const undo = () => {
+    if (historyRef.current.length <= 1) return
+    historyRef.current = historyRef.current.slice(0, -1)
+    setHistLen(historyRef.current.length)
+    restoreFrame(historyRef.current[historyRef.current.length - 1])
+  }
+
+  const reset = () => {
+    if (historyRef.current.length === 0) return
+    const orig = historyRef.current[0]
+    historyRef.current = [orig]
+    setHistLen(1)
+    restoreFrame(orig)
+    setHasCropSel(false)
+    overlayRef.current && (overlayRef.current.getContext('2d')!.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height))
+  }
+
+  const clearOverlay = () => {
+    const o = overlayRef.current; if (!o) return
+    o.getContext('2d')!.clearRect(0, 0, o.width, o.height)
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const pos = getPos(e)
+    isDrawingRef.current = true
+    lastPtRef.current = pos
+
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+
+    if (tool === 'draw') {
+      ctx.beginPath(); ctx.moveTo(pos.x, pos.y)
+    } else if (tool === 'erase') {
+      ctx.beginPath(); ctx.moveTo(pos.x, pos.y)
+    } else if (tool === 'blur') {
+      blurPtsRef.current = [pos]
+    } else if (tool === 'shape' || tool === 'crop') {
+      startPtRef.current = pos
+      setHasCropSel(false)
+      cropRectRef.current = null
+    }
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current) return
+    const pos = getPos(e)
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+    const overlay = overlayRef.current!
+    const octx = overlay.getContext('2d')!
+
+    if (tool === 'draw') {
+      ctx.strokeStyle = drawColor
+      ctx.lineWidth = brushSize
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.lineTo(pos.x, pos.y); ctx.stroke()
+    } else if (tool === 'erase') {
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = brushSize
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.lineTo(pos.x, pos.y); ctx.stroke()
+    } else if (tool === 'blur') {
+      blurPtsRef.current.push(pos)
+      // Show a soft blue tint preview over brushed area
+      octx.clearRect(0, 0, overlay.width, overlay.height)
+      blurPtsRef.current.forEach(pt => {
+        octx.beginPath(); octx.arc(pt.x, pt.y, brushSize / 2, 0, Math.PI * 2)
+        octx.fillStyle = 'rgba(100,160,255,0.12)'; octx.fill()
+      })
+    } else if (tool === 'crop' || tool === 'shape') {
+      const sp = startPtRef.current; if (!sp) return
+      octx.clearRect(0, 0, overlay.width, overlay.height)
+      const x = Math.min(sp.x, pos.x), y = Math.min(sp.y, pos.y)
+      const w = Math.abs(pos.x - sp.x),   h = Math.abs(pos.y - sp.y)
+
+      if (tool === 'crop') {
+        octx.fillStyle = 'rgba(0,0,0,0.5)'; octx.fillRect(0, 0, overlay.width, overlay.height)
+        octx.clearRect(x, y, w, h)
+        octx.strokeStyle = 'rgba(255,255,255,0.85)'; octx.lineWidth = 1.5
+        octx.strokeRect(x, y, w, h)
+        cropRectRef.current = { x, y, w, h }
+      } else {
+        octx.fillStyle = shapeColor; octx.strokeStyle = shapeColor; octx.lineWidth = 2.5
+        if (shapeKind === 'rect') {
+          shapeFill ? octx.fillRect(x, y, w, h) : octx.strokeRect(x, y, w, h)
+        } else {
+          octx.beginPath(); octx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
+          shapeFill ? octx.fill() : octx.stroke()
+        }
+      }
+    }
+    lastPtRef.current = pos
+  }
+
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current) return
+    isDrawingRef.current = false
+
+    if (tool === 'draw' || tool === 'erase') {
+      pushHistory()
+    } else if (tool === 'blur') {
+      const canvas = canvasRef.current!
+      const ctx = canvas.getContext('2d')!
+      // Render a blurred copy of the canvas, clip to brushed path, composite back
+      const off = document.createElement('canvas')
+      off.width = canvas.width; off.height = canvas.height
+      const offCtx = off.getContext('2d')!
+      offCtx.filter = `blur(${blurRadius}px)`
+      offCtx.drawImage(canvas, 0, 0)
+      ctx.save()
+      ctx.beginPath()
+      blurPtsRef.current.forEach(pt => { ctx.arc(pt.x, pt.y, brushSize / 2, 0, Math.PI * 2) })
+      ctx.clip(); ctx.drawImage(off, 0, 0); ctx.restore()
+      clearOverlay(); blurPtsRef.current = []
+      pushHistory()
+    } else if (tool === 'shape') {
+      // Commit shape overlay to main canvas
+      const canvas = canvasRef.current!
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(overlayRef.current!, 0, 0)
+      clearOverlay(); pushHistory()
+    } else if (tool === 'crop') {
+      const r = cropRectRef.current
+      setHasCropSel(!!(r && r.w > 2 && r.h > 2))
+    }
+  }
+
+  const applyCrop = () => {
+    const r = cropRectRef.current; if (!r || r.w < 2 || r.h < 2) return
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+    const data = ctx.getImageData(Math.round(r.x), Math.round(r.y), Math.round(r.w), Math.round(r.h))
+    canvas.width = Math.round(r.w); canvas.height = Math.round(r.h)
+    const overlay = overlayRef.current!
+    overlay.width = canvas.width; overlay.height = canvas.height
+    ctx.putImageData(data, 0, 0)
+    clearOverlay(); cropRectRef.current = null; setHasCropSel(false)
+    pushHistory()
+  }
+
+  const applyEdit = () => {
+    const canvas = canvasRef.current!
+    // Export as JPEG with white background
+    const exp = document.createElement('canvas')
+    exp.width = canvas.width; exp.height = canvas.height
+    const ectx = exp.getContext('2d')!
+    ectx.fillStyle = '#ffffff'; ectx.fillRect(0, 0, exp.width, exp.height)
+    ectx.drawImage(canvas, 0, 0)
+    onApply(exp.toDataURL('image/jpeg', 0.92))
+  }
+
+  const toolBtn = (t: EditorTool, icon: React.ReactNode, label: string) => (
+    <button
+      key={t}
+      onClick={() => { setTool(t); clearOverlay(); setHasCropSel(false) }}
+      title={label}
+      className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-[10px] font-medium transition-all ${
+        tool === t
+          ? 'bg-white/[0.12] text-white'
+          : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.05]'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+
+  return createPortal(
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+      <div className="relative w-full max-w-2xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[95vh]">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.08] shrink-0">
+          <span className="text-sm font-semibold text-white">Edit Reference</span>
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center gap-1 px-4 py-2 border-b border-white/[0.06] shrink-0">
+          {toolBtn('draw',  <Pencil  size={15} />, 'Draw')}
+          {toolBtn('erase', <Eraser  size={15} />, 'Erase')}
+          {toolBtn('blur',  <Droplets size={15} />, 'Blur')}
+          {toolBtn('shape', <Square  size={15} />, 'Shape')}
+          {toolBtn('crop',  <Crop    size={15} />, 'Crop')}
+        </div>
+
+        {/* Tool options */}
+        <div className="flex items-center gap-4 px-5 py-2 border-b border-white/[0.06] shrink-0 min-h-[44px]">
+          {(tool === 'draw' || tool === 'erase') && (
+            <>
+              {tool === 'draw' && (
+                <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                  Color
+                  <input type="color" value={drawColor} onChange={e => setDrawColor(e.target.value)}
+                    className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
+                </label>
+              )}
+              <label className="flex items-center gap-2 text-[11px] text-slate-400 flex-1">
+                Size <span className="text-slate-300 w-7 text-center">{brushSize}</span>
+                <input type="range" min={4} max={80} value={brushSize} onChange={e => setBrushSize(+e.target.value)}
+                  className="flex-1 accent-cyan-400" />
+              </label>
+            </>
+          )}
+          {tool === 'blur' && (
+            <>
+              <label className="flex items-center gap-2 text-[11px] text-slate-400 flex-1">
+                Intensity <span className="text-slate-300 w-7 text-center">{blurRadius}</span>
+                <input type="range" min={2} max={30} value={blurRadius} onChange={e => setBlurRadius(+e.target.value)}
+                  className="flex-1 accent-cyan-400" />
+              </label>
+              <label className="flex items-center gap-2 text-[11px] text-slate-400 flex-1">
+                Brush <span className="text-slate-300 w-7 text-center">{brushSize}</span>
+                <input type="range" min={10} max={120} value={brushSize} onChange={e => setBrushSize(+e.target.value)}
+                  className="flex-1 accent-cyan-400" />
+              </label>
+            </>
+          )}
+          {tool === 'shape' && (
+            <>
+              <div className="flex gap-1">
+                {(['rect', 'circle'] as ShapeKind[]).map(k => (
+                  <button key={k} onClick={() => setShapeKind(k)}
+                    className={`p-1.5 rounded-lg transition-colors ${shapeKind === k ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                    {k === 'rect' ? <Square size={14} /> : <Circle size={14} />}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                Color
+                <input type="color" value={shapeColor} onChange={e => setShapeColor(e.target.value)}
+                  className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
+              </label>
+              <button onClick={() => setShapeFill(f => !f)}
+                className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${shapeFill ? 'border-cyan-500/40 text-cyan-400 bg-cyan-500/10' : 'border-white/10 text-slate-400 hover:text-slate-200'}`}>
+                {shapeFill ? 'Filled' : 'Outline'}
+              </button>
+            </>
+          )}
+          {tool === 'crop' && (
+            <span className="text-[11px] text-slate-500">Drag to select crop area</span>
+          )}
+        </div>
+
+        {/* Canvas area */}
+        <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-black/20">
+          {!loaded ? (
+            <div className="flex items-center gap-2 text-slate-600 text-sm">
+              <Loader2 size={16} className="animate-spin" /> Loading…
+            </div>
+          ) : (
+            <div className="relative inline-block rounded-lg overflow-hidden shadow-xl">
+              <canvas ref={canvasRef} className="block max-w-full"
+                style={{ cursor: tool === 'crop' ? 'crosshair' : tool === 'shape' ? 'crosshair' : 'cell', touchAction: 'none' }}
+                onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
+              <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none block" />
+            </div>
+          )}
+        </div>
+
+        {/* Crop apply banner */}
+        {hasCropSel && (
+          <div className="flex items-center justify-center gap-3 px-5 py-2 bg-amber-500/10 border-t border-amber-500/20 shrink-0">
+            <span className="text-[11px] text-amber-300">Crop selection ready</span>
+            <button onClick={applyCrop}
+              className="text-[11px] px-3 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 transition-colors">
+              Apply Crop
+            </button>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-5 py-3 border-t border-white/[0.08] shrink-0">
+          <div className="flex items-center gap-2">
+            <button onClick={undo} disabled={histLen <= 1}
+              className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
+              <Undo2 size={13} /> Undo
+            </button>
+            <button onClick={reset} disabled={histLen <= 1}
+              className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
+              <RotateCcw size={13} /> Reset
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose}
+              className="text-[11px] px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-all">
+              Cancel
+            </button>
+            <button onClick={applyEdit}
+              className="text-[11px] px-4 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 transition-all font-medium">
+              Apply
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 // Builds a full-size mask canvas from a crop-sized mask + its position in the original image.
 // The returned data URL has white only where the lasso region was, black everywhere else.
 function buildFullSizeMask(
@@ -5797,6 +6172,7 @@ function PromptBox({
   activeRefImages,
   refLibrary,
   onDeactivateRef,
+  onEditRef,
   onLoadPreset,
   onUploadRef,
   onStartPolling,
@@ -5823,6 +6199,7 @@ function PromptBox({
   activeRefImages: RefImage[]
   refLibrary: RefImage[]
   onDeactivateRef: (id: string) => void
+  onEditRef: (id: string, newUrl: string) => void
   onLoadPreset: (urls: string[]) => void
   onUploadRef: (items: RefImage[]) => void
   onStartPolling: (slotId: string, queueId: number, prompt: string) => void
@@ -5839,6 +6216,7 @@ function PromptBox({
   ticketBalance?: number
 }) {
   const PROMPT_STORAGE_KEY = "pv2-prompt-state"
+  const [editingRefImage, setEditingRefImage] = useState<RefImage | null>(null)
   const [prompt, setPrompt] = useState<string>("")
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(model.aspectRatios[0])
   const [quality, setQuality] = useState<Quality>("2k")
@@ -6797,22 +7175,41 @@ function PromptBox({
     <div className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
       <div className="max-w-3xl mx-auto pointer-events-auto space-y-2">
 
-        {/* Active reference image previews */}
+        {/* Active reference image previews — click to edit */}
         {activeRefImages.length > 0 && (
-          <div className="flex items-center gap-2 px-1">
+          <div className="flex items-center gap-2 px-1 flex-wrap">
             {activeRefImages.map((img) => (
-              <div key={img.id} className="relative shrink-0 w-14 h-14 rounded-lg overflow-hidden border border-cyan-500/30 group">
+              <div key={img.id} className="relative shrink-0 w-14 h-14 rounded-lg overflow-hidden border border-cyan-500/30 group cursor-pointer"
+                onClick={() => setEditingRefImage(img)}
+                title="Click to edit">
                 <img src={img.url} alt="reference" className="w-full h-full object-cover" />
+                {/* Edit hint overlay */}
+                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  <Pencil size={14} className="text-white" />
+                </div>
+                {/* Deactivate button */}
                 <button
-                  onClick={() => onDeactivateRef(img.id)}
-                  title="Deactivate"
-                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={(e) => { e.stopPropagation(); onDeactivateRef(img.id) }}
+                  title="Remove"
+                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
                 >
                   <X size={9} className="text-white" />
                 </button>
               </div>
             ))}
           </div>
+        )}
+
+        {/* Ref image editor modal */}
+        {editingRefImage && (
+          <RefImageEditorModal
+            image={editingRefImage}
+            onApply={(newUrl) => {
+              onEditRef(editingRefImage.id, newUrl)
+              setEditingRefImage(null)
+            }}
+            onClose={() => setEditingRefImage(null)}
+          />
         )}
 
         {/* Hidden file input for upscaler upload */}
@@ -10908,6 +11305,9 @@ export default function PortalV2Page() {
 
   const handleActivateRef   = useCallback((id: string) => setActiveRefIds((prev) => [...prev, id]), [])
   const handleDeactivateRef = useCallback((id: string) => setActiveRefIds((prev) => prev.filter((rid) => rid !== id)), [])
+  const handleEditRef       = useCallback((id: string, newUrl: string) => {
+    setRefLibrary(prev => prev.map(r => r.id === id ? { ...r, url: newUrl } : r))
+  }, [])
 
   const handleLoadPreset = useCallback((urls: string[]) => {
     const newItems: RefImage[] = urls.map((url) => ({
@@ -11503,6 +11903,7 @@ export default function PortalV2Page() {
             activeRefImages={activeRefImages}
             refLibrary={refLibrary}
             onDeactivateRef={handleDeactivateRef}
+            onEditRef={handleEditRef}
             onLoadPreset={handleLoadPreset}
             onUploadRef={handleUploadRef}
             onStartPolling={startPolling}
