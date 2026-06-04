@@ -3501,7 +3501,7 @@ function buildFullSizeMask(
     canvas.width = fullW; canvas.height = fullH
     const ctx = canvas.getContext('2d')!
     ctx.fillStyle = 'black'; ctx.fillRect(0, 0, fullW, fullH)
-    const img = new Image()
+    const img = document.createElement('img')
     img.onload = () => { ctx.drawImage(img, cropX, cropY, cropW, cropH); resolve(canvas.toDataURL('image/png')) }
     img.src = cropMaskB64
   })
