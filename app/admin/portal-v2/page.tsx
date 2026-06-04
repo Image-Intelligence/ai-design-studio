@@ -3520,36 +3520,53 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const [histLen,    setHistLen]    = useState(1)
 
   // Load image into canvas on mount.
-  // We don't set crossOrigin so the browser can load blob: and https: URLs freely.
-  // On Apply we proxy the export through a white-background JPEG so canvas taint doesn't matter.
+  // HTTPS images (Vercel Blob, R2, etc.) taint the canvas when drawn directly, which causes
+  // toDataURL() to throw a SecurityError — silently killing onload before setLoaded(true) runs.
+  // Fix: fetch HTTPS URLs as a blob first → create a same-origin blob URL → no canvas taint.
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return
-    const img = document.createElement('img')
-    img.onload = () => {
-      const maxW = 720, maxH = 500
-      const scale = Math.min(1, maxW / img.width, maxH / img.height)
-      const w = Math.round(img.width * scale)
-      const h = Math.round(img.height * scale)
-      canvas.width = w; canvas.height = h
-      const overlay = overlayRef.current!
-      overlay.width = w; overlay.height = h
-      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
-      // Snapshot the initial state for reset/undo — use the img element directly
-      // (avoids toDataURL taint issue on first load from remote URLs)
-      const snap = document.createElement('canvas')
-      snap.width = w; snap.height = h
-      snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
-      historyRef.current = [snap.toDataURL('image/jpeg', 0.95)]
-      setHistLen(1); setLoaded(true)
+    let blobUrlToRevoke: string | null = null
+
+    const drawToCanvas = (src: string) => {
+      const img = document.createElement('img')
+      img.onload = () => {
+        const maxW = 720, maxH = 500
+        const scale = Math.min(1, maxW / img.width, maxH / img.height)
+        const w = Math.round(img.width * scale)
+        const h = Math.round(img.height * scale)
+        canvas.width = w; canvas.height = h
+        overlayRef.current!.width = w; overlayRef.current!.height = h
+        canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+        if (blobUrlToRevoke) { URL.revokeObjectURL(blobUrlToRevoke); blobUrlToRevoke = null }
+        try {
+          const snap = document.createElement('canvas')
+          snap.width = w; snap.height = h
+          snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
+          historyRef.current = [snap.toDataURL('image/jpeg', 0.95)]
+          setHistLen(1)
+        } catch {
+          historyRef.current = [] // tainted — undo/reset unavailable
+          setHistLen(0)
+        }
+        setLoaded(true)
+      }
+      img.onerror = () => setLoaded(true)
+      img.src = src
     }
-    img.onerror = () => {
-      // If direct load fails (e.g. CORS on remote URL), fetch as blob first
+
+    if (image.url.startsWith('http')) {
+      // Fetch as blob to get a same-origin blob URL — prevents canvas taint entirely
       fetch(image.url)
         .then(r => r.blob())
-        .then(blob => { img.src = URL.createObjectURL(blob) })
-        .catch(() => setLoaded(true)) // show empty canvas rather than hang
+        .then(blob => {
+          blobUrlToRevoke = URL.createObjectURL(blob)
+          drawToCanvas(blobUrlToRevoke)
+        })
+        .catch(() => drawToCanvas(image.url)) // fetch failed, try direct (may taint)
+    } else {
+      // blob: or data: — already same-origin, no taint risk
+      drawToCanvas(image.url)
     }
-    img.src = image.url
   }, [image.url])
 
   const getPos = (e: React.PointerEvent) => {
@@ -3562,9 +3579,11 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   }
 
   const pushHistory = () => {
-    const url = canvasRef.current!.toDataURL()
-    historyRef.current = [...historyRef.current, url]
-    setHistLen(historyRef.current.length)
+    try {
+      const url = canvasRef.current!.toDataURL('image/jpeg', 0.85)
+      historyRef.current = [...historyRef.current, url]
+      setHistLen(historyRef.current.length)
+    } catch { /* tainted canvas — skip snapshot */ }
   }
 
   const restoreFrame = (dataUrl: string) => {
@@ -3747,13 +3766,18 @@ function RefImageEditorModal({ image, onApply, onClose }: {
 
   const applyEdit = () => {
     const canvas = canvasRef.current!
-    // Export as JPEG with white background
-    const exp = document.createElement('canvas')
-    exp.width = canvas.width; exp.height = canvas.height
-    const ectx = exp.getContext('2d')!
-    ectx.fillStyle = '#ffffff'; ectx.fillRect(0, 0, exp.width, exp.height)
-    ectx.drawImage(canvas, 0, 0)
-    onApply(exp.toDataURL('image/jpeg', 0.92))
+    try {
+      const exp = document.createElement('canvas')
+      exp.width = canvas.width; exp.height = canvas.height
+      const ectx = exp.getContext('2d')!
+      ectx.fillStyle = '#ffffff'; ectx.fillRect(0, 0, exp.width, exp.height)
+      ectx.drawImage(canvas, 0, 0)
+      onApply(exp.toDataURL('image/jpeg', 0.92))
+    } catch {
+      // Canvas tainted (cross-origin image loaded without CORS) — shouldn't happen
+      // because we fetch HTTPS images as blobs, but guard just in case
+      alert('Could not export this image. Try re-uploading it to the ref library.')
+    }
   }
 
   const toolBtn = (t: EditorTool, icon: React.ReactNode, label: string) => (
