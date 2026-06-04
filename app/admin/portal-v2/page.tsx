@@ -4393,10 +4393,6 @@ function CustomFluxPanel({
 
   const runMultiInpaint = async () => {
     const jobs = inpaintJobs!
-    const dims = inpaintImgDims!
-    const inpaintSlotId = `inpaint-${Date.now()}`
-    onAddPending({ slotId: inpaintSlotId, status: 'loading', prompt: prompt.trim() || 'Inpainting…', modelId: 'custom-flux-lora' })
-    setGenerating(true); setError(null); setResultUrl(null)
     const reqWidth  = autoBaseDims?.w ?? width
     const reqHeight = autoBaseDims?.h ?? height
     const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
@@ -4414,13 +4410,47 @@ function CustomFluxPanel({
       controlnet: false, controlnet_conditions: [] as unknown[],
       inpaint_strength: inpaintStrength,
     }
-    // Composite canvas starts as the compressed original
+
+    setGenerating(true); setError(null); setResultUrl(null); setStatus('submitting')
+
+    // ── Single shape: submit then hand off to parent polling (non-blocking) ──
+    if (jobs.length === 1) {
+      const job = jobs[0]
+      const shapePrompt = job.prompt.trim()
+      const fullPrompt  = shapePrompt ? `${shapePrompt}, ${baseBody.prompt}` : baseBody.prompt
+      const res = await fetch('/api/admin/flux-inference/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
+        body: JSON.stringify({ ...baseBody, prompt: fullPrompt, inpaint_image: job.image, inpaint_mask: job.mask, use_flux_fill: isFluxFill }),
+      })
+      const data = await res.json() as { mode: string; job_id?: string; error?: string }
+      if (!res.ok || data.error || !data.job_id) {
+        setError(data.error ?? 'Submission failed'); setGenerating(false); setStatus(''); return
+      }
+      // Add a real pending slot — parent polling handles completion and adds to feed
+      onAddPending({
+        slotId:         `flux-inpaint-${Date.now()}`,
+        status:         'loading',
+        prompt:         fullPrompt,
+        modelId:        'custom-flux-lora',
+        nb2RequestId:   data.job_id,
+        nb2FalEndpoint: '',
+        nb2StatusUrl:   '/api/admin/flux-inference/nb2-status',
+      })
+      setGenerating(false); setStatus('')
+      return
+    }
+
+    // ── Multi-shape: must run sequentially to composite each result ──
+    const dims = inpaintImgDims!
+    const inpaintSlotId = `inpaint-${Date.now()}`
+    onAddPending({ slotId: inpaintSlotId, status: 'loading', prompt: prompt.trim() || 'Inpainting…', modelId: 'custom-flux-lora' })
     let compositeB64 = inpaintOriginalB64
     const compScale = Math.min(1, 1536 / dims.w, 1536 / dims.h)
     const compW = Math.round(dims.w * compScale), compH = Math.round(dims.h * compScale)
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i]
-      setStatus(jobs.length > 1 ? `Inpainting shape ${i + 1} / ${jobs.length}` : 'Inpainting…')
+      setStatus(`Inpainting shape ${i + 1} / ${jobs.length}`)
       const shapePrompt = job.prompt.trim()
       const fullPrompt  = shapePrompt ? `${shapePrompt}, ${baseBody.prompt}` : baseBody.prompt
       const res = await fetch('/api/admin/flux-inference/generate', {
@@ -4434,7 +4464,6 @@ function CustomFluxPanel({
         onUpdatePending(inpaintSlotId, { status: 'failed', error: errMsg })
         setError(errMsg); setGenerating(false); return
       }
-      // Poll until this job completes
       let resultUrl: string | null = null
       for (let a = 0; a < 240; a++) {
         await new Promise(r => setTimeout(r, 3000))
@@ -4455,7 +4484,6 @@ function CustomFluxPanel({
         onUpdatePending(inpaintSlotId, { status: 'failed', error: errMsg })
         setError(errMsg); setGenerating(false); return
       }
-      // Composite result onto the growing canvas
       const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(resultUrl)}`
       const blob = await fetch(proxyUrl).then(r => r.blob())
       const blobUrl = URL.createObjectURL(blob)
