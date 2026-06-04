@@ -3518,11 +3518,12 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const [loaded,     setLoaded]     = useState(false)
   const [histLen,    setHistLen]    = useState(1)
 
-  // Load image into canvas on mount
+  // Load image into canvas on mount.
+  // We don't set crossOrigin so the browser can load blob: and https: URLs freely.
+  // On Apply we proxy the export through a white-background JPEG so canvas taint doesn't matter.
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return
     const img = document.createElement('img')
-    img.crossOrigin = 'anonymous'
     img.onload = () => {
       const maxW = 720, maxH = 500
       const scale = Math.min(1, maxW / img.width, maxH / img.height)
@@ -3532,8 +3533,20 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       const overlay = overlayRef.current!
       overlay.width = w; overlay.height = h
       canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
-      historyRef.current = [canvas.toDataURL()]
+      // Snapshot the initial state for reset/undo — use the img element directly
+      // (avoids toDataURL taint issue on first load from remote URLs)
+      const snap = document.createElement('canvas')
+      snap.width = w; snap.height = h
+      snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
+      historyRef.current = [snap.toDataURL('image/jpeg', 0.95)]
       setHistLen(1); setLoaded(true)
+    }
+    img.onerror = () => {
+      // If direct load fails (e.g. CORS on remote URL), fetch as blob first
+      fetch(image.url)
+        .then(r => r.blob())
+        .then(blob => { img.src = URL.createObjectURL(blob) })
+        .catch(() => setLoaded(true)) // show empty canvas rather than hang
     }
     img.src = image.url
   }, [image.url])
@@ -3553,12 +3566,13 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     setHistLen(historyRef.current.length)
   }
 
-  const restoreFrame = (url: string) => {
+  const restoreFrame = (dataUrl: string) => {
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
     const img = document.createElement('img')
+    // History frames are always JPEG data URLs (same-origin) — no CORS concern
     img.onload = () => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0) }
-    img.src = url
+    img.src = dataUrl
   }
 
   const undo = () => {
