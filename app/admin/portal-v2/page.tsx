@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets } from "lucide-react"
+import { Image, Video, Type, ChevronDown, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock } from "lucide-react"
 
 // --- TYPES ---
 interface CNCondition {
@@ -1069,12 +1069,11 @@ function RefDropdown({
   const [uploading, setUploading] = useState(false)
   const [consentGiven, setConsentGiven] = useState(false)
   const [showConsentModal, setShowConsentModal] = useState(false)
-  const [pendingActivateId, setPendingActivateId] = useState<string | null>(null)
   const activeCount = disabled ? 0 : activeIds.filter((id) => library.some((img) => img.id === id)).length
   const atLimit = !disabled && modelMaxRefs > 0 && activeCount >= modelMaxRefs
 
   useEffect(() => {
-    setConsentGiven(localStorage.getItem("ref-rights-consent-v1") === "true")
+    setConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
   }, [])
 
   // Exit select mode + clear errors when dropdown closes
@@ -1136,25 +1135,26 @@ function RefDropdown({
     if (activeIds.includes(img.id)) {
       onDeactivate(img.id)
     } else if (!atLimit) {
-      if (consentGiven) {
-        onActivate(img.id)
-      } else {
-        setPendingActivateId(img.id)
-        setShowConsentModal(true)
-      }
+      onActivate(img.id)
+    }
+  }
+
+  const handleButtonClick = () => {
+    if (consentGiven) {
+      onToggle()
+    } else {
+      setShowConsentModal(true)
     }
   }
 
   const handleConsentAgree = () => {
-    localStorage.setItem("ref-rights-consent-v1", "true")
+    sessionStorage.setItem("ref-rights-consent", "true")
     setConsentGiven(true)
-    if (pendingActivateId) onActivate(pendingActivateId)
-    setPendingActivateId(null)
     setShowConsentModal(false)
+    onToggle()
   }
 
   const handleConsentDecline = () => {
-    setPendingActivateId(null)
     setShowConsentModal(false)
   }
 
@@ -1182,14 +1182,14 @@ function RefDropdown({
     <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
       <button
         ref={buttonRef}
-        onClick={onToggle}
+        onClick={handleButtonClick}
         className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+          open ? "bg-white/10 text-white" : consentGiven ? "text-slate-400 hover:text-white hover:bg-white/5" : "text-slate-500 hover:text-slate-300 hover:bg-white/5"
         }`}
       >
-        <ImagePlus size={15} />
+        {consentGiven ? <ImagePlus size={15} /> : <Lock size={13} className="text-slate-600" />}
         Refs
-        {activeCount > 0 && (
+        {consentGiven && activeCount > 0 && (
           <span className="px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-bold leading-none">
             {activeCount}
           </span>
@@ -1411,11 +1411,11 @@ function RefDropdown({
             {/* Icon + title */}
             <div className="flex items-start gap-3 mb-4">
               <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                <ImagePlus size={16} className="text-cyan-400" />
+                <Lock size={16} className="text-cyan-400" />
               </div>
               <div>
-                <h2 className="text-sm font-bold text-white leading-tight">Reference Image Rights</h2>
-                <p className="text-[11px] text-slate-500 mt-0.5">Please confirm before activating</p>
+                <h2 className="text-sm font-bold text-white leading-tight">Before You Upload</h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">Please read and confirm the following</p>
               </div>
             </div>
 
@@ -1424,19 +1424,19 @@ function RefDropdown({
               <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
                 <p className="text-[12px] text-slate-300 leading-relaxed">
-                  I own the rights to this image, or have explicit permission to use it as a reference for AI generation.
+                  I own the rights to any images I upload here, or have explicit permission to use them as references for AI generation.
                 </p>
               </div>
               <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
                 <p className="text-[12px] text-slate-300 leading-relaxed">
-                  If this image contains the likeness of any person, I have obtained their consent to use it online.
+                  If any image contains the likeness of a real person, I have obtained their consent to use it online.
                 </p>
               </div>
             </div>
 
             <p className="text-[10px] text-slate-600 mb-4 leading-relaxed">
-              You only need to agree once. This confirmation applies to all reference images you activate.
+              This confirmation is required each session. Agreeing now unlocks the Refs section for the rest of your current session.
             </p>
 
             {/* Buttons */}
@@ -11904,7 +11904,7 @@ export default function PortalV2Page() {
               <Ticket size={10} className="text-cyan-500/70" />
               <span className="text-cyan-400 tabular-nums">{user ? user.ticketBalance.toLocaleString() : "---"}</span>
             </div>
-            <ProfileBubble user={user} onSignOut={() => setUser(null)} />
+            <ProfileBubble user={user} onSignOut={() => { sessionStorage.removeItem("ref-rights-consent"); setUser(null) }} />
             <Link
               href="/dashboard"
               className="flex items-center px-2 py-1 rounded-md border border-white/10 bg-white/5 text-[10px] text-slate-400 hover:border-white/20 hover:text-white transition-all"
@@ -12017,7 +12017,7 @@ export default function PortalV2Page() {
                 {user ? user.ticketBalance.toLocaleString() : "---"}
               </span>
             </div>
-            <ProfileBubble user={user} onSignOut={() => setUser(null)} />
+            <ProfileBubble user={user} onSignOut={() => { sessionStorage.removeItem("ref-rights-consent"); setUser(null) }} />
             <Link
               href="/dashboard"
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-[11px] text-slate-400 hover:border-white/20 hover:text-white transition-all"
