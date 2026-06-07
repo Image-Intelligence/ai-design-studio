@@ -1030,8 +1030,11 @@ function ProfileBubble({ user, onSignOut }: { user: UserData | null; onSignOut: 
 }
 
 // --- SHARED REF CONSENT MODAL ---
+// Renders into document.body via portal so it escapes any parent stacking context
+// (backdrop-filter / transform on ancestor elements trap position:fixed children).
 function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDecline: () => void }) {
-  return (
+  if (typeof document === 'undefined') return null
+  return createPortal(
     <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4" onClick={onDecline}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
@@ -1079,7 +1082,8 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
