@@ -1029,6 +1029,60 @@ function ProfileBubble({ user, onSignOut }: { user: UserData | null; onSignOut: 
   )
 }
 
+// --- SHARED REF CONSENT MODAL ---
+function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDecline: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4" onClick={onDecline}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#0e0e18] shadow-2xl p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
+            <Lock size={16} className="text-cyan-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold text-white leading-tight">Before You Upload</h2>
+            <p className="text-[11px] text-slate-500 mt-0.5">Please read and confirm the following</p>
+          </div>
+        </div>
+        <div className="space-y-3 mb-5">
+          <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
+            <p className="text-[12px] text-slate-300 leading-relaxed">
+              I own the rights to any images I upload here, or have explicit permission to use them as references for AI generation.
+            </p>
+          </div>
+          <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
+            <p className="text-[12px] text-slate-300 leading-relaxed">
+              If any image contains the likeness of a real person, I have obtained their consent to use it online.
+            </p>
+          </div>
+        </div>
+        <p className="text-[10px] text-slate-600 mb-4 leading-relaxed">
+          This confirmation is required each session. Agreeing now unlocks the Refs section for the rest of your current session.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={onDecline}
+            className="flex-1 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-[12px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onAgree}
+            className="flex-1 py-2 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-[12px] text-cyan-300 font-semibold hover:bg-cyan-500/30 transition-all"
+          >
+            I Agree
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // --- REF IMAGE DROPDOWN ---
 function RefDropdown({
   open,
@@ -1400,62 +1454,8 @@ function RefDropdown({
         </div>
       )}
 
-      {/* Reference image rights consent modal */}
       {showConsentModal && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4" onClick={handleConsentDecline}>
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div
-            className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#0e0e18] shadow-2xl p-6"
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Icon + title */}
-            <div className="flex items-start gap-3 mb-4">
-              <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                <Lock size={16} className="text-cyan-400" />
-              </div>
-              <div>
-                <h2 className="text-sm font-bold text-white leading-tight">Before You Upload</h2>
-                <p className="text-[11px] text-slate-500 mt-0.5">Please read and confirm the following</p>
-              </div>
-            </div>
-
-            {/* Acknowledgements */}
-            <div className="space-y-3 mb-5">
-              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
-                <p className="text-[12px] text-slate-300 leading-relaxed">
-                  I own the rights to any images I upload here, or have explicit permission to use them as references for AI generation.
-                </p>
-              </div>
-              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
-                <p className="text-[12px] text-slate-300 leading-relaxed">
-                  If any image contains the likeness of a real person, I have obtained their consent to use it online.
-                </p>
-              </div>
-            </div>
-
-            <p className="text-[10px] text-slate-600 mb-4 leading-relaxed">
-              This confirmation is required each session. Agreeing now unlocks the Refs section for the rest of your current session.
-            </p>
-
-            {/* Buttons */}
-            <div className="flex gap-2">
-              <button
-                onClick={handleConsentDecline}
-                className="flex-1 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-[12px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-all"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConsentAgree}
-                className="flex-1 py-2 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-[12px] text-cyan-300 font-semibold hover:bg-cyan-500/30 transition-all"
-              >
-                I Agree
-              </button>
-            </div>
-          </div>
-        </div>
+        <RefConsentModal onAgree={handleConsentAgree} onDecline={handleConsentDecline} />
       )}
     </div>
   )
@@ -2223,6 +2223,10 @@ function ImageDetailModal({
 }) {
   const [copied, setCopied] = useState(false)
   const [addedRef, setAddedRef] = useState(false)
+  const [showRefConsent, setShowRefConsent] = useState(false)
+  const [consentGiven, setConsentGiven] = useState(() =>
+    typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
+  )
 
   const modelName = getModelDisplayName(image.model)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
@@ -2528,6 +2532,7 @@ function ImageDetailModal({
                 <>
                   <button
                     onClick={() => {
+                      if (!consentGiven) { setShowRefConsent(true); return }
                       onAddRef(image.imageUrl, image.r2Key)
                       setAddedRef(true)
                       setTimeout(() => setAddedRef(false), 2000)
@@ -2569,6 +2574,19 @@ function ImageDetailModal({
           </div>
         </div>
       </div>
+      {showRefConsent && (
+        <RefConsentModal
+          onAgree={() => {
+            sessionStorage.setItem("ref-rights-consent", "true")
+            setConsentGiven(true)
+            setShowRefConsent(false)
+            onAddRef(image.imageUrl, image.r2Key)
+            setAddedRef(true)
+            setTimeout(() => setAddedRef(false), 2000)
+          }}
+          onDecline={() => setShowRefConsent(false)}
+        />
+      )}
     </div>
   )
 }
@@ -6528,6 +6546,10 @@ function PromptBox({
   }, [])
   const [showPresets, setShowPresets] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [showRefConsent, setShowRefConsent] = useState(false)
+  const [refConsentGiven, setRefConsentGiven] = useState(() =>
+    typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
+  )
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -8230,10 +8252,10 @@ function PromptBox({
                 />
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => { if (refConsentGiven) { fileInputRef.current?.click() } else { setShowRefConsent(true) } }}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-[11px] text-slate-300 hover:border-white/20 hover:text-white transition-all shrink-0"
                 >
-                  <ImagePlus size={11} />
+                  {refConsentGiven ? <ImagePlus size={11} /> : <Lock size={11} className="text-slate-500" />}
                   {activeRefImages.length > 0 ? `${activeRefImages.length}/${model.maxReferenceImages}` : "Ref"}
                 </button>
               </>
@@ -8402,6 +8424,17 @@ function PromptBox({
           </div>
         </div>,
         document.body
+      )}
+      {showRefConsent && (
+        <RefConsentModal
+          onAgree={() => {
+            sessionStorage.setItem("ref-rights-consent", "true")
+            setRefConsentGiven(true)
+            setShowRefConsent(false)
+            fileInputRef.current?.click()
+          }}
+          onDecline={() => setShowRefConsent(false)}
+        />
       )}
     </div>
   )
