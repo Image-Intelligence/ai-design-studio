@@ -1067,8 +1067,15 @@ function RefDropdown({
   const [selectedForDelete, setSelectedForDelete] = useState<Set<string>>(new Set())
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [consentGiven, setConsentGiven] = useState(false)
+  const [showConsentModal, setShowConsentModal] = useState(false)
+  const [pendingActivateId, setPendingActivateId] = useState<string | null>(null)
   const activeCount = disabled ? 0 : activeIds.filter((id) => library.some((img) => img.id === id)).length
   const atLimit = !disabled && modelMaxRefs > 0 && activeCount >= modelMaxRefs
+
+  useEffect(() => {
+    setConsentGiven(localStorage.getItem("ref-rights-consent-v1") === "true")
+  }, [])
 
   // Exit select mode + clear errors when dropdown closes
   useEffect(() => {
@@ -1129,8 +1136,26 @@ function RefDropdown({
     if (activeIds.includes(img.id)) {
       onDeactivate(img.id)
     } else if (!atLimit) {
-      onActivate(img.id)
+      if (consentGiven) {
+        onActivate(img.id)
+      } else {
+        setPendingActivateId(img.id)
+        setShowConsentModal(true)
+      }
     }
+  }
+
+  const handleConsentAgree = () => {
+    localStorage.setItem("ref-rights-consent-v1", "true")
+    setConsentGiven(true)
+    if (pendingActivateId) onActivate(pendingActivateId)
+    setPendingActivateId(null)
+    setShowConsentModal(false)
+  }
+
+  const handleConsentDecline = () => {
+    setPendingActivateId(null)
+    setShowConsentModal(false)
   }
 
   const toggleSelectForDelete = (id: string) => {
@@ -1372,6 +1397,64 @@ function RefDropdown({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Reference image rights consent modal */}
+      {showConsentModal && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4" onClick={handleConsentDecline}>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#0e0e18] shadow-2xl p-6"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Icon + title */}
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                <ImagePlus size={16} className="text-cyan-400" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-white leading-tight">Reference Image Rights</h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">Please confirm before activating</p>
+              </div>
+            </div>
+
+            {/* Acknowledgements */}
+            <div className="space-y-3 mb-5">
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
+                <p className="text-[12px] text-slate-300 leading-relaxed">
+                  I own the rights to this image, or have explicit permission to use it as a reference for AI generation.
+                </p>
+              </div>
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
+                <p className="text-[12px] text-slate-300 leading-relaxed">
+                  If this image contains the likeness of any person, I have obtained their consent to use it online.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-slate-600 mb-4 leading-relaxed">
+              You only need to agree once. This confirmation applies to all reference images you activate.
+            </p>
+
+            {/* Buttons */}
+            <div className="flex gap-2">
+              <button
+                onClick={handleConsentDecline}
+                className="flex-1 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-[12px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConsentAgree}
+                className="flex-1 py-2 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-[12px] text-cyan-300 font-semibold hover:bg-cyan-500/30 transition-all"
+              >
+                I Agree
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
