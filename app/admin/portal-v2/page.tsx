@@ -1960,6 +1960,18 @@ function FailedSlot({ prompt, error, onClick }: { prompt: string; error: string;
   )
 }
 
+// --- AI DISCLAIMER ---
+function AIDisclaimer() {
+  return (
+    <div className="flex items-start gap-1.5 px-2.5 py-2 rounded-lg bg-amber-500/[0.05] border border-amber-500/[0.15]">
+      <Sparkles size={10} className="text-amber-400/60 shrink-0 mt-0.5" />
+      <p className="text-[10px] text-amber-400/60 leading-relaxed">
+        <span className="font-semibold text-amber-400/80">AI-Generated Content</span> — This content was produced by artificial intelligence and may not represent real people, places, or events.
+      </p>
+    </div>
+  )
+}
+
 // --- PENDING DETAIL MODAL ---
 function PendingDetailModal({
   prompt,
@@ -2136,6 +2148,7 @@ function PendingDetailModal({
                 <X size={11} /> Dismiss Generation
               </button>
             )}
+            <AIDisclaimer />
           </div>
         </div>
       </div>
@@ -2575,6 +2588,7 @@ function ImageDetailModal({
                 </>
               )}
             </div>
+            <AIDisclaimer />
           </div>
         </div>
       </div>
@@ -2858,6 +2872,7 @@ function VideoDetailModal({
                 </button>
               </div>
             )}
+            <AIDisclaimer />
           </div>
         </div>
       </div>
