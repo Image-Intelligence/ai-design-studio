@@ -142,7 +142,7 @@ export default function RefundPage() {
           <section>
             <h2 className="text-2xl font-bold mb-4 text-cyan-400">5. Chargebacks and Payment Disputes</h2>
             <p className="mb-4">
-              Before initiating a chargeback or payment dispute with your bank, credit card company, or Lemon Squeezy, we strongly encourage
+              Before initiating a chargeback or payment dispute with your bank or credit card company, we strongly encourage
               you to contact us directly at{' '}
               <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>.
               Most concerns can be resolved quickly without involving third-party payment processors.
@@ -228,7 +228,7 @@ export default function RefundPage() {
                 </a>
               </p>
               <p className="text-sm text-slate-400 mt-2">
-                We aim to respond within 5 business days. Support is provided in English only.
+                Response times may vary. Support is provided in English only.
               </p>
             </div>
           </section>
