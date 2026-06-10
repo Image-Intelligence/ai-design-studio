@@ -8488,6 +8488,31 @@ function PromptBox({
 
 // --- VIDEO COMPONENTS ---
 
+function useRefConsent() {
+  const [showModal, setShowModal] = useState(false)
+  const pendingRef = useRef<(() => void) | null>(null)
+  const [consented, setConsented] = useState(() =>
+    typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
+  )
+  const request = (action: () => void) => {
+    if (consented) { action() }
+    else { pendingRef.current = action; setShowModal(true) }
+  }
+  const modal = showModal ? (
+    <RefConsentModal
+      onAgree={() => {
+        sessionStorage.setItem("ref-rights-consent", "true")
+        setConsented(true)
+        setShowModal(false)
+        pendingRef.current?.()
+        pendingRef.current = null
+      }}
+      onDecline={() => { setShowModal(false); pendingRef.current = null }}
+    />
+  ) : null
+  return { request, modal }
+}
+
 function FrameUploadArea({
   preview, uploading, onSelect, onClear, label, optional, inputRef,
 }: {
@@ -8499,6 +8524,7 @@ function FrameUploadArea({
   optional?: boolean
   inputRef: React.RefObject<HTMLInputElement>
 }) {
+  const { request: requestConsent, modal: consentModal } = useRefConsent()
   return (
     <div className="relative">
       <input
@@ -8525,13 +8551,14 @@ function FrameUploadArea({
         </div>
       ) : (
         <button
-          onClick={() => inputRef.current?.click()}
+          onClick={() => requestConsent(() => inputRef.current?.click())}
           className="w-full rounded-lg border border-dashed border-orange-500/30 hover:border-orange-500/50 flex flex-col items-center justify-center gap-1.5 transition-all py-6"
         >
           <ImagePlus size={16} className="text-orange-400/60" />
           <span className="text-[10px] text-slate-500">{label}</span>
         </button>
       )}
+      {consentModal}
     </div>
   )
 }
@@ -8556,6 +8583,7 @@ function SD20RefPanel({
   const imgInputRef  = useRef<HTMLInputElement>(null)
   const vidInputRef  = useRef<HTMLInputElement>(null)
   const audInputRef  = useRef<HTMLInputElement>(null)
+  const { request: requestConsent, modal: consentModal } = useRefConsent()
   // Store per-video duration so we can subtract it on remove
   const videoDurations = useRef<number[]>([])
 
@@ -8582,7 +8610,7 @@ function SD20RefPanel({
             Reference Images <span className="text-slate-600 normal-case font-normal">(optional)</span>
           </p>
           {videoRefImagePreviews.length < 5 && (
-            <button onClick={() => imgInputRef.current?.click()}
+            <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
               className="text-[10px] text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
             </button>
@@ -8603,7 +8631,7 @@ function SD20RefPanel({
             ))}
           </div>
         ) : (
-          <button onClick={() => imgInputRef.current?.click()}
+          <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
             className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
             <ImagePlus size={12} />Upload reference images
           </button>
@@ -8617,7 +8645,7 @@ function SD20RefPanel({
             Reference Videos <span className="text-slate-600 normal-case font-normal">(optional)</span>
           </p>
           {videoRefVideoFilenames.length < 3 && (
-            <button onClick={() => vidInputRef.current?.click()}
+            <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
               className="text-[10px] text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
             </button>
@@ -8639,7 +8667,7 @@ function SD20RefPanel({
             ))}
           </div>
         ) : (
-          <button onClick={() => vidInputRef.current?.click()}
+          <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
             className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
             <Video size={12} />Upload reference videos
           </button>
@@ -8653,7 +8681,7 @@ function SD20RefPanel({
             Reference Audio <span className="text-slate-600 normal-case font-normal">(optional)</span>
           </p>
           {videoRefAudioFilenames.length < 2 && (
-            <button onClick={() => audInputRef.current?.click()}
+            <button onClick={() => requestConsent(() => audInputRef.current?.click())}
               className="text-[10px] text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
             </button>
@@ -8672,12 +8700,13 @@ function SD20RefPanel({
             ))}
           </div>
         ) : (
-          <button onClick={() => audInputRef.current?.click()}
+          <button onClick={() => requestConsent(() => audInputRef.current?.click())}
             className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
             <Plus size={12} />Upload reference audio
           </button>
         )}
       </div>
+      {consentModal}
     </div>
   )
 }
@@ -8770,6 +8799,7 @@ function VideoCustomizationPanel({
   const lipsyncAudRef = useRef<HTMLInputElement>(null)
   const [motionVideoError, setMotionVideoError] = useState<string | null>(null)
   const [lipsyncVideoError, setLipsyncVideoError] = useState<string | null>(null)
+  const { request: requestConsent, modal: consentModal } = useRefConsent()
 
   function handleMotionVideoFile(file: File) {
     setMotionVideoError(null)
@@ -8899,7 +8929,7 @@ function VideoCustomizationPanel({
                 </button>
               </div>
             ) : (
-              <button onClick={() => lipsyncVidRef.current?.click()}
+              <button onClick={() => requestConsent(() => lipsyncVidRef.current?.click())}
                 className={`w-full rounded-lg border border-dashed flex flex-col items-center justify-center gap-1.5 transition-all py-6 ${
                   lipsyncVideoError ? "border-red-500/40 hover:border-red-500/60" : "border-orange-500/30 hover:border-orange-500/50"
                 }`}>
@@ -8936,7 +8966,7 @@ function VideoCustomizationPanel({
                 </button>
               </div>
             ) : (
-              <button onClick={() => lipsyncAudRef.current?.click()}
+              <button onClick={() => requestConsent(() => lipsyncAudRef.current?.click())}
                 className="w-full rounded-lg border border-dashed border-orange-500/30 hover:border-orange-500/50 flex flex-col items-center justify-center gap-1.5 transition-all py-6">
                 <Music size={16} className="text-orange-400/60" />
                 <span className="text-[10px] text-slate-500">Click to upload audio track</span>
@@ -9026,7 +9056,7 @@ function VideoCustomizationPanel({
                 </button>
               </div>
             ) : (
-              <button onClick={() => endRef.current.click()}
+              <button onClick={() => requestConsent(() => endRef.current.click())}
                 className={`w-full rounded-lg border border-dashed flex flex-col items-center justify-center gap-1.5 transition-all py-6 ${
                   motionVideoError ? "border-red-500/40 hover:border-red-500/60" : "border-orange-500/30 hover:border-orange-500/50"
                 }`}>
@@ -9328,6 +9358,7 @@ function VideoCustomizationPanel({
       </div>,
       document.body
     )}
+    {consentModal}
     </>
   )
 }
@@ -9623,6 +9654,7 @@ function VideoPromptBar({
   const [modelOpen, setModelOpen] = useState(false)
   const startFrameInputRef = useRef<HTMLInputElement>(null)
   const motionVideoInputRef = useRef<HTMLInputElement>(null)
+  const { request: requestConsent, modal: consentModal } = useRefConsent()
 
   const modelRef = useRef<HTMLDivElement>(null)
   const overrideVersion = promptOverride?.version ?? 0
@@ -9718,7 +9750,7 @@ function VideoPromptBar({
             <div className="flex gap-2">
               {/* Reference image slot */}
               <button
-                onClick={() => startFrameInputRef.current?.click()}
+                onClick={() => requestConsent(() => startFrameInputRef.current?.click())}
                 className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all text-xs font-medium ${
                   startFramePreview
                     ? "border-green-500/40 bg-green-500/8 text-green-400"
@@ -9736,7 +9768,7 @@ function VideoPromptBar({
 
               {/* Motion video slot */}
               <button
-                onClick={() => motionVideoInputRef.current?.click()}
+                onClick={() => requestConsent(() => motionVideoInputRef.current?.click())}
                 className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all text-xs font-medium ${
                   motionVideoFilename
                     ? "border-orange-500/40 bg-orange-500/8 text-orange-400"
@@ -9904,7 +9936,7 @@ function VideoPromptBar({
           </button>
         </div>
       </div>
-
+      {consentModal}
     </div>
   )
 }
