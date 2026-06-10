@@ -1033,6 +1033,7 @@ function ProfileBubble({ user, onSignOut }: { user: UserData | null; onSignOut: 
 // Renders into document.body via portal so it escapes any parent stacking context
 // (backdrop-filter / transform on ancestor elements trap position:fixed children).
 function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDecline: () => void }) {
+  const [checked, setChecked] = useState(false)
   if (typeof document === 'undefined') return null
   return createPortal(
     <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4" onClick={onDecline}>
@@ -1064,6 +1065,27 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
             </p>
           </div>
         </div>
+
+        {/* Checkbox — must be checked to enable I Agree */}
+        <label className="flex items-start gap-2.5 mb-4 cursor-pointer group" onClick={e => e.stopPropagation()}>
+          <div
+            onClick={() => setChecked(c => !c)}
+            className={`w-4 h-4 rounded shrink-0 mt-0.5 border flex items-center justify-center transition-all ${
+              checked
+                ? "bg-cyan-500 border-cyan-500"
+                : "bg-white/[0.04] border-white/20 group-hover:border-white/40"
+            }`}
+          >
+            {checked && <Check size={10} className="text-white" strokeWidth={3} />}
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            I have read and agree to the{" "}
+            <a href="/terms" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-cyan-400 hover:underline">Terms of Service</a>,{" "}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-cyan-400 hover:underline">Privacy Policy</a>, and{" "}
+            <a href="/refund" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-cyan-400 hover:underline">Refund Policy</a>.
+          </p>
+        </label>
+
         <p className="text-[10px] text-slate-600 mb-4 leading-relaxed">
           This confirmation is required each session. Agreeing now unlocks the Refs section for the rest of your current session.
         </p>
@@ -1075,8 +1097,13 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
             Cancel
           </button>
           <button
-            onClick={onAgree}
-            className="flex-1 py-2 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-[12px] text-cyan-300 font-semibold hover:bg-cyan-500/30 transition-all"
+            onClick={() => { if (checked) onAgree() }}
+            disabled={!checked}
+            className={`flex-1 py-2 rounded-xl text-[12px] font-semibold transition-all ${
+              checked
+                ? "bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 cursor-pointer"
+                : "bg-white/[0.03] border border-white/10 text-slate-600 cursor-not-allowed"
+            }`}
           >
             I Agree
           </button>
