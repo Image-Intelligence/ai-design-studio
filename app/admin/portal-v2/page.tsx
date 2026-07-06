@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 
 // --- TYPES ---
@@ -3071,6 +3071,301 @@ function StarRatingWidget({ generationId }: { generationId: number }) {
 }
 
 // --- IMAGE DETAIL MODAL ---
+// --- DETAIL MODAL LAYOUT (info panel position) ---
+type InfoPos = "left" | "right" | "top" | "bottom" | "hidden"
+
+// Card flex direction per position. Left/right apply from sm: up (side-by-side
+// is too cramped on phones — they fall back to the stacked layout); top/bottom
+// work at every size. Column modes pin the card height so the media pane
+// (flex-1) has a real height to fill.
+const INFO_POS_CARD_CLS: Record<InfoPos, string> = {
+  right:  "sm:h-auto sm:max-h-[90vh] flex-col sm:flex-row",
+  left:   "sm:h-auto sm:max-h-[90vh] flex-col sm:flex-row-reverse",
+  bottom: "sm:h-[90vh] flex-col",
+  top:    "sm:h-[90vh] flex-col-reverse",
+  hidden: "sm:h-auto sm:max-h-[90vh] flex-col",
+}
+const INFO_POS_PANEL_CLS: Record<InfoPos, string> = {
+  right:  "sm:w-72 border-t border-white/8 sm:border-t-0 sm:border-l sm:border-white/8",
+  left:   "sm:w-72 border-t border-white/8 sm:border-t-0 sm:border-r sm:border-white/8",
+  // Compact bands — the media keeps priority; info content scrolls within the band
+  bottom: "border-t border-white/8 sm:max-h-[280px]",
+  top:    "border-b border-white/8 max-h-[45vh] sm:max-h-[280px]",
+  hidden: "", // panel is not rendered
+}
+
+function useInfoPanelPos(): [InfoPos, (p: InfoPos) => void, () => void] {
+  const [pos, setPos] = useState<InfoPos>("right")
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("pv2-detail-info-pos") as InfoPos | null
+      if (v && ["left", "right", "top", "bottom", "hidden"].includes(v)) setPos(v)
+    } catch {}
+  }, [])
+  const update = (p: InfoPos) => {
+    setPos(prev => {
+      // Remember the last visible position so "show again" restores it
+      if (p === "hidden" && prev !== "hidden") {
+        try { localStorage.setItem("pv2-detail-info-pos-last", prev) } catch {}
+      }
+      return p
+    })
+    try { localStorage.setItem("pv2-detail-info-pos", p) } catch {}
+  }
+  const restore = () => {
+    let last: InfoPos = "right"
+    try {
+      const v = localStorage.getItem("pv2-detail-info-pos-last") as InfoPos | null
+      if (v && ["left", "right", "top", "bottom"].includes(v)) last = v
+    } catch {}
+    update(last)
+  }
+  return [pos, update, restore]
+}
+
+function InfoPosSwitcher({ pos, onChange }: { pos: InfoPos; onChange: (p: InfoPos) => void }) {
+  const options: [InfoPos, React.ComponentType<{ size?: number | string }>][] = [
+    ["left", PanelLeft], ["right", PanelRight], ["top", PanelTop], ["bottom", PanelBottom], ["hidden", EyeOff],
+  ]
+  // pr-12 reserves room for the card's absolute close ✕ whenever this row
+  // sits in the card's top-right corner (info on top, or info on the right)
+  return (
+    <div className={`flex items-center justify-between px-4 py-2 border-b border-white/5 shrink-0 ${pos === "top" ? "pr-12" : pos === "right" ? "sm:pr-12" : ""}`}>
+      <span className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">Info Panel</span>
+      <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
+        {options.map(([p, Icon]) => (
+          <button
+            key={p}
+            onClick={() => onChange(p)}
+            title={p === "hidden" ? "Hide info panel" : `Show info panel ${p === "left" ? "on the left" : p === "right" ? "on the right" : p === "top" ? "above the image" : "below the image"}`}
+            className={`px-2 py-1 transition-colors ${pos === p ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"}`}
+          >
+            <Icon size={13} />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// --- MODAL TOUCH GESTURES ---
+const SWIPE_NAV_THRESHOLD = 50 // px of horizontal travel required to navigate
+
+// Swipe-to-navigate for the detail modals. Multi-touch-safe: any gesture that
+// ever involves 2+ fingers (a pinch) is ignored entirely, and swipes only fire
+// when the motion is clearly horizontal — vertical/diagonal scrolls never
+// navigate. Returns a live dragX so the card can follow the finger.
+function useModalSwipeNav({ hasPrev, hasNext, onPrev, onNext, disabled = false }: {
+  hasPrev: boolean
+  hasNext: boolean
+  onPrev: () => void
+  onNext: () => void
+  disabled?: boolean
+}) {
+  const [dragX, setDragX] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const startRef = useRef<{ x: number; y: number } | null>(null)
+  const multiTouchRef = useRef(false)
+  const axisLockRef = useRef<"h" | "v" | null>(null)
+  const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (animTimerRef.current) clearTimeout(animTimerRef.current) }, [])
+
+  const resetGesture = () => {
+    startRef.current = null
+    axisLockRef.current = null
+    multiTouchRef.current = false
+    setDragging(false)
+    setDragX(0)
+  }
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length > 1) {
+      // Second finger landed — this is a pinch, not a swipe
+      multiTouchRef.current = true
+      setDragX(0)
+      setDragging(false)
+      return
+    }
+    startRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+    multiTouchRef.current = false
+    axisLockRef.current = null
+    setDragging(true)
+  }
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length > 1) {
+      multiTouchRef.current = true
+      setDragX(0)
+      return
+    }
+    if (multiTouchRef.current || disabled || !startRef.current) return
+    const dx = e.touches[0].clientX - startRef.current.x
+    const dy = e.touches[0].clientY - startRef.current.y
+    if (!axisLockRef.current) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+      // Decide once per gesture: clearly horizontal, or locked out as vertical
+      axisLockRef.current = Math.abs(dx) > Math.abs(dy) * 1.5 ? "h" : "v"
+    }
+    if (axisLockRef.current !== "h") return
+    // Rubber-band resistance when there's nothing to navigate to in that direction
+    const hasTarget = dx < 0 ? hasNext : hasPrev
+    setDragX(hasTarget ? dx : dx / 3)
+  }
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length > 0) return // wait for the last finger to lift
+    const start = startRef.current
+    const wasMulti = multiTouchRef.current
+    const lock = axisLockRef.current
+    startRef.current = null
+    multiTouchRef.current = false
+    axisLockRef.current = null
+    setDragging(false)
+    if (wasMulti || disabled || !start || lock !== "h") { setDragX(0); return }
+    const dx = e.changedTouches[0].clientX - start.x
+    if (Math.abs(dx) < SWIPE_NAV_THRESHOLD) { setDragX(0); return }
+    const goNext = dx < 0
+    if ((goNext && !hasNext) || (!goNext && !hasPrev)) { setDragX(0); return }
+    // Two-phase slide: finish the slide out, swap content, slide in from the other side
+    const w = typeof window !== "undefined" ? window.innerWidth : 800
+    setDragX(goNext ? -w : w)
+    animTimerRef.current = setTimeout(() => {
+      if (goNext) onNext(); else onPrev()
+      setDragging(true) // kills the transition for the off-screen jump
+      setDragX(goNext ? w * 0.35 : -w * 0.35)
+      animTimerRef.current = setTimeout(() => {
+        setDragging(false)
+        setDragX(0)
+      }, 30)
+    }, 160)
+  }
+
+  return {
+    swipeHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: resetGesture },
+    cardStyle: {
+      transform: dragX !== 0 ? `translateX(${dragX}px)` : undefined,
+      transition: dragging ? "none" : "transform 200ms ease-out",
+      touchAction: "pan-y" as const,
+    },
+  }
+}
+
+// Pinch-to-zoom + pan + double-tap for the image detail modal. Applied to the
+// media pane (which gets touch-action: none so iOS doesn't page-zoom there).
+// While zoomed (scale > 1) the caller should disable swipe navigation.
+function usePinchZoom(resetKey: unknown) {
+  const [scale, setScale] = useState(1)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const [smooth, setSmooth] = useState(false)
+  const paneRef = useRef<HTMLDivElement>(null)
+  const pinchRef = useRef<{ dist: number; scale: number; midX: number; midY: number; offX: number; offY: number } | null>(null)
+  const panRef = useRef<{ x: number; y: number; offX: number; offY: number } | null>(null)
+  const tapStartRef = useRef<{ x: number; y: number } | null>(null)
+  const lastTapRef = useRef<{ t: number; x: number; y: number } | null>(null)
+  const lastTouchEndRef = useRef(0)
+
+  // New image (or navigation) — reset zoom
+  useEffect(() => { setScale(1); setOffset({ x: 0, y: 0 }); setSmooth(false) }, [resetKey])
+
+  const clampOffset = (ox: number, oy: number, s: number) => {
+    const pane = paneRef.current
+    const maxX = pane ? (pane.clientWidth * (s - 1)) / 2 : 0
+    const maxY = pane ? (pane.clientHeight * (s - 1)) / 2 : 0
+    return { x: Math.max(-maxX, Math.min(maxX, ox)), y: Math.max(-maxY, Math.min(maxY, oy)) }
+  }
+  const touchDist = (t: React.TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+  const touchMid = (t: React.TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 })
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    setSmooth(false)
+    if (e.touches.length === 2) {
+      const m = touchMid(e.touches)
+      pinchRef.current = { dist: touchDist(e.touches), scale, midX: m.x, midY: m.y, offX: offset.x, offY: offset.y }
+      panRef.current = null
+      tapStartRef.current = null
+    } else if (e.touches.length === 1) {
+      tapStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+      if (scale > 1) {
+        panRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, offX: offset.x, offY: offset.y }
+      }
+    }
+  }
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchRef.current) {
+      const p = pinchRef.current
+      const s = Math.max(1, Math.min(4, p.scale * (touchDist(e.touches) / p.dist)))
+      const m = touchMid(e.touches)
+      setScale(s)
+      setOffset(clampOffset(p.offX + (m.x - p.midX), p.offY + (m.y - p.midY), s))
+    } else if (e.touches.length === 1 && panRef.current && scale > 1) {
+      const p = panRef.current
+      setOffset(clampOffset(p.offX + (e.touches[0].clientX - p.x), p.offY + (e.touches[0].clientY - p.y), scale))
+    }
+  }
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) pinchRef.current = null
+    if (e.touches.length > 0) return
+    panRef.current = null
+    lastTouchEndRef.current = Date.now()
+    // Snap back to 1 if the pinch ended barely zoomed
+    if (scale !== 1 && scale < 1.05) {
+      setSmooth(true); setScale(1); setOffset({ x: 0, y: 0 })
+    }
+    // Double-tap: two quick stationary taps → toggle zoom around the tap point
+    const t = e.changedTouches[0]
+    const wasTap = tapStartRef.current &&
+      Math.abs(t.clientX - tapStartRef.current.x) < 10 &&
+      Math.abs(t.clientY - tapStartRef.current.y) < 10
+    tapStartRef.current = null
+    if (!wasTap) { lastTapRef.current = null; return }
+    const now = Date.now()
+    const last = lastTapRef.current
+    if (last && now - last.t < 300 && Math.abs(t.clientX - last.x) < 30 && Math.abs(t.clientY - last.y) < 30) {
+      lastTapRef.current = null
+      setSmooth(true)
+      if (scale > 1) {
+        setScale(1); setOffset({ x: 0, y: 0 })
+      } else {
+        const pane = paneRef.current
+        const s = 2.5
+        setScale(s)
+        if (pane) {
+          const r = pane.getBoundingClientRect()
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+          setOffset(clampOffset((cx - t.clientX) * (s - 1), (cy - t.clientY) * (s - 1), s))
+        }
+      }
+    } else {
+      lastTapRef.current = { t: now, x: t.clientX, y: t.clientY }
+    }
+  }
+
+  const onTouchCancel = () => {
+    pinchRef.current = null
+    panRef.current = null
+    tapStartRef.current = null
+  }
+
+  // Touch taps should never trigger the desktop click action (open in new tab) —
+  // on touch, tapping is part of the double-tap zoom gesture instead
+  const shouldSuppressClick = () => Date.now() - lastTouchEndRef.current < 500
+
+  return {
+    scale,
+    paneRef,
+    shouldSuppressClick,
+    zoomHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel },
+    paneStyle: { touchAction: "none" as const },
+    imgStyle: {
+      transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+      transition: smooth ? "transform 200ms ease-out" : "none",
+    },
+  }
+}
+
 function ImageDetailModal({
   image,
   onClose,
@@ -3096,7 +3391,6 @@ function ImageDetailModal({
   const [consentGiven, setConsentGiven] = useState(() =>
     typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
   )
-  const touchStartXRef = useRef<number | null>(null)
 
   const modelName = getModelDisplayName(image.model)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
@@ -3131,6 +3425,20 @@ function ImageDetailModal({
   const hasPrev = navList && navIndex !== undefined && navIndex > 0
   const hasNext = navList && navIndex !== undefined && navIndex >= 0 && navIndex < navList.length - 1
 
+  const [infoPos, setInfoPos, restoreInfoPos] = useInfoPanelPos()
+  // Top/bottom modes render the info as a compact horizontal band so the image keeps priority
+  const horiz = infoPos === "top" || infoPos === "bottom"
+
+  // Pinch zoom on the image; swipe nav pauses while zoomed
+  const zoom = usePinchZoom(image.imageUrl)
+  const { swipeHandlers, cardStyle } = useModalSwipeNav({
+    hasPrev: !!hasPrev,
+    hasNext: !!hasNext,
+    onPrev: () => onNavigate?.(navList![navIndex! - 1]),
+    onNext: () => onNavigate?.(navList![navIndex! + 1]),
+    disabled: zoom.scale > 1,
+  })
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-sm"
@@ -3154,17 +3462,10 @@ function ImageDetailModal({
         </button>
       )}
       <div
-        className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:max-h-[90vh] sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex flex-col sm:flex-row"
+        className={`relative w-full h-full sm:max-w-4xl sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
         onClick={(e) => e.stopPropagation()}
-        onTouchStart={(e) => { touchStartXRef.current = e.touches[0].clientX }}
-        onTouchEnd={(e) => {
-          if (touchStartXRef.current === null) return
-          const dx = e.changedTouches[0].clientX - touchStartXRef.current
-          touchStartXRef.current = null
-          if (Math.abs(dx) < 50) return
-          if (dx < 0 && hasNext) onNavigate?.(navList![navIndex! + 1])
-          else if (dx > 0 && hasPrev) onNavigate?.(navList![navIndex! - 1])
-        }}
+        style={cardStyle}
+        {...swipeHandlers}
       >
         {/* Close */}
         <button
@@ -3174,8 +3475,23 @@ function ImageDetailModal({
           <X size={13} />
         </button>
 
+        {/* Restore info panel — shown only while it's hidden */}
+        {infoPos === "hidden" && (
+          <button
+            onClick={restoreInfoPos}
+            title="Show info panel"
+            className="absolute top-3 right-12 z-10 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-slate-500 hover:text-white transition-colors"
+          >
+            <Eye size={13} />
+          </button>
+        )}
+
         {/* Image — or failed state */}
-        <div className="flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
+        <div
+          ref={zoom.paneRef}
+          className="flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0"
+          {...(!image.failed ? { ...zoom.zoomHandlers, style: zoom.paneStyle } : {})}
+        >
           {image.failed ? (
             <div className="flex flex-col items-center gap-3 p-8 text-center">
               <div className="w-14 h-14 rounded-full border-2 border-red-500/50 flex items-center justify-center">
@@ -3190,19 +3506,29 @@ function ImageDetailModal({
             <img
               src={image.imageUrl}
               alt={image.prompt}
-              className="max-w-full max-h-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
+              className="max-w-full max-h-full object-contain cursor-pointer hover:opacity-90"
               title="Open full size"
-              onClick={() => window.open(image.imageUrl, "_blank")}
+              style={zoom.imgStyle}
+              onClick={() => { if (zoom.shouldSuppressClick()) return; window.open(image.imageUrl, "_blank") }}
             />
           )}
         </div>
 
         {/* Info panel */}
-        <div className="sm:w-72 flex flex-col border-t border-white/8 sm:border-t-0 sm:border-l sm:border-white/8 shrink-0">
+        {infoPos !== "hidden" && (
+        <div className={`flex flex-col shrink-0 ${INFO_POS_PANEL_CLS[infoPos]}`}>
+
+          {/* Layout switcher */}
+          <InfoPosSwitcher pos={infoPos} onChange={setInfoPos} />
+
+          {/* Top/bottom band: info sections + actions sit side-by-side (sm+) */}
+          <div className={horiz ? "contents sm:flex sm:flex-row sm:flex-1 sm:min-h-0" : "contents"}>
 
           {/* Desktop: full scrollable info */}
-          <div className="hidden sm:block flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-            <div>
+          <div className={horiz
+            ? "hidden sm:flex flex-wrap content-start gap-x-8 gap-y-3 flex-1 overflow-y-auto p-4 min-h-0"
+            : "hidden sm:block flex-1 overflow-y-auto p-4 space-y-4 min-h-0"}>
+            <div className={horiz ? "flex-1 min-w-[240px] max-w-xl" : ""}>
               <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Prompt</p>
               <p className="text-[12px] text-slate-200 leading-relaxed">{image.prompt}</p>
             </div>
@@ -3412,7 +3738,9 @@ function ImageDetailModal({
           </div>
 
           {/* Actions */}
-          <div className="p-3 sm:p-4 border-t border-white/8 space-y-2 shrink-0">
+          <div className={horiz
+            ? "p-3 sm:p-4 border-t sm:border-t-0 sm:border-l border-white/8 space-y-2 shrink-0 sm:w-64 sm:overflow-y-auto"
+            : "p-3 sm:p-4 border-t border-white/8 space-y-2 shrink-0"}>
             <button
               onClick={() => { onRescan(image); onClose() }}
               className="w-full py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
@@ -3480,7 +3808,10 @@ function ImageDetailModal({
             </div>
             <AIDisclaimer />
           </div>
+
+          </div>{/* end top/bottom band wrapper */}
         </div>
+        )}
       </div>
       {showRefConsent && (
         <RefConsentModal
@@ -3519,7 +3850,6 @@ function VideoDetailModal({
 }) {
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
-  const touchStartXRef = useRef<number | null>(null)
 
   const modelName = getModelDisplayName(video.model)
   const formattedDate = video.createdAt
@@ -3574,6 +3904,17 @@ function VideoDetailModal({
   const hasPrev = navList && navIndex !== undefined && navIndex > 0
   const hasNext = navList && navIndex !== undefined && navIndex >= 0 && navIndex < navList.length - 1
 
+  const [infoPos, setInfoPos, restoreInfoPos] = useInfoPanelPos()
+  // Top/bottom modes render the info as a compact horizontal band so the video keeps priority
+  const horiz = infoPos === "top" || infoPos === "bottom"
+
+  const { swipeHandlers, cardStyle } = useModalSwipeNav({
+    hasPrev: !!hasPrev,
+    hasNext: !!hasNext,
+    onPrev: () => onNavigate?.(navList![navIndex! - 1]),
+    onNext: () => onNavigate?.(navList![navIndex! + 1]),
+  })
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/85 backdrop-blur-sm"
@@ -3597,17 +3938,10 @@ function VideoDetailModal({
         </button>
       )}
       <div
-        className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:max-h-[90vh] sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex flex-col sm:flex-row"
+        className={`relative w-full h-full sm:max-w-4xl sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
         onClick={(e) => e.stopPropagation()}
-        onTouchStart={(e) => { touchStartXRef.current = e.touches[0].clientX }}
-        onTouchEnd={(e) => {
-          if (touchStartXRef.current === null) return
-          const dx = e.changedTouches[0].clientX - touchStartXRef.current
-          touchStartXRef.current = null
-          if (Math.abs(dx) < 50) return
-          if (dx < 0 && hasNext) onNavigate?.(navList![navIndex! + 1])
-          else if (dx > 0 && hasPrev) onNavigate?.(navList![navIndex! - 1])
-        }}
+        style={cardStyle}
+        {...swipeHandlers}
       >
         {/* Close */}
         <button
@@ -3616,6 +3950,17 @@ function VideoDetailModal({
         >
           <X size={13} />
         </button>
+
+        {/* Restore info panel — shown only while it's hidden */}
+        {infoPos === "hidden" && (
+          <button
+            onClick={restoreInfoPos}
+            title="Show info panel"
+            className="absolute top-3 right-12 z-10 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-slate-500 hover:text-white transition-colors"
+          >
+            <Eye size={13} />
+          </button>
+        )}
 
         {/* Video player — or error state */}
         <div className="flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
@@ -3642,11 +3987,20 @@ function VideoDetailModal({
         </div>
 
         {/* Info + actions panel */}
-        <div className="sm:w-72 flex flex-col border-t border-white/8 sm:border-t-0 sm:border-l sm:border-white/8 shrink-0">
+        {infoPos !== "hidden" && (
+        <div className={`flex flex-col shrink-0 ${INFO_POS_PANEL_CLS[infoPos]}`}>
+
+          {/* Layout switcher */}
+          <InfoPosSwitcher pos={infoPos} onChange={setInfoPos} />
+
+          {/* Top/bottom band: info sections + actions sit side-by-side (sm+) */}
+          <div className={horiz ? "contents sm:flex sm:flex-row sm:flex-1 sm:min-h-0" : "contents"}>
 
           {/* Desktop: full info */}
-          <div className="hidden sm:block flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-            <div>
+          <div className={horiz
+            ? "hidden sm:flex flex-wrap content-start gap-x-8 gap-y-3 flex-1 overflow-y-auto p-4 min-h-0"
+            : "hidden sm:block flex-1 overflow-y-auto p-4 space-y-4 min-h-0"}>
+            <div className={horiz ? "flex-1 min-w-[240px] max-w-xl" : ""}>
               <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Prompt</p>
               <p className="text-[12px] text-slate-200 leading-relaxed">{video.prompt}</p>
             </div>
@@ -3734,7 +4088,9 @@ function VideoDetailModal({
           </div>
 
           {/* Actions */}
-          <div className="p-3 sm:p-4 border-t border-white/8 space-y-2 shrink-0">
+          <div className={horiz
+            ? "p-3 sm:p-4 border-t sm:border-t-0 sm:border-l border-white/8 space-y-2 shrink-0 sm:w-64 sm:overflow-y-auto"
+            : "p-3 sm:p-4 border-t border-white/8 space-y-2 shrink-0"}>
             <button
               onClick={() => { onRescan(video); onClose() }}
               className="w-full py-2 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
@@ -3808,7 +4164,10 @@ function VideoDetailModal({
             )}
             <AIDisclaimer />
           </div>
+
+          </div>{/* end top/bottom band wrapper */}
         </div>
+        )}
       </div>
     </div>
   )
