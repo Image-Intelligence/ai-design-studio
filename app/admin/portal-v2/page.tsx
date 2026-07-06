@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus } from "lucide-react"
+import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 
 // --- TYPES ---
 interface CNCondition {
@@ -794,33 +795,20 @@ function SelectDropdown({
   selectMode,
   onToggleSelectMode,
   selectedCount,
-  onDownloadAll,
-  onDeleteAll,
-  downloading,
-  deleting,
-  downloadProgress,
-  downloadError,
+  isAdmin = false,
+  onAddToBucket,
 }: {
   open: boolean
   onToggle: () => void
   selectMode: boolean
   onToggleSelectMode: () => void
   selectedCount: number
-  onDownloadAll: () => void
-  onDeleteAll: () => void
-  downloading: boolean
-  deleting: boolean
-  downloadProgress?: { done: number; total: number } | null
-  downloadError?: string | null
+  isAdmin?: boolean
+  onAddToBucket?: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
-  const [confirmDelete, setConfirmDelete] = useState(false)
-
-  // Reset confirmation when dropdown closes or selection changes
-  useEffect(() => { if (!open) setConfirmDelete(false) }, [open])
-  useEffect(() => { setConfirmDelete(false) }, [selectedCount])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -871,76 +859,150 @@ function SelectDropdown({
             {selectMode ? "Exit Select Mode" : "Enter Select Mode"}
           </button>
 
-          {/* Bulk actions — only shown in select mode */}
+          {/* Admin only: add selection to a dataset bucket */}
+          {selectMode && isAdmin && onAddToBucket && (
+            <button
+              onClick={() => { onAddToBucket(); onToggle() }}
+              disabled={selectedCount === 0}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <FolderPlus size={13} />
+              Add to Bucket
+            </button>
+          )}
+
+          {/* Bulk controls live in the floating panel while select mode is on */}
           {selectMode && (
-            <>
-              <div className="border-t border-white/8 pt-2 space-y-1.5">
-                <p className="text-[10px] font-mono text-slate-600 px-1 uppercase tracking-wider">
-                  {selectedCount === 0 ? "Select images to act" : `${selectedCount} selected`}
-                </p>
-                <button
-                  onClick={() => { if (selectedCount > 0) onDownloadAll() }}
-                  disabled={selectedCount === 0 || downloading}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {downloading
-                    ? <div className="w-3 h-3 rounded-full border-2 border-slate-500 border-t-slate-200 animate-spin shrink-0" />
-                    : <Download size={13} className="shrink-0" />}
-                  <span className="flex-1 text-left">
-                    {downloading && downloadProgress
-                      ? downloadProgress.total > 1
-                        ? `Fetching ${downloadProgress.done} / ${downloadProgress.total}…`
-                        : "Downloading…"
-                      : downloading
-                        ? "Starting…"
-                        : "Download All"}
-                  </span>
-                  {downloading && downloadProgress && downloadProgress.total > 1 && (
-                    <span className="text-[10px] font-mono text-slate-500 shrink-0">
-                      {Math.round((downloadProgress.done / downloadProgress.total) * 100)}%
-                    </span>
-                  )}
-                </button>
-                {downloadError && (
-                  <p className="text-[11px] text-red-400 px-1 leading-snug">{downloadError}</p>
-                )}
-                {confirmDelete ? (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/8 p-2.5 space-y-2">
-                    <p className="text-[11px] text-red-300 leading-snug">
-                      Permanently delete {selectedCount} image{selectedCount !== 1 ? "s" : ""}? This cannot be undone.
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => { onDeleteAll(); setConfirmDelete(false) }}
-                        disabled={deleting}
-                        className="flex-1 py-1.5 rounded-md bg-red-500 hover:bg-red-400 text-white text-[11px] font-semibold transition-colors disabled:opacity-50"
-                      >
-                        {deleting ? "Deleting…" : "Yes, Delete"}
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(false)}
-                        className="flex-1 py-1.5 rounded-md border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-medium transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => { if (selectedCount > 0) setConfirmDelete(true) }}
-                    disabled={selectedCount === 0 || deleting}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/15 hover:text-red-300 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    <X size={13} />
-                    Delete Selected
-                  </button>
-                )}
-              </div>
-            </>
+            <p className="text-[10px] text-slate-500 leading-snug px-1">
+              Tap images to select them. Download and delete controls are in the panel at the top right of your screen.
+            </p>
           )}
         </div>
       )}
     </div>
+  )
+}
+
+// --- SELECT MODE FLOATING CONTROLS ---
+// Pinned below the taskbar at the top right while select mode is active, so
+// users can act on their selection without reopening the Select dropdown.
+function SelectModeOverlay({
+  selectedCount,
+  onDownloadAll,
+  onDeleteAll,
+  onExit,
+  downloading,
+  deleting,
+  downloadProgress,
+  downloadError,
+  isAdmin = false,
+  onAddToBucket,
+}: {
+  selectedCount: number
+  onDownloadAll: () => void
+  onDeleteAll: () => void
+  onExit: () => void
+  downloading: boolean
+  deleting: boolean
+  downloadProgress?: { done: number; total: number } | null
+  downloadError?: string | null
+  isAdmin?: boolean
+  onAddToBucket?: () => void
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // Reset confirmation when the selection changes
+  useEffect(() => { setConfirmDelete(false) }, [selectedCount])
+
+  return createPortal(
+    <div className="fixed right-3 top-[92px] sm:top-[60px] z-[9970] w-60 rounded-xl border border-cyan-500/25 bg-slate-900/95 backdrop-blur-md shadow-2xl p-3 space-y-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono text-cyan-400/80 uppercase tracking-widest">Select Mode</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+            {selectedCount === 0 ? "Tap images" : `${selectedCount} selected`}
+          </span>
+          <button
+            onClick={onExit}
+            title="Exit select mode"
+            className="w-5 h-5 rounded-md border border-white/10 bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      </div>
+
+      <button
+        onClick={() => { if (selectedCount > 0) onDownloadAll() }}
+        disabled={selectedCount === 0 || downloading}
+        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        {downloading
+          ? <div className="w-3 h-3 rounded-full border-2 border-slate-500 border-t-slate-200 animate-spin shrink-0" />
+          : <Download size={13} className="shrink-0" />}
+        <span className="flex-1 text-left">
+          {downloading && downloadProgress
+            ? downloadProgress.total > 1
+              ? `Fetching ${downloadProgress.done} / ${downloadProgress.total}…`
+              : "Downloading…"
+            : downloading
+              ? "Starting…"
+              : "Download All"}
+        </span>
+        {downloading && downloadProgress && downloadProgress.total > 1 && (
+          <span className="text-[10px] font-mono text-slate-500 shrink-0">
+            {Math.round((downloadProgress.done / downloadProgress.total) * 100)}%
+          </span>
+        )}
+      </button>
+      {downloadError && (
+        <p className="text-[11px] text-red-400 px-1 leading-snug">{downloadError}</p>
+      )}
+      {/* Admin only: add selection to a dataset bucket */}
+      {isAdmin && onAddToBucket && (
+        <button
+          onClick={() => { if (selectedCount > 0) onAddToBucket() }}
+          disabled={selectedCount === 0}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <FolderPlus size={13} />
+          Add to Bucket
+        </button>
+      )}
+      {confirmDelete ? (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/8 p-2.5 space-y-2">
+          <p className="text-[11px] text-red-300 leading-snug">
+            Permanently delete {selectedCount} image{selectedCount !== 1 ? "s" : ""}? This cannot be undone.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { onDeleteAll(); setConfirmDelete(false) }}
+              disabled={deleting}
+              className="flex-1 py-1.5 rounded-md bg-red-500 hover:bg-red-400 text-white text-[11px] font-semibold transition-colors disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Yes, Delete"}
+            </button>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="flex-1 py-1.5 rounded-md border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-medium transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => { if (selectedCount > 0) setConfirmDelete(true) }}
+          disabled={selectedCount === 0 || deleting}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/15 hover:text-red-300 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <X size={13} />
+          Delete Selected
+        </button>
+      )}
+    </div>,
+    document.body
   )
 }
 
@@ -10910,6 +10972,77 @@ export default function PortalV2Page() {
 
   const [imageGridKey, setImageGridKey] = useState(0)
 
+  // --- Admin: add selected generations to dataset buckets ---
+  const [addToBucketOpen, setAddToBucketOpen] = useState(false)
+  const [datasetBuckets, setDatasetBuckets] = useState<Bucket[]>([])
+  const [datasetFolders, setDatasetFolders] = useState<BucketFolder[]>([])
+  const [bucketsLoading, setBucketsLoading] = useState(false)
+  const [bucketLoadError, setBucketLoadError] = useState<string | null>(null)
+  const [recentBucketIds, setRecentBucketIds] = useState<number[]>([])
+
+  useEffect(() => {
+    try { setRecentBucketIds(JSON.parse(localStorage.getItem("pv2-recent-buckets") || "[]")) } catch {}
+  }, [])
+
+  const datasetAuthHeaders = (): Record<string, string> => {
+    const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
+    return pass ? { "x-admin-password": pass } : {}
+  }
+
+  const handleOpenAddToBucket = async () => {
+    if (!isAdminAccount || selectedImageIds.size === 0) return
+    setAddToBucketOpen(true)
+    setBucketsLoading(true)
+    setBucketLoadError(null)
+    try {
+      const headers = datasetAuthHeaders()
+      const [bRes, fRes] = await Promise.all([
+        fetch("/api/admin/buckets", { headers }),
+        fetch("/api/admin/folders", { headers }),
+      ])
+      if (bRes.status === 401 || fRes.status === 401) {
+        setBucketLoadError("Admin session expired — open any /admin page to log in again, then retry.")
+      } else if (!bRes.ok || !fRes.ok) {
+        setBucketLoadError("Failed to load buckets — try again.")
+      } else {
+        setDatasetBuckets(await bRes.json())
+        setDatasetFolders(await fRes.json())
+      }
+    } catch {
+      setBucketLoadError("Failed to load buckets — check your connection.")
+    } finally {
+      setBucketsLoading(false)
+    }
+  }
+
+  const handleAddToBucket = async (bucketId: number) => {
+    const ids = Array.from(selectedImageIds)
+    const res = await fetch(`/api/admin/buckets/${bucketId}/images`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...datasetAuthHeaders() },
+      body: JSON.stringify({ imageIds: ids }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    setRecentBucketIds(prev => {
+      const next = [bucketId, ...prev.filter(id => id !== bucketId)].slice(0, 20)
+      try { localStorage.setItem("pv2-recent-buckets", JSON.stringify(next)) } catch {}
+      return next
+    })
+    // Keep select mode on so more can be selected, but clear the handled selection
+    setSelectedImageIds(new Set())
+  }
+
+  const handleCreateAndAddToBucket = async (name: string) => {
+    const res = await fetch("/api/admin/buckets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...datasetAuthHeaders() },
+      body: JSON.stringify({ name }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const bucket = await res.json()
+    await handleAddToBucket(bucket.id)
+  }
+
   // --- Video scanner state ---
   const [scannerMode, setScannerMode] = useState<"image" | "video">("image")
   const [selectedVideoModel, setSelectedVideoModel] = useState<VideoModelConfig>(() => VIDEO_MODEL_CONFIGS[0])
@@ -12501,12 +12634,8 @@ export default function PortalV2Page() {
               selectMode={selectMode}
               onToggleSelectMode={handleToggleSelectMode}
               selectedCount={selectedImageIds.size}
-              onDownloadAll={handleBulkDownload}
-              onDeleteAll={handleBulkDelete}
-              downloading={bulkDownloading}
-              deleting={bulkDeleting}
-              downloadProgress={downloadProgress}
-              downloadError={downloadError}
+              isAdmin={isAdminAccount}
+              onAddToBucket={handleOpenAddToBucket}
             />
             <NewsDropdown
               open={openDropdown === "news"}
@@ -12534,6 +12663,37 @@ export default function PortalV2Page() {
         </div>
 
       </div>
+
+      {/* Floating select-mode controls — visible whenever select mode is on */}
+      {selectMode && (
+        <SelectModeOverlay
+          selectedCount={selectedImageIds.size}
+          onDownloadAll={handleBulkDownload}
+          onDeleteAll={handleBulkDelete}
+          onExit={handleToggleSelectMode}
+          downloading={bulkDownloading}
+          deleting={bulkDeleting}
+          downloadProgress={downloadProgress}
+          downloadError={downloadError}
+          isAdmin={isAdminAccount}
+          onAddToBucket={handleOpenAddToBucket}
+        />
+      )}
+
+      {/* Admin only: shared Add to Bucket modal (same one as /admin/dataset) */}
+      {addToBucketOpen && isAdminAccount && (
+        <AddToBucketModal
+          count={selectedImageIds.size}
+          buckets={datasetBuckets}
+          folders={datasetFolders}
+          recentBucketIds={recentBucketIds}
+          loading={bucketsLoading}
+          error={bucketLoadError}
+          onClose={() => setAddToBucketOpen(false)}
+          onAdd={handleAddToBucket}
+          onCreateAndAdd={handleCreateAndAddToBucket}
+        />
+      )}
 
       {scannerMode === "image" ? (
         <>
