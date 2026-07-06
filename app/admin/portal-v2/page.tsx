@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock } from "lucide-react"
 
 // --- TYPES ---
 interface CNCondition {
@@ -1127,6 +1127,7 @@ function RefDropdown({
   onClearAll,
   onActivate,
   onDeactivate,
+  onEditSave,
   disabled = false,
   libraryLimit = 50,
 }: {
@@ -1141,6 +1142,7 @@ function RefDropdown({
   onClearAll: () => void
   onActivate: (id: string) => void
   onDeactivate: (id: string) => void
+  onEditSave: (id: string, newUrl: string) => void
   disabled?: boolean
   libraryLimit?: number
 }) {
@@ -1150,6 +1152,8 @@ function RefDropdown({
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
   const [selectMode, setSelectMode] = useState(false)
   const [selectedForDelete, setSelectedForDelete] = useState<Set<string>>(new Set())
+  const [editMode, setEditMode] = useState(false)
+  const [editingImage, setEditingImage] = useState<RefImage | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [consentGiven, setConsentGiven] = useState(false)
@@ -1161,24 +1165,28 @@ function RefDropdown({
     setConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
   }, [])
 
-  // Exit select mode + clear errors when dropdown closes
+  // Exit select/edit mode + clear errors when dropdown closes
   useEffect(() => {
     if (!open) {
       setSelectMode(false)
       setSelectedForDelete(new Set())
+      setEditMode(false)
       setUploadError(null)
     }
   }, [open])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
+      // The ref editor modal is portaled to document.body, so clicks inside it
+      // register as "outside" the dropdown — don't close the dropdown under it
+      if (editingImage) return
       if (ref.current && !ref.current.contains(e.target as Node)) {
         if (open) onToggle()
       }
     }
     document.addEventListener("mousedown", handleClick)
     return () => document.removeEventListener("mousedown", handleClick)
-  }, [open, onToggle])
+  }, [open, onToggle, editingImage])
 
   useEffect(() => {
     if (open && buttonRef.current) {
@@ -1311,35 +1319,47 @@ function RefDropdown({
                   </span>
                 </div>
               </div>
-              {library.length > 0 && !selectMode && (
-                <button
-                  onClick={() => setSelectMode(true)}
-                  className="text-[10px] font-bold text-slate-300 hover:text-white transition-all h-7 px-3 rounded-md border border-white/15 bg-white/6 hover:bg-white/10 hover:border-white/25 whitespace-nowrap flex items-center justify-center"
-                >
-                  Select
-                </button>
+            </div>
+          </div>
+
+          {/* Action buttons row */}
+          {library.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/5">
+              {!selectMode && !editMode && (
+                <>
+                  <button
+                    onClick={() => setSelectMode(true)}
+                    className="flex-1 text-[10px] font-bold text-slate-300 hover:text-white transition-all h-7 rounded-md border border-white/15 bg-white/6 hover:bg-white/10 hover:border-white/25 whitespace-nowrap flex items-center justify-center"
+                  >
+                    Select
+                  </button>
+                  <button
+                    onClick={() => setEditMode(true)}
+                    className="flex-1 text-[10px] font-bold text-cyan-400 hover:text-cyan-300 transition-all h-7 rounded-md border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 hover:border-cyan-500/50 whitespace-nowrap flex items-center justify-center"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={handleClearAll}
+                    className="flex-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-all h-7 rounded-md border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 hover:border-rose-500/50 whitespace-nowrap flex items-center justify-center"
+                  >
+                    Clear all
+                  </button>
+                </>
               )}
-              {library.length > 0 && !selectMode && (
+              {(selectMode || editMode) && (
                 <button
-                  onClick={handleClearAll}
-                  className="text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-all h-7 px-3 rounded-md border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 hover:border-rose-500/50 whitespace-nowrap flex items-center justify-center"
-                >
-                  Clear all
-                </button>
-              )}
-              {selectMode && (
-                <button
-                  onClick={() => { setSelectMode(false); setSelectedForDelete(new Set()) }}
-                  className="text-[10px] text-slate-400 hover:text-white transition-colors px-1.5 py-0.5 rounded border border-white/10 hover:border-white/20"
+                  onClick={() => { setSelectMode(false); setSelectedForDelete(new Set()); setEditMode(false) }}
+                  className="flex-1 text-[10px] font-bold text-slate-400 hover:text-white transition-all h-7 rounded-md border border-white/10 hover:border-white/20 bg-white/[0.03] hover:bg-white/[0.06] flex items-center justify-center"
                 >
                   Cancel
                 </button>
               )}
             </div>
-          </div>
+          )}
 
           {/* Description */}
-          {!selectMode && (
+          {!selectMode && !editMode && (
             <div className="px-4 py-2.5 border-b border-white/5 bg-white/2">
               <p className="text-[10px] text-slate-400 leading-relaxed">
                 Upload images here to use as visual references. <span className="text-white">Tap an image to toggle it on/off</span> — only <span className="text-cyan-400">active</span> images are sent with your generation. Your library is saved between sessions.
@@ -1347,8 +1367,8 @@ function RefDropdown({
             </div>
           )}
 
-          {/* Upload button — hidden in select mode */}
-          {!selectMode && (
+          {/* Upload button — hidden in select/edit mode */}
+          {!selectMode && !editMode && (
             <div className="px-3 py-2 border-b border-white/5">
               <input
                 ref={fileInputRef}
@@ -1381,15 +1401,22 @@ function RefDropdown({
             </div>
           )}
 
+          {/* Edit mode hint */}
+          {editMode && (
+            <div className="px-4 py-2 border-b border-white/5 bg-cyan-500/5">
+              <p className="text-[10px] text-cyan-400/80">Tap an image to open the editor — crop, draw, blur and more</p>
+            </div>
+          )}
+
           {/* Disabled notice for video mode */}
-          {!selectMode && disabled && (
+          {!selectMode && !editMode && disabled && (
             <div className="px-4 py-2 border-b border-white/5 bg-slate-800/60">
               <p className="text-[10px] text-slate-400">Reference images are not used by video models. Upload start/end frames through the video configuration panel instead.</p>
             </div>
           )}
 
           {/* Model support notice */}
-          {!selectMode && !disabled && modelMaxRefs === 0 && (
+          {!selectMode && !editMode && !disabled && modelMaxRefs === 0 && (
             <div className="px-4 py-2 border-b border-white/5 bg-amber-500/5">
               <p className="text-[10px] text-amber-400/70">Current model doesn't support reference images.</p>
             </div>
@@ -1402,23 +1429,26 @@ function RefDropdown({
             ) : (
               <div className="grid grid-cols-5 gap-1.5">
                 {library.map((img) => {
-                  const isActive = !selectMode && activeIds.includes(img.id)
-                  const isDisabled = !selectMode && !isActive && atLimit
+                  const isActive = !selectMode && !editMode && activeIds.includes(img.id)
+                  const isDisabled = !selectMode && !editMode && !isActive && atLimit
                   const isSelectedForDelete = selectMode && selectedForDelete.has(img.id)
                   return (
                     <div key={img.id} className="relative group aspect-square">
                       <button
-                        onClick={() => selectMode ? toggleSelectForDelete(img.id) : handleToggle(img)}
-                        disabled={!selectMode && (isDisabled || disabled)}
+                        onClick={() => editMode ? setEditingImage(img) : selectMode ? toggleSelectForDelete(img.id) : handleToggle(img)}
+                        disabled={!selectMode && !editMode && (isDisabled || disabled)}
                         title={
-                          selectMode
+                          editMode ? "Click to edit"
+                            : selectMode
                             ? isSelectedForDelete ? "Click to deselect" : "Click to select for deletion"
                             : disabled ? "Not available for video models"
                             : isDisabled ? `Limit reached (${modelMaxRefs})`
                             : isActive ? "Click to deactivate" : "Click to activate"
                         }
                         className={`w-full h-full rounded-md overflow-hidden border-2 transition-all ${
-                          selectMode
+                          editMode
+                            ? "border-transparent hover:border-cyan-400/70"
+                            : selectMode
                             ? isSelectedForDelete
                               ? "border-rose-400 ring-1 ring-rose-400/30"
                               : "border-transparent hover:border-white/30"
@@ -1432,6 +1462,12 @@ function RefDropdown({
                         }`}
                       >
                         <img src={img.url} alt="" className={`w-full h-full object-cover transition-opacity ${isSelectedForDelete ? "opacity-60" : ""}`} />
+                        {/* Edit hint overlay (edit mode) */}
+                        {editMode && (
+                          <div className="absolute inset-0 rounded-md bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                            <Pencil size={12} className="text-white" />
+                          </div>
+                        )}
                       </button>
 
                       {/* Active checkmark (normal mode) */}
@@ -1451,7 +1487,7 @@ function RefDropdown({
                       )}
 
                       {/* Delete on hover (normal mode only) */}
-                      {!selectMode && (
+                      {!selectMode && !editMode && (
                         <button
                           onClick={(e) => { e.stopPropagation(); onDelete(img.id) }}
                           className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-black/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
@@ -1487,6 +1523,18 @@ function RefDropdown({
 
       {showConsentModal && (
         <RefConsentModal onAgree={handleConsentAgree} onDecline={handleConsentDecline} />
+      )}
+
+      {/* Ref image editor — opened from edit mode */}
+      {editingImage && (
+        <RefImageEditorModal
+          image={editingImage}
+          onApply={(newUrl) => {
+            onEditSave(editingImage.id, newUrl)
+            setEditingImage(null)
+          }}
+          onClose={() => setEditingImage(null)}
+        />
       )}
     </div>
   )
@@ -2258,12 +2306,18 @@ function ImageDetailModal({
   onRescan,
   onUsePrompt,
   onAddRef,
+  navList,
+  navIndex,
+  onNavigate,
 }: {
   image: ImageItem
   onClose: () => void
   onRescan: (image: ImageItem) => void
   onUsePrompt: (text: string) => void
   onAddRef: (url: string, r2Key?: string) => void
+  navList?: ImageItem[]
+  navIndex?: number
+  onNavigate?: (item: ImageItem) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [addedRef, setAddedRef] = useState(false)
@@ -2271,6 +2325,7 @@ function ImageDetailModal({
   const [consentGiven, setConsentGiven] = useState(() =>
     typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
   )
+  const touchStartXRef = useRef<number | null>(null)
 
   const modelName = getModelDisplayName(image.model)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
@@ -2287,21 +2342,58 @@ function ImageDetailModal({
     })
   }
 
-  // Close on Escape
+  // Close on Escape; navigate on arrow keys
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { onClose(); return }
+      if (e.key === "ArrowLeft" && navList && navIndex !== undefined && navIndex > 0) {
+        onNavigate?.(navList[navIndex - 1])
+      }
+      if (e.key === "ArrowRight" && navList && navIndex !== undefined && navIndex < navList.length - 1) {
+        onNavigate?.(navList[navIndex + 1])
+      }
+    }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [onClose])
+  }, [onClose, navList, navIndex, onNavigate])
+
+  const hasPrev = navList && navIndex !== undefined && navIndex > 0
+  const hasNext = navList && navIndex !== undefined && navIndex >= 0 && navIndex < navList.length - 1
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-sm"
       onClick={onClose}
     >
+      {/* Desktop prev/next arrows — outside the card, in the backdrop margins */}
+      {hasPrev && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onNavigate?.(navList![navIndex! - 1]) }}
+          className="absolute left-3 top-1/2 -translate-y-1/2 z-10 hidden sm:flex w-9 h-9 rounded-full bg-black/60 items-center justify-center text-slate-400 hover:text-white hover:bg-black/80 transition-all border border-white/10"
+        >
+          <ChevronLeft size={18} />
+        </button>
+      )}
+      {hasNext && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onNavigate?.(navList![navIndex! + 1]) }}
+          className="absolute right-3 top-1/2 -translate-y-1/2 z-10 hidden sm:flex w-9 h-9 rounded-full bg-black/60 items-center justify-center text-slate-400 hover:text-white hover:bg-black/80 transition-all border border-white/10"
+        >
+          <ChevronRight size={18} />
+        </button>
+      )}
       <div
         className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:max-h-[90vh] sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex flex-col sm:flex-row"
         onClick={(e) => e.stopPropagation()}
+        onTouchStart={(e) => { touchStartXRef.current = e.touches[0].clientX }}
+        onTouchEnd={(e) => {
+          if (touchStartXRef.current === null) return
+          const dx = e.changedTouches[0].clientX - touchStartXRef.current
+          touchStartXRef.current = null
+          if (Math.abs(dx) < 50) return
+          if (dx < 0 && hasNext) onNavigate?.(navList![navIndex! + 1])
+          else if (dx > 0 && hasPrev) onNavigate?.(navList![navIndex! - 1])
+        }}
       >
         {/* Close */}
         <button
@@ -2642,14 +2734,21 @@ function VideoDetailModal({
   onClose,
   onRescan,
   onUsePrompt,
+  navList,
+  navIndex,
+  onNavigate,
 }: {
   video: VideoDetailData
   onClose: () => void
   onRescan: (video: VideoDetailData) => void
   onUsePrompt: (text: string) => void
+  navList?: VideoDetailData[]
+  navIndex?: number
+  onNavigate?: (item: VideoDetailData) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const touchStartXRef = useRef<number | null>(null)
 
   const modelName = getModelDisplayName(video.model)
   const formattedDate = video.createdAt
@@ -2657,10 +2756,18 @@ function VideoDetailModal({
     : null
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { onClose(); return }
+      if (e.key === "ArrowLeft" && navList && navIndex !== undefined && navIndex > 0) {
+        onNavigate?.(navList[navIndex - 1])
+      }
+      if (e.key === "ArrowRight" && navList && navIndex !== undefined && navIndex < navList.length - 1) {
+        onNavigate?.(navList[navIndex + 1])
+      }
+    }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [onClose])
+  }, [onClose, navList, navIndex, onNavigate])
 
   const handleCopy = () => {
     copyToClipboard(video.prompt).then(() => {
@@ -2693,14 +2800,43 @@ function VideoDetailModal({
     }
   }
 
+  const hasPrev = navList && navIndex !== undefined && navIndex > 0
+  const hasNext = navList && navIndex !== undefined && navIndex >= 0 && navIndex < navList.length - 1
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/85 backdrop-blur-sm"
       onClick={onClose}
     >
+      {/* Desktop prev/next arrows */}
+      {hasPrev && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onNavigate?.(navList![navIndex! - 1]) }}
+          className="absolute left-3 top-1/2 -translate-y-1/2 z-10 hidden sm:flex w-9 h-9 rounded-full bg-black/60 items-center justify-center text-slate-400 hover:text-white hover:bg-black/80 transition-all border border-white/10"
+        >
+          <ChevronLeft size={18} />
+        </button>
+      )}
+      {hasNext && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onNavigate?.(navList![navIndex! + 1]) }}
+          className="absolute right-3 top-1/2 -translate-y-1/2 z-10 hidden sm:flex w-9 h-9 rounded-full bg-black/60 items-center justify-center text-slate-400 hover:text-white hover:bg-black/80 transition-all border border-white/10"
+        >
+          <ChevronRight size={18} />
+        </button>
+      )}
       <div
         className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:max-h-[90vh] sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex flex-col sm:flex-row"
         onClick={(e) => e.stopPropagation()}
+        onTouchStart={(e) => { touchStartXRef.current = e.touches[0].clientX }}
+        onTouchEnd={(e) => {
+          if (touchStartXRef.current === null) return
+          const dx = e.changedTouches[0].clientX - touchStartXRef.current
+          touchStartXRef.current = null
+          if (Math.abs(dx) < 50) return
+          if (dx < 0 && hasNext) onNavigate?.(navList![navIndex! + 1])
+          else if (dx > 0 && hasPrev) onNavigate?.(navList![navIndex! - 1])
+        }}
       >
         {/* Close */}
         <button
@@ -2918,6 +3054,7 @@ function ImageGrid({
   selectMode,
   selectedIds,
   onSelectToggle,
+  onNavListChange,
 }: {
   signedIn: boolean
   pendingSlots: PendingSlot[]
@@ -2928,6 +3065,7 @@ function ImageGrid({
   selectMode?: boolean
   selectedIds?: Set<number>
   onSelectToggle?: (id: number) => void
+  onNavListChange?: (list: ImageItem[]) => void
 }) {
   const [images, setImages] = useState<ImageItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -2991,6 +3129,21 @@ function ImageGrid({
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [signedIn, loadNext])
+
+  // Emit ordered nav list whenever visible images change
+  useEffect(() => {
+    if (!onNavListChange) return
+    const freshIds = new Set(freshImages.map(i => i.id))
+    const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
+    const dbFiltered = images.filter(img => !freshIds.has(img.id))
+    const failsToMerge = savedFails.filter(f => !liveFailIds.has(f.id))
+    const merged = [...dbFiltered, ...failsToMerge].sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return bTime - aTime
+    })
+    onNavListChange([...freshImages, ...merged])
+  }, [images, freshImages, savedFails, onNavListChange])
 
   if (!signedIn) {
     return (
@@ -3639,6 +3792,24 @@ function DownloadToR2Panel() {
 // --- REF IMAGE EDITOR ---
 type EditorTool = 'draw' | 'erase' | 'blur' | 'shape' | 'crop'
 type ShapeKind  = 'rect' | 'circle'
+type CropMode   = 'frame' | 'drag'
+type FrameHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+type CropRect = { x: number; y: number; w: number; h: number }
+
+// Corners listed first so they win hit-testing over edge midpoints
+const FRAME_HANDLES: FrameHandle[] = ['nw', 'ne', 'se', 'sw', 'n', 'e', 's', 'w']
+const FRAME_CURSORS: Record<FrameHandle, string> = {
+  nw: 'nwse-resize', se: 'nwse-resize',
+  ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize',
+  e: 'ew-resize', w: 'ew-resize',
+}
+const frameHandlePoints = (r: CropRect): Record<FrameHandle, [number, number]> => ({
+  nw: [r.x, r.y],                 n: [r.x + r.w / 2, r.y],           ne: [r.x + r.w, r.y],
+  w:  [r.x, r.y + r.h / 2],                                          e:  [r.x + r.w, r.y + r.h / 2],
+  sw: [r.x, r.y + r.h],           s: [r.x + r.w / 2, r.y + r.h],     se: [r.x + r.w, r.y + r.h],
+})
+const clampNum = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
 function RefImageEditorModal({ image, onApply, onClose }: {
   image: RefImage
@@ -3653,9 +3824,11 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const blurPtsRef   = useRef<{ x: number; y: number }[]>([])
   const blurSnapRef  = useRef<HTMLCanvasElement | null>(null)  // snapshot at blur stroke start
   const startPtRef   = useRef<{ x: number; y: number } | null>(null)
-  const cropRectRef  = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+  const cropRectRef  = useRef<CropRect | null>(null)
+  const frameDragRef = useRef<{ kind: FrameHandle | 'move'; start: { x: number; y: number }; orig: CropRect } | null>(null)
 
   const [tool,       setTool]       = useState<EditorTool>('draw')
+  const [cropMode,   setCropMode]   = useState<CropMode>('frame')
   const [brushSize,  setBrushSize]  = useState(20)
   const [drawColor,  setDrawColor]  = useState('#ffffff')
   const [blurRadius, setBlurRadius] = useState(10)
@@ -3734,7 +3907,14 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     const ctx = canvas.getContext('2d')!
     const img = document.createElement('img')
     // History frames are always JPEG data URLs (same-origin) — no CORS concern
-    img.onload = () => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0) }
+    img.onload = () => {
+      // Frames can differ in size after a crop — resize canvases to match (resizing also clears)
+      canvas.width = img.width; canvas.height = img.height
+      const overlay = overlayRef.current
+      if (overlay) { overlay.width = img.width; overlay.height = img.height }
+      ctx.drawImage(img, 0, 0)
+      if (tool === 'crop' && cropMode === 'frame') initCropFrame()
+    }
     img.src = dataUrl
   }
 
@@ -3760,6 +3940,92 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     o.getContext('2d')!.clearRect(0, 0, o.width, o.height)
   }
 
+  // Canvas px per CSS px — the canvas is native resolution but displayed scaled down,
+  // so handle sizes / hit tolerances must be scaled to look consistent on screen
+  const displayScale = () => {
+    const c = canvasRef.current; if (!c) return 1
+    const r = c.getBoundingClientRect()
+    return r.width > 0 ? c.width / r.width : 1
+  }
+
+  const drawFrameOverlay = () => {
+    const overlay = overlayRef.current; if (!overlay) return
+    const octx = overlay.getContext('2d')!
+    octx.clearRect(0, 0, overlay.width, overlay.height)
+    const r = cropRectRef.current; if (!r) return
+    const s = displayScale()
+    // Dim everything outside the crop frame
+    octx.fillStyle = 'rgba(0,0,0,0.55)'
+    octx.fillRect(0, 0, overlay.width, overlay.height)
+    octx.clearRect(r.x, r.y, r.w, r.h)
+    // Rule-of-thirds grid
+    octx.strokeStyle = 'rgba(255,255,255,0.25)'
+    octx.lineWidth = 1 * s
+    octx.beginPath()
+    for (let i = 1; i <= 2; i++) {
+      octx.moveTo(r.x + (r.w * i) / 3, r.y); octx.lineTo(r.x + (r.w * i) / 3, r.y + r.h)
+      octx.moveTo(r.x, r.y + (r.h * i) / 3); octx.lineTo(r.x + r.w, r.y + (r.h * i) / 3)
+    }
+    octx.stroke()
+    // Frame border
+    octx.strokeStyle = 'rgba(255,255,255,0.9)'
+    octx.lineWidth = 1.5 * s
+    octx.strokeRect(r.x, r.y, r.w, r.h)
+    // Corner + edge handles
+    const hs = 10 * s
+    const pts = frameHandlePoints(r)
+    octx.fillStyle = '#ffffff'
+    octx.strokeStyle = 'rgba(0,0,0,0.5)'
+    octx.lineWidth = 1 * s
+    for (const h of FRAME_HANDLES) {
+      const [hx, hy] = pts[h]
+      octx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
+      octx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs)
+    }
+  }
+
+  const initCropFrame = () => {
+    const canvas = canvasRef.current; if (!canvas) return
+    cropRectRef.current = { x: 0, y: 0, w: canvas.width, h: canvas.height }
+    setHasCropSel(true)
+    drawFrameOverlay()
+  }
+
+  const hitTestFrame = (pos: { x: number; y: number }): FrameHandle | 'move' | null => {
+    const r = cropRectRef.current; if (!r) return null
+    const tol = 12 * displayScale()
+    const pts = frameHandlePoints(r)
+    for (const h of FRAME_HANDLES) {
+      const [hx, hy] = pts[h]
+      if (Math.abs(pos.x - hx) <= tol && Math.abs(pos.y - hy) <= tol) return h
+    }
+    if (pos.x > r.x && pos.x < r.x + r.w && pos.y > r.y && pos.y < r.y + r.h) return 'move'
+    return null
+  }
+
+  // Initialize / tear down the crop frame when the tool or crop mode changes
+  useEffect(() => {
+    if (!loaded) return
+    if (tool === 'crop' && cropMode === 'frame') {
+      initCropFrame()
+    } else {
+      frameDragRef.current = null
+      cropRectRef.current = null
+      setHasCropSel(false)
+      clearOverlay()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, cropMode, loaded])
+
+  // Fit/Full toggle changes the display scale — redraw handles at the new size after layout
+  useEffect(() => {
+    if (tool === 'crop' && cropMode === 'frame' && cropRectRef.current) {
+      const id = requestAnimationFrame(() => drawFrameOverlay())
+      return () => cancelAnimationFrame(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitMode])
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId)
     const pos = getPos(e)
@@ -3780,6 +4046,11 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       snap.width = canvas.width; snap.height = canvas.height
       snap.getContext('2d')!.drawImage(canvas, 0, 0)
       blurSnapRef.current = snap
+    } else if (tool === 'crop' && cropMode === 'frame') {
+      // Grab a handle to resize, or the frame interior to move it
+      if (!cropRectRef.current) initCropFrame()
+      const hit = hitTestFrame(pos)
+      frameDragRef.current = hit ? { kind: hit, start: pos, orig: { ...cropRectRef.current! } } : null
     } else if (tool === 'shape' || tool === 'crop') {
       startPtRef.current = pos
       setHasCropSel(false)
@@ -3788,7 +4059,15 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingRef.current) return
+    if (!isDrawingRef.current) {
+      // Hover feedback for crop frame handles
+      if (tool === 'crop' && cropMode === 'frame' && loaded) {
+        const hit = hitTestFrame(getPos(e))
+        const c = canvasRef.current
+        if (c) c.style.cursor = hit === 'move' ? 'move' : hit ? FRAME_CURSORS[hit] : 'default'
+      }
+      return
+    }
     const pos = getPos(e)
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
@@ -3846,6 +4125,25 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       ctx.imageSmoothingQuality = 'high'
       ctx.drawImage(tiny2, 0, 0, sw, sh, bx1, by1, bw, bh)
       ctx.restore()
+    } else if (tool === 'crop' && cropMode === 'frame') {
+      const d = frameDragRef.current; if (!d) return
+      const dx = pos.x - d.start.x, dy = pos.y - d.start.y
+      const minSz = Math.min(20 * displayScale(), canvas.width / 2, canvas.height / 2)
+      let { x, y, w, h } = d.orig
+      if (d.kind === 'move') {
+        x = clampNum(d.orig.x + dx, 0, canvas.width - d.orig.w)
+        y = clampNum(d.orig.y + dy, 0, canvas.height - d.orig.h)
+      } else {
+        // Handle names encode which edges they move: 'nw' moves the north + west edges, etc.
+        let x1 = d.orig.x, y1 = d.orig.y, x2 = d.orig.x + d.orig.w, y2 = d.orig.y + d.orig.h
+        if (d.kind.includes('w')) x1 = clampNum(d.orig.x + dx, 0, x2 - minSz)
+        if (d.kind.includes('e')) x2 = clampNum(d.orig.x + d.orig.w + dx, x1 + minSz, canvas.width)
+        if (d.kind.includes('n')) y1 = clampNum(d.orig.y + dy, 0, y2 - minSz)
+        if (d.kind.includes('s')) y2 = clampNum(d.orig.y + d.orig.h + dy, y1 + minSz, canvas.height)
+        x = x1; y = y1; w = x2 - x1; h = y2 - y1
+      }
+      cropRectRef.current = { x, y, w, h }
+      drawFrameOverlay()
     } else if (tool === 'crop' || tool === 'shape') {
       const sp = startPtRef.current; if (!sp) return
       octx.clearRect(0, 0, overlay.width, overlay.height)
@@ -3889,8 +4187,12 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       ctx.drawImage(overlayRef.current!, 0, 0)
       clearOverlay(); pushHistory()
     } else if (tool === 'crop') {
-      const r = cropRectRef.current
-      setHasCropSel(!!(r && r.w > 2 && r.h > 2))
+      if (cropMode === 'frame') {
+        frameDragRef.current = null
+      } else {
+        const r = cropRectRef.current
+        setHasCropSel(!!(r && r.w > 2 && r.h > 2))
+      }
     }
   }
 
@@ -3905,9 +4207,19 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     ctx.putImageData(data, 0, 0)
     clearOverlay(); cropRectRef.current = null; setHasCropSel(false)
     pushHistory()
+    // Frame mode: rebuild the frame around the newly cropped image so the user can keep refining
+    if (cropMode === 'frame') initCropFrame()
   }
 
   const applyEdit = () => {
+    // Commit any pending crop selection first — users adjust the frame and hit Apply
+    // directly, expecting the crop to be included (without clicking "Apply Crop")
+    const r = cropRectRef.current
+    if (tool === 'crop' && r && r.w > 2 && r.h > 2) {
+      const c = canvasRef.current!
+      const isFullFrame = r.x < 0.5 && r.y < 0.5 && r.w > c.width - 0.5 && r.h > c.height - 0.5
+      if (!isFullFrame) applyCrop()
+    }
     const canvas = canvasRef.current!
     try {
       const exp = document.createElement('canvas')
@@ -3926,7 +4238,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const toolBtn = (t: EditorTool, icon: React.ReactNode, label: string) => (
     <button
       key={t}
-      onClick={() => { setTool(t); clearOverlay(); setHasCropSel(false) }}
+      onClick={() => { if (t === tool) return; setTool(t); clearOverlay(); setHasCropSel(false) }}
       title={label}
       className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-[10px] font-medium transition-all ${
         tool === t
@@ -3940,7 +4252,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   )
 
   return createPortal(
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-4xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[95vh]">
 
         {/* Header */}
@@ -4029,7 +4341,27 @@ function RefImageEditorModal({ image, onApply, onClose }: {
             </>
           )}
           {tool === 'crop' && (
-            <span className="text-[11px] text-slate-500">Drag to select crop area</span>
+            <>
+              <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
+                <button
+                  onClick={() => setCropMode('frame')}
+                  title="Crop frame with draggable corners and edges"
+                  className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${cropMode === 'frame' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                  Frame
+                </button>
+                <button
+                  onClick={() => setCropMode('drag')}
+                  title="Drag to draw a crop selection"
+                  className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${cropMode === 'drag' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                  Drag
+                </button>
+              </div>
+              <span className="text-[11px] text-slate-500">
+                {cropMode === 'frame'
+                  ? 'Drag corners or edges to resize the frame — drag inside it to move'
+                  : 'Drag to select crop area'}
+              </span>
+            </>
           )}
         </div>
 
@@ -4045,7 +4377,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
               style={{
                 display: 'block',
                 touchAction: 'none',
-                cursor: tool === 'crop' || tool === 'shape' ? 'crosshair' : 'cell',
+                cursor: tool === 'shape' || (tool === 'crop' && cropMode === 'drag') ? 'crosshair' : tool === 'crop' ? 'default' : 'cell',
                 // Fit mode: shrink to fit container while preserving aspect ratio
                 ...(fitMode === 'fit' ? { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)', objectFit: 'contain' } : {}),
               }}
@@ -4058,7 +4390,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
         {/* Crop apply banner */}
         {hasCropSel && (
           <div className="flex items-center justify-center gap-3 px-5 py-2 bg-amber-500/10 border-t border-amber-500/20 shrink-0">
-            <span className="text-[11px] text-amber-300">Crop selection ready</span>
+            <span className="text-[11px] text-amber-300">{tool === 'crop' && cropMode === 'frame' ? 'Adjust the crop frame, then apply' : 'Crop selection ready'}</span>
             <button onClick={applyCrop}
               className="text-[11px] px-3 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 transition-colors">
               Apply Crop
@@ -9372,6 +9704,7 @@ function VideoFeed({
   selectMode,
   selectedIds,
   onSelectToggle,
+  onNavListChange,
 }: {
   pendingSlots: VideoPendingSlot[]
   items: VideoItem[]
@@ -9381,6 +9714,7 @@ function VideoFeed({
   selectMode?: boolean
   selectedIds?: Set<number>
   onSelectToggle?: (id: number) => void
+  onNavListChange?: (list: VideoDetailData[]) => void
 }) {
   // Pull the same historical feed as the image scanner — with infinite scroll
   const [dbImages, setDbImages] = useState<ImageItem[]>([])
@@ -9430,6 +9764,64 @@ function VideoFeed({
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [loadNextVideos])
+
+  // Emit ordered nav list whenever visible videos change
+  useEffect(() => {
+    if (!onNavListChange) return
+    const sDbIds = new Set(items.map(i => i.dbId).filter((id): id is number => id !== undefined))
+    const liveFailIds = new Set(items.filter(i => i.failed).map(i => i.id))
+    const sessionList: VideoDetailData[] = items.map(item => ({
+      id: item.dbId,
+      videoUrl: item.videoUrl,
+      prompt: item.prompt,
+      model: item.model,
+      duration: item.duration,
+      resolution: item.resolution,
+      aspectRatio: item.aspectRatio,
+      audioEnabled: item.audioEnabled,
+      startFrameUrl: item.startFrameUrl,
+      endFrameUrl: item.endFrameUrl,
+      motionVideoUrl: item.motionVideoUrl,
+      keepOriginalSound: item.keepOriginalSound,
+      characterOrientation: item.characterOrientation,
+      createdAt: item.createdAt,
+      failed: item.failed,
+      failError: item.failError,
+    }))
+    const dbList: VideoDetailData[] = dbImages
+      .filter(img => !sDbIds.has(img.id))
+      .map(img => {
+        const vm = img.videoMetadata || {}
+        return {
+          id: img.id,
+          videoUrl: img.imageUrl,
+          prompt: img.prompt,
+          model: img.model,
+          duration: vm.duration,
+          resolution: vm.resolution || img.quality || undefined,
+          aspectRatio: vm.aspectRatio || img.aspectRatio,
+          audioEnabled: vm.audioEnabled,
+          startFrameUrl: vm.startFrameUrl || undefined,
+          endFrameUrl: vm.endFrameUrl || undefined,
+          motionVideoUrl: vm.motionVideoUrl || undefined,
+          keepOriginalSound: vm.keepOriginalSound,
+          characterOrientation: vm.characterOrientation || undefined,
+          createdAt: img.createdAt,
+        }
+      })
+    const failsList: VideoDetailData[] = savedFails
+      .filter(f => !liveFailIds.has(f.id))
+      .map(f => ({
+        videoUrl: '',
+        prompt: f.prompt,
+        model: f.model,
+        duration: f.duration,
+        createdAt: f.createdAt,
+        failed: true,
+        failError: f.failError,
+      }))
+    onNavListChange([...sessionList, ...dbList, ...failsList])
+  }, [items, dbImages, savedFails, onNavListChange])
 
   // IDs already shown as session items — skip them in the DB section.
   // Session VideoItem.id is a FAL request ID string, which never matches a numeric
@@ -10391,6 +10783,8 @@ export default function PortalV2Page() {
   const [selectedVideo, setSelectedVideo] = useState<VideoDetailData | null>(null)
   const [pendingDetail, setPendingDetail] = useState<PendingSlot | null>(null)
   const [videoPendingDetail, setVideoPendingDetail] = useState<VideoPendingSlot | null>(null)
+  const [imageNavList, setImageNavList] = useState<ImageItem[]>([])
+  const [videoNavList, setVideoNavList] = useState<VideoDetailData[]>([])
 
   // --- Select mode ---
   const [selectMode, setSelectMode] = useState(false)
@@ -12092,6 +12486,7 @@ export default function PortalV2Page() {
               onClearAll={handleLibraryClearAll}
               onActivate={handleActivateRef}
               onDeactivate={handleDeactivateRef}
+              onEditSave={handleEditRef}
               disabled={scannerMode === "video"}
               libraryLimit={isAdminAccount ? 250 : hasEffectiveDevAccess ? 100 : 50}
             />
@@ -12155,6 +12550,7 @@ export default function PortalV2Page() {
               selectMode={selectMode}
               selectedIds={selectedImageIds}
               onSelectToggle={handleSelectToggle}
+              onNavListChange={setImageNavList}
             />
           </div>
           {/* Custom Flux LoRA panel — replaces PromptBox for that model */}
@@ -12301,6 +12697,7 @@ export default function PortalV2Page() {
               selectMode={selectMode}
               selectedIds={selectedImageIds}
               onSelectToggle={handleSelectToggle}
+              onNavListChange={setVideoNavList}
             />
           </div>
 
@@ -12442,6 +12839,9 @@ export default function PortalV2Page() {
           onClose={() => setSelectedImage(null)}
           onRescan={handleRescan}
           onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null) }}
+          navList={imageNavList}
+          navIndex={imageNavList.findIndex(img => img.id === selectedImage.id)}
+          onNavigate={setSelectedImage}
           onAddRef={(url, r2Key) => {
             const addRef = (finalUrl: string) =>
               handleUploadRef([{ id: `ref-${Date.now()}-${Math.random()}`, url: finalUrl }])
@@ -12465,6 +12865,9 @@ export default function PortalV2Page() {
         <VideoDetailModal
           video={selectedVideo}
           onClose={() => setSelectedVideo(null)}
+          navList={videoNavList}
+          navIndex={videoNavList.findIndex(v => v.videoUrl === selectedVideo.videoUrl && v.prompt === selectedVideo.prompt && v.createdAt === selectedVideo.createdAt)}
+          onNavigate={setSelectedVideo}
           onRescan={(vid) => {
             setScannerMode("video")
             setVideoPromptOverride(prev => ({ text: vid.prompt, version: prev.version + 1 }))
