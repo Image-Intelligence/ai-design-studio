@@ -3,6 +3,12 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
+function checkAuth(req: Request) {
+  const pass = process.env.ADMIN_PASSWORD
+  if (!pass) return true
+  return req.headers.get('x-admin-password') === pass
+}
+
 // GET - Fetch notifications
 // ?all=true          → all (admin view)
 // ?target=main       → main page notifications (target = 'main' or 'all')
@@ -15,6 +21,7 @@ export async function GET(request: Request) {
     const target = searchParams.get('target')
 
     if (showAll) {
+      if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       const notifications = await prisma.$queryRaw<any[]>`
         SELECT * FROM "Notification" ORDER BY "createdAt" DESC
       `
@@ -48,6 +55,7 @@ export async function GET(request: Request) {
 
 // POST - Create new notification (admin only)
 export async function POST(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json()
     const { message, type = 'info', target = 'main', isActive = true, locked = false } = body
@@ -72,6 +80,7 @@ export async function POST(request: Request) {
 
 // PUT - Update notification (admin only)
 export async function PUT(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json()
     const { id, message, type, target, isActive, locked } = body
@@ -111,6 +120,7 @@ export async function PUT(request: Request) {
 
 // DELETE - Delete notification (admin only)
 export async function DELETE(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')

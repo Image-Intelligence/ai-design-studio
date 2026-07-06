@@ -168,6 +168,7 @@ model GeneratedImage {
   createdAt          DateTime @default(now())
   expiresAt          DateTime // 30 days from creation
   isDeleted          Boolean  @default(false)
+  isHidden           Boolean  @default(false) // User-hidden from the feed (reversible, blob untouched)
 
   // NEW: Video support fields
   quality            String?  // Quality/resolution (e.g., "2k", "4k", "480p", "720p", "1080p")

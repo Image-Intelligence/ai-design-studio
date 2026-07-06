@@ -22,6 +22,12 @@ interface Notification {
   createdAt: string
 }
 
+// The notifications API requires the admin password for all=true reads and all mutations
+function adminHeaders(): Record<string, string> {
+  const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
+  return pass ? { "x-admin-password": pass } : {}
+}
+
 const TYPE_COLORS = {
   info:    { bg: 'bg-cyan-500/10',    border: 'border-cyan-500/30',    text: 'text-cyan-400',    badge: 'bg-cyan-500' },
   warning: { bg: 'bg-yellow-500/10',  border: 'border-yellow-500/30',  text: 'text-yellow-400',  badge: 'bg-yellow-500' },
@@ -70,7 +76,7 @@ export function NotificationManager() {
 
   const fetchNotifications = async () => {
     try {
-      const res = await fetch('/api/notifications?all=true')
+      const res = await fetch('/api/notifications?all=true', { headers: adminHeaders() })
       if (res.ok) {
         const data = await res.json()
         setNotifications(data)
@@ -87,14 +93,14 @@ export function NotificationManager() {
       if (editingId) {
         const res = await fetch('/api/notifications', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...adminHeaders() },
           body: JSON.stringify({ id: editingId, ...formData })
         })
         if (res.ok) { await fetchNotifications(); resetForm() }
       } else {
         const res = await fetch('/api/notifications', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...adminHeaders() },
           body: JSON.stringify(formData)
         })
         if (res.ok) { await fetchNotifications(); resetForm() }
@@ -119,7 +125,7 @@ export function NotificationManager() {
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this notification?')) return
     try {
-      const res = await fetch(`/api/notifications?id=${id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/notifications?id=${id}`, { method: 'DELETE', headers: adminHeaders() })
       if (res.ok) await fetchNotifications()
     } catch (error) {
       console.error('Error deleting notification:', error)
@@ -130,7 +136,7 @@ export function NotificationManager() {
     try {
       const res = await fetch('/api/notifications', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...adminHeaders() },
         body: JSON.stringify({ id: notification.id, isActive: !notification.isActive })
       })
       if (res.ok) await fetchNotifications()
@@ -143,7 +149,7 @@ export function NotificationManager() {
     try {
       const res = await fetch('/api/notifications', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...adminHeaders() },
         body: JSON.stringify({ id: notification.id, locked: !notification.locked })
       })
       if (res.ok) await fetchNotifications()

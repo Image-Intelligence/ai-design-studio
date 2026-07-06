@@ -6,6 +6,7 @@ import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
+import { NewsManager } from "@/components/NewsManager"
 
 // --- TYPES ---
 interface CNCondition {
@@ -890,9 +891,12 @@ function SelectModeOverlay({
   selectedCount,
   onDownloadAll,
   onDeleteAll,
+  onHideAll,
   onExit,
   downloading,
   deleting,
+  hiding = false,
+  hiddenView = false,
   downloadProgress,
   downloadError,
   isAdmin = false,
@@ -901,9 +905,12 @@ function SelectModeOverlay({
   selectedCount: number
   onDownloadAll: () => void
   onDeleteAll: () => void
+  onHideAll?: () => void
   onExit: () => void
   downloading: boolean
   deleting: boolean
+  hiding?: boolean
+  hiddenView?: boolean
   downloadProgress?: { done: number; total: number } | null
   downloadError?: string | null
   isAdmin?: boolean
@@ -958,6 +965,25 @@ function SelectModeOverlay({
       </button>
       {downloadError && (
         <p className="text-[11px] text-red-400 px-1 leading-snug">{downloadError}</p>
+      )}
+      {/* Hide / Unhide — reversible, no confirm needed */}
+      {onHideAll && (
+        <button
+          onClick={() => { if (selectedCount > 0) onHideAll() }}
+          disabled={selectedCount === 0 || hiding}
+          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${
+            hiddenView
+              ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20"
+              : "bg-amber-500/10 border-amber-500/25 text-amber-300 hover:bg-amber-500/20"
+          }`}
+        >
+          {hiding
+            ? <div className="w-3 h-3 rounded-full border-2 border-slate-500 border-t-slate-200 animate-spin shrink-0" />
+            : hiddenView ? <Eye size={13} className="shrink-0" /> : <EyeOff size={13} className="shrink-0" />}
+          <span className="flex-1 text-left">
+            {hiding ? (hiddenView ? "Unhiding…" : "Hiding…") : hiddenView ? "Unhide Selected" : "Hide Selected"}
+          </span>
+        </button>
       )}
       {/* Admin only: add selection to a dataset bucket */}
       {isAdmin && onAddToBucket && (
@@ -1020,6 +1046,8 @@ function FeedDropdown({
   onColsChange,
   fullSize,
   onFullSizeChange,
+  showHidden,
+  onShowHiddenChange,
   isAdmin = false,
   adminFilterCount = 0,
   onOpenAdminFilters,
@@ -1031,6 +1059,8 @@ function FeedDropdown({
   onColsChange: (n: number | null) => void
   fullSize: boolean
   onFullSizeChange: (on: boolean) => void
+  showHidden: boolean
+  onShowHiddenChange: (on: boolean) => void
   isAdmin?: boolean
   adminFilterCount?: number
   onOpenAdminFilters?: () => void
@@ -1070,6 +1100,9 @@ function FeedDropdown({
         Feed
         {cols !== null && (
           <span className="text-[10px] font-mono bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded-full leading-none">{cols}</span>
+        )}
+        {showHidden && (
+          <EyeOff size={11} className="text-amber-400 shrink-0" aria-label="Viewing hidden generations" />
         )}
         {adminFilterCount > 0 && (
           <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" title={`${adminFilterCount} feed filters active`} />
@@ -1135,6 +1168,29 @@ function FeedDropdown({
             </button>
             <p className="text-[10px] text-slate-600 leading-relaxed px-1 pt-1.5">
               Shows entire images at full resolution and their natural shape — nothing cropped. Works with any column count.
+            </p>
+          </div>
+
+          {/* View Hidden toggle */}
+          <div className="border-t border-white/5 pt-2 mt-1">
+            <button
+              onClick={() => onShowHiddenChange(!showHidden)}
+              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${
+                showHidden
+                  ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
+                  : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                <EyeOff size={11} />
+                View Hidden
+              </span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${showHidden ? "bg-amber-500/25 text-amber-300" : "bg-white/10 text-slate-500"}`}>
+                {showHidden ? "ON" : "OFF"}
+              </span>
+            </button>
+            <p className="text-[10px] text-slate-600 leading-relaxed px-1 pt-1.5">
+              Shows only your hidden generations — select them to unhide. Turn off to return to your normal feed.
             </p>
           </div>
 
@@ -4188,6 +4244,7 @@ function ImageGrid({
   cols = null,
   fullSize = false,
   adminFilters = null,
+  showHidden = false,
 }: {
   signedIn: boolean
   pendingSlots: PendingSlot[]
@@ -4202,6 +4259,7 @@ function ImageGrid({
   cols?: number | null
   fullSize?: boolean
   adminFilters?: AdminFeedFilters | null
+  showHidden?: boolean
 }) {
   const [images, setImages] = useState<ImageItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -4226,7 +4284,7 @@ function ImageGrid({
         const params = buildAdminFeedParams(adminFilters, pageRef.current, pageLimitRef.current)
         res = await fetch(`/api/admin/dataset?${params}`, { headers: adminPasswordHeaders() })
       } else {
-        res = await fetch(`/api/my-images?page=${pageRef.current}&limit=${pageLimitRef.current}&type=image`)
+        res = await fetch(`/api/my-images?page=${pageRef.current}&limit=${pageLimitRef.current}&type=image${showHidden ? "&hidden=true" : ""}`)
       }
       if (!res.ok) { hasMoreRef.current = false; return }
       const data = await res.json()
@@ -4257,7 +4315,7 @@ function ImageGrid({
         setLoading(false)
       }
     }
-  }, [adminFilters])
+  }, [adminFilters, showHidden])
 
   const checkSentinel = useCallback(() => {
     if (!sentinelRef.current || !hasMoreRef.current) return
@@ -4293,8 +4351,8 @@ function ImageGrid({
   // Emit ordered nav list whenever visible images change
   useEffect(() => {
     if (!onNavListChange) return
-    if (adminFilters) {
-      // Admin-filtered view shows exactly the API results, in API order
+    if (adminFilters || showHidden) {
+      // Admin-filtered and hidden views show exactly the API results, in API order
       onNavListChange(images)
       return
     }
@@ -4308,7 +4366,7 @@ function ImageGrid({
       return bTime - aTime
     })
     onNavListChange([...freshImages, ...merged])
-  }, [images, freshImages, savedFails, onNavListChange, adminFilters])
+  }, [images, freshImages, savedFails, onNavListChange, adminFilters, showHidden])
 
   if (!signedIn) {
     return (
@@ -4339,10 +4397,10 @@ function ImageGrid({
     )
   }
 
-  if (!loading && images.length === 0 && !hasMoreRef.current && (adminFilters || (pendingSlots.length === 0 && freshImages.length === 0))) {
+  if (!loading && images.length === 0 && !hasMoreRef.current && (adminFilters || showHidden || (pendingSlots.length === 0 && freshImages.length === 0))) {
     return (
       <div className="flex items-center justify-center py-32 text-slate-600 text-sm">
-        {adminFilters ? "No generations match these filters" : "No generations yet"}
+        {adminFilters ? "No generations match these filters" : showHidden ? "No hidden generations" : "No generations yet"}
       </div>
     )
   }
@@ -4350,8 +4408,8 @@ function ImageGrid({
   return (
     <div>
       <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
-        {/* Pending: loading and failed slots appear at the top (hidden in admin-filtered view) */}
-        {!adminFilters && pendingSlots.map((slot) =>
+        {/* Pending: loading and failed slots appear at the top (hidden in admin-filtered / hidden views) */}
+        {!adminFilters && !showHidden && pendingSlots.map((slot) =>
           slot.status === "loading"
             ? (slot.streamDataUrl
                 ? <StreamingSlot key={slot.slotId} dataUrl={slot.streamDataUrl} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
@@ -4360,8 +4418,8 @@ function ImageGrid({
                   : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
             : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
         )}
-        {/* Fresh: just-completed images and failed tiles, in completion order (hidden in admin-filtered view) */}
-        {!adminFilters && freshImages.map((img) =>
+        {/* Fresh: just-completed images and failed tiles, in completion order (hidden in admin-filtered / hidden views) */}
+        {!adminFilters && !showHidden && freshImages.map((img) =>
           img.failed
             ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
             : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
@@ -4382,8 +4440,22 @@ function ImageGrid({
             adminThumb
           />
         ))}
+        {/* Hidden view: exactly the API results (user's hidden items) */}
+        {!adminFilters && showHidden && images.map(img => (
+          <GridImage
+            key={`h-${img.id}`}
+            src={img.imageUrl}
+            alt={img.prompt}
+            onClick={selectMode ? undefined : () => onImageClick(img)}
+            imageId={img.id}
+            selectMode={selectMode}
+            selected={selectedIds?.has(img.id)}
+            onSelect={onSelectToggle}
+            fullWidth={fullSize}
+          />
+        ))}
         {/* DB images merged with restored fails, sorted by createdAt so fails land in the right spot */}
-        {!adminFilters && (() => {
+        {!adminFilters && !showHidden && (() => {
           const freshIds = new Set(freshImages.map(i => i.id))
           const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
           const dbFiltered = images.filter(img => !freshIds.has(img.id))
@@ -8106,9 +8178,12 @@ function PromptBox({
   const [showPresets, setShowPresets] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [showRefConsent, setShowRefConsent] = useState(false)
-  const [refConsentGiven, setRefConsentGiven] = useState(() =>
-    typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
-  )
+  // Start false and sync after mount — reading sessionStorage during the initial
+  // render makes server and client HTML disagree (hydration error on the Ref button)
+  const [refConsentGiven, setRefConsentGiven] = useState(false)
+  useEffect(() => {
+    setRefConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
+  }, [])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -10004,9 +10079,11 @@ function PromptBox({
 function useRefConsent() {
   const [showModal, setShowModal] = useState(false)
   const pendingRef = useRef<(() => void) | null>(null)
-  const [consented, setConsented] = useState(() =>
-    typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
-  )
+  // Start false and sync after mount — see refConsentGiven above (hydration safety)
+  const [consented, setConsented] = useState(false)
+  useEffect(() => {
+    setConsented(sessionStorage.getItem("ref-rights-consent") === "true")
+  }, [])
   const request = (action: () => void) => {
     if (consented) { action() }
     else { pendingRef.current = action; setShowModal(true) }
@@ -10887,6 +10964,7 @@ function VideoFeed({
   onSelectToggle,
   onNavListChange,
   cols = null,
+  showHidden = false,
 }: {
   pendingSlots: VideoPendingSlot[]
   items: VideoItem[]
@@ -10898,6 +10976,7 @@ function VideoFeed({
   onSelectToggle?: (id: number) => void
   onNavListChange?: (list: VideoDetailData[]) => void
   cols?: number | null
+  showHidden?: boolean
 }) {
   // Pull the same historical feed as the image scanner — with infinite scroll
   const [dbImages, setDbImages] = useState<ImageItem[]>([])
@@ -10907,16 +10986,20 @@ function VideoFeed({
   const videoPageRef = useRef(1)
   const videoHasMoreRef = useRef(true)
   const videoPagLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
+  // Discard in-flight responses when the hidden toggle flips mid-request
+  const videoEpochRef = useRef(0)
 
   const loadNextVideos = useCallback(async () => {
     if (videoLoadingRef.current || !videoHasMoreRef.current) return
     videoLoadingRef.current = true
     setDbLoading(true)
+    const epoch = videoEpochRef.current
     try {
-      const res = await fetch(`/api/my-images?page=${videoPageRef.current}&limit=${videoPagLimitRef.current}&type=video`)
+      const res = await fetch(`/api/my-images?page=${videoPageRef.current}&limit=${videoPagLimitRef.current}&type=video${showHidden ? "&hidden=true" : ""}`)
       if (!res.ok) return
       const data = await res.json()
       if (!data.images) return
+      if (epoch !== videoEpochRef.current) return
       setDbImages(prev => {
         const existingIds = new Set(prev.map(i => i.id))
         const newItems = (data.images as any[]).filter(img => !existingIds.has(img.id))
@@ -10925,12 +11008,23 @@ function VideoFeed({
       videoHasMoreRef.current = videoPageRef.current < (data.pagination?.totalPages ?? 1)
       videoPageRef.current += 1
     } finally {
-      videoLoadingRef.current = false
-      setDbLoading(false)
+      if (epoch === videoEpochRef.current) {
+        videoLoadingRef.current = false
+        setDbLoading(false)
+      }
     }
-  }, [])
+  }, [showHidden])
 
-  useEffect(() => { loadNextVideos() }, [loadNextVideos])
+  // Initial load + full reset when the hidden toggle changes
+  useEffect(() => {
+    videoEpochRef.current += 1
+    setDbImages([])
+    videoPageRef.current = 1
+    videoHasMoreRef.current = true
+    videoLoadingRef.current = false
+    setDbLoading(false)
+    loadNextVideos()
+  }, [loadNextVideos])
   useEffect(() => { if (!dbLoading) {
     if (!videoSentinelRef.current || !videoHasMoreRef.current) return
     const rect = videoSentinelRef.current.getBoundingClientRect()
@@ -11003,8 +11097,9 @@ function VideoFeed({
         failed: true,
         failError: f.failError,
       }))
-    onNavListChange([...sessionList, ...dbList, ...failsList])
-  }, [items, dbImages, savedFails, onNavListChange])
+    // Hidden view: only the API results — session items are never hidden
+    onNavListChange(showHidden ? dbList : [...sessionList, ...dbList, ...failsList])
+  }, [items, dbImages, savedFails, onNavListChange, showHidden])
 
   // IDs already shown as session items — skip them in the DB section.
   // Session VideoItem.id is a FAL request ID string, which never matches a numeric
@@ -11025,21 +11120,23 @@ function VideoFeed({
   // Append #t=0.001 so iOS Safari decodes the first frame instead of showing black
   const iosSrc = (url: string) => (url.includes("#") ? url : `${url}#t=0.001`)
 
-  const hasContent = pendingSlots.length > 0 || items.length > 0 || dbImages.length > 0 || savedFails.length > 0 || dbLoading || videoHasMoreRef.current
+  const hasContent = showHidden
+    ? dbImages.length > 0 || dbLoading || videoHasMoreRef.current
+    : pendingSlots.length > 0 || items.length > 0 || dbImages.length > 0 || savedFails.length > 0 || dbLoading || videoHasMoreRef.current
 
   if (!hasContent) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-700">
         <Video size={28} strokeWidth={1.5} />
-        <p className="text-sm">Generated videos will appear here</p>
+        <p className="text-sm">{showHidden ? "No hidden videos" : "Generated videos will appear here"}</p>
       </div>
     )
   }
 
   return (
     <div className={`p-3 grid gap-2 auto-rows-max ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3"}`}>
-      {/* Loading / queued slots */}
-      {pendingSlots.map(slot => (
+      {/* Loading / queued slots (hidden view shows only DB results) */}
+      {!showHidden && pendingSlots.map(slot => (
         <button
           key={slot.slotId}
           onClick={onPendingClick ? () => onPendingClick(slot) : undefined}
@@ -11054,7 +11151,7 @@ function VideoFeed({
       ))}
 
       {/* Session items (new this session) */}
-      {items.map(item =>
+      {!showHidden && items.map(item =>
         item.failed ? (
           <div
             key={item.id}
@@ -11161,7 +11258,7 @@ function VideoFeed({
       }
 
       {/* Persisted failed tiles from previous sessions — deduped against live session items */}
-      {(() => {
+      {!showHidden && (() => {
         const liveFailIds = new Set(items.filter(i => i.failed).map(i => i.id))
         return savedFails
           .filter(f => !liveFailIds.has(f.id))
@@ -11561,7 +11658,17 @@ function parseNotifMessage(message: string) {
   })
 }
 
-function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+function NewsDropdown({
+  open,
+  onToggle,
+  isAdmin = false,
+  onManage,
+}: {
+  open: boolean
+  onToggle: () => void
+  isAdmin?: boolean
+  onManage?: (target?: { section: "articles" | "notifications"; articleId?: number }) => void
+}) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
@@ -11610,7 +11717,7 @@ function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void 
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 320) })
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - 408)) })
     }
   }, [open])
 
@@ -11637,9 +11744,163 @@ function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void 
     localStorage.setItem("dismissed-portal-articles", JSON.stringify(nextArticles))
   }
 
+  // --- Admin quick edit (inline, in the dropdown) ---
+  const [editingNotifId, setEditingNotifId] = useState<number | null>(null)
+  const [editingArticleId, setEditingArticleId] = useState<number | null>(null)
+  const [editTitle, setEditTitle] = useState("")
+  const [editText, setEditText] = useState("")
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  const startEditNotif = (n: PortalNotification) => {
+    setEditingArticleId(null)
+    setEditingNotifId(n.id)
+    setEditText(n.message)
+    setEditError(null)
+  }
+  const startEditArticle = (a: NewsArticlePreview) => {
+    setEditingNotifId(null)
+    setEditingArticleId(a.id)
+    setEditTitle(a.title)
+    setEditText(a.summary)
+    setEditError(null)
+  }
+  const cancelQuickEdit = () => {
+    setEditingNotifId(null)
+    setEditingArticleId(null)
+    setEditError(null)
+  }
+  const saveNotifEdit = async () => {
+    if (editingNotifId === null || !editText.trim() || editSaving) return
+    setEditSaving(true)
+    setEditError(null)
+    try {
+      const res = await fetch("/api/notifications", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...adminPasswordHeaders() },
+        body: JSON.stringify({ id: editingNotifId, message: editText.trim() }),
+      })
+      if (!res.ok) {
+        setEditError(res.status === 401 ? "Admin unlock required — open Manage and enter your password first." : "Save failed — try again.")
+        return
+      }
+      cancelQuickEdit()
+      await fetchNews()
+    } catch {
+      setEditError("Save failed — check your connection.")
+    } finally {
+      setEditSaving(false)
+    }
+  }
+  const saveArticleEdit = async () => {
+    if (editingArticleId === null || !editTitle.trim() || editSaving) return
+    setEditSaving(true)
+    setEditError(null)
+    try {
+      const res = await fetch("/api/news", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...adminPasswordHeaders() },
+        body: JSON.stringify({ id: editingArticleId, title: editTitle.trim(), summary: editText }),
+      })
+      if (!res.ok) {
+        setEditError(res.status === 401 ? "Admin unlock required — open Manage and enter your password first." : "Save failed — try again.")
+        return
+      }
+      cancelQuickEdit()
+      await fetchNews()
+    } catch {
+      setEditError("Save failed — check your connection.")
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  // Shared quick-edit UI (admin only)
+  const articleQuickEditor = (a: NewsArticlePreview) => (
+    <div className="space-y-1.5" onClick={e => e.stopPropagation()}>
+      <input
+        value={editTitle}
+        onChange={e => setEditTitle(e.target.value)}
+        placeholder="Title"
+        autoFocus
+        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[12px] text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/40"
+      />
+      <textarea
+        value={editText}
+        onChange={e => setEditText(e.target.value)}
+        placeholder="Summary"
+        rows={2}
+        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500/40 resize-none"
+      />
+      {editError && <p className="text-[10px] text-red-400">{editError}</p>}
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={saveArticleEdit}
+          disabled={editSaving || !editTitle.trim()}
+          className="flex-1 py-1.5 rounded-md bg-violet-500/20 border border-violet-500/40 text-violet-300 text-[10px] font-semibold hover:bg-violet-500/30 disabled:opacity-40 transition-all"
+        >
+          {editSaving ? "Saving…" : "Confirm"}
+        </button>
+        <button
+          onClick={cancelQuickEdit}
+          className="flex-1 py-1.5 rounded-md border border-white/10 bg-white/5 text-slate-400 text-[10px] hover:text-white transition-all"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => { onManage?.({ section: "articles", articleId: a.id }); onToggle() }}
+          title="Open the full editor (content blocks, publish, delete)"
+          className="px-2.5 py-1.5 rounded-md border border-white/10 text-slate-500 text-[10px] hover:text-white transition-all whitespace-nowrap"
+        >
+          Full editor
+        </button>
+      </div>
+    </div>
+  )
+
+  const notifQuickEditor = (
+    <div className="space-y-1.5" onClick={e => e.stopPropagation()}>
+      <textarea
+        value={editText}
+        onChange={e => setEditText(e.target.value)}
+        placeholder="Notification message… supports [label](url) links"
+        rows={3}
+        autoFocus
+        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500/40 resize-none"
+      />
+      {editError && <p className="text-[10px] text-red-400">{editError}</p>}
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={saveNotifEdit}
+          disabled={editSaving || !editText.trim()}
+          className="flex-1 py-1.5 rounded-md bg-violet-500/20 border border-violet-500/40 text-violet-300 text-[10px] font-semibold hover:bg-violet-500/30 disabled:opacity-40 transition-all"
+        >
+          {editSaving ? "Saving…" : "Confirm"}
+        </button>
+        <button
+          onClick={cancelQuickEdit}
+          className="flex-1 py-1.5 rounded-md border border-white/10 bg-white/5 text-slate-400 text-[10px] hover:text-white transition-all"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+
   const visibleNotifs = notifications.filter(n => !dismissed.includes(n.id))
   const visibleArticles = articles.filter(a => !dismissedArticles.includes(a.id))
   const unreadCount = visibleNotifs.length + visibleArticles.length
+
+  // Pinned (locked) notifications sort to the top
+  const sortedNotifs = [...visibleNotifs].sort((a, b) => Number(b.locked) - Number(a.locked))
+  // Featured card: the newest visible article that has a preview image
+  const featured = visibleArticles.find(a => a.previewImage) ?? null
+  const restArticles = visibleArticles.filter(a => a !== featured)
+
+  const isNewItem = (dateStr: string) => Date.now() - new Date(dateStr).getTime() < 48 * 3600000
+
+  const articleTypeLabel = (t: string) =>
+    t === "success" ? "Update" : t === "update" ? "Patch" : t === "tutorial" ? "Tutorial" : t.charAt(0).toUpperCase() + t.slice(1)
 
   function relativeTime(dateStr: string) {
     const diff = Date.now() - new Date(dateStr).getTime()
@@ -11664,16 +11925,19 @@ function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void 
         <Bell size={15} />
         News
         {unreadCount > 0 && (
-          <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-fuchsia-500 ring-1 ring-black" />
+          <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-fuchsia-500 text-black text-[9px] font-bold flex items-center justify-center ring-1 ring-black leading-none">
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
         )}
         <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
         <div
-          className="fixed w-80 rounded-xl border border-white/10 bg-slate-900/98 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]"
-          style={{ top: menuPos.top, left: menuPos.left }}
+          className="fixed w-[400px] max-w-[calc(100vw-16px)] rounded-xl border border-white/10 bg-slate-900/98 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]"
+          style={{ top: menuPos.top, left: menuPos.left, animation: "pv2NewsIn 150ms ease-out" }}
         >
+          <style>{`@keyframes pv2NewsIn { from { opacity: 0; transform: translateY(-6px) } to { opacity: 1; transform: none } }`}</style>
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/8">
             <div className="flex items-center gap-2">
@@ -11685,68 +11949,159 @@ function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void 
                 </span>
               )}
             </div>
-            {unreadCount > 0 && (
-              <button
-                onClick={handleDismissAll}
-                className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
-              >
-                Dismiss all
-              </button>
-            )}
+            <div className="flex items-center gap-2.5">
+              {isAdmin && (
+                <button
+                  onClick={() => { onManage?.(); onToggle() }}
+                  title="Manage news & notifications (admin)"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-violet-500/30 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 text-[10px] font-medium transition-all"
+                >
+                  <Pencil size={9} />
+                  Manage
+                </button>
+              )}
+              {unreadCount > 0 && (
+                <button
+                  onClick={handleDismissAll}
+                  className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  Dismiss all
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Content */}
-          <div className="max-h-[28rem] overflow-y-auto">
+          <div className="max-h-[32rem] overflow-y-auto">
             {unreadCount === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10 gap-2 text-slate-600">
-                <Bell size={20} strokeWidth={1.5} />
-                <p className="text-[12px]">All caught up</p>
+              <div className="flex flex-col items-center justify-center py-12 gap-2.5 text-slate-600">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-500/10 to-fuchsia-500/10 border border-white/8 flex items-center justify-center">
+                  <Sparkles size={17} className="text-slate-500" />
+                </div>
+                <p className="text-[12px] text-slate-500">You're all caught up</p>
               </div>
             ) : (
               <>
-                {/* News Article Previews */}
-                {visibleArticles.length > 0 && (
+                {/* Featured article — newest with a preview image */}
+                {featured && (() => {
+                  const cfg = NEWS_TYPE_CONFIG[featured.type as keyof typeof NEWS_TYPE_CONFIG] ?? NEWS_TYPE_CONFIG.update
+                  return (
+                    <div
+                      className="group relative m-2 rounded-xl overflow-hidden cursor-pointer border border-white/10 hover:border-white/25 transition-colors"
+                      onClick={() => { if (editingArticleId === featured.id) return; window.location.href = `/news/${featured.slug}`; onToggle() }}
+                    >
+                      <div className="aspect-video w-full bg-slate-800">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={featured.previewImage!} alt="" className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300" />
+                      </div>
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent" />
+                      {/* Type chip + NEW badge */}
+                      <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${cfg.bg} border ${cfg.border} ${cfg.text} backdrop-blur-sm`}>
+                          {articleTypeLabel(featured.type)}
+                        </span>
+                        {isNewItem(featured.publishedAt || featured.createdAt) && (
+                          <span className="px-1.5 py-0.5 rounded-full text-[8px] font-bold bg-fuchsia-500 text-black">NEW</span>
+                        )}
+                      </div>
+                      {/* Admin quick edit + dismiss (admin buttons always visible — no hover on touch) */}
+                      <div className="absolute top-2 right-2 flex items-center gap-1">
+                        {isAdmin && (
+                          <button
+                            onClick={e => { e.stopPropagation(); startEditArticle(featured) }}
+                            title="Quick edit (admin)"
+                            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/60 text-violet-300 hover:bg-violet-500/40 hover:text-white transition-all"
+                          >
+                            <Pencil size={10} />
+                          </button>
+                        )}
+                        <button
+                          onClick={e => { e.stopPropagation(); handleDismissArticle(featured.id) }}
+                          className="w-6 h-6 flex items-center justify-center rounded-full bg-black/60 text-slate-400 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                      {/* Title over gradient — or admin quick editor */}
+                      {editingArticleId === featured.id ? (
+                        <div className="absolute bottom-0 left-0 right-0 p-3 bg-slate-950/90 backdrop-blur-sm border-t border-violet-500/30 cursor-default">
+                          {articleQuickEditor(featured)}
+                        </div>
+                      ) : (
+                        <div className="absolute bottom-0 left-0 right-0 p-3">
+                          <p className="text-[13px] text-white font-semibold leading-snug line-clamp-2">{featured.title}</p>
+                          {featured.summary && (
+                            <p className="text-[11px] text-slate-300/90 mt-0.5 truncate">{featured.summary}</p>
+                          )}
+                          <p className="text-[10px] text-slate-400/80 mt-1">{relativeTime(featured.publishedAt || featured.createdAt)}</p>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
+                {/* Remaining articles — compact rows with type accent */}
+                {restArticles.length > 0 && (
                   <div>
-                    {visibleArticles.length > 0 && visibleNotifs.length > 0 && (
-                      <p className="px-4 pt-2.5 pb-1 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Articles</p>
-                    )}
-                    {visibleArticles.map(a => {
+                    <p className="px-4 pt-2.5 pb-1 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Articles</p>
+                    {restArticles.map(a => {
                       const cfg = NEWS_TYPE_CONFIG[a.type as keyof typeof NEWS_TYPE_CONFIG] ?? NEWS_TYPE_CONFIG.update
                       const Icon = cfg.icon
                       return (
                         <div
                           key={`article-${a.id}`}
-                          className="group px-3 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                          onClick={() => { window.location.href = `/news/${a.slug}`; onToggle() }}
+                          className="group relative px-3 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                          onClick={() => { if (editingArticleId === a.id) return; window.location.href = `/news/${a.slug}`; onToggle() }}
                         >
-                          <div className="flex items-start gap-2.5">
+                          <div className={`absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r ${cfg.dot}`} />
+                          <div className="flex items-start gap-2.5 pl-1.5">
                             {a.previewImage ? (
                               // eslint-disable-next-line @next/next/no-img-element
                               <img
                                 src={a.previewImage}
                                 alt=""
-                                className="w-10 h-10 rounded-lg object-cover shrink-0 border border-white/10"
+                                className="w-12 h-12 rounded-lg object-cover shrink-0 border border-white/10"
                               />
                             ) : (
-                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${cfg.bg} border ${cfg.border}`}>
-                                <Icon size={16} className={cfg.text} />
+                              <div className={`w-12 h-12 rounded-lg flex items-center justify-center shrink-0 ${cfg.bg} border ${cfg.border}`}>
+                                <Icon size={17} className={cfg.text} />
                               </div>
                             )}
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5 mb-0.5">
-                                <span className={`text-[10px] font-semibold ${cfg.text}`}>{a.type === 'success' ? 'Update' : a.type === 'update' ? 'Patch' : a.type === 'tutorial' ? 'Tutorial' : a.type.charAt(0).toUpperCase() + a.type.slice(1)}</span>
+                                <span className={`text-[10px] font-semibold ${cfg.text}`}>{articleTypeLabel(a.type)}</span>
+                                {isNewItem(a.publishedAt || a.createdAt) && (
+                                  <span className="px-1.5 py-0.5 rounded-full text-[8px] font-bold bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-300 leading-none">NEW</span>
+                                )}
                                 <span className="text-slate-700 text-[10px]">·</span>
                                 <span className="text-[10px] text-slate-600">{relativeTime(a.publishedAt || a.createdAt)}</span>
                               </div>
-                              <p className="text-[12px] text-slate-200 font-medium leading-snug truncate">{a.title}</p>
-                              <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed line-clamp-2">{a.summary}</p>
+                              {editingArticleId === a.id ? (
+                                <div className="mt-1">{articleQuickEditor(a)}</div>
+                              ) : (
+                                <>
+                                  <p className="text-[12px] text-slate-200 font-medium leading-snug truncate">{a.title}</p>
+                                  <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed line-clamp-2">{a.summary}</p>
+                                </>
+                              )}
                             </div>
-                            <button
-                              onClick={e => { e.stopPropagation(); handleDismissArticle(a.id) }}
-                              className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-slate-600 hover:text-slate-300 hover:bg-white/8 transition-all opacity-0 group-hover:opacity-100 mt-0.5"
-                            >
-                              <X size={10} />
-                            </button>
+                            <div className="flex flex-col items-center gap-1 shrink-0 mt-0.5">
+                              {isAdmin && editingArticleId !== a.id && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); startEditArticle(a) }}
+                                  title="Quick edit (admin)"
+                                  className="w-5 h-5 flex items-center justify-center rounded-full text-violet-400/70 hover:text-violet-300 hover:bg-violet-500/15 transition-all"
+                                >
+                                  <Pencil size={10} />
+                                </button>
+                              )}
+                              <button
+                                onClick={e => { e.stopPropagation(); handleDismissArticle(a.id) }}
+                                className="w-5 h-5 flex items-center justify-center rounded-full text-slate-600 hover:text-slate-300 hover:bg-white/8 transition-all opacity-0 group-hover:opacity-100"
+                              >
+                                <X size={10} />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )
@@ -11754,37 +12109,58 @@ function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void 
                   </div>
                 )}
 
-                {/* Notifications */}
-                {visibleNotifs.length > 0 && (
+                {/* Notifications — pinned first, type accent */}
+                {sortedNotifs.length > 0 && (
                   <div>
-                    {visibleArticles.length > 0 && (
-                      <p className="px-4 pt-2.5 pb-1 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Updates</p>
-                    )}
-                    {visibleNotifs.map((n) => {
+                    <p className="px-4 pt-2.5 pb-1 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Updates</p>
+                    {sortedNotifs.map((n) => {
                       const cfg = NEWS_TYPE_CONFIG[n.type as keyof typeof NEWS_TYPE_CONFIG] ?? NEWS_TYPE_CONFIG.info
                       const Icon = cfg.icon
                       return (
-                        <div key={n.id} className="group px-4 py-3 border-b border-white/5 last:border-0 hover:bg-white/[0.03] transition-colors">
-                          <div className="flex items-start gap-3">
-                            <div className={`mt-0.5 shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${cfg.dot}/15`}>
-                              <Icon size={11} className={cfg.text} />
+                        <div key={n.id} className="group relative px-4 py-3 border-b border-white/5 last:border-0 hover:bg-white/[0.03] transition-colors">
+                          <div className={`absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r ${cfg.dot}`} />
+                          <div className="flex items-start gap-3 pl-1">
+                            <div className={`mt-0.5 shrink-0 w-6 h-6 rounded-lg flex items-center justify-center ${cfg.bg} border ${cfg.border}`}>
+                              <Icon size={12} className={cfg.text} />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[12px] text-slate-200 leading-relaxed">{parseNotifMessage(n.message)}</p>
-                              <p className="text-[10px] text-slate-600 mt-1">{relativeTime(n.createdAt)}</p>
+                              {editingNotifId === n.id ? (
+                                <div className="mt-0.5">{notifQuickEditor}</div>
+                              ) : (
+                                <>
+                                  <p className="text-[12px] text-slate-200 leading-relaxed">{parseNotifMessage(n.message)}</p>
+                                  <div className="flex items-center gap-1.5 mt-1">
+                                    {isNewItem(n.createdAt) && (
+                                      <span className="px-1.5 py-0.5 rounded-full text-[8px] font-bold bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-300 leading-none">NEW</span>
+                                    )}
+                                    <p className="text-[10px] text-slate-600">{relativeTime(n.createdAt)}</p>
+                                  </div>
+                                </>
+                              )}
                             </div>
-                            {n.locked ? (
-                              <div className="shrink-0 w-5 h-5 flex items-center justify-center text-amber-500/50" title="Pinned">
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => handleDismiss(n.id)}
-                                className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-slate-600 hover:text-slate-300 hover:bg-white/8 transition-all opacity-0 group-hover:opacity-100"
-                              >
-                                <X size={10} />
-                              </button>
-                            )}
+                            <div className="flex flex-col items-center gap-1 shrink-0">
+                              {isAdmin && editingNotifId !== n.id && (
+                                <button
+                                  onClick={() => startEditNotif(n)}
+                                  title="Quick edit (admin)"
+                                  className="w-5 h-5 flex items-center justify-center rounded-full text-violet-400/70 hover:text-violet-300 hover:bg-violet-500/15 transition-all"
+                                >
+                                  <Pencil size={10} />
+                                </button>
+                              )}
+                              {n.locked ? (
+                                <div className="w-5 h-5 flex items-center justify-center text-amber-500/60" title="Pinned">
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleDismiss(n.id)}
+                                  className="w-5 h-5 flex items-center justify-center rounded-full text-slate-600 hover:text-slate-300 hover:bg-white/8 transition-all opacity-0 group-hover:opacity-100"
+                                >
+                                  <X size={10} />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )
@@ -11794,9 +12170,130 @@ function NewsDropdown({ open, onToggle }: { open: boolean; onToggle: () => void 
               </>
             )}
           </div>
+
+          {/* Admin footer note */}
+          {isAdmin && (
+            <div className="px-4 py-2 border-t border-white/5 bg-violet-500/[0.04]">
+              <p className="text-[9px] text-slate-600 leading-relaxed">
+                Admin section — create, edit and delete news & notifications via <span className="text-violet-400">Manage</span>. Only visible to admin accounts.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
+  )
+}
+
+// --- NEWS MANAGER MODAL (admin only) ---
+// Hosts the shared NewsManager (same editor as /admin/news) in a full-screen
+// portal modal, with the inline admin unlock used by other portal admin tools.
+function NewsManagerModal({ initialSection, initialArticleId, onClose }: {
+  initialSection?: "articles" | "notifications"
+  initialArticleId?: number
+  onClose: () => void
+}) {
+  const [authNeeded, setAuthNeeded] = useState<boolean | null>(null) // null = probing
+  const [passwordInput, setPasswordInput] = useState("")
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/news?all=true", { headers: adminPasswordHeaders() })
+        setAuthNeeded(res.status === 401)
+      } catch {
+        setAuthNeeded(false)
+      }
+    })()
+  }, [])
+
+  const handleUnlock = async () => {
+    if (!passwordInput.trim() || verifying) return
+    setVerifying(true)
+    setVerifyError(null)
+    try {
+      const res = await fetch("/api/admin/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordInput }),
+      })
+      if (res.ok) {
+        try { sessionStorage.setItem("admin-password", passwordInput) } catch {}
+        setPasswordInput("")
+        setAuthNeeded(false)
+      } else {
+        const data = await res.json().catch(() => null)
+        setVerifyError(data?.error || "Incorrect password")
+      }
+    } catch {
+      setVerifyError("Verification failed — check your connection.")
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[10010] flex items-center justify-center p-3 sm:p-6 bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-5xl h-[90vh] rounded-2xl bg-[#09090f] border border-white/[0.1] shadow-2xl flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.07] shrink-0">
+          <div className="flex items-center gap-2">
+            <Bell size={14} className="text-fuchsia-400" />
+            <p className="text-sm font-semibold text-white">Manage News & Notifications</p>
+            <span className="px-1.5 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/30 text-violet-300 text-[9px] font-bold uppercase tracking-wider">Admin</span>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-white/[0.06] text-slate-600 hover:text-slate-300 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 min-h-0">
+          {authNeeded === null ? (
+            <div className="flex items-center justify-center h-full gap-2 text-slate-500 text-xs">
+              <Loader2 size={14} className="animate-spin" /> Checking admin session…
+            </div>
+          ) : authNeeded ? (
+            <div className="flex items-center justify-center h-full p-6">
+              <div className="w-full max-w-sm rounded-xl border border-violet-500/25 bg-violet-500/5 p-4 space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <Lock size={13} className="text-violet-400" />
+                  <p className="text-xs font-semibold text-white">Admin unlock required</p>
+                </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Enter your admin password to manage news & notifications for this browser session.
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={passwordInput}
+                    onChange={e => { setPasswordInput(e.target.value); setVerifyError(null) }}
+                    onKeyDown={e => e.key === "Enter" && handleUnlock()}
+                    placeholder="Admin password"
+                    autoFocus
+                    className="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-white/10 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/40"
+                  />
+                  <button
+                    onClick={handleUnlock}
+                    disabled={verifying || !passwordInput.trim()}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-500/20 border border-violet-500/40 text-violet-300 text-xs font-medium hover:bg-violet-500/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {verifying && <Loader2 size={11} className="animate-spin" />}
+                    Unlock
+                  </button>
+                </div>
+                {verifyError && <p className="text-[11px] text-red-400">{verifyError}</p>}
+              </div>
+            </div>
+          ) : (
+            <NewsManager embedded initialSection={initialSection} initialArticleId={initialArticleId} />
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -12122,10 +12619,36 @@ export default function PortalV2Page() {
     } catch {}
   }
 
+  // --- Hidden generations view — session-only (always back to normal feed on refresh) ---
+  const [feedShowHidden, setFeedShowHidden] = useState(false)
+  const [bulkHiding, setBulkHiding] = useState(false)
+
+  const handleBulkHide = async () => {
+    if (selectedImageIds.size === 0 || bulkHiding) return
+    setBulkHiding(true)
+    try {
+      const res = await fetch("/api/my-images", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(selectedImageIds), hidden: !feedShowHidden }),
+      })
+      if (res.ok) {
+        setSelectedImageIds(new Set())
+        setSelectMode(false)
+        // Force both feeds to reload so the (un)hidden items move between views
+        setImageGridKey(k => k + 1)
+      }
+    } catch {}
+    finally { setBulkHiding(false) }
+  }
+
   // --- Admin only: feed filters (mirrors /admin/dataset) — session state, not persisted ---
   const [adminFeedFilters, setAdminFeedFilters] = useState<AdminFeedFilters | null>(null)
   const [adminFilterPanelOpen, setAdminFilterPanelOpen] = useState(false)
   const adminFeedFilterCount = countActiveAdminFeedFilters(adminFeedFilters)
+
+  // --- Admin only: news manager modal (opened from the News dropdown) ---
+  const [newsManagerTarget, setNewsManagerTarget] = useState<{ section: "articles" | "notifications"; articleId?: number } | null>(null)
 
   // --- Admin: add selected generations to dataset buckets ---
   const [addToBucketOpen, setAddToBucketOpen] = useState(false)
@@ -13795,6 +14318,8 @@ export default function PortalV2Page() {
             <NewsDropdown
               open={openDropdown === "news"}
               onToggle={() => toggle("news")}
+              isAdmin={isAdminAccount}
+              onManage={(t) => setNewsManagerTarget(t ?? { section: "articles" })}
             />
             <FeedDropdown
               open={openDropdown === "feed"}
@@ -13803,6 +14328,8 @@ export default function PortalV2Page() {
               onColsChange={handleFeedColsChange}
               fullSize={feedFullSize}
               onFullSizeChange={handleFeedFullSizeChange}
+              showHidden={feedShowHidden}
+              onShowHiddenChange={setFeedShowHidden}
               isAdmin={isAdminAccount}
               adminFilterCount={adminFeedFilterCount}
               onOpenAdminFilters={() => setAdminFilterPanelOpen(true)}
@@ -13837,13 +14364,25 @@ export default function PortalV2Page() {
           selectedCount={selectedImageIds.size}
           onDownloadAll={handleBulkDownload}
           onDeleteAll={handleBulkDelete}
+          onHideAll={handleBulkHide}
           onExit={handleToggleSelectMode}
           downloading={bulkDownloading}
           deleting={bulkDeleting}
+          hiding={bulkHiding}
+          hiddenView={feedShowHidden}
           downloadProgress={downloadProgress}
           downloadError={downloadError}
           isAdmin={isAdminAccount}
           onAddToBucket={handleOpenAddToBucket}
+        />
+      )}
+
+      {/* Admin only: news & notifications manager (same editor as /admin/news) */}
+      {newsManagerTarget && isAdminAccount && (
+        <NewsManagerModal
+          initialSection={newsManagerTarget.section}
+          initialArticleId={newsManagerTarget.articleId}
+          onClose={() => setNewsManagerTarget(null)}
         />
       )}
 
@@ -13890,6 +14429,7 @@ export default function PortalV2Page() {
               cols={feedCols}
               fullSize={feedFullSize}
               adminFilters={isAdminAccount ? adminFeedFilters : null}
+              showHidden={feedShowHidden}
             />
           </div>
           {/* Custom Flux LoRA panel — replaces PromptBox for that model */}
@@ -14033,11 +14573,13 @@ export default function PortalV2Page() {
               savedFails={savedVideoFails}
               onVideoClick={setSelectedVideo}
               onPendingClick={setVideoPendingDetail}
+              key={`vf-${imageGridKey}`}
               selectMode={selectMode}
               selectedIds={selectedImageIds}
               onSelectToggle={handleSelectToggle}
               onNavListChange={setVideoNavList}
               cols={feedCols}
+              showHidden={feedShowHidden}
             />
           </div>
 

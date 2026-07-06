@@ -1,14 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 
+function checkAuth(req: Request) {
+  const pass = process.env.ADMIN_PASSWORD
+  if (!pass) return true
+  return req.headers.get('x-admin-password') === pass
+}
+
 // GET /api/news          → active articles (public)
-// GET /api/news?all=true → all articles (admin)
+// GET /api/news?all=true → all articles incl. drafts (admin only)
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const all = searchParams.get('all') === 'true'
 
   try {
     if (all) {
+      if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       const articles = await prisma.newsArticle.findMany({
         orderBy: { createdAt: 'desc' },
       })
@@ -36,8 +43,9 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/news → create article
+// POST /api/news → create article (admin only)
 export async function POST(req: NextRequest) {
+  if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await req.json()
     const { title, slug, type, summary, previewImage, content, isActive } = body
@@ -69,8 +77,9 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PUT /api/news → update article
+// PUT /api/news → update article (admin only)
 export async function PUT(req: NextRequest) {
+  if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await req.json()
     const { id, title, slug, type, summary, previewImage, content, isActive } = body
@@ -106,8 +115,9 @@ export async function PUT(req: NextRequest) {
   }
 }
 
-// DELETE /api/news?id=X → delete article
+// DELETE /api/news?id=X → delete article (admin only)
 export async function DELETE(req: NextRequest) {
+  if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { searchParams } = new URL(req.url)
   const id = parseInt(searchParams.get('id') || '')
 

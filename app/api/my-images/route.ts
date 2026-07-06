@@ -33,6 +33,7 @@ export async function GET(request: Request) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const skip = (page - 1) * limit
     const type = searchParams.get('type') // 'image' | 'video' | null (all)
+    const showHidden = searchParams.get('hidden') === 'true' // hidden-only view
     const falRequestIdsParam = searchParams.get('falRequestIds') // comma-separated list
 
     const VIDEO_MODELS = ['wan-2.5', 'kling-v3', 'kling-o3', 'kling-v3-motion', 'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'lipsync-v3']
@@ -72,6 +73,8 @@ export async function GET(request: Request) {
     const baseWhere = {
       userId: user.id,
       isDeleted: false,
+      // Normal feed excludes hidden items; ?hidden=true shows only hidden items
+      isHidden: showHidden,
       ...typeFilter,
     }
 
@@ -117,6 +120,45 @@ export async function GET(request: Request) {
       { error: 'Failed to fetch images' },
       { status: 500 }
     )
+  } finally {
+    await prisma.$disconnect()
+  }
+}
+
+// PATCH /api/my-images
+// Body: { ids: number[], hidden: boolean }
+// Hides or unhides the specified generations. Fully reversible — the DB row and
+// the stored file are untouched; only the isHidden flag changes.
+export async function PATCH(request: Request) {
+  try {
+    const cookieStore = await cookies()
+    const token = cookieStore.get('session')?.value
+    if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+
+    const user = await getUserFromSession(token)
+    if (!user) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+
+    const body = await request.json()
+    const ids: number[] = body.ids
+    const hidden: boolean = body.hidden
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return NextResponse.json({ error: 'No image IDs provided' }, { status: 400 })
+    }
+    if (typeof hidden !== 'boolean') {
+      return NextResponse.json({ error: 'hidden must be a boolean' }, { status: 400 })
+    }
+
+    // User-scoped where prevents any cross-user modification
+    const result = await prisma.generatedImage.updateMany({
+      where: { id: { in: ids }, userId: user.id, isDeleted: false },
+      data: { isHidden: hidden },
+    })
+
+    return NextResponse.json({ success: true, updated: result.count })
+  } catch (error: any) {
+    console.error('Error updating image visibility:', error)
+    return NextResponse.json({ error: 'Failed to update images' }, { status: 500 })
   } finally {
     await prisma.$disconnect()
   }
