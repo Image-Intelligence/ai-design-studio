@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 
 // --- TYPES ---
@@ -1006,6 +1006,689 @@ function SelectModeOverlay({
   )
 }
 
+// --- FEED WIDTH DROPDOWN ---
+// Maps the user's column choice to a static Tailwind class (JIT needs literals)
+const FEED_COL_CLASS: Record<number, string> = {
+  1: "grid-cols-1", 2: "grid-cols-2", 3: "grid-cols-3",
+  4: "grid-cols-4", 5: "grid-cols-5", 6: "grid-cols-6",
+}
+
+function FeedDropdown({
+  open,
+  onToggle,
+  cols,
+  onColsChange,
+  fullSize,
+  onFullSizeChange,
+  isAdmin = false,
+  adminFilterCount = 0,
+  onOpenAdminFilters,
+  onClearAdminFilters,
+}: {
+  open: boolean
+  onToggle: () => void
+  cols: number | null
+  onColsChange: (n: number | null) => void
+  fullSize: boolean
+  onFullSizeChange: (on: boolean) => void
+  isAdmin?: boolean
+  adminFilterCount?: number
+  onOpenAdminFilters?: () => void
+  onClearAdminFilters?: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        if (open) onToggle()
+      }
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [open, onToggle])
+
+  useEffect(() => {
+    if (open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect()
+      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 288) })
+    }
+  }, [open])
+
+  return (
+    <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
+      <button
+        ref={buttonRef}
+        onClick={onToggle}
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
+          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+        }`}
+      >
+        <Layers size={15} />
+        Feed
+        {cols !== null && (
+          <span className="text-[10px] font-mono bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded-full leading-none">{cols}</span>
+        )}
+        {adminFilterCount > 0 && (
+          <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" title={`${adminFilterCount} feed filters active`} />
+        )}
+        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="fixed w-[270px] rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-[9999] p-3 space-y-2" style={{ top: menuPos.top, left: menuPos.left }}>
+          <span className="text-sm font-semibold text-white">Feed Width</span>
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            Choose how many columns your generation feed displays. <span className="text-white">Auto</span> adapts to your screen size.
+          </p>
+          <div className="flex items-center rounded-lg border border-white/10 overflow-hidden">
+            <button
+              onClick={() => onColsChange(null)}
+              className={`flex-1 px-2 py-2 text-[11px] font-medium transition-colors ${cols === null ? "bg-cyan-500/15 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+            >
+              Auto
+            </button>
+            {[1, 2, 3, 4, 5, 6].map(n => (
+              <button
+                key={n}
+                onClick={() => onColsChange(n)}
+                className={`flex-1 px-2 py-2 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? "bg-white/[0.08] text-white" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          {/* Slider — same control, drag instead of click */}
+          <div className="flex items-center gap-2.5 px-1 pt-0.5">
+            <span className="text-[10px] font-mono text-slate-600">1</span>
+            <input
+              type="range"
+              min={1}
+              max={6}
+              step={1}
+              value={cols ?? 4}
+              onChange={e => onColsChange(+e.target.value)}
+              className="flex-1 accent-cyan-400 cursor-pointer"
+            />
+            <span className="text-[10px] font-mono text-slate-600">6</span>
+            <span className={`w-7 text-center text-[11px] font-mono rounded-md border py-0.5 ${cols === null ? "border-white/10 text-slate-600" : "border-cyan-500/30 text-cyan-300"}`}>
+              {cols ?? "A"}
+            </span>
+          </div>
+
+          {/* Full Size mode toggle */}
+          <div className="border-t border-white/5 pt-2 mt-1">
+            <button
+              onClick={() => onFullSizeChange(!fullSize)}
+              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${
+                fullSize
+                  ? "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
+                  : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <span>Full Size Mode</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${fullSize ? "bg-cyan-500/25 text-cyan-300" : "bg-white/10 text-slate-500"}`}>
+                {fullSize ? "ON" : "OFF"}
+              </span>
+            </button>
+            <p className="text-[10px] text-slate-600 leading-relaxed px-1 pt-1.5">
+              Shows entire images at full resolution and their natural shape — nothing cropped. Works with any column count.
+            </p>
+          </div>
+
+          {/* Admin only: feed filters */}
+          {isAdmin && (
+            <div className="border-t border-white/5 pt-2 mt-1 space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => { onOpenAdminFilters?.(); onToggle() }}
+                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all bg-violet-500/10 border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200"
+                >
+                  <SlidersHorizontal size={12} />
+                  Feed Filters
+                  {adminFilterCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-violet-500/25 text-violet-200 text-[10px] font-bold leading-none">{adminFilterCount}</span>
+                  )}
+                </button>
+                {adminFilterCount > 0 && (
+                  <button
+                    onClick={() => onClearAdminFilters?.()}
+                    title="Clear all feed filters"
+                    className="px-2.5 py-2 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-400 hover:text-white hover:bg-white/10 transition-all"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="text-[9px] text-slate-600 leading-relaxed px-1">
+                Admin section — only visible to admin accounts. Filters the feed using the /admin/dataset system (models, buckets, tags, users and more).
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// --- ADMIN FEED FILTERS ---
+// Mirrors the filter system on /admin/dataset — same query params, same API.
+type AdminFeedFilters = {
+  models: string[]
+  aspects: string[]
+  qualities: string[]
+  users: number[]
+  hasRefs: string      // '' | 'true' | 'false' | '1' | '2' | '3' | '4+'
+  hasRating: string    // '' | 'true' | 'false'
+  hasCaption: string   // '' | 'true' | 'false'
+  hasTag: string       // '' | 'true' | 'false'
+  tagFilter: string
+  mediaType: string    // '' | 'image' | 'video'
+  markedOnly: boolean
+  bucketId: string
+  search: string
+  sort: string         // 'newest' | 'oldest' | 'rating' | 'cost'
+}
+
+const EMPTY_ADMIN_FEED_FILTERS: AdminFeedFilters = {
+  models: [], aspects: [], qualities: [], users: [],
+  hasRefs: "", hasRating: "", hasCaption: "", hasTag: "", tagFilter: "",
+  mediaType: "", markedOnly: false, bucketId: "", search: "", sort: "newest",
+}
+
+function countActiveAdminFeedFilters(f: AdminFeedFilters | null): number {
+  if (!f) return 0
+  return [
+    f.models.length > 0, f.aspects.length > 0, f.qualities.length > 0, f.users.length > 0,
+    !!f.hasRefs, !!f.hasRating, !!f.hasCaption, !!f.hasTag, !!f.tagFilter,
+    !!f.mediaType, f.markedOnly, !!f.bucketId, !!f.search, f.sort !== "newest",
+  ].filter(Boolean).length
+}
+
+function buildAdminFeedParams(f: AdminFeedFilters, page: number, limit: number): URLSearchParams {
+  const p = new URLSearchParams()
+  p.set("page", String(page))
+  p.set("limit", String(limit))
+  f.models.forEach(m => p.append("model", m))
+  f.aspects.forEach(a => p.append("aspectRatio", a))
+  f.qualities.forEach(q => p.append("quality", q))
+  f.users.forEach(u => p.append("userId", String(u)))
+  if (f.hasRefs)    p.set("hasRefs", f.hasRefs)
+  if (f.hasRating)  p.set("hasRating", f.hasRating)
+  if (f.hasCaption) p.set("hasCaption", f.hasCaption)
+  if (f.hasTag)     p.set("hasTag", f.hasTag)
+  if (f.tagFilter)  p.set("tagFilter", f.tagFilter)
+  if (f.mediaType)  p.set("mediaType", f.mediaType)
+  if (f.markedOnly) p.set("markedOnly", "true")
+  if (f.bucketId)   p.set("bucketId", f.bucketId)
+  if (f.search)     p.set("search", f.search)
+  if (f.sort && f.sort !== "newest") p.set("sort", f.sort)
+  return p
+}
+
+const adminPasswordHeaders = (): Record<string, string> => {
+  const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
+  return pass ? { "x-admin-password": pass } : {}
+}
+
+const isVideoUrl = (url: string) => /\.(mp4|webm|mov|avi|mkv)($|\?|#)/i.test(url)
+
+interface AdminFeedFacets {
+  models:    { value: string; count: number }[]
+  aspects:   { value: string; count: number }[]
+  qualities: { value: string | null; count: number }[]
+  tags:      { value: string; count: number }[]
+  users:     { id: number; email: string; name: string | null; count: number }[]
+}
+
+// Multi-select filter dropdown — same control as /admin/dataset's filter bar
+function MultiFilterSelect({ values, onChange, options, placeholder, searchable = false }: {
+  values:       string[]
+  onChange:     (v: string[]) => void
+  options:      { value: string; label: string }[]
+  placeholder:  string
+  searchable?:  boolean
+}) {
+  const [open,  setOpen]  = useState(false)
+  const [query, setQuery] = useState("")
+  const ref               = useRef<HTMLDivElement>(null)
+  const menuRef           = useRef<HTMLDivElement>(null)
+  const searchRef         = useRef<HTMLInputElement>(null)
+  // Menu is portaled to <body> so it can't be clipped by scrollable/overflow
+  // containers (e.g. the admin filter modal). Position is computed from the
+  // button rect; the menu flips upward when there isn't enough room below.
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; left: number; maxH: number }>({ left: 0, maxH: 340 })
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      const t = e.target as Node
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return
+      setOpen(false); setQuery("")
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
+  useEffect(() => {
+    if (open && ref.current) {
+      const r = ref.current.getBoundingClientRect()
+      const below = window.innerHeight - r.bottom - 12
+      const above = r.top - 12
+      const left = Math.min(r.left, window.innerWidth - 272)
+      if (below >= 240 || below >= above) {
+        setMenuPos({ top: r.bottom + 4, left, maxH: Math.max(180, Math.min(340, below)) })
+      } else {
+        setMenuPos({ bottom: window.innerHeight - r.top + 4, left, maxH: Math.max(180, Math.min(340, above)) })
+      }
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (open && searchable) setTimeout(() => searchRef.current?.focus(), 50)
+  }, [open, searchable])
+
+  function toggleValue(v: string) {
+    onChange(values.includes(v) ? values.filter(x => x !== v) : [...values, v])
+  }
+
+  const active   = values.length > 0
+  const filtered = searchable && query
+    ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
+    : options
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-all whitespace-nowrap
+          ${active
+            ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300"
+            : "bg-white/[0.05] border-white/[0.08] text-slate-300 hover:text-white hover:border-white/20"}`}
+      >
+        {active ? `${placeholder.split(":")[0]}: ${values.length}` : placeholder}
+        {active && (
+          <span
+            onClick={e => { e.stopPropagation(); onChange([]) }}
+            className="ml-0.5 text-cyan-500 hover:text-white cursor-pointer"
+            title="Clear"
+          >
+            <X size={9} />
+          </span>
+        )}
+        <ChevronDown size={10} className={`text-slate-600 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[10020] w-[260px] rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl overflow-hidden flex flex-col"
+          style={{ top: menuPos.top, bottom: menuPos.bottom, left: menuPos.left, maxHeight: menuPos.maxH }}
+        >
+          {searchable && (
+            <div className="p-2 border-b border-white/[0.06] shrink-0">
+              <div className="relative">
+                <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
+                <input
+                  ref={searchRef}
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  placeholder="Search…"
+                  className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-white/[0.06] border border-white/[0.08] text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/40"
+                />
+                {query && (
+                  <button onClick={() => setQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
+                    <X size={9} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="overflow-y-auto py-1 flex-1 min-h-0">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-3 text-[11px] text-slate-600 text-center">No results</p>
+            ) : filtered.map(opt => {
+              const checked = values.includes(opt.value)
+              return (
+                <button key={opt.value} onClick={() => toggleValue(opt.value)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs transition-colors text-left
+                    ${checked ? "text-cyan-300 bg-cyan-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}>
+                  <span className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 border transition-colors
+                    ${checked ? "bg-cyan-500 border-cyan-500" : "border-white/20"}`}>
+                    {checked && <span className="text-black text-[8px] font-bold leading-none">✓</span>}
+                  </span>
+                  <span className="truncate">{opt.label}</span>
+                </button>
+              )
+            })}
+          </div>
+          {values.length > 0 && (
+            <div className="border-t border-white/[0.06] p-1 shrink-0">
+              <button onClick={() => onChange([])}
+                className="w-full text-left px-3 py-1.5 text-[11px] text-slate-600 hover:text-slate-400 transition-colors rounded-lg hover:bg-white/[0.04]">
+                Clear {values.length} selected
+              </button>
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+function AdminFeedFilterPanel({ initial, onApply, onClose }: {
+  initial: AdminFeedFilters | null
+  onApply: (filters: AdminFeedFilters | null) => void
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState<AdminFeedFilters>(initial ?? EMPTY_ADMIN_FEED_FILTERS)
+  const [facets, setFacets] = useState<AdminFeedFacets | null>(null)
+  const [buckets, setBuckets] = useState<Bucket[]>([])
+  const [folders, setFolders] = useState<BucketFolder[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [browsePath, setBrowsePath] = useState<number[]>([])
+  // Inline admin unlock — shown when the session has no valid admin password yet
+  const [authNeeded, setAuthNeeded] = useState(false)
+  const [passwordInput, setPasswordInput] = useState("")
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+
+  const loadAll = useCallback(async () => {
+    setLoadError(null)
+    try {
+      const headers = adminPasswordHeaders()
+      const [dRes, bRes, fRes] = await Promise.all([
+        fetch("/api/admin/dataset?page=1&limit=1", { headers }),
+        fetch("/api/admin/buckets", { headers }),
+        fetch("/api/admin/folders", { headers }),
+      ])
+      if (dRes.status === 401 || bRes.status === 401) {
+        setAuthNeeded(true)
+        return
+      }
+      setAuthNeeded(false)
+      if (dRes.ok) { const d = await dRes.json(); setFacets(d.facets ?? null) }
+      if (bRes.ok) setBuckets(await bRes.json())
+      if (fRes.ok) setFolders(await fRes.json())
+    } catch {
+      setLoadError("Failed to load filter options — check your connection.")
+    }
+  }, [])
+
+  useEffect(() => { loadAll() }, [loadAll])
+
+  const handleUnlock = async () => {
+    if (!passwordInput.trim() || verifying) return
+    setVerifying(true)
+    setVerifyError(null)
+    try {
+      const res = await fetch("/api/admin/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordInput }),
+      })
+      if (res.ok) {
+        try { sessionStorage.setItem("admin-password", passwordInput) } catch {}
+        setPasswordInput("")
+        setAuthNeeded(false)
+        await loadAll()
+      } else {
+        const data = await res.json().catch(() => null)
+        setVerifyError(data?.error || "Incorrect password")
+      }
+    } catch {
+      setVerifyError("Verification failed — check your connection.")
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  const set = <K extends keyof AdminFeedFilters>(k: K, v: AdminFeedFilters[K]) => setDraft(d => ({ ...d, [k]: v }))
+
+  const isEmpty = JSON.stringify(draft) === JSON.stringify(EMPTY_ADMIN_FEED_FILTERS)
+  const currentFolderId = browsePath.length > 0 ? browsePath[browsePath.length - 1] : null
+  const visibleFolders = folders.filter(f => currentFolderId === null ? !f.parentId : f.parentId === currentFolderId)
+  const visibleBuckets = buckets.filter(b => b.folderId === currentFolderId)
+  const selectedBucket = draft.bucketId ? buckets.find(b => String(b.id) === draft.bucketId) : null
+
+  const selectCls = "w-full px-2 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-white/25"
+  const labelCls = "text-[9px] font-mono uppercase tracking-wider text-slate-600 mb-1 block"
+
+  return createPortal(
+    <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-3xl rounded-2xl bg-[#0f0f1a] border border-white/[0.1] shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07] shrink-0">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-semibold text-white">Feed Filters</p>
+            <span className="px-1.5 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/30 text-violet-300 text-[9px] font-bold uppercase tracking-wider">Admin</span>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-white/[0.06] text-slate-600 hover:text-slate-300 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 p-4 space-y-4">
+          {loadError && <p className="text-xs text-red-400">{loadError}</p>}
+
+          {/* Inline admin unlock */}
+          {authNeeded && (
+            <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-4 space-y-2.5">
+              <div className="flex items-center gap-2">
+                <Lock size={13} className="text-violet-400" />
+                <p className="text-xs font-semibold text-white">Admin unlock required</p>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Enter your admin password to unlock filters and other admin features for this browser session.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  value={passwordInput}
+                  onChange={e => { setPasswordInput(e.target.value); setVerifyError(null) }}
+                  onKeyDown={e => e.key === "Enter" && handleUnlock()}
+                  placeholder="Admin password"
+                  autoFocus
+                  className="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-white/10 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/40"
+                />
+                <button
+                  onClick={handleUnlock}
+                  disabled={verifying || !passwordInput.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-500/20 border border-violet-500/40 text-violet-300 text-xs font-medium hover:bg-violet-500/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {verifying && <Loader2 size={11} className="animate-spin" />}
+                  Unlock
+                </button>
+              </div>
+              {verifyError && <p className="text-[11px] text-red-400">{verifyError}</p>}
+            </div>
+          )}
+
+          {/* Search + sort + media + marked */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="col-span-2 sm:col-span-1">
+              <span className={labelCls}>Search prompt</span>
+              <input value={draft.search} onChange={e => set("search", e.target.value)} placeholder="Contains…"
+                className={selectCls} />
+            </div>
+            <div>
+              <span className={labelCls}>Sort</span>
+              <select value={draft.sort} onChange={e => set("sort", e.target.value)} className={selectCls}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="rating">Top rated</option>
+                <option value="cost">Highest cost</option>
+              </select>
+            </div>
+            <div>
+              <span className={labelCls}>Media</span>
+              <select value={draft.mediaType} onChange={e => set("mediaType", e.target.value)} className={selectCls}>
+                <option value="">Images & videos</option>
+                <option value="image">Images only</option>
+                <option value="video">Videos only</option>
+              </select>
+            </div>
+            <div>
+              <span className={labelCls}>Training</span>
+              <button onClick={() => set("markedOnly", !draft.markedOnly)}
+                className={`w-full px-2 py-1.5 rounded-lg border text-xs transition-colors ${draft.markedOnly ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300" : "bg-slate-950 border-white/10 text-slate-500 hover:text-slate-300"}`}>
+                {draft.markedOnly ? "Marked only ✓" : "Any"}
+              </button>
+            </div>
+          </div>
+
+          {/* Refs / rating / caption / tags */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            <div>
+              <span className={labelCls}>Refs</span>
+              <select value={draft.hasRefs} onChange={e => set("hasRefs", e.target.value)} className={selectCls}>
+                <option value="">Any</option>
+                <option value="false">No refs</option>
+                <option value="true">Has refs</option>
+                <option value="1">1 ref</option>
+                <option value="2">2 refs</option>
+                <option value="3">3 refs</option>
+                <option value="4+">4+ refs</option>
+              </select>
+            </div>
+            <div>
+              <span className={labelCls}>Rating</span>
+              <select value={draft.hasRating} onChange={e => set("hasRating", e.target.value)} className={selectCls}>
+                <option value="">Any</option>
+                <option value="true">Rated</option>
+                <option value="false">Unrated</option>
+              </select>
+            </div>
+            <div>
+              <span className={labelCls}>Caption</span>
+              <select value={draft.hasCaption} onChange={e => set("hasCaption", e.target.value)} className={selectCls}>
+                <option value="">Any</option>
+                <option value="true">Has caption</option>
+                <option value="false">No caption</option>
+              </select>
+            </div>
+            <div>
+              <span className={labelCls}>Tags</span>
+              <select value={draft.hasTag} onChange={e => set("hasTag", e.target.value)} className={selectCls}>
+                <option value="">Any</option>
+                <option value="true">Has tags</option>
+                <option value="false">No tags</option>
+              </select>
+            </div>
+            <div>
+              <span className={labelCls}>Specific tag</span>
+              <select value={draft.tagFilter} onChange={e => set("tagFilter", e.target.value)} className={selectCls}>
+                <option value="">Any tag</option>
+                {facets?.tags.map(t => <option key={t.value} value={t.value}>{t.value} ({t.count})</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Model / aspect / quality / user — dropdown multi-selects, same as /admin/dataset */}
+          {facets && (
+            <div>
+              <span className={labelCls}>Filter by</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <MultiFilterSelect
+                  values={draft.models}
+                  onChange={v => set("models", v)}
+                  placeholder="Model: any"
+                  options={facets.models.map(m => ({ value: m.value, label: `${m.value} (${m.count})` }))}
+                />
+                <MultiFilterSelect
+                  values={draft.aspects}
+                  onChange={v => set("aspects", v)}
+                  placeholder="Aspect: any"
+                  options={facets.aspects.map(a => ({ value: a.value, label: `${a.value} (${a.count})` }))}
+                />
+                <MultiFilterSelect
+                  values={draft.qualities}
+                  onChange={v => set("qualities", v)}
+                  placeholder="Quality: any"
+                  options={facets.qualities.filter(q => q.value).map(q => ({ value: q.value!, label: `${q.value} (${q.count})` }))}
+                />
+                <MultiFilterSelect
+                  values={draft.users.map(String)}
+                  onChange={v => set("users", v.map(Number))}
+                  placeholder="User: any"
+                  searchable
+                  options={facets.users.map(u => ({ value: String(u.id), label: `${u.email} (${u.count})` }))}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Bucket / folder browser */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className={labelCls}>Filter by bucket</span>
+              {selectedBucket && (
+                <button onClick={() => set("bucketId", "")}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/40 text-violet-300 text-[10px]">
+                  {selectedBucket.name} <X size={9} />
+                </button>
+              )}
+            </div>
+            <div className="rounded-lg border border-white/[0.07] bg-black/20 p-2">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                {browsePath.length > 0 && (
+                  <button onClick={() => setBrowsePath(p => p.slice(0, -1))}
+                    className="p-0.5 rounded hover:bg-white/[0.06] text-slate-500 hover:text-white transition-colors">
+                    <ChevronLeft size={12} />
+                  </button>
+                )}
+                <span className="text-[10px] text-slate-600 font-mono truncate">
+                  {browsePath.length === 0 ? "Root" : browsePath.map(id => folders.find(f => f.id === id)?.name ?? "…").join(" / ")}
+                </span>
+              </div>
+              {visibleFolders.length === 0 && visibleBuckets.length === 0 ? (
+                <p className="text-[10px] text-slate-700 text-center py-3">No buckets here</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                  {visibleFolders.map(f => (
+                    <button key={`f-${f.id}`} onClick={() => setBrowsePath(p => [...p, f.id])}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md border border-amber-500/25 bg-amber-500/5 text-amber-400 text-[10px] hover:border-amber-500/50 transition-colors">
+                      <BookMarked size={9} /> {f.name}
+                    </button>
+                  ))}
+                  {visibleBuckets.map(b => (
+                    <button key={`b-${b.id}`} onClick={() => set("bucketId", draft.bucketId === String(b.id) ? "" : String(b.id))}
+                      className={`px-2 py-1 rounded-md border text-[10px] transition-colors ${draft.bucketId === String(b.id) ? "bg-violet-500/20 border-violet-500/50 text-violet-200" : "border-violet-500/25 bg-violet-500/5 text-violet-400 hover:border-violet-500/50"}`}>
+                      {b.name} <span className="opacity-50">{b.count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-white/[0.07] flex items-center justify-between gap-2 shrink-0">
+          <button onClick={() => { setDraft(EMPTY_ADMIN_FEED_FILTERS); setBrowsePath([]) }}
+            className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-slate-500 hover:text-white text-xs transition-all">
+            Clear all
+          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose}
+              className="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] text-xs transition-all">
+              Cancel
+            </button>
+            <button onClick={() => { onApply(isEmpty ? null : draft); onClose() }}
+              className="px-4 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/40 text-violet-300 hover:bg-violet-500/30 text-xs font-medium transition-all">
+              Apply Filters
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 const ADMIN_EMAILS = ["dirtysecretai@gmail.com", "promptandprotocol@gmail.com"]
 
 // --- PROFILE BUBBLE ---
@@ -1997,33 +2680,59 @@ function QueueDisplay({ active, max, label = "queue" }: { active: number; max: n
 }
 
 // --- GRID IMAGE CELL ---
-function GridImage({ src, alt, onClick, imageId, directUrl, selectMode, selected, onSelect }: {
+function GridImage({ src, alt, onClick, imageId, directUrl, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false }: {
   src: string; alt: string; onClick?: () => void; imageId?: number; directUrl?: string
   selectMode?: boolean; selected?: boolean; onSelect?: (id: number) => void
+  // fullWidth (Full Size mode): show the entire image at its natural aspect ratio,
+  // loading the full-resolution file instead of the square-cropped thumbnail
+  fullWidth?: boolean
+  // isVideo: render a muted <video> frame instead of <img> (admin-filtered feed can include videos)
+  isVideo?: boolean
+  // adminThumb (admin-filtered feed): /api/images/[id] only serves the signed-in user's own
+  // images, so cross-user thumbnails 404 — use the admin dataset thumb route instead
+  adminThumb?: boolean
 }) {
   const [loaded, setLoaded] = useState(false)
   // directUrl: skip the proxy and load directly (used for just-completed images where the
   // blob URL is already known — avoids the DB-auth → blob-fetch → sharp chain adding delay)
-  const thumbSrc = directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
+  const thumbSrc = adminThumb && imageId
+    ? `/api/admin/dataset/thumb/${imageId}`
+    : directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
+  const fullSrc = directUrl || src
   const handleClick = () => {
     if (selectMode && imageId !== undefined) { onSelect?.(imageId); return }
     onClick?.()
   }
   return (
     <div
-      className={`aspect-square bg-slate-800 overflow-hidden relative ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+      className={`${fullWidth ? "" : "aspect-square"} bg-slate-800 overflow-hidden relative ${fullWidth && !loaded ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
       onClick={handleClick}
     >
       {!loaded && (
         <div className="absolute inset-0 bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800 animate-pulse" />
       )}
-      <img
-        src={thumbSrc}
-        alt={alt}
-        decoding="async"
-        onLoad={() => setLoaded(true)}
-        className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
-      />
+      {isVideo ? (
+        <video
+          src={`${fullSrc}${fullSrc.includes("#") ? "" : "#t=0.001"}`}
+          muted
+          playsInline
+          preload="metadata"
+          onLoadedData={() => setLoaded(true)}
+          className={`${fullWidth ? "w-full h-auto block" : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
+        />
+      ) : (
+        <img
+          src={fullWidth ? fullSrc : thumbSrc}
+          alt={alt}
+          decoding="async"
+          loading={fullWidth ? "lazy" : undefined}
+          onLoad={() => setLoaded(true)}
+          className={`${fullWidth ? "w-full h-auto block" : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
+        />
+      )}
+      {isVideo && loaded && (
+        <div className="absolute bottom-1 right-1 px-1 py-0.5 rounded bg-black/60 text-[8px] font-mono text-white/70 pointer-events-none">VID</div>
+      )}
       {selectMode && (
         <div className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"}`}>
           {selected && <Check size={9} className="text-black" />}
@@ -3117,6 +3826,9 @@ function ImageGrid({
   selectedIds,
   onSelectToggle,
   onNavListChange,
+  cols = null,
+  fullSize = false,
+  adminFilters = null,
 }: {
   signedIn: boolean
   pendingSlots: PendingSlot[]
@@ -3128,6 +3840,9 @@ function ImageGrid({
   selectedIds?: Set<number>
   onSelectToggle?: (id: number) => void
   onNavListChange?: (list: ImageItem[]) => void
+  cols?: number | null
+  fullSize?: boolean
+  adminFilters?: AdminFeedFilters | null
 }) {
   const [images, setImages] = useState<ImageItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -3136,16 +3851,28 @@ function ImageGrid({
   const pageRef = useRef(1)
   const hasMoreRef = useRef(true)
   const pageLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
+  // Bumped whenever the filter set changes — in-flight responses from the old
+  // filter set are discarded instead of being appended to the fresh list
+  const epochRef = useRef(0)
 
   const loadNext = useCallback(async () => {
     if (loadingRef.current || !hasMoreRef.current) return
     loadingRef.current = true
     setLoading(true)
+    const epoch = epochRef.current
     try {
-      const res = await fetch(`/api/my-images?page=${pageRef.current}&limit=${pageLimitRef.current}&type=image`)
-      if (!res.ok) return
+      let res: Response
+      if (adminFilters) {
+        // Admin feed filters — same API + params as /admin/dataset
+        const params = buildAdminFeedParams(adminFilters, pageRef.current, pageLimitRef.current)
+        res = await fetch(`/api/admin/dataset?${params}`, { headers: adminPasswordHeaders() })
+      } else {
+        res = await fetch(`/api/my-images?page=${pageRef.current}&limit=${pageLimitRef.current}&type=image`)
+      }
+      if (!res.ok) { hasMoreRef.current = false; return }
       const data = await res.json()
-      if (!data.success) return
+      if (!adminFilters && !data.success) return
+      if (epoch !== epochRef.current) return // filters changed mid-flight — discard
       setImages((prev) => {
         const existingIds = new Set(prev.map(i => i.id))
         const newItems = data.images
@@ -3166,10 +3893,12 @@ function ImageGrid({
       hasMoreRef.current = pageRef.current < data.pagination.totalPages
       pageRef.current += 1
     } finally {
-      loadingRef.current = false
-      setLoading(false)
+      if (epoch === epochRef.current) {
+        loadingRef.current = false
+        setLoading(false)
+      }
     }
-  }, [])
+  }, [adminFilters])
 
   const checkSentinel = useCallback(() => {
     if (!sentinelRef.current || !hasMoreRef.current) return
@@ -3177,7 +3906,17 @@ function ImageGrid({
     if (rect.top < window.innerHeight + 1200) loadNext()
   }, [loadNext])
 
-  useEffect(() => { if (signedIn) loadNext() }, [signedIn, loadNext])
+  // Initial load + full reset whenever the filter set changes
+  useEffect(() => {
+    epochRef.current += 1
+    setImages([])
+    pageRef.current = 1
+    hasMoreRef.current = true
+    loadingRef.current = false
+    setLoading(false)
+    if (signedIn) loadNext()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn, loadNext])
   useEffect(() => { if (!loading) checkSentinel() }, [loading, checkSentinel])
 
   useEffect(() => {
@@ -3195,6 +3934,11 @@ function ImageGrid({
   // Emit ordered nav list whenever visible images change
   useEffect(() => {
     if (!onNavListChange) return
+    if (adminFilters) {
+      // Admin-filtered view shows exactly the API results, in API order
+      onNavListChange(images)
+      return
+    }
     const freshIds = new Set(freshImages.map(i => i.id))
     const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
     const dbFiltered = images.filter(img => !freshIds.has(img.id))
@@ -3205,7 +3949,7 @@ function ImageGrid({
       return bTime - aTime
     })
     onNavListChange([...freshImages, ...merged])
-  }, [images, freshImages, savedFails, onNavListChange])
+  }, [images, freshImages, savedFails, onNavListChange, adminFilters])
 
   if (!signedIn) {
     return (
@@ -3236,19 +3980,19 @@ function ImageGrid({
     )
   }
 
-  if (!loading && images.length === 0 && !hasMoreRef.current) {
+  if (!loading && images.length === 0 && !hasMoreRef.current && (adminFilters || (pendingSlots.length === 0 && freshImages.length === 0))) {
     return (
       <div className="flex items-center justify-center py-32 text-slate-600 text-sm">
-        No generations yet
+        {adminFilters ? "No generations match these filters" : "No generations yet"}
       </div>
     )
   }
 
   return (
     <div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-0.5">
-        {/* Pending: loading and failed slots appear at the top */}
-        {pendingSlots.map((slot) =>
+      <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
+        {/* Pending: loading and failed slots appear at the top (hidden in admin-filtered view) */}
+        {!adminFilters && pendingSlots.map((slot) =>
           slot.status === "loading"
             ? (slot.streamDataUrl
                 ? <StreamingSlot key={slot.slotId} dataUrl={slot.streamDataUrl} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
@@ -3257,14 +4001,30 @@ function ImageGrid({
                   : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
             : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
         )}
-        {/* Fresh: just-completed images and failed tiles, in completion order */}
-        {freshImages.map((img) =>
+        {/* Fresh: just-completed images and failed tiles, in completion order (hidden in admin-filtered view) */}
+        {!adminFilters && freshImages.map((img) =>
           img.failed
             ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
-            : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} />
+            : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
         )}
+        {/* Admin-filtered view: exactly the API results, in API order (sort is a filter option) */}
+        {adminFilters && images.map(img => (
+          <GridImage
+            key={`af-${img.id}`}
+            src={img.imageUrl}
+            alt={img.prompt}
+            onClick={selectMode ? undefined : () => onImageClick(img)}
+            imageId={img.id}
+            selectMode={selectMode}
+            selected={selectedIds?.has(img.id)}
+            onSelect={onSelectToggle}
+            fullWidth={fullSize}
+            isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)}
+            adminThumb
+          />
+        ))}
         {/* DB images merged with restored fails, sorted by createdAt so fails land in the right spot */}
-        {(() => {
+        {!adminFilters && (() => {
           const freshIds = new Set(freshImages.map(i => i.id))
           const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
           const dbFiltered = images.filter(img => !freshIds.has(img.id))
@@ -3278,7 +4038,7 @@ function ImageGrid({
           return merged.map(img =>
             img.failed
               ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
-              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} />
+              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
           )
         })()}
       </div>
@@ -9767,6 +10527,7 @@ function VideoFeed({
   selectedIds,
   onSelectToggle,
   onNavListChange,
+  cols = null,
 }: {
   pendingSlots: VideoPendingSlot[]
   items: VideoItem[]
@@ -9777,6 +10538,7 @@ function VideoFeed({
   selectedIds?: Set<number>
   onSelectToggle?: (id: number) => void
   onNavListChange?: (list: VideoDetailData[]) => void
+  cols?: number | null
 }) {
   // Pull the same historical feed as the image scanner — with infinite scroll
   const [dbImages, setDbImages] = useState<ImageItem[]>([])
@@ -9916,7 +10678,7 @@ function VideoFeed({
   }
 
   return (
-    <div className="p-3 grid grid-cols-2 sm:grid-cols-3 gap-2 auto-rows-max">
+    <div className={`p-3 grid gap-2 auto-rows-max ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3"}`}>
       {/* Loading / queued slots */}
       {pendingSlots.map(slot => (
         <button
@@ -10972,6 +11734,40 @@ export default function PortalV2Page() {
 
   const [imageGridKey, setImageGridKey] = useState(0)
 
+  // --- Feed width (columns) — null = auto (responsive default) ---
+  const [feedCols, setFeedCols] = useState<number | null>(null)
+  // Full Size mode — show entire images at natural aspect instead of square thumbnails
+  const [feedFullSize, setFeedFullSize] = useState(false)
+
+  useEffect(() => {
+    try {
+      const v = parseInt(localStorage.getItem("pv2-feed-cols") || "")
+      if (v >= 1 && v <= 6) setFeedCols(v)
+      setFeedFullSize(localStorage.getItem("pv2-feed-fullsize") === "true")
+    } catch {}
+  }, [])
+
+  const handleFeedColsChange = (n: number | null) => {
+    setFeedCols(n)
+    try {
+      if (n) localStorage.setItem("pv2-feed-cols", String(n))
+      else localStorage.removeItem("pv2-feed-cols")
+    } catch {}
+  }
+
+  const handleFeedFullSizeChange = (on: boolean) => {
+    setFeedFullSize(on)
+    try {
+      if (on) localStorage.setItem("pv2-feed-fullsize", "true")
+      else localStorage.removeItem("pv2-feed-fullsize")
+    } catch {}
+  }
+
+  // --- Admin only: feed filters (mirrors /admin/dataset) — session state, not persisted ---
+  const [adminFeedFilters, setAdminFeedFilters] = useState<AdminFeedFilters | null>(null)
+  const [adminFilterPanelOpen, setAdminFilterPanelOpen] = useState(false)
+  const adminFeedFilterCount = countActiveAdminFeedFilters(adminFeedFilters)
+
   // --- Admin: add selected generations to dataset buckets ---
   const [addToBucketOpen, setAddToBucketOpen] = useState(false)
   const [datasetBuckets, setDatasetBuckets] = useState<Bucket[]>([])
@@ -11001,7 +11797,7 @@ export default function PortalV2Page() {
         fetch("/api/admin/folders", { headers }),
       ])
       if (bRes.status === 401 || fRes.status === 401) {
-        setBucketLoadError("Admin session expired — open any /admin page to log in again, then retry.")
+        setBucketLoadError("Admin unlock required — open Feed → Feed Filters, enter your admin password, then retry.")
       } else if (!bRes.ok || !fRes.ok) {
         setBucketLoadError("Failed to load buckets — try again.")
       } else {
@@ -12641,6 +13437,18 @@ export default function PortalV2Page() {
               open={openDropdown === "news"}
               onToggle={() => toggle("news")}
             />
+            <FeedDropdown
+              open={openDropdown === "feed"}
+              onToggle={() => toggle("feed")}
+              cols={feedCols}
+              onColsChange={handleFeedColsChange}
+              fullSize={feedFullSize}
+              onFullSizeChange={handleFeedFullSizeChange}
+              isAdmin={isAdminAccount}
+              adminFilterCount={adminFeedFilterCount}
+              onOpenAdminFilters={() => setAdminFilterPanelOpen(true)}
+              onClearAdminFilters={() => setAdminFeedFilters(null)}
+            />
           </div>
           {/* Desktop-only right group */}
           <div className="hidden sm:flex items-center gap-2 shrink-0">
@@ -12680,6 +13488,15 @@ export default function PortalV2Page() {
         />
       )}
 
+      {/* Admin only: feed filter panel */}
+      {adminFilterPanelOpen && isAdminAccount && (
+        <AdminFeedFilterPanel
+          initial={adminFeedFilters}
+          onApply={setAdminFeedFilters}
+          onClose={() => setAdminFilterPanelOpen(false)}
+        />
+      )}
+
       {/* Admin only: shared Add to Bucket modal (same one as /admin/dataset) */}
       {addToBucketOpen && isAdminAccount && (
         <AddToBucketModal
@@ -12711,6 +13528,9 @@ export default function PortalV2Page() {
               selectedIds={selectedImageIds}
               onSelectToggle={handleSelectToggle}
               onNavListChange={setImageNavList}
+              cols={feedCols}
+              fullSize={feedFullSize}
+              adminFilters={isAdminAccount ? adminFeedFilters : null}
             />
           </div>
           {/* Custom Flux LoRA panel — replaces PromptBox for that model */}
@@ -12858,6 +13678,7 @@ export default function PortalV2Page() {
               selectedIds={selectedImageIds}
               onSelectToggle={handleSelectToggle}
               onNavListChange={setVideoNavList}
+              cols={feedCols}
             />
           </div>
 
