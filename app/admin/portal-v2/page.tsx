@@ -13076,7 +13076,8 @@ function ShopDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 328) })
+      const panelW = Math.min(340, window.innerWidth - 16)
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
     }
   }, [open])
 
@@ -13101,87 +13102,113 @@ function ShopDropdown({
       </button>
 
       {open && (
-        <div className="fixed w-80 rounded-2xl border border-white/10 bg-[#0a0f1e] backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
+        <div className="fixed w-[min(340px,calc(100vw-16px))] rounded-2xl border border-white/10 bg-[#0a0f1e] backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
 
-          {/* ── Tickets card ── */}
-          <div className="p-3">
+          {/* ── Header: title + live balance ── */}
+          <div className="relative px-4 py-3 flex items-center justify-between border-b border-white/[0.07] overflow-hidden">
+            {/* ambient glow wash */}
+            <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/[0.07] via-transparent to-violet-500/[0.07] pointer-events-none" />
+            <div className="relative flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-white/15 flex items-center justify-center">
+                <ShoppingBag size={13} className="text-white" />
+              </div>
+              <span className="text-sm font-bold text-white tracking-wide">Shop</span>
+            </div>
+            {user && (
+              <div className="relative flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-cyan-500/25 bg-black font-mono text-xs" style={{ boxShadow: "0 0 10px rgba(0,255,255,0.08), inset 0 0 12px rgba(0,0,0,0.6)" }} title="Your ticket balance">
+                <Ticket size={10} className="text-cyan-500/80" />
+                <span className="text-cyan-400 font-bold">{user.ticketBalance.toLocaleString()}</span>
+              </div>
+            )}
+          </div>
+
+          {/* ── Tickets card — cyan energy ── */}
+          <div className="p-3 pb-1.5">
             <button
               onClick={() => handleNav("/buy-tickets")}
-              className="w-full rounded-xl border border-white/10 bg-slate-800/60 hover:bg-slate-700/50 hover:border-white/20 transition-all group overflow-hidden"
+              className="w-full rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/[0.10] via-slate-900/50 to-transparent hover:border-cyan-400/50 hover:shadow-[0_0_24px_rgba(34,211,238,0.12)] transition-all duration-200 group overflow-hidden"
             >
               <div className="px-4 py-3.5 text-left">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-slate-700 border border-white/10 flex items-center justify-center shrink-0">
-                      <Ticket size={14} className="text-slate-200" />
+                    <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center shrink-0 group-hover:bg-cyan-500/25 transition-colors">
+                      <Ticket size={15} className="text-cyan-300" />
                     </div>
                     <span className="text-[13px] font-bold text-white">Ticket Dispenser</span>
                   </div>
-                  <span className="text-[10px] font-mono text-slate-500 group-hover:text-slate-300 transition-colors">Buy →</span>
+                  <span className="text-[10px] font-bold text-cyan-400/80 group-hover:text-cyan-300 transition-colors">
+                    Buy <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+                  </span>
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Tickets power every generation. Each image or video costs tickets — the amount depends on the model. Packs are one-time purchases and never expire.
+                  Tickets power every generation. Packs are <span className="text-cyan-300/90">one-time purchases</span> and <span className="text-cyan-300/90">never expire</span> — grab a pack and create whenever inspiration hits.
                 </p>
               </div>
-              <div className="px-4 py-2 border-t border-white/8 bg-slate-800/80 flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 font-medium">Packs from 25 → 1,000 tickets</span>
-                <span className="text-[10px] font-bold text-slate-400 group-hover:text-white transition-colors">Shop now →</span>
+              <div className="px-4 py-2 border-t border-cyan-500/15 bg-black/40 flex items-center justify-between">
+                <span className="text-[10px] text-slate-500 font-medium">Packs from <span className="text-slate-300 font-bold">25</span> → <span className="text-slate-300 font-bold">1,000</span> tickets</span>
+                <span className="text-[10px] font-bold text-cyan-400 group-hover:text-cyan-300 transition-colors">
+                  Shop now <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+                </span>
               </div>
             </button>
           </div>
 
-          <div className="mx-3 border-t border-white/6" />
-
-          {/* ── Dev Tier card ── */}
-          <div className="p-3">
+          {/* ── Dev Tier card — premium violet ── */}
+          <div className="p-3 pt-1.5">
             <button
               onClick={() => handleNav("/prompting-studio/subscribe")}
-              className="w-full rounded-xl border border-white/10 bg-slate-800/60 hover:bg-slate-700/50 hover:border-white/20 transition-all group overflow-hidden"
+              className="w-full rounded-xl border border-violet-500/30 bg-gradient-to-br from-violet-500/[0.12] via-slate-900/50 to-transparent hover:border-violet-400/55 hover:shadow-[0_0_24px_rgba(167,139,250,0.14)] transition-all duration-200 group overflow-hidden"
             >
               <div className="px-4 py-3.5 text-left">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-slate-700 border border-white/10 flex items-center justify-center shrink-0">
-                      <Sparkles size={13} className="text-slate-200" />
+                    <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/35 flex items-center justify-center shrink-0 group-hover:bg-violet-500/25 transition-colors">
+                      <Sparkles size={14} className="text-violet-300" />
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-[13px] font-bold text-white">Dev Tier</span>
-                      <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 bg-slate-700 border border-white/10 px-1.5 py-0.5 rounded-full">Subscription</span>
+                      <span className="text-[8.5px] font-black uppercase tracking-wider text-fuchsia-200 bg-gradient-to-r from-violet-500/30 to-fuchsia-500/30 border border-fuchsia-400/30 px-1.5 py-0.5 rounded-full">
+                        Best value
+                      </span>
                     </div>
                   </div>
-                  <span className="text-[10px] font-mono text-slate-500 group-hover:text-slate-300 transition-colors">View →</span>
+                  <span className="text-[10px] font-bold text-violet-400/80 group-hover:text-violet-300 transition-colors">
+                    View <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+                  </span>
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed mb-3">
-                  Unlock the full studio with a recurring plan — tickets auto-delivered every cycle, discounts on purchases, and more slots.
+                  Unlock the full studio — tickets auto-delivered every cycle, <span className="text-violet-300/90">30% off everything</span>, and more of every limit.
                 </p>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-2">
                   {[
                     { label: "30% off all ticket purchases", bright: true },
                     { label: "250–500 tickets per cycle", bright: true },
                     { label: "8 concurrent generations", bright: true },
-                    { label: "100 Refs slots (2× free tier)", bright: true },
+                    { label: "250 Refs slots (5× free tier)", bright: true },
                     { label: "AI prompt generation", bright: false },
                     { label: "Early feature access", bright: false },
                   ].map(({ label, bright }) => (
                     <div key={label} className="flex items-start gap-1.5">
-                      <Check size={9} className={`shrink-0 mt-0.5 ${bright ? "text-slate-300" : "text-slate-600"}`} />
+                      <Check size={9} className={`shrink-0 mt-0.5 ${bright ? "text-violet-300" : "text-slate-600"}`} />
                       <span className={`text-[10px] leading-snug ${bright ? "text-slate-200" : "text-slate-500"}`}>{label}</span>
                     </div>
                   ))}
                 </div>
               </div>
-              <div className="px-4 py-2 border-t border-white/8 bg-slate-800/80 flex items-center justify-between">
+              <div className="px-4 py-2 border-t border-violet-500/15 bg-black/40 flex items-center justify-between">
                 <span className="text-[10px] text-slate-500 font-medium">Biweekly · Monthly · Yearly</span>
-                <span className="text-[10px] font-bold text-slate-400 group-hover:text-white transition-colors">See plans →</span>
+                <span className="text-[10px] font-bold text-violet-300 group-hover:text-violet-200 transition-colors">
+                  See plans <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+                </span>
               </div>
             </button>
           </div>
 
           {loginPrompt && (
-            <div className="mx-3 mb-3 px-3.5 py-3 rounded-xl border border-white/10 bg-slate-800/60 space-y-1">
-              <p className="text-[11px] text-slate-200 font-semibold">Sign in required</p>
+            <div className="mx-3 mb-3 px-3.5 py-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] space-y-1">
+              <p className="text-[11px] text-amber-300 font-semibold">Sign in required</p>
               <p className="text-[10px] text-slate-500">You need to be logged in to visit the shop.</p>
-              <a href="/dashboard" className="text-[11px] text-slate-400 hover:text-white hover:underline transition-colors">
+              <a href="/dashboard" className="text-[11px] text-cyan-400 hover:text-cyan-300 hover:underline transition-colors">
                 Go to login →
               </a>
             </div>
