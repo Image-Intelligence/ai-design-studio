@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -27,6 +27,7 @@ interface UserData {
 interface ImageItem {
   id: number
   imageUrl: string
+  thumbnailUrl?: string | null
   prompt: string
   model: string
   createdAt?: string
@@ -1040,6 +1041,98 @@ const FEED_COL_CLASS: Record<number, string> = {
   1: "grid-cols-1", 2: "grid-cols-2", 3: "grid-cols-3",
   4: "grid-cols-4", 5: "grid-cols-5", 6: "grid-cols-6",
 }
+// CSS multi-column classes for masonry "Flow" mode — packs variable-height images with
+// no row gaps, flowing top-to-bottom per column.
+const FEED_MASONRY_CLASS: Record<number, string> = {
+  1: "columns-1", 2: "columns-2", 3: "columns-3",
+  4: "columns-4", 5: "columns-5", 6: "columns-6",
+}
+
+// Masonry "Rows" mode helpers (JS packing) --------------------------------------------
+// Estimate a tile's relative height from its known aspect ratio ("2:3" / "1024x1536" →
+// height per unit column width). Lets us balance columns BEFORE images load, so tiles
+// don't move as images fill in.
+const arHeightWeight = (ar?: string): number => {
+  if (!ar || ar === "auto") return 1
+  const [w, h] = ar.replace(/x/i, ":").split(":").map(parseFloat)
+  return w > 0 && h > 0 ? h / w : 1
+}
+// Deterministic shortest-column packing: assign each item, in order, to the currently
+// shortest column. Because a given item's placement depends only on the items before it,
+// appending new items never moves existing ones (no reflow/jump), and the first row fills
+// left-to-right.
+function distributeMasonry<T extends { weight: number }>(items: T[], n: number): T[][] {
+  const cols: T[][] = Array.from({ length: n }, () => [])
+  const heights = new Array(n).fill(0)
+  for (const item of items) {
+    let min = 0
+    for (let i = 1; i < n; i++) if (heights[i] < heights[min]) min = i
+    cols[min].push(item)
+    heights[min] += item.weight
+  }
+  return cols
+}
+
+// --- FEED DROPDOWN UI HELPERS ---
+// Segmented pill control used throughout the Feed settings panel.
+function FeedSeg<T extends string>({ value, options, onChange }: {
+  value: T
+  options: { value: T; label: string; accent?: "cyan" | "amber" }[]
+  onChange: (v: T) => void
+}) {
+  return (
+    <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
+      {options.map((opt, i) => {
+        const active = value === opt.value
+        const activeCls = (opt.accent ?? "cyan") === "amber"
+          ? "bg-amber-500/20 text-amber-300"
+          : "bg-cyan-500/20 text-cyan-300"
+        return (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${i > 0 ? "border-l border-white/10" : ""} ${active ? activeCls : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// Label + control row for the nested Full Size options.
+function FeedOptionRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-14 shrink-0 text-[10px] font-medium text-slate-400">{label}</span>
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+// ON/OFF toggle row (Full Size, View Hidden).
+function FeedToggleRow({ label, icon, on, onChange, accent = "cyan" }: {
+  label: string
+  icon?: ReactNode
+  on: boolean
+  onChange: (v: boolean) => void
+  accent?: "cyan" | "amber"
+}) {
+  const activeCls = accent === "amber"
+    ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
+    : "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
+  const pillCls = accent === "amber" ? "bg-amber-500/25 text-amber-300" : "bg-cyan-500/25 text-cyan-300"
+  return (
+    <button
+      onClick={() => onChange(!on)}
+      className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${on ? activeCls : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"}`}
+    >
+      <span className="flex items-center gap-1.5">{icon}{label}</span>
+      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${on ? pillCls : "bg-white/10 text-slate-500"}`}>{on ? "ON" : "OFF"}</span>
+    </button>
+  )
+}
 
 function FeedDropdown({
   open,
@@ -1048,12 +1141,18 @@ function FeedDropdown({
   onColsChange,
   fullSize,
   onFullSizeChange,
+  fullSizeLayout,
+  onFullSizeLayoutChange,
+  masonryMode,
+  onMasonryModeChange,
+  tileRes,
+  onTileResChange,
   showHidden,
   onShowHiddenChange,
   isAdmin = false,
   adminFilterCount = 0,
-  onOpenAdminFilters,
-  onClearAdminFilters,
+  adminFilters = null,
+  onApplyAdminFilters,
 }: {
   open: boolean
   onToggle: () => void
@@ -1061,20 +1160,44 @@ function FeedDropdown({
   onColsChange: (n: number | null) => void
   fullSize: boolean
   onFullSizeChange: (on: boolean) => void
+  fullSizeLayout: "grid" | "masonry"
+  onFullSizeLayoutChange: (layout: "grid" | "masonry") => void
+  masonryMode: "flow" | "rows"
+  onMasonryModeChange: (mode: "flow" | "rows") => void
+  tileRes: "thumb" | "full"
+  onTileResChange: (res: "thumb" | "full") => void
   showHidden: boolean
   onShowHiddenChange: (on: boolean) => void
   isAdmin?: boolean
   adminFilterCount?: number
-  onOpenAdminFilters?: () => void
-  onClearAdminFilters?: () => void
+  adminFilters?: AdminFeedFilters | null
+  onApplyAdminFilters?: (filters: AdminFeedFilters | null) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
 
+  // --- Inline admin feed filters (previously the AdminFeedFilterPanel modal) ---
+  // Starts expanded — admins use it constantly
+  const [adminOpen, setAdminOpen] = useState(true)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [draft, setDraft] = useState<AdminFeedFilters>(adminFilters ?? EMPTY_ADMIN_FEED_FILTERS)
+  const [facets, setFacets] = useState<AdminFeedFacets | null>(null)
+  const [buckets, setBuckets] = useState<Bucket[]>([])
+  const [folders, setFolders] = useState<BucketFolder[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [browsePath, setBrowsePath] = useState<number[]>([])
+  const [adminLoaded, setAdminLoaded] = useState(false)
+  const [authNeeded, setAuthNeeded] = useState(false)
+  const [passwordInput, setPasswordInput] = useState("")
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      const el = e.target as HTMLElement
+      // Ignore clicks inside portaled MultiFilterSelect menus — they live on <body>
+      if (ref.current && !ref.current.contains(el) && !el.closest?.("[data-feed-filter-menu]")) {
         if (open) onToggle()
       }
     }
@@ -1085,9 +1208,85 @@ function FeedDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 288) })
+      const panelW = Math.min(540, window.innerWidth - 16)
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
     }
   }, [open])
+
+  // Whenever the panel opens, reset the filter draft to whatever is currently applied
+  useEffect(() => {
+    if (open) {
+      const f = adminFilters ?? EMPTY_ADMIN_FEED_FILTERS
+      setDraft(f)
+      if (f.hasRefs || f.hasRating || f.hasCaption || f.hasTag || f.tagFilter || f.bucketId) setMoreOpen(true)
+    }
+  }, [open, adminFilters])
+
+  // Same load pattern as AdminFeedFilterPanel: 401 on the protected endpoints → unlock needed
+  const loadAdminData = useCallback(async () => {
+    setLoadError(null)
+    try {
+      const headers = adminPasswordHeaders()
+      const [dRes, bRes, fRes] = await Promise.all([
+        fetch("/api/admin/dataset?page=1&limit=1", { headers }),
+        fetch("/api/admin/buckets", { headers }),
+        fetch("/api/admin/folders", { headers }),
+      ])
+      if (dRes.status === 401 || bRes.status === 401) {
+        setAuthNeeded(true)
+        return
+      }
+      setAuthNeeded(false)
+      if (dRes.ok) { const d = await dRes.json(); setFacets(d.facets ?? null) }
+      if (bRes.ok) setBuckets(await bRes.json())
+      if (fRes.ok) setFolders(await fRes.json())
+    } catch {
+      setLoadError("Failed to load filter options — check your connection.")
+    }
+  }, [])
+
+  // Check auth / load facets the first time the admin section is expanded
+  useEffect(() => {
+    if (open && isAdmin && adminOpen && !adminLoaded) {
+      setAdminLoaded(true)
+      loadAdminData()
+    }
+  }, [open, isAdmin, adminOpen, adminLoaded, loadAdminData])
+
+  const handleUnlock = async () => {
+    if (!passwordInput.trim() || verifying) return
+    setVerifying(true)
+    setVerifyError(null)
+    try {
+      const res = await fetch("/api/admin/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordInput }),
+      })
+      if (res.ok) {
+        try { sessionStorage.setItem("admin-password", passwordInput) } catch {}
+        setPasswordInput("")
+        setAuthNeeded(false)
+        await loadAdminData()
+      } else {
+        const data = await res.json().catch(() => null)
+        setVerifyError(data?.error || "Incorrect password")
+      }
+    } catch {
+      setVerifyError("Verification failed — check your connection.")
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  const setF = <K extends keyof AdminFeedFilters>(k: K, v: AdminFeedFilters[K]) => setDraft(d => ({ ...d, [k]: v }))
+  const draftEmpty = JSON.stringify(draft) === JSON.stringify(EMPTY_ADMIN_FEED_FILTERS)
+  const currentFolderId = browsePath.length > 0 ? browsePath[browsePath.length - 1] : null
+  const visibleFolders = folders.filter(f => currentFolderId === null ? !f.parentId : f.parentId === currentFolderId)
+  const visibleBuckets = buckets.filter(b => b.folderId === currentFolderId)
+  const selectedBucket = draft.bucketId ? buckets.find(b => String(b.id) === draft.bucketId) : null
+  const selectCls = "w-full px-2 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-slate-200 focus:outline-none focus:border-violet-500/40"
+  const labelCls = "text-[9px] font-mono uppercase tracking-wider text-slate-600 mb-1 block"
 
   return (
     <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
@@ -1113,118 +1312,311 @@ function FeedDropdown({
       </button>
 
       {open && (
-        <div className="fixed w-[270px] rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-[9999] p-3 space-y-2" style={{ top: menuPos.top, left: menuPos.left }}>
-          <span className="text-sm font-semibold text-white">Feed Width</span>
-          <p className="text-[10px] text-slate-500 leading-relaxed">
-            Choose how many columns your generation feed displays. <span className="text-white">Auto</span> adapts to your screen size.
-          </p>
-          <div className="flex items-center rounded-lg border border-white/10 overflow-hidden">
-            <button
-              onClick={() => onColsChange(null)}
-              className={`flex-1 px-2 py-2 text-[11px] font-medium transition-colors ${cols === null ? "bg-cyan-500/15 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
-            >
-              Auto
-            </button>
-            {[1, 2, 3, 4, 5, 6].map(n => (
-              <button
-                key={n}
-                onClick={() => onColsChange(n)}
-                className={`flex-1 px-2 py-2 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? "bg-white/[0.08] text-white" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
-              >
-                {n}
-              </button>
-            ))}
-          </div>
-          {/* Slider — same control, drag instead of click */}
-          <div className="flex items-center gap-2.5 px-1 pt-0.5">
-            <span className="text-[10px] font-mono text-slate-600">1</span>
-            <input
-              type="range"
-              min={1}
-              max={6}
-              step={1}
-              value={cols ?? 4}
-              onChange={e => onColsChange(+e.target.value)}
-              className="flex-1 accent-cyan-400 cursor-pointer"
-            />
-            <span className="text-[10px] font-mono text-slate-600">6</span>
-            <span className={`w-7 text-center text-[11px] font-mono rounded-md border py-0.5 ${cols === null ? "border-white/10 text-slate-600" : "border-cyan-500/30 text-cyan-300"}`}>
-              {cols ?? "A"}
-            </span>
+        <div className="fixed w-[min(540px,calc(100vw-16px))] rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
+          {/* Header */}
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-white/5">
+            <Layers size={13} className="text-cyan-400" />
+            <span className="text-[12px] font-semibold text-white">Feed Settings</span>
           </div>
 
-          {/* Full Size mode toggle */}
-          <div className="border-t border-white/5 pt-2 mt-1">
-            <button
-              onClick={() => onFullSizeChange(!fullSize)}
-              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${
-                fullSize
-                  ? "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
-                  : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <span>Full Size Mode</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${fullSize ? "bg-cyan-500/25 text-cyan-300" : "bg-white/10 text-slate-500"}`}>
-                {fullSize ? "ON" : "OFF"}
-              </span>
-            </button>
-            <p className="text-[10px] text-slate-600 leading-relaxed px-1 pt-1.5">
-              Shows entire images at full resolution and their natural shape — nothing cropped. Works with any column count.
-            </p>
-          </div>
+          <div className="p-3 space-y-3 max-h-[calc(100vh-140px)] overflow-y-auto">
+            {/* Two-column layout: Columns + View | Display */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+              <div className="space-y-3">
+                {/* COLUMNS */}
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Columns</span>
+                    <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border ${cols === null ? "border-white/10 text-slate-500" : "border-cyan-500/30 text-cyan-300"}`}>{cols ?? "Auto"}</span>
+                  </div>
+                  <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
+                    <button onClick={() => onColsChange(null)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${cols === null ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>Auto</button>
+                    {[1, 2, 3, 4, 5, 6].map(n => (
+                      <button key={n} onClick={() => onColsChange(n)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>{n}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2.5 px-0.5">
+                    <span className="text-[10px] font-mono text-slate-600">1</span>
+                    <input type="range" min={1} max={6} step={1} value={cols ?? 4} onChange={e => onColsChange(+e.target.value)} className="flex-1 accent-cyan-400 cursor-pointer" />
+                    <span className="text-[10px] font-mono text-slate-600">6</span>
+                  </div>
+                  <p className="text-[9.5px] text-slate-600 leading-relaxed"><span className="text-slate-400">Auto</span> adapts to your screen size.</p>
+                </section>
 
-          {/* View Hidden toggle */}
-          <div className="border-t border-white/5 pt-2 mt-1">
-            <button
-              onClick={() => onShowHiddenChange(!showHidden)}
-              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${
-                showHidden
-                  ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
-                  : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <span className="flex items-center gap-1.5">
-                <EyeOff size={11} />
-                View Hidden
-              </span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${showHidden ? "bg-amber-500/25 text-amber-300" : "bg-white/10 text-slate-500"}`}>
-                {showHidden ? "ON" : "OFF"}
-              </span>
-            </button>
-            <p className="text-[10px] text-slate-600 leading-relaxed px-1 pt-1.5">
-              Shows only your hidden generations — select them to unhide. Turn off to return to your normal feed.
-            </p>
-          </div>
-
-          {/* Admin only: feed filters */}
-          {isAdmin && (
-            <div className="border-t border-white/5 pt-2 mt-1 space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => { onOpenAdminFilters?.(); onToggle() }}
-                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all bg-violet-500/10 border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200"
-                >
-                  <SlidersHorizontal size={12} />
-                  Feed Filters
-                  {adminFilterCount > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-violet-500/25 text-violet-200 text-[10px] font-bold leading-none">{adminFilterCount}</span>
-                  )}
-                </button>
-                {adminFilterCount > 0 && (
-                  <button
-                    onClick={() => onClearAdminFilters?.()}
-                    title="Clear all feed filters"
-                    className="px-2.5 py-2 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-400 hover:text-white hover:bg-white/10 transition-all"
-                  >
-                    Clear
-                  </button>
-                )}
+                {/* VIEW */}
+                <section className="border-t border-white/5 pt-3 space-y-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">View</span>
+                  <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={showHidden} onChange={onShowHiddenChange} accent="amber" />
+                  {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
+                </section>
               </div>
-              <p className="text-[9px] text-slate-600 leading-relaxed px-1">
-                Admin section — only visible to admin accounts. Filters the feed using the /admin/dataset system (models, buckets, tags, users and more).
-              </p>
+
+              {/* DISPLAY */}
+              <section className="space-y-2 border-t border-white/5 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:border-white/5 sm:pl-4">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Display</span>
+                <FeedToggleRow label="Full Size" on={fullSize} onChange={onFullSizeChange} />
+                {fullSize && (
+                  <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-2">
+                    <FeedOptionRow label="Layout">
+                      <FeedSeg value={fullSizeLayout} onChange={onFullSizeLayoutChange} options={[{ value: "grid", label: "Grid" }, { value: "masonry", label: "Masonry" }]} />
+                    </FeedOptionRow>
+                    {fullSizeLayout === "masonry" && (
+                      <FeedOptionRow label="Packing">
+                        <FeedSeg value={masonryMode} onChange={onMasonryModeChange} options={[{ value: "rows", label: "Rows" }, { value: "flow", label: "Flow" }]} />
+                      </FeedOptionRow>
+                    )}
+                    <FeedOptionRow label="Quality">
+                      <FeedSeg value={tileRes} onChange={onTileResChange} options={[{ value: "thumb", label: "Thumbnail" }, { value: "full", label: "Full size", accent: "amber" }]} />
+                    </FeedOptionRow>
+                    <p className="text-[9.5px] text-slate-600 leading-relaxed pt-0.5">
+                      {tileRes === "full"
+                        ? <><span className="text-amber-400">Full size</span> loads originals — sharper, but long scrolls may reload the page.</>
+                        : fullSizeLayout === "masonry"
+                          ? <><span className="text-white">Rows</span> stays put as images load; <span className="text-white">Flow</span> fills each column top-to-bottom.</>
+                          : <>Whole images at their natural shape — nothing cropped. Tap any for full resolution.</>}
+                    </p>
+                  </div>
+                )}
+              </section>
             </div>
-          )}
+
+            {/* ADMIN — inline feed filters (replaces the old Feed Filters modal) */}
+            {isAdmin && (
+              <section className="border-t border-white/5 pt-3 space-y-2">
+                <button onClick={() => setAdminOpen(v => !v)} className="w-full flex items-center justify-between gap-2 group">
+                  <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-violet-400/70 group-hover:text-violet-300 transition-colors">
+                    <SlidersHorizontal size={11} />
+                    Admin · Feed Filters
+                    {adminFilterCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-violet-500/25 text-violet-200 text-[9px] font-bold leading-none">{adminFilterCount}</span>}
+                  </span>
+                  <ChevronDown size={12} className={`text-violet-400/70 transition-transform ${adminOpen ? "rotate-180" : ""}`} />
+                </button>
+
+                {!adminOpen && (
+                  <p className="text-[9px] text-slate-600 leading-relaxed">Filters the feed via the dataset system — models, buckets, tags, users and more.</p>
+                )}
+
+                {adminOpen && (
+                  <div className="space-y-2.5">
+                    {loadError && <p className="text-[10px] text-red-400">{loadError}</p>}
+
+                    {authNeeded ? (
+                      /* Locked: inline unlock — same flow as the dataset admin pages */
+                      <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-2.5 space-y-2">
+                        <div className="flex items-center gap-1.5">
+                          <Lock size={11} className="text-violet-400" />
+                          <p className="text-[11px] font-semibold text-white">Admin unlock required</p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="password"
+                            value={passwordInput}
+                            onChange={e => { setPasswordInput(e.target.value); setVerifyError(null) }}
+                            onKeyDown={e => e.key === "Enter" && handleUnlock()}
+                            placeholder="Admin password"
+                            className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/40"
+                          />
+                          <button
+                            onClick={handleUnlock}
+                            disabled={verifying || !passwordInput.trim()}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/40 text-violet-300 text-[11px] font-medium hover:bg-violet-500/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {verifying && <Loader2 size={10} className="animate-spin" />}
+                            Unlock
+                          </button>
+                        </div>
+                        {verifyError && <p className="text-[10px] text-red-400">{verifyError}</p>}
+                      </div>
+                    ) : (
+                      <>
+                        {/* Search + sort */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className={labelCls}>Search prompt</span>
+                            <input value={draft.search} onChange={e => setF("search", e.target.value)} placeholder="Contains…" className={selectCls} />
+                          </div>
+                          <div>
+                            <span className={labelCls}>Sort</span>
+                            <select value={draft.sort} onChange={e => setF("sort", e.target.value)} className={selectCls}>
+                              <option value="newest">Newest first</option>
+                              <option value="oldest">Oldest first</option>
+                              <option value="rating">Top rated</option>
+                              <option value="cost">Highest cost</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Media + training */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className={labelCls}>Media</span>
+                            <select value={draft.mediaType} onChange={e => setF("mediaType", e.target.value)} className={selectCls}>
+                              <option value="">Images & videos</option>
+                              <option value="image">Images only</option>
+                              <option value="video">Videos only</option>
+                            </select>
+                          </div>
+                          <div>
+                            <span className={labelCls}>Training</span>
+                            <button onClick={() => setF("markedOnly", !draft.markedOnly)}
+                              className={`w-full px-2 py-1.5 rounded-lg border text-[11px] transition-colors ${draft.markedOnly ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300" : "bg-slate-950 border-white/10 text-slate-500 hover:text-slate-300"}`}>
+                              {draft.markedOnly ? "Marked only ✓" : "Any"}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Model / aspect / quality / user — same multi-selects as /admin/dataset */}
+                        {facets && (
+                          <div>
+                            <span className={labelCls}>Filter by</span>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <MultiFilterSelect
+                                values={draft.models}
+                                onChange={v => setF("models", v)}
+                                placeholder="Model: any"
+                                options={facets.models.map(m => ({ value: m.value, label: `${m.value} (${m.count})` }))}
+                              />
+                              <MultiFilterSelect
+                                values={draft.aspects}
+                                onChange={v => setF("aspects", v)}
+                                placeholder="Aspect: any"
+                                options={facets.aspects.map(a => ({ value: a.value, label: `${a.value} (${a.count})` }))}
+                              />
+                              <MultiFilterSelect
+                                values={draft.qualities}
+                                onChange={v => setF("qualities", v)}
+                                placeholder="Quality: any"
+                                options={facets.qualities.filter(q => q.value).map(q => ({ value: q.value!, label: `${q.value} (${q.count})` }))}
+                              />
+                              <MultiFilterSelect
+                                values={draft.users.map(String)}
+                                onChange={v => setF("users", v.map(Number))}
+                                placeholder="User: any"
+                                searchable
+                                options={facets.users.map(u => ({ value: String(u.id), label: `${u.email} (${u.count})` }))}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* More filters — refs / rating / caption / tags / bucket browser */}
+                        <button onClick={() => setMoreOpen(v => !v)} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-white transition-colors">
+                          <ChevronDown size={10} className={`transition-transform ${moreOpen ? "rotate-180" : ""}`} />
+                          More filters — refs, rating, caption, tags, buckets
+                        </button>
+
+                        {moreOpen && (
+                          <>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                              <div>
+                                <span className={labelCls}>Refs</span>
+                                <select value={draft.hasRefs} onChange={e => setF("hasRefs", e.target.value)} className={selectCls}>
+                                  <option value="">Any</option>
+                                  <option value="false">No refs</option>
+                                  <option value="true">Has refs</option>
+                                  <option value="1">1 ref</option>
+                                  <option value="2">2 refs</option>
+                                  <option value="3">3 refs</option>
+                                  <option value="4+">4+ refs</option>
+                                </select>
+                              </div>
+                              <div>
+                                <span className={labelCls}>Rating</span>
+                                <select value={draft.hasRating} onChange={e => setF("hasRating", e.target.value)} className={selectCls}>
+                                  <option value="">Any</option>
+                                  <option value="true">Rated</option>
+                                  <option value="false">Unrated</option>
+                                </select>
+                              </div>
+                              <div>
+                                <span className={labelCls}>Caption</span>
+                                <select value={draft.hasCaption} onChange={e => setF("hasCaption", e.target.value)} className={selectCls}>
+                                  <option value="">Any</option>
+                                  <option value="true">Has caption</option>
+                                  <option value="false">No caption</option>
+                                </select>
+                              </div>
+                              <div>
+                                <span className={labelCls}>Tags</span>
+                                <select value={draft.hasTag} onChange={e => setF("hasTag", e.target.value)} className={selectCls}>
+                                  <option value="">Any</option>
+                                  <option value="true">Has tags</option>
+                                  <option value="false">No tags</option>
+                                </select>
+                              </div>
+                              <div className="col-span-2 sm:col-span-1">
+                                <span className={labelCls}>Specific tag</span>
+                                <select value={draft.tagFilter} onChange={e => setF("tagFilter", e.target.value)} className={selectCls}>
+                                  <option value="">Any tag</option>
+                                  {facets?.tags.map(t => <option key={t.value} value={t.value}>{t.value} ({t.count})</option>)}
+                                </select>
+                              </div>
+                            </div>
+
+                            {/* Bucket / folder browser */}
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className={labelCls}>Filter by bucket</span>
+                                {selectedBucket && (
+                                  <button onClick={() => setF("bucketId", "")}
+                                    className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/40 text-violet-300 text-[10px]">
+                                    {selectedBucket.name} <X size={9} />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="rounded-lg border border-white/[0.07] bg-black/20 p-2">
+                                <div className="flex items-center gap-1.5 mb-1.5">
+                                  {browsePath.length > 0 && (
+                                    <button onClick={() => setBrowsePath(p => p.slice(0, -1))}
+                                      className="p-0.5 rounded hover:bg-white/[0.06] text-slate-500 hover:text-white transition-colors">
+                                      <ChevronLeft size={12} />
+                                    </button>
+                                  )}
+                                  <span className="text-[10px] text-slate-600 font-mono truncate">
+                                    {browsePath.length === 0 ? "Root" : browsePath.map(id => folders.find(f => f.id === id)?.name ?? "…").join(" / ")}
+                                  </span>
+                                </div>
+                                {visibleFolders.length === 0 && visibleBuckets.length === 0 ? (
+                                  <p className="text-[10px] text-slate-700 text-center py-3">No buckets here</p>
+                                ) : (
+                                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                                    {visibleFolders.map(f => (
+                                      <button key={`f-${f.id}`} onClick={() => setBrowsePath(p => [...p, f.id])}
+                                        className="flex items-center gap-1 px-2 py-1 rounded-md border border-amber-500/25 bg-amber-500/5 text-amber-400 text-[10px] hover:border-amber-500/50 transition-colors">
+                                        <BookMarked size={9} /> {f.name}
+                                      </button>
+                                    ))}
+                                    {visibleBuckets.map(b => (
+                                      <button key={`b-${b.id}`} onClick={() => setF("bucketId", draft.bucketId === String(b.id) ? "" : String(b.id))}
+                                        className={`px-2 py-1 rounded-md border text-[10px] transition-colors ${draft.bucketId === String(b.id) ? "bg-violet-500/20 border-violet-500/50 text-violet-200" : "border-violet-500/25 bg-violet-500/5 text-violet-400 hover:border-violet-500/50"}`}>
+                                        {b.name} <span className="opacity-50">{b.count}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {/* Apply / clear */}
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <button onClick={() => { setDraft(EMPTY_ADMIN_FEED_FILTERS); setBrowsePath([]); onApplyAdminFilters?.(null) }}
+                            className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-500 hover:text-white transition-all">
+                            Clear all
+                          </button>
+                          <button onClick={() => { onApplyAdminFilters?.(draftEmpty ? null : draft); onToggle() }}
+                            className="px-3.5 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/40 text-violet-300 hover:bg-violet-500/30 text-[11px] font-medium transition-all">
+                            Apply Filters
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1380,6 +1772,7 @@ function MultiFilterSelect({ values, onChange, options, placeholder, searchable 
       {open && createPortal(
         <div
           ref={menuRef}
+          data-feed-filter-menu=""
           className="fixed z-[10020] w-[260px] rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl overflow-hidden flex flex-col"
           style={{ top: menuPos.top, bottom: menuPos.bottom, left: menuPos.left, maxHeight: menuPos.maxH }}
         >
@@ -1435,6 +1828,7 @@ function MultiFilterSelect({ values, onChange, options, placeholder, searchable 
   )
 }
 
+// (No longer rendered — admin filters now live inline in FeedDropdown)
 function AdminFeedFilterPanel({ initial, onApply, onClose }: {
   initial: AdminFeedFilters | null
   onApply: (filters: AdminFeedFilters | null) => void
@@ -2740,8 +3134,18 @@ function QueueDisplay({ active, max, label = "queue" }: { active: number; max: n
 }
 
 // --- GRID IMAGE CELL ---
-function GridImage({ src, alt, onClick, imageId, directUrl, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false }: {
+function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRatio, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false }: {
   src: string; alt: string; onClick?: () => void; imageId?: number; directUrl?: string
+  // thumbUrl: a pre-generated thumbnail on public R2 (CDN-cached) — used directly so
+  // the feed skips the per-request resize + full-image download
+  thumbUrl?: string | null
+  // aspectRatio: the image's known ratio ("2:3", "16:9", "1024x1536"…). In Full Size
+  // mode it's applied to the tile up front so the correct height is reserved before the
+  // image loads — no layout jump — and the tile keeps its height even when windowed out.
+  aspectRatio?: string
+  // fullRes: in Full Size mode, load the full-resolution original instead of the
+  // lightweight thumbnail (sharper but heavy — can reload the tab on long scrolls)
+  fullRes?: boolean
   selectMode?: boolean; selected?: boolean; onSelect?: (id: number) => void
   // fullWidth (Full Size mode): show the entire image at its natural aspect ratio,
   // loading the full-resolution file instead of the square-cropped thumbnail
@@ -2755,22 +3159,34 @@ function GridImage({ src, alt, onClick, imageId, directUrl, selectMode, selected
   const [loaded, setLoaded] = useState(false)
   // directUrl: skip the proxy and load directly (used for just-completed images where the
   // blob URL is already known — avoids the DB-auth → blob-fetch → sharp chain adding delay)
-  const thumbSrc = adminThumb && imageId
+  const thumbSrc = thumbUrl
+    ? thumbUrl
+    : adminThumb && imageId
     ? `/api/admin/dataset/thumb/${imageId}`
     : directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
   const fullSrc = directUrl || src
+  // Full Size mode: reserve the tile's height from the known ratio ("2:3" → "2/3",
+  // "1024x1536" → "1024/1536") so images don't shove the layout when they pop in.
+  // Null → natural height.
+  const arCss = fullWidth && aspectRatio && aspectRatio !== "auto"
+    ? aspectRatio.replace(":", "/").replace("x", "/")
+    : null
   const handleClick = () => {
     if (selectMode && imageId !== undefined) { onSelect?.(imageId); return }
     onClick?.()
   }
   return (
     <div
-      className={`${fullWidth ? "" : "aspect-square"} bg-slate-800 overflow-hidden relative ${fullWidth && !loaded ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+      className={`${fullWidth ? "" : "aspect-square"} bg-slate-800 overflow-hidden relative ${fullWidth && !loaded && !arCss ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+      style={arCss ? { aspectRatio: arCss } : undefined}
       onClick={handleClick}
     >
       {!loaded && (
         <div className="absolute inset-0 bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800 animate-pulse" />
       )}
+      {/* Tiles are never unmounted; native lazy-loading defers the fetch until the
+          tile nears the viewport, and once loaded the image stays put — so scrolling
+          back never tears the layout apart. */}
       {isVideo ? (
         <video
           src={`${fullSrc}${fullSrc.includes("#") ? "" : "#t=0.001"}`}
@@ -2778,16 +3194,20 @@ function GridImage({ src, alt, onClick, imageId, directUrl, selectMode, selected
           playsInline
           preload="metadata"
           onLoadedData={() => setLoaded(true)}
-          className={`${fullWidth ? "w-full h-auto block" : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
+          className={`${fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
         />
       ) : (
         <img
-          src={fullWidth ? fullSrc : thumbSrc}
+          // Feed tiles always use the lightweight thumbnail (shows the whole image at its
+          // natural shape). Loading full-resolution originals into every mounted tile
+          // exhausts iPad Safari's memory on long scrolls and reloads the tab, so the
+          // default is the thumbnail; Full Size + fullRes opts into the originals.
+          src={fullWidth && fullRes ? fullSrc : thumbSrc}
           alt={alt}
           decoding="async"
-          loading={fullWidth ? "lazy" : undefined}
+          loading="lazy"
           onLoad={() => setLoaded(true)}
-          className={`${fullWidth ? "w-full h-auto block" : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
+          className={`${fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
         />
       )}
       {isVideo && loaded && (
@@ -4249,6 +4669,9 @@ function ImageGrid({
   onNavListChange,
   cols = null,
   fullSize = false,
+  fullSizeLayout = "grid",
+  masonryMode = "rows",
+  tileRes = "thumb",
   adminFilters = null,
   showHidden = false,
 }: {
@@ -4264,14 +4687,28 @@ function ImageGrid({
   onNavListChange?: (list: ImageItem[]) => void
   cols?: number | null
   fullSize?: boolean
+  fullSizeLayout?: "grid" | "masonry"
+  masonryMode?: "flow" | "rows"
+  tileRes?: "thumb" | "full"
   adminFilters?: AdminFeedFilters | null
   showHidden?: boolean
 }) {
+  const fullRes = tileRes === "full"
+  // Responsive column count for JS "Rows" masonry (auto = 2 on mobile, 4 on desktop)
+  const [autoCols, setAutoCols] = useState(4)
+  useEffect(() => {
+    const compute = () => setAutoCols(window.innerWidth < 640 ? 2 : 4)
+    compute()
+    window.addEventListener("resize", compute)
+    return () => window.removeEventListener("resize", compute)
+  }, [])
   const [images, setImages] = useState<ImageItem[]>([])
   const [loading, setLoading] = useState(false)
   const sentinelRef = useRef<HTMLDivElement>(null)
   const loadingRef = useRef(false)
-  const pageRef = useRef(1)
+  const pageRef = useRef(1) // still used by the admin-filters (dataset) path
+  // Cursor for keyset pagination of the my-images feed — constant-speed at any depth
+  const cursorRef = useRef<{ before: string; beforeId: number } | null>(null)
   const hasMoreRef = useRef(true)
   const pageLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
   // Bumped whenever the filter set changes — in-flight responses from the old
@@ -4286,11 +4723,15 @@ function ImageGrid({
     try {
       let res: Response
       if (adminFilters) {
-        // Admin feed filters — same API + params as /admin/dataset
+        // Admin feed filters — same API + params as /admin/dataset (page-based)
         const params = buildAdminFeedParams(adminFilters, pageRef.current, pageLimitRef.current)
         res = await fetch(`/api/admin/dataset?${params}`, { headers: adminPasswordHeaders() })
       } else {
-        res = await fetch(`/api/my-images?page=${pageRef.current}&limit=${pageLimitRef.current}&type=image${showHidden ? "&hidden=true" : ""}`)
+        // Cursor pagination: send the last item we have so the server reads straight
+        // from there instead of skipping — same speed at page 500 as at page 1.
+        const c = cursorRef.current
+        const cursorQs = c ? `&before=${encodeURIComponent(c.before)}&beforeId=${c.beforeId}` : ""
+        res = await fetch(`/api/my-images?limit=${pageLimitRef.current}&type=image&cursor=1${showHidden ? "&hidden=true" : ""}${cursorQs}`)
       }
       if (!res.ok) { hasMoreRef.current = false; return }
       const data = await res.json()
@@ -4303,6 +4744,7 @@ function ImageGrid({
           .map((img: any) => ({
             id: img.id,
             imageUrl: img.imageUrl,
+            thumbnailUrl: img.thumbnailUrl ?? undefined,
             prompt: img.prompt,
             model: img.model,
             createdAt: img.createdAt,
@@ -4313,8 +4755,14 @@ function ImageGrid({
           }))
         return [...prev, ...newItems]
       })
-      hasMoreRef.current = pageRef.current < data.pagination.totalPages
-      pageRef.current += 1
+      if (adminFilters) {
+        hasMoreRef.current = pageRef.current < data.pagination.totalPages
+        pageRef.current += 1
+      } else {
+        // Cursor mode: advance the cursor to the last row and stop when a page isn't full
+        hasMoreRef.current = !!data.hasMore
+        if (data.nextCursor) cursorRef.current = data.nextCursor
+      }
     } finally {
       if (epoch === epochRef.current) {
         loadingRef.current = false
@@ -4334,6 +4782,7 @@ function ImageGrid({
     epochRef.current += 1
     setImages([])
     pageRef.current = 1
+    cursorRef.current = null
     hasMoreRef.current = true
     loadingRef.current = false
     setLoading(false)
@@ -4413,72 +4862,93 @@ function ImageGrid({
 
   return (
     <div>
-      <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
-        {/* Pending: loading and failed slots appear at the top (hidden in admin-filtered / hidden views) */}
-        {!adminFilters && !showHidden && pendingSlots.map((slot) =>
-          slot.status === "loading"
-            ? (slot.streamDataUrl
-                ? <StreamingSlot key={slot.slotId} dataUrl={slot.streamDataUrl} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
-                : slot.queueJobId && !slot.nb2RequestId
-                  ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
-                  : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
-            : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
-        )}
-        {/* Fresh: just-completed images and failed tiles, in completion order (hidden in admin-filtered / hidden views) */}
-        {!adminFilters && !showHidden && freshImages.map((img) =>
-          img.failed
-            ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
-            : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
-        )}
-        {/* Admin-filtered view: exactly the API results, in API order (sort is a filter option) */}
-        {adminFilters && images.map(img => (
-          <GridImage
-            key={`af-${img.id}`}
-            src={img.imageUrl}
-            alt={img.prompt}
-            onClick={selectMode ? undefined : () => onImageClick(img)}
-            imageId={img.id}
-            selectMode={selectMode}
-            selected={selectedIds?.has(img.id)}
-            onSelect={onSelectToggle}
-            fullWidth={fullSize}
-            isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)}
-            adminThumb
-          />
-        ))}
-        {/* Hidden view: exactly the API results (user's hidden items) */}
-        {!adminFilters && showHidden && images.map(img => (
-          <GridImage
-            key={`h-${img.id}`}
-            src={img.imageUrl}
-            alt={img.prompt}
-            onClick={selectMode ? undefined : () => onImageClick(img)}
-            imageId={img.id}
-            selectMode={selectMode}
-            selected={selectedIds?.has(img.id)}
-            onSelect={onSelectToggle}
-            fullWidth={fullSize}
-          />
-        ))}
-        {/* DB images merged with restored fails, sorted by createdAt so fails land in the right spot */}
-        {!adminFilters && !showHidden && (() => {
+      {(() => {
+        // Build the ordered feed nodes once; all three layouts render from this single
+        // list so grid / masonry-flow / masonry-rows stay perfectly in sync.
+        const nodes: { weight: number; node: ReactNode }[] = []
+
+        // Pending + fresh (top of feed) — only in the normal (non-admin, non-hidden) view
+        if (!adminFilters && !showHidden) {
+          pendingSlots.forEach((slot) => {
+            const node = slot.status === "loading"
+              ? (slot.streamDataUrl
+                  ? <StreamingSlot key={slot.slotId} dataUrl={slot.streamDataUrl} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
+                  : slot.queueJobId && !slot.nb2RequestId
+                    ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
+                    : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
+              : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
+            nodes.push({ weight: 1, node })
+          })
+          freshImages.forEach((img) => {
+            const node = img.failed
+              ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
+              : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
+            nodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
+          })
+        }
+
+        if (adminFilters) {
+          // Admin-filtered view: exactly the API results, in API order
+          images.forEach((img) => nodes.push({
+            weight: arHeightWeight(img.aspectRatio),
+            node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)} adminThumb />,
+          }))
+        } else if (showHidden) {
+          // Hidden view: exactly the API results (user's hidden items)
+          images.forEach((img) => nodes.push({
+            weight: arHeightWeight(img.aspectRatio),
+            node: <GridImage key={`h-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />,
+          }))
+        } else {
+          // DB images merged with restored fails, sorted by createdAt so fails land in place
           const freshIds = new Set(freshImages.map(i => i.id))
           const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
           const dbFiltered = images.filter(img => !freshIds.has(img.id))
-          // Only include savedFails not already shown in the live freshImages section
           const failsToMerge = savedFails.filter(f => !liveFailIds.has(f.id))
           const merged = [...dbFiltered, ...failsToMerge].sort((a, b) => {
             const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0
             const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0
             return bTime - aTime
           })
-          return merged.map(img =>
-            img.failed
+          merged.forEach((img) => {
+            const node = img.failed
               ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
-              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
+              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
+            nodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
+          })
+        }
+
+        // Masonry "Rows": JS shortest-column packing — left-to-right, and tiles never move
+        // as more load in (stable, no reflow/jump).
+        if (fullSize && fullSizeLayout === "masonry" && masonryMode === "rows") {
+          const columns = distributeMasonry(nodes, cols ?? autoCols)
+          return (
+            <div className="flex gap-2 items-start">
+              {columns.map((colItems, i) => (
+                <div key={i} className="flex-1 min-w-0 flex flex-col gap-2">
+                  {colItems.map(it => it.node)}
+                </div>
+              ))}
+            </div>
           )
-        })()}
-      </div>
+        }
+
+        // Masonry "Flow": CSS multi-column — packs top-to-bottom down each column.
+        if (fullSize && fullSizeLayout === "masonry") {
+          return (
+            <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? "columns-2 sm:columns-4" : "columns-2 sm:columns-4"} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
+              {nodes.map(it => it.node)}
+            </div>
+          )
+        }
+
+        // Grid / normal
+        return (
+          <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
+            {nodes.map(it => it.node)}
+          </div>
+        )
+      })()}
       <div ref={sentinelRef} className="h-1" />
       {loading && (
         <div className="flex justify-center py-6">
@@ -10992,6 +11462,8 @@ function VideoFeed({
   const videoSentinelRef = useRef<HTMLDivElement>(null)
   const videoLoadingRef = useRef(false)
   const videoPageRef = useRef(1)
+  // Cursor for keyset pagination of the video feed — constant-speed at any depth
+  const videoCursorRef = useRef<{ before: string; beforeId: number } | null>(null)
   const videoHasMoreRef = useRef(true)
   const videoPagLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
   // Discard in-flight responses when the hidden toggle flips mid-request
@@ -11003,7 +11475,9 @@ function VideoFeed({
     setDbLoading(true)
     const epoch = videoEpochRef.current
     try {
-      const res = await fetch(`/api/my-images?page=${videoPageRef.current}&limit=${videoPagLimitRef.current}&type=video${showHidden ? "&hidden=true" : ""}`)
+      const c = videoCursorRef.current
+      const cursorQs = c ? `&before=${encodeURIComponent(c.before)}&beforeId=${c.beforeId}` : ""
+      const res = await fetch(`/api/my-images?limit=${videoPagLimitRef.current}&type=video&cursor=1${showHidden ? "&hidden=true" : ""}${cursorQs}`)
       if (!res.ok) return
       const data = await res.json()
       if (!data.images) return
@@ -11013,8 +11487,8 @@ function VideoFeed({
         const newItems = (data.images as any[]).filter(img => !existingIds.has(img.id))
         return [...prev, ...newItems]
       })
-      videoHasMoreRef.current = videoPageRef.current < (data.pagination?.totalPages ?? 1)
-      videoPageRef.current += 1
+      videoHasMoreRef.current = !!data.hasMore
+      if (data.nextCursor) videoCursorRef.current = data.nextCursor
     } finally {
       if (epoch === videoEpochRef.current) {
         videoLoadingRef.current = false
@@ -11028,6 +11502,7 @@ function VideoFeed({
     videoEpochRef.current += 1
     setDbImages([])
     videoPageRef.current = 1
+    videoCursorRef.current = null
     videoHasMoreRef.current = true
     videoLoadingRef.current = false
     setDbLoading(false)
@@ -12600,14 +13075,30 @@ export default function PortalV2Page() {
 
   // --- Feed width (columns) — null = auto (responsive default) ---
   const [feedCols, setFeedCols] = useState<number | null>(null)
-  // Full Size mode — show entire images at natural aspect instead of square thumbnails
-  const [feedFullSize, setFeedFullSize] = useState(false)
+  // Full Size mode — show entire images at natural aspect instead of square thumbnails.
+  // Defaults ON: the feed's default view is Full Size → Masonry → Rows.
+  const [feedFullSize, setFeedFullSize] = useState(true)
+  // Full Size sub-layout: "grid" (uniform rows) or "masonry" (packed columns, no gaps). Default masonry.
+  const [feedFullSizeLayout, setFeedFullSizeLayout] = useState<"grid" | "masonry">("masonry")
+  // Masonry packing method: "rows" (JS, left-to-right, stable) or "flow" (CSS columns, top-to-bottom)
+  const [feedMasonryMode, setFeedMasonryMode] = useState<"flow" | "rows">("rows")
+  // Full Size tile resolution: "thumb" (light, memory-safe) or "full" (full-res originals —
+  // heavier, may reload the tab on very long scrolls)
+  const [feedTileRes, setFeedTileRes] = useState<"thumb" | "full">("thumb")
 
   useEffect(() => {
     try {
       const v = parseInt(localStorage.getItem("pv2-feed-cols") || "")
       if (v >= 1 && v <= 6) setFeedCols(v)
-      setFeedFullSize(localStorage.getItem("pv2-feed-fullsize") === "true")
+      // Only override the default when the user has an explicit stored choice
+      const fs = localStorage.getItem("pv2-feed-fullsize")
+      if (fs !== null) setFeedFullSize(fs === "true")
+      const layout = localStorage.getItem("pv2-feed-fullsize-layout")
+      if (layout === "masonry" || layout === "grid") setFeedFullSizeLayout(layout)
+      const mm = localStorage.getItem("pv2-feed-masonry-mode")
+      if (mm === "flow" || mm === "rows") setFeedMasonryMode(mm)
+      const tr = localStorage.getItem("pv2-feed-tile-res")
+      if (tr === "thumb" || tr === "full") setFeedTileRes(tr)
     } catch {}
   }, [])
 
@@ -12621,10 +13112,24 @@ export default function PortalV2Page() {
 
   const handleFeedFullSizeChange = (on: boolean) => {
     setFeedFullSize(on)
-    try {
-      if (on) localStorage.setItem("pv2-feed-fullsize", "true")
-      else localStorage.removeItem("pv2-feed-fullsize")
-    } catch {}
+    // Store the explicit value (not remove-on-off) so turning it off persists against
+    // the new default-on behavior.
+    try { localStorage.setItem("pv2-feed-fullsize", on ? "true" : "false") } catch {}
+  }
+
+  const handleFeedFullSizeLayoutChange = (layout: "grid" | "masonry") => {
+    setFeedFullSizeLayout(layout)
+    try { localStorage.setItem("pv2-feed-fullsize-layout", layout) } catch {}
+  }
+
+  const handleFeedMasonryModeChange = (mode: "flow" | "rows") => {
+    setFeedMasonryMode(mode)
+    try { localStorage.setItem("pv2-feed-masonry-mode", mode) } catch {}
+  }
+
+  const handleFeedTileResChange = (res: "thumb" | "full") => {
+    setFeedTileRes(res)
+    try { localStorage.setItem("pv2-feed-tile-res", res) } catch {}
   }
 
   // --- Hidden generations view — session-only (always back to normal feed on refresh) ---
@@ -12650,10 +13155,38 @@ export default function PortalV2Page() {
     finally { setBulkHiding(false) }
   }
 
-  // --- Admin only: feed filters (mirrors /admin/dataset) — session state, not persisted ---
+  // --- Admin only: feed filters (mirrors /admin/dataset) ---
+  // Persisted account-scoped via /api/user/preferences (portalPreferences JSON), so the
+  // configuration survives refresh AND follows the account across devices.
   const [adminFeedFilters, setAdminFeedFilters] = useState<AdminFeedFilters | null>(null)
-  const [adminFilterPanelOpen, setAdminFilterPanelOpen] = useState(false)
   const adminFeedFilterCount = countActiveAdminFeedFilters(adminFeedFilters)
+  const adminFiltersRestoredRef = useRef(false)
+
+  // Restore saved filters once the account is known to be admin
+  useEffect(() => {
+    if (!isAdminAccount || adminFiltersRestoredRef.current) return
+    adminFiltersRestoredRef.current = true
+    fetch("/api/user/preferences")
+      .then(r => r.json())
+      .then(({ preferences }) => {
+        const stored = preferences?.adminFeedFilters
+        if (stored && typeof stored === "object" && Array.isArray(stored.models)) {
+          // Merge over EMPTY so newly added filter fields get sane defaults
+          setAdminFeedFilters({ ...EMPTY_ADMIN_FEED_FILTERS, ...stored })
+        }
+      })
+      .catch(() => {})
+  }, [isAdminAccount])
+
+  // Apply + persist (shallow-merge PUT; null clears the saved config too)
+  const applyAdminFeedFilters = useCallback((f: AdminFeedFilters | null) => {
+    setAdminFeedFilters(f)
+    fetch("/api/user/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ adminFeedFilters: f }),
+    }).catch(() => {})
+  }, [])
 
   // --- Admin only: news manager modal (opened from the News dropdown) ---
   const [newsManagerTarget, setNewsManagerTarget] = useState<{ section: "articles" | "notifications"; articleId?: number } | null>(null)
@@ -14336,12 +14869,18 @@ export default function PortalV2Page() {
               onColsChange={handleFeedColsChange}
               fullSize={feedFullSize}
               onFullSizeChange={handleFeedFullSizeChange}
+              fullSizeLayout={feedFullSizeLayout}
+              onFullSizeLayoutChange={handleFeedFullSizeLayoutChange}
+              masonryMode={feedMasonryMode}
+              onMasonryModeChange={handleFeedMasonryModeChange}
+              tileRes={feedTileRes}
+              onTileResChange={handleFeedTileResChange}
               showHidden={feedShowHidden}
               onShowHiddenChange={setFeedShowHidden}
               isAdmin={isAdminAccount}
               adminFilterCount={adminFeedFilterCount}
-              onOpenAdminFilters={() => setAdminFilterPanelOpen(true)}
-              onClearAdminFilters={() => setAdminFeedFilters(null)}
+              adminFilters={adminFeedFilters}
+              onApplyAdminFilters={applyAdminFeedFilters}
             />
           </div>
           {/* Desktop-only right group */}
@@ -14394,15 +14933,6 @@ export default function PortalV2Page() {
         />
       )}
 
-      {/* Admin only: feed filter panel */}
-      {adminFilterPanelOpen && isAdminAccount && (
-        <AdminFeedFilterPanel
-          initial={adminFeedFilters}
-          onApply={setAdminFeedFilters}
-          onClose={() => setAdminFilterPanelOpen(false)}
-        />
-      )}
-
       {/* Admin only: shared Add to Bucket modal (same one as /admin/dataset) */}
       {addToBucketOpen && isAdminAccount && (
         <AddToBucketModal
@@ -14436,6 +14966,9 @@ export default function PortalV2Page() {
               onNavListChange={setImageNavList}
               cols={feedCols}
               fullSize={feedFullSize}
+              fullSizeLayout={feedFullSizeLayout}
+              masonryMode={feedMasonryMode}
+              tileRes={feedTileRes}
               adminFilters={isAdminAccount ? adminFeedFilters : null}
               showHidden={feedShowHidden}
             />
