@@ -21,6 +21,8 @@ export async function GET(request: Request) {
     const includeCleared = searchParams.get('includeCleared') === 'true'
 
     if (!isNaN(treeUser)) {
+      // Tree mode shows the user's ORGANIZED library (library-source only) —
+      // backfilled generation-history refs are folderless and would flood the root
       const [folders, references] = await Promise.all([
         prisma.userRefFolder.findMany({
           where: { userId: treeUser },
@@ -28,10 +30,10 @@ export async function GET(request: Request) {
           select: { id: true, name: true, parentId: true },
         }),
         prisma.userReference.findMany({
-          where: { userId: treeUser, ...(includeCleared ? {} : { isCleared: false }) },
+          where: { userId: treeUser, source: 'library', ...(includeCleared ? {} : { isCleared: false }) },
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           take: 5000,
-          select: { id: true, url: true, folderId: true, isCleared: true, clearedAt: true, createdAt: true },
+          select: { id: true, url: true, folderId: true, isCleared: true, clearedAt: true, createdAt: true, source: true },
         }),
       ])
       return NextResponse.json({ folders, references })
@@ -42,10 +44,14 @@ export async function GET(request: Request) {
     const limit = Math.min(120, Math.max(1, parseInt(searchParams.get('limit') || '60')))
     const sort = searchParams.get('sort') === 'oldest' ? 'asc' : 'desc'
     const userIds = searchParams.getAll('userId').map(Number).filter(n => !isNaN(n) && n > 0)
+    // source filter: 'library' (dropdown uploads) | 'generation' (backfilled history)
+    const sourceParam = searchParams.get('source')
+    const source = sourceParam === 'library' || sourceParam === 'generation' ? sourceParam : null
 
     const where = {
       ...(userIds.length === 1 ? { userId: userIds[0] } : userIds.length > 1 ? { userId: { in: userIds } } : {}),
       ...(includeCleared ? {} : { isCleared: false }),
+      ...(source ? { source } : {}),
     }
 
     const [total, rows, userGroups] = await Promise.all([
@@ -57,7 +63,7 @@ export async function GET(request: Request) {
         take: limit,
         select: {
           id: true, url: true, userId: true, folderId: true,
-          isCleared: true, clearedAt: true, createdAt: true,
+          isCleared: true, clearedAt: true, createdAt: true, source: true,
           user: { select: { email: true, name: true } },
           folder: { select: { name: true } },
         },
@@ -89,6 +95,7 @@ export async function GET(request: Request) {
         isCleared: r.isCleared,
         clearedAt: r.clearedAt,
         createdAt: r.createdAt,
+        source: r.source,
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
       facets: {

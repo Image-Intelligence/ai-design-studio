@@ -839,6 +839,7 @@ model UserReference {
   folderId  Int?
   isCleared Boolean   @default(false) // soft delete — hidden from user, kept for admin
   clearedAt DateTime?
+  source    String    @default("library") // 'library' | 'generation' (backfilled from GeneratedImage.referenceImageUrls history)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 

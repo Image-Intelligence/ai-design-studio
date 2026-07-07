@@ -22,6 +22,7 @@ interface AdminRef {
   isCleared: boolean
   clearedAt: string | null
   createdAt: string
+  source: string // 'library' | 'generation' (backfilled from generation history)
 }
 
 interface RefFacetUser { id: number; email: string; name: string | null; count: number }
@@ -58,7 +59,9 @@ export function ReferencePanel({ authHeaders, cols }: {
 
   // Filters (persisted)
   const [userFilters, setUserFilters] = useState<string[]>([])
-  const [includeCleared, setIncludeCleared] = useState(true)
+  // What to show: everything ever uploaded/used, current active libraries only,
+  // or the backfilled generation-usage history
+  const [view, setView] = useState<"all" | "library" | "history">("all")
   const [sort, setSort] = useState<"newest" | "oldest">("newest")
   const [page, setPage] = useState(1)
   const pageSize = 60
@@ -80,7 +83,7 @@ export function ReferencePanel({ authHeaders, cols }: {
       if (raw) {
         const p = JSON.parse(raw)
         if (Array.isArray(p.userFilters)) setUserFilters(p.userFilters)
-        if (typeof p.includeCleared === "boolean") setIncludeCleared(p.includeCleared)
+        if (p.view === "all" || p.view === "library" || p.view === "history") setView(p.view)
         if (p.sort === "newest" || p.sort === "oldest") setSort(p.sort)
       }
     } catch {}
@@ -88,8 +91,8 @@ export function ReferencePanel({ authHeaders, cols }: {
   }, [])
   useEffect(() => {
     if (!prefsLoaded.current) return
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ userFilters, includeCleared, sort })) } catch {}
-  }, [userFilters, includeCleared, sort])
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ userFilters, view, sort })) } catch {}
+  }, [userFilters, view, sort])
 
   const abortRef = useRef<AbortController | null>(null)
   const fetchRefs = useCallback(async () => {
@@ -103,7 +106,10 @@ export function ReferencePanel({ authHeaders, cols }: {
       params.set("page", String(page))
       params.set("limit", String(pageSize))
       params.set("sort", sort)
-      if (includeCleared) params.set("includeCleared", "true")
+      // all = everything (incl. cleared + history); library = active libraries only;
+      // history = backfilled generation-usage refs
+      if (view !== "library") params.set("includeCleared", "true")
+      if (view === "history") params.set("source", "generation")
       userFilters.forEach(u => params.append("userId", u))
       const res = await fetch(`/api/admin/references?${params}`, { headers: authHeaders(), signal: ctrl.signal })
       if (res.status === 401) { setAuthNeeded(true); return }
@@ -119,11 +125,11 @@ export function ReferencePanel({ authHeaders, cols }: {
     } finally {
       if (abortRef.current === ctrl) setLoading(false)
     }
-  }, [page, sort, includeCleared, userFilters, authHeaders])
+  }, [page, sort, view, userFilters, authHeaders])
 
   useEffect(() => { if (treeUserId === null) fetchRefs() }, [fetchRefs, treeUserId])
   // Reset to page 1 when filters change
-  useEffect(() => { setPage(1) }, [userFilters, includeCleared, sort])
+  useEffect(() => { setPage(1) }, [userFilters, view, sort])
 
   // Verify a freshly-typed admin password, store it, and retry the fetch
   const handleUnlock = async () => {
@@ -159,7 +165,7 @@ export function ReferencePanel({ authHeaders, cols }: {
     try {
       const params = new URLSearchParams()
       params.set("treeUser", String(userId))
-      if (includeCleared) params.set("includeCleared", "true")
+      params.set("includeCleared", "true") // tree always shows cleared library refs (badged)
       const res = await fetch(`/api/admin/references?${params}`, { headers: authHeaders() })
       if (!res.ok) { setTreeUserId(null); return }
       const data = await res.json()
@@ -170,7 +176,7 @@ export function ReferencePanel({ authHeaders, cols }: {
     } finally {
       setTreeLoading(false)
     }
-  }, [includeCleared, authHeaders])
+  }, [authHeaders])
 
   const treeUserLabel = facetUsers.find(u => u.id === treeUserId)?.email
     ?? refs.find(r => r.userId === treeUserId)?.userEmail
@@ -182,19 +188,24 @@ export function ReferencePanel({ authHeaders, cols }: {
 
   const gridCls = GRID_COLS[cols] ?? "grid-cols-4"
 
-  const RefCard = ({ url, label, sub, cleared }: { url: string; label: string; sub: string; cleared: boolean }) => (
+  const RefCard = ({ url, label, sub, cleared, history = false }: { url: string; label: string; sub: string; cleared: boolean; history?: boolean }) => (
     <button
       onClick={() => setPreview({ url, label })}
       className="group relative rounded-xl overflow-hidden border border-white/[0.07] bg-white/[0.02] hover:border-white/20 transition-all text-left"
     >
       <div className="aspect-square bg-black/40">
-        <img src={url} alt="" loading="lazy" className={`w-full h-full object-cover ${cleared ? "opacity-50" : ""}`} />
+        <img src={url} alt="" loading="lazy" className={`w-full h-full object-cover ${cleared && !history ? "opacity-50" : ""}`} />
       </div>
-      {cleared && (
+      {history ? (
+        // Backfilled from generation history — was used with a generation, never a library item
+        <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-indigo-500/25 border border-indigo-500/40 text-indigo-300 text-[9px] font-bold uppercase tracking-wide">
+          History
+        </span>
+      ) : cleared ? (
         <span className="absolute top-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[9px] font-bold uppercase tracking-wide">
           <EyeOff size={8} /> Cleared
         </span>
-      )}
+      ) : null}
       <div className="px-2 py-1.5">
         <p className="text-[10px] text-slate-300 truncate">{label}</p>
         <p className="text-[9px] text-slate-600 truncate">{sub}</p>
@@ -213,17 +224,26 @@ export function ReferencePanel({ authHeaders, cols }: {
           placeholder="Users: all"
           searchable
         />
-        <button
-          onClick={() => setIncludeCleared(v => !v)}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-all ${
-            includeCleared
-              ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
-              : "bg-white/[0.05] border-white/[0.08] text-slate-400 hover:text-white"
-          }`}
-        >
-          <EyeOff size={11} />
-          {includeCleared ? "Cleared: shown" : "Cleared: hidden"}
-        </button>
+        {/* Show: everything ever / active libraries / generation-usage history */}
+        <div className="flex items-center rounded-lg border border-white/[0.08] overflow-hidden">
+          {([
+            { v: "all", label: "Everything" },
+            { v: "library", label: "Libraries" },
+            { v: "history", label: "History" },
+          ] as const).map((opt, i) => (
+            <button
+              key={opt.v}
+              onClick={() => setView(opt.v)}
+              className={`px-2.5 py-1.5 text-xs transition-colors ${i > 0 ? "border-l border-white/[0.08]" : ""} ${
+                view === opt.v
+                  ? opt.v === "history" ? "bg-indigo-500/15 text-indigo-300" : "bg-cyan-500/15 text-cyan-300"
+                  : "text-slate-500 hover:text-white"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
         <button
           onClick={() => setSort(s => s === "newest" ? "oldest" : "newest")}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.05] text-xs text-slate-300 hover:text-white transition-all"
@@ -361,8 +381,9 @@ export function ReferencePanel({ authHeaders, cols }: {
                   key={r.id}
                   url={r.url}
                   label={r.userEmail ?? `user ${r.userId}`}
-                  sub={`${fmtDate(r.createdAt)}${r.folderName ? ` · ${r.folderName}` : ""}`}
+                  sub={r.source === "generation" ? `${fmtDate(r.createdAt)} · used in generation` : `${fmtDate(r.createdAt)}${r.folderName ? ` · ${r.folderName}` : ""}`}
                   cleared={r.isCleared}
+                  history={r.source === "generation"}
                 />
               ))}
             </div>
