@@ -3143,7 +3143,9 @@ const INFO_POS_CARD_CLS: Record<InfoPos, string> = {
   left:   "sm:h-auto sm:max-h-[90vh] flex-col sm:flex-row-reverse",
   bottom: "sm:h-[90vh] flex-col",
   top:    "sm:h-[90vh] flex-col-reverse",
-  hidden: "sm:h-auto sm:max-h-[90vh] flex-col",
+  // Pinned height so the media pane has a real box to contain the image —
+  // with h-auto the image renders unbounded and gets clipped at 90vh
+  hidden: "sm:h-[90vh] flex-col",
 }
 const INFO_POS_PANEL_CLS: Record<InfoPos, string> = {
   right:  "sm:w-72 border-t border-white/8 sm:border-t-0 sm:border-l sm:border-white/8",
