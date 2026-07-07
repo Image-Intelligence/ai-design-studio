@@ -38,7 +38,5 @@ export async function GET(req: Request) {
   } catch (err: any) {
     console.error('queue-job-status error:', err)
     return NextResponse.json({ error: err.message }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

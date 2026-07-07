@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { cookies } from 'next/headers'
 import { getUserFromSession, verifyPassword, hashPassword, isValidPassword } from '@/lib/auth'
 
-const prisma = new PrismaClient()
 
 export async function POST(request: Request) {
   try {
@@ -58,7 +57,5 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error('Change password error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

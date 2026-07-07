@@ -2,9 +2,8 @@
 // Manages saved sessions for prompting studio
 
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 
-const prisma = new PrismaClient();
 
 // GET - List all saved sessions for user
 export async function GET(req: NextRequest) {

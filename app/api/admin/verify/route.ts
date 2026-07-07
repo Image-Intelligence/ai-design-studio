@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server"
-import { PrismaClient } from "@prisma/client"
+import prisma from '@/lib/prisma'
 import { cookies } from "next/headers"
 import { getUserFromSession } from "@/lib/auth"
 
-const prisma = new PrismaClient()
 
 // Fallback list used only if the AdminAccount table is empty (initial setup)
 const FALLBACK_ADMIN_EMAILS = ["promptandprotocol@gmail.com", "dirtysecretai@gmail.com"]

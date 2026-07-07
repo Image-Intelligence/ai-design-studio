@@ -204,7 +204,9 @@ export default function AdminImagesPage() {
       const typeParam  = type !== 'all' ? `&type=${type}` : ''
       const userParam  = userIds.size > 0 ? `&userIds=${Array.from(userIds).join(',')}` : ''
       const ratedParam = rated ? `&rated=true` : ''
-      const res = await fetch(`/api/admin/images?page=${page}&limit=24${typeParam}${userParam}${ratedParam}`)
+      const res = await fetch(`/api/admin/images?page=${page}&limit=24${typeParam}${userParam}${ratedParam}`, {
+        headers: { 'x-admin-password': sessionStorage.getItem('admin-password') || '' },
+      })
       if (res.ok) {
         const data = await res.json()
         setImages(data.images)

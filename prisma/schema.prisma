@@ -169,6 +169,7 @@ model GeneratedImage {
   expiresAt          DateTime // 30 days from creation
   isDeleted          Boolean  @default(false)
   isHidden           Boolean  @default(false) // User-hidden from the feed (reversible, blob untouched)
+  thumbnailUrl       String?  // Pre-generated 600px webp thumb on public R2 — feed serves this directly (CDN-cached), avoiding a per-request resize + full-image download
 
   // NEW: Video support fields
   quality            String?  // Quality/resolution (e.g., "2k", "4k", "480p", "720p", "1080p")
@@ -199,6 +200,8 @@ model GeneratedImage {
   @@index([falRequestId]) // Idempotency lookups
   @@index([markedForTraining]) // Dataset export queries
   @@index([adminTags])         // Tag filter queries
+  // Hot feed query: where { userId, isDeleted, isHidden } orderBy createdAt desc
+  @@index([userId, isDeleted, isHidden, createdAt])
 }
 
 // ============================================

@@ -1,14 +1,13 @@
 import { NextResponse } from 'next/server'
 import { fal } from '@fal-ai/client'
 import { uploadToR2 } from '@/lib/r2'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
-const prisma = new PrismaClient()
 
 export async function POST(req: Request) {
   let step = 'init'
@@ -222,7 +221,5 @@ export async function POST(req: Request) {
       { error: `[${step}] ${error.message || 'Generation failed'}` },
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }

@@ -1,5 +1,4 @@
 import { NextResponse, after } from 'next/server'
-import { PrismaClient } from '@prisma/client'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
@@ -102,7 +101,6 @@ export async function POST(req: Request) {
     // Run Gemini generation after the response is sent so the client unlocks immediately
     after(async () => {
       // Use a fresh Prisma client — the main handler's client may be disconnected
-      const bgPrisma = new PrismaClient()
       try {
         // ── Build Gemini request ────────────────────────────────────────
         const contentParts: any[] = []
@@ -160,7 +158,7 @@ export async function POST(req: Request) {
         // ── Save GeneratedImage ─────────────────────────────────────────
         const expiresAt = new Date()
         expiresAt.setFullYear(expiresAt.getFullYear() + 100)
-        const savedImage = await bgPrisma.generatedImage.create({
+        const savedImage = await prisma.generatedImage.create({
           data: {
             userId,
             prompt: promptStr,
@@ -175,7 +173,7 @@ export async function POST(req: Request) {
         })
 
         // ── Deduct tickets ──────────────────────────────────────────────
-        await bgPrisma.ticket.update({
+        await prisma.ticket.update({
           where: { userId },
           data: {
             balance:   { decrement: ticketCost },
@@ -185,7 +183,7 @@ export async function POST(req: Request) {
         })
 
         // ── Mark queue completed ────────────────────────────────────────
-        await bgPrisma.generationQueue.update({
+        await prisma.generationQueue.update({
           where: { id: queueId },
           data: {
             status:       'completed',
@@ -208,11 +206,11 @@ export async function POST(req: Request) {
       } catch (err: any) {
         console.error(`Gemini queue #${queueId} failed:`, err.message)
         await Promise.all([
-          bgPrisma.ticket.update({
+          prisma.ticket.update({
             where: { userId },
             data: { reserved: { decrement: ticketCost } },
           }).catch(() => {}),
-          bgPrisma.generationQueue.update({
+          prisma.generationQueue.update({
             where: { id: queueId },
             data: {
               status:      'failed',
@@ -221,8 +219,6 @@ export async function POST(req: Request) {
             },
           }).catch(() => {}),
         ])
-      } finally {
-        await bgPrisma.$disconnect()
       }
     })
 
@@ -230,7 +226,5 @@ export async function POST(req: Request) {
   } catch (err: any) {
     console.error('Gemini submit error:', err)
     return NextResponse.json({ error: err.message || 'Submission failed' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

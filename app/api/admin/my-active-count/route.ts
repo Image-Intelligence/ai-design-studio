@@ -26,7 +26,5 @@ export async function GET() {
   } catch (err: any) {
     console.error('my-active-count error:', err)
     return NextResponse.json({ error: 'Failed' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

@@ -142,7 +142,5 @@ export async function POST(req: Request) {
       return NextResponse.json({ status: 'failed', error: `Generation failed: ${detail}` })
     }
     return NextResponse.json({ status: 'in_progress', error: error.message })
-  } finally {
-    await prisma.$disconnect()
   }
 }

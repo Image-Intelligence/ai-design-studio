@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { uploadToR2, deleteFromR2 } from '@/lib/r2'
 
-const prisma = new PrismaClient()
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 
 export async function GET(request: Request) {

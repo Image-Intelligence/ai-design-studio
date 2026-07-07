@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 
-const prisma   = new PrismaClient()
 const ADMIN_PW = process.env.ADMIN_PASSWORD || 'admin123'
 
 interface RecordInput {
@@ -98,7 +97,5 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('[dataset/record] error:', error)
     return NextResponse.json({ error: error.message || 'Failed' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

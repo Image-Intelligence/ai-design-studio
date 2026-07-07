@@ -5,14 +5,28 @@
 
 import { uploadToR2 } from '@/lib/r2';
 import { NextRequest, NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { getUserFromSession } from '@/lib/auth';
+
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15MB — client compresses to ≤1920px
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {
+    // Require a valid session — previously any anonymous caller could upload to R2.
+    const token = (await cookies()).get('session')?.value;
+    const sessionUser = token ? await getUserFromSession(token) : null;
+    if (!sessionUser) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
+
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
 
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json({ error: 'File too large (max 15MB)' }, { status: 400 });
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());

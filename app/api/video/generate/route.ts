@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { fal } from "@fal-ai/client";
 import { syncAndClaimFalSlot } from '@/lib/admin-queue-helpers';
 import { isGenerationBlocked } from '@/lib/generation-guard';
 import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
 
-const prisma = new PrismaClient();
 
 fal.config({
   credentials: process.env.FAL_KEY!
@@ -283,8 +282,6 @@ export async function POST(request: NextRequest) {
     if (adminMode) {
       const { cookies } = await import('next/headers')
       const { getUserFromSession } = await import('@/lib/auth')
-      const { PrismaClient: PC2 } = await import('@prisma/client')
-      const prisma2 = new PC2()
       const FALLBACK_ADMIN_EMAILS = ['promptandprotocol@gmail.com', 'dirtysecretai@gmail.com']
       const cookieStore = await cookies()
       const token = cookieStore.get('session')?.value
@@ -295,17 +292,15 @@ export async function POST(request: NextRequest) {
       // Verify the session user is actually an admin
       let isAdmin = false
       try {
-        const count = await prisma2.adminAccount.count()
+        const count = await prisma.adminAccount.count()
         if (count === 0) {
           isAdmin = FALLBACK_ADMIN_EMAILS.includes(sessionUser.email)
         } else {
-          const account = await prisma2.adminAccount.findUnique({ where: { email: sessionUser.email } })
+          const account = await prisma.adminAccount.findUnique({ where: { email: sessionUser.email } })
           isAdmin = !!(account?.canAccessAdmin)
         }
       } catch {
         isAdmin = FALLBACK_ADMIN_EMAILS.includes(sessionUser.email)
-      } finally {
-        await prisma2.$disconnect()
       }
       if (!isAdmin) {
         return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
@@ -325,7 +320,7 @@ export async function POST(request: NextRequest) {
             prompt:     (prompt || '').trim(),
             parameters: { falEndpoint, falInput, usePolling: true },
             status:     'queued',
-            ticketCost: 0,
+            ticketCost: ticketCost, // real cost — admin video is debited client-side; refunded server-side on failure
           },
         })
         console.log(`Video queued (at capacity, max=${maxConcurrent}) model=${model} queueId=#${queueEntry.id}`)
@@ -374,7 +369,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Admin mode: track as processing in GenerationQueue (counter already incremented above)
+    // Track as processing in GenerationQueue so the polling status route can settle
+    // the job and — on failure — refund the debited tickets server-side (works even
+    // if the user's tab is closed). ticketCost is the amount actually debited:
+    // admin video is debited client-side, non-admin server-side above.
     if (adminMode && adminSlotClaimed && adminTargetUserId) {
       await prisma.generationQueue.create({
         data: {
@@ -384,11 +382,25 @@ export async function POST(request: NextRequest) {
           prompt:      (prompt || '').trim(),
           parameters:  { falEndpoint, falInput, usePolling: true },
           status:      'processing',
-          ticketCost:  0,
+          ticketCost:  ticketCost,
           falRequestId: requestId,
           startedAt:   new Date(),
         },
       })
+    } else if (!adminMode && userId) {
+      await prisma.generationQueue.create({
+        data: {
+          userId:       userId,
+          modelId:      model,
+          modelType:    'video',
+          prompt:       (prompt || '').trim(),
+          parameters:   { falEndpoint, falInput, usePolling: true },
+          status:       'processing',
+          ticketCost:   ticketCost,
+          falRequestId: requestId,
+          startedAt:    new Date(),
+        },
+      }).catch(() => {})
     }
 
     return NextResponse.json({
@@ -404,7 +416,5 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Video generation error:', error);
     return NextResponse.json({ success: false, error: error.message || 'Failed to submit video generation' }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
   }
 }

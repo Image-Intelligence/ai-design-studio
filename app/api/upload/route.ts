@@ -1,8 +1,18 @@
 import { NextResponse } from 'next/server';
 import { uploadToR2, deleteFromR2 } from '@/lib/r2';
+import { cookies } from 'next/headers';
+import { getUserFromSession } from '@/lib/auth';
+
+async function requireSession() {
+  const token = (await cookies()).get('session')?.value;
+  return token ? await getUserFromSession(token) : null;
+}
 
 export async function POST(request: Request) {
   try {
+    if (!(await requireSession())) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
     const formData = await request.formData();
     const file = formData.get('file') as File;
     
@@ -60,6 +70,10 @@ export async function POST(request: Request) {
 // DELETE endpoint to remove uploaded images
 export async function DELETE(request: Request) {
   try {
+    // Previously anonymous — anyone could delete ANY R2 object by URL. Require a session.
+    if (!(await requireSession())) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
     const { searchParams } = new URL(request.url);
     const imageUrl = searchParams.get('imageUrl');
     

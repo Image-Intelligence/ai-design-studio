@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
 import { spawn } from 'child_process'
 import { writeFile, readFile, readdir, rm, mkdir } from 'fs/promises'
@@ -9,7 +9,6 @@ import { existsSync } from 'fs'
 import path from 'path'
 import os from 'os'
 
-const prisma = new PrismaClient()
 const FALLBACK_ADMIN_EMAILS = ['promptandprotocol@gmail.com', 'dirtysecretai@gmail.com']
 
 async function getAdminUser(): Promise<{ id: number; email: string } | null> {

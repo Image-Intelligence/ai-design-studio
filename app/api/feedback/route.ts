@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 
-const prisma = new PrismaClient();
 
 // POST - Create new feedback
 export async function POST(request: Request) {
@@ -32,12 +31,17 @@ export async function POST(request: Request) {
 }
 
 // GET - Get all feedback (admin only)
+// Admin auth via header — never the query string (query strings leak into
+// server/proxy access logs and browser history).
+function checkAdmin(request: Request) {
+  const pass = process.env.ADMIN_PASSWORD;
+  if (!pass) return true;
+  return request.headers.get('x-admin-password') === pass;
+}
+
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const password = searchParams.get('password');
-
-    if (password !== process.env.ADMIN_PASSWORD) {
+    if (!checkAdmin(request)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -64,12 +68,11 @@ export async function GET(request: Request) {
 // PUT - Update feedback status (admin only) — single or bulk
 export async function PUT(request: Request) {
   try {
-    const body = await request.json();
-    const { password, id, ids, status, adminNotes } = body;
-
-    if (password !== process.env.ADMIN_PASSWORD) {
+    if (!checkAdmin(request)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    const body = await request.json();
+    const { id, ids, status, adminNotes } = body;
 
     // Bulk update
     if (Array.isArray(ids) && ids.length > 0) {
@@ -104,29 +107,23 @@ export async function PUT(request: Request) {
 // DELETE - Delete feedback (admin only) — single (query params) or bulk (request body)
 export async function DELETE(request: Request) {
   try {
+    if (!checkAdmin(request)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const { searchParams } = new URL(request.url);
-    const queryPassword = searchParams.get('password');
     const queryId = searchParams.get('id');
 
     // Attempt to read body for bulk deletes
-    let bodyPassword: string | undefined;
     let bodyIds: number[] | undefined;
 
     const contentType = request.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       try {
         const body = await request.json();
-        bodyPassword = body.password;
         bodyIds = body.ids;
       } catch {
         // no body or unparseable — fine
       }
-    }
-
-    const password = queryPassword || bodyPassword;
-
-    if (password !== process.env.ADMIN_PASSWORD) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     // Bulk delete via body

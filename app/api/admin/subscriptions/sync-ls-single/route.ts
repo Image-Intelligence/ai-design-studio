@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 
-const prisma = new PrismaClient();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
 // POST — force-syncs a single subscription from LemonSqueezy (always overwrites, no manual-override check)
@@ -88,7 +87,5 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('sync-ls-single error:', error);
     return NextResponse.json({ error: error.message || 'Server error' }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
   }
 }

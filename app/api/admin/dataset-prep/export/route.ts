@@ -247,7 +247,6 @@ export async function POST(req: Request) {
       await send({ type: 'error', message: msg })
     } finally {
       await writer.close().catch(() => {})
-      await prisma.$disconnect()
     }
   })()
 

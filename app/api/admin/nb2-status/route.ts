@@ -138,7 +138,5 @@ export async function POST(req: Request) {
     }
     // Transient error — keep polling
     return NextResponse.json({ status: 'in_progress', error: error.message })
-  } finally {
-    await prisma.$disconnect()
   }
 }

@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 
-const prisma = new PrismaClient();
 
 export async function GET(req: NextRequest) {
   try {
@@ -70,7 +69,5 @@ export async function GET(req: NextRequest) {
       { success: false, error: error.message || 'Failed to fetch subscriptions' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

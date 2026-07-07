@@ -7,7 +7,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
-import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -78,6 +78,7 @@ export async function POST(req: Request) {
 
     // Server-side ticket check — Kling V3 costs 2 tickets
     const ticketCost = 2
+    const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
     const ticketResult = await deductGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
     if (!ticketResult.ok) {
       return NextResponse.json(
@@ -107,7 +108,7 @@ export async function POST(req: Request) {
           prompt:    (prompt as string).trim(),
           parameters: { falEndpoint: endpoint, falInput: input as Record<string, unknown>, usePolling: true, permanentReferenceUrls } as any,
           status:    'queued',
-          ticketCost: 0,
+          ticketCost: chargedCost,
         },
       })
       console.log(`Kling V3 queued (at capacity, max=${maxConcurrent}) → queueId #${queueEntry.id}`)
@@ -126,7 +127,7 @@ export async function POST(req: Request) {
           prompt:      (prompt as string).trim(),
           parameters:  { falEndpoint: endpoint, falInput: input, usePolling: true, permanentReferenceUrls } as any,
           status:      'processing',
-          ticketCost:  0,
+          ticketCost:  chargedCost,
           falRequestId: submitted.request_id,
           startedAt:   new Date(),
         },
@@ -152,7 +153,5 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('Kling image submit error:', error)
     return NextResponse.json({ error: error.message || 'Submission failed' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

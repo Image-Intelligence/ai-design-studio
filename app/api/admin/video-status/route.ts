@@ -10,13 +10,17 @@ fal.config({ credentials: process.env.FAL_KEY! })
 
 // POST /api/admin/video-status
 // Polls a FAL queue video job and saves to DB on completion.
-// Admin-only — no session auth required (portal-v2 video scanner).
+// Requires a valid session — previously anyone with a requestId+falEndpoint could
+// drive fal.queue.result + an R2 upload here.
 export async function POST(req: Request) {
   let requestId: string | undefined
   try {
     const cookieStore = await cookies()
     const token = cookieStore.get('session')?.value
     const sessionUser = token ? await getUserFromSession(token) : null
+    if (!sessionUser) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
 
     const body = await req.json()
     requestId = body.requestId
@@ -137,7 +141,5 @@ export async function POST(req: Request) {
     }
     // Return in_progress on transient network/server errors so the client keeps polling
     return NextResponse.json({ status: 'in_progress', error: error.message })
-  } finally {
-    await prisma.$disconnect()
   }
 }

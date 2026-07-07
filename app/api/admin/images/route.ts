@@ -1,11 +1,18 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient, Prisma } from '@prisma/client'
+import prisma from '@/lib/prisma'
+import { Prisma } from '@prisma/client'
 
-const prisma = new PrismaClient()
+function checkAuth(req: Request) {
+  const pass = process.env.ADMIN_PASSWORD
+  if (!pass) return true
+  return req.headers.get('x-admin-password') === pass
+}
 
 // GET - Fetch all generated images with user info (admin only)
 // Query params: page, limit, type (all | image | video), userIds (comma-separated), rated (true)
 export async function GET(request: Request) {
+  // This returns EVERY user's images + emails/names — was fully public. Admin-gated now.
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { searchParams } = new URL(request.url)
     const page         = parseInt(searchParams.get('page')  || '1')
@@ -56,7 +63,5 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error('Error fetching admin images:', error)
     return NextResponse.json({ error: 'Failed to fetch images' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

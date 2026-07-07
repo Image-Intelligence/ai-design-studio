@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { after } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { uploadToR2 } from '@/lib/r2'
@@ -8,8 +8,8 @@ import { getTicketCost, getModelById } from '@/config/ai-models.config'
 import { fal } from "@fal-ai/client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
+import { checkUserConcurrency } from '@/lib/user-concurrency'
 
-const prisma = new PrismaClient()
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
@@ -151,6 +151,20 @@ export async function POST(request: Request) {
           ? 1 // minimum; actual cost computed server-side after fetching image dimensions
           : getTicketCost(model, quality)
     console.log('Selected model:', selectedModel.displayName, '- Quality:', quality, '- Cost:', ticketCost, 'ticket(s)')
+
+    // Per-user concurrency cap — this route creates GenerationQueue rows but never
+    // gated on them, so a user could fire unlimited concurrent FAL jobs (runaway
+    // cost). checkUserConcurrency counts the user's in-flight image jobs; owners
+    // get a 999 limit so admins are effectively unlimited.
+    if (!adminMode) {
+      const { allowed, activeCount, limit } = await checkUserConcurrency(user.id)
+      if (!allowed) {
+        return NextResponse.json(
+          { error: `Too many generations in progress (${activeCount}/${limit}). Wait for one to finish.` },
+          { status: 429 }
+        )
+      }
+    }
 
     // Check ticket balance (skip for admin mode)
     const ticketRecord = await prisma.ticket.findUnique({
@@ -666,7 +680,6 @@ export async function POST(request: Request) {
 
           // Background: poll Replicate → save result → settle tickets → mark done
           after(async () => {
-            const prismaAfter = new PrismaClient()
             try {
               const pollUrl = `https://api.replicate.com/v1/predictions/${prediction.id}`
               const headers = { 'Authorization': `Bearer ${process.env.REPLICATE_API_TOKEN}` }
@@ -688,7 +701,7 @@ export async function POST(request: Request) {
                       hostedUrl = await uploadToR2(`supir-${Date.now()}.png`, buf, 'image/png')
                     }
                   } catch {}
-                  await prismaAfter.generatedImage.create({
+                  await prisma.generatedImage.create({
                     data: {
                       userId: user.id,
                       prompt: `${upscaleFactor}x SUPIR`,
@@ -701,9 +714,9 @@ export async function POST(request: Request) {
                       falRequestId: prediction.id,
                     },
                   })
-                  await prismaAfter.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'completed' } })
+                  await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'completed' } })
                   if (!skipTickets) {
-                    await prismaAfter.ticket.update({ where: { userId: user.id }, data: { balance: { decrement: supirCost }, reserved: { decrement: supirCost } } })
+                    await prisma.ticket.update({ where: { userId: user.id }, data: { balance: { decrement: supirCost }, reserved: { decrement: supirCost } } })
                   }
                   break
                 } else if (pred.status === 'failed' || pred.status === 'canceled') {
@@ -711,19 +724,17 @@ export async function POST(request: Request) {
                   const friendlyErr = rawErr.includes('CUDA out of memory') || rawErr.includes('out of memory')
                     ? 'GPU out of memory — try a smaller image or lower upscale factor'
                     : rawErr.slice(0, 120)
-                  await prismaAfter.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: friendlyErr } })
-                  if (!skipTickets) await prismaAfter.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
+                  await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: friendlyErr } })
+                  if (!skipTickets) await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
                   break
                 }
               }
               if (attempt >= maxAttempts) {
-                await prismaAfter.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: 'SUPIR timed out' } })
-                if (!skipTickets) await prismaAfter.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
+                await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: 'SUPIR timed out' } })
+                if (!skipTickets) await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
               }
             } catch (err) {
               console.error('[supir] background worker error:', err)
-            } finally {
-              await prismaAfter.$disconnect()
             }
           })
 

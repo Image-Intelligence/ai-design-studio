@@ -2,10 +2,9 @@
 // Fetches current rate limit usage from database
 
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { AI_MODELS } from '@/config/ai-models.config'
 
-const prisma = new PrismaClient()
 
 export async function GET(request: NextRequest) {
   try {

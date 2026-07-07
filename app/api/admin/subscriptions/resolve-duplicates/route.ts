@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 
-const prisma = new PrismaClient()
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'
 
 // POST — find users with multiple subscription records and delete the stale ones.
@@ -74,8 +73,6 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[resolve-duplicates] error:', error)
     return NextResponse.json({ error: error.message || 'Server error' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }
 
@@ -124,7 +121,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, duplicateUserCount: duplicates.length, duplicates })
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Server error' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

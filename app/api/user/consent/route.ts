@@ -2,10 +2,9 @@
 // API route for managing user consent preferences
 
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { updateUserConsent } from '@/lib/prompt-intelligence';
 
-const prisma = new PrismaClient();
 
 export async function GET(req: NextRequest) {
   const userId = req.nextUrl.searchParams.get('userId');

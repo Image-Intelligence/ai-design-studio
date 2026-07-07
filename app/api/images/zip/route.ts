@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import JSZip from 'jszip'
 
-const prisma = new PrismaClient()
 
 // Server-side zip builder — moves all image fetching + JSZip memory off the
 // client (critical for iPad Safari, which crashes when 60+ images accumulate

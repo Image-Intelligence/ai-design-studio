@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { fal } from "@fal-ai/client";
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { uploadToR2 } from '@/lib/r2';
 
-const prisma = new PrismaClient();
 
 fal.config({
   credentials: process.env.FAL_KEY!
@@ -125,7 +124,5 @@ export async function POST(request: NextRequest) {
     console.error('Video status check error:', error);
     // Return in_progress on transient errors so the client keeps polling
     return NextResponse.json({ status: 'in_progress', error: error.message });
-  } finally {
-    await prisma.$disconnect();
   }
 }

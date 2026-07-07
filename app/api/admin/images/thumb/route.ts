@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import sharp from 'sharp'
 
-const prisma = new PrismaClient()
 
 // Admin thumbnail endpoint — accepts ?id=<imageId> and returns a resized WebP.
 // Protected only by the admin page gate (same pattern as other admin API routes).
@@ -37,7 +36,5 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Admin thumb error:', error)
     return new NextResponse('Server error', { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

@@ -3,10 +3,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromSession } from '@/lib/auth';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { cookies } from 'next/headers';
 
-const prisma = new PrismaClient();
 
 const PAYPAL_API = process.env.PAYPAL_API_URL || 'https://api-m.sandbox.paypal.com';
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
@@ -178,7 +177,5 @@ export async function POST(req: NextRequest) {
       { error: 'Failed to process subscription payment' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

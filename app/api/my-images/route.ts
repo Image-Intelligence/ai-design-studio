@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { deleteFromR2 } from '@/lib/r2'
 
-const prisma = new PrismaClient()
 
 export async function GET(request: Request) {
   try {
@@ -35,6 +34,17 @@ export async function GET(request: Request) {
     const type = searchParams.get('type') // 'image' | 'video' | null (all)
     const showHidden = searchParams.get('hidden') === 'true' // hidden-only view
     const falRequestIdsParam = searchParams.get('falRequestIds') // comma-separated list
+    // Cursor (keyset) pagination — the feed sends the last item it has (createdAt + id).
+    // Loading "everything older than this cursor" is O(limit) at any depth, unlike
+    // skip/OFFSET which slows down the deeper you scroll. Falls back to page/skip
+    // when no cursor is provided (keeps other callers working).
+    const beforeParam = searchParams.get('before')     // ISO createdAt of last loaded item
+    const beforeIdParam = searchParams.get('beforeId') // id of last loaded item (tiebreak)
+    // cursorMode = the caller wants keyset responses (hasMore/nextCursor) — set on
+    // EVERY feed request, including the first (which has no before yet = start at newest).
+    // hasCursor = an actual bookmark is present to page from.
+    const cursorMode = searchParams.get('cursor') === '1'
+    const hasCursor = !!beforeParam && !!beforeIdParam
 
     const VIDEO_MODELS = ['wan-2.5', 'kling-v3', 'kling-o3', 'kling-v3-motion', 'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'lipsync-v3']
     const typeFilter = type === 'image'
@@ -78,40 +88,62 @@ export async function GET(request: Request) {
       ...typeFilter,
     }
 
-    const total = await prisma.generatedImage.count({ where: baseWhere })
+    // Keyset predicate: rows strictly "older" than the cursor, using id as a tiebreak
+    // for rows sharing the same createdAt timestamp.
+    const beforeDate = hasCursor ? new Date(beforeParam!) : null
+    const cursorWhere = hasCursor
+      ? {
+          OR: [
+            { createdAt: { lt: beforeDate! } },
+            { createdAt: beforeDate!, id: { lt: parseInt(beforeIdParam!) } },
+          ],
+        }
+      : {}
 
-    // Fetch paginated user's generated images (not expired, not deleted, newest first)
+    const where = { ...baseWhere, ...cursorWhere }
+
     const images = await prisma.generatedImage.findMany({
-      where: baseWhere,
-      orderBy: {
-        createdAt: 'desc'
-      },
-      skip,
-      take: limit
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // Cursor mode reads straight from the cursor (no skip); page mode keeps skip
+      ...(cursorMode ? {} : { skip }),
+      take: limit,
     })
 
+    const mapped = images.map(img => ({
+      id: img.id,
+      prompt: img.prompt,
+      imageUrl: img.imageUrl,
+      thumbnailUrl: img.thumbnailUrl || null, // pre-generated CDN thumb, when available
+      model: img.model,
+      referenceImageUrls: img.referenceImageUrls || [],
+      createdAt: img.createdAt,
+      expiresAt: img.expiresAt,
+      quality: img.quality || null,
+      aspectRatio: img.aspectRatio || null,
+      videoMetadata: img.videoMetadata || null,
+      loraUrl: (img.videoMetadata as any)?.loraUrl || null,
+      loraName: (img.videoMetadata as any)?.loraName || null,
+    }))
+
+    // Cursor mode: no expensive total count; "more" = we filled a full page. Also
+    // hand back the next cursor so the client doesn't have to reconstruct it.
+    if (cursorMode) {
+      const last = images[images.length - 1]
+      return NextResponse.json({
+        success: true,
+        images: mapped,
+        hasMore: images.length === limit,
+        nextCursor: last ? { before: last.createdAt, beforeId: last.id } : null,
+      })
+    }
+
+    // Page mode (unchanged) — used by callers that still pass ?page=
+    const total = await prisma.generatedImage.count({ where: baseWhere })
     return NextResponse.json({
       success: true,
-      images: images.map(img => ({
-        id: img.id,
-        prompt: img.prompt,
-        imageUrl: img.imageUrl,
-        model: img.model,
-        referenceImageUrls: img.referenceImageUrls || [],
-        createdAt: img.createdAt,
-        expiresAt: img.expiresAt,
-        quality: img.quality || null,
-        aspectRatio: img.aspectRatio || null,
-        videoMetadata: img.videoMetadata || null,
-        loraUrl: (img.videoMetadata as any)?.loraUrl || null,
-        loraName: (img.videoMetadata as any)?.loraName || null,
-      })),
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit)
-      }
+      images: mapped,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     })
 
   } catch (error: any) {
@@ -120,8 +152,6 @@ export async function GET(request: Request) {
       { error: 'Failed to fetch images' },
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }
 
@@ -159,8 +189,6 @@ export async function PATCH(request: Request) {
   } catch (error: any) {
     console.error('Error updating image visibility:', error)
     return NextResponse.json({ error: 'Failed to update images' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }
 
@@ -208,7 +236,5 @@ export async function DELETE(request: Request) {
   } catch (error: any) {
     console.error('Error deleting images:', error)
     return NextResponse.json({ error: 'Failed to delete images' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

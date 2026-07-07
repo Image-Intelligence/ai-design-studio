@@ -309,7 +309,6 @@ export async function POST(req: Request) {
           await refundGenerationTickets(userId, sessionUser.email, ticketCost)
         }
       } finally {
-        await prisma.$disconnect()
         controller.close()
       }
     },

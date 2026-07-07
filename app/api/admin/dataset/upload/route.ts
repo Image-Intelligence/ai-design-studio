@@ -4,11 +4,10 @@
 // Per-file metadata is passed as a JSON array in `metadataJson`.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
 import { v4 as uuidv4 } from 'uuid'
 
-const prisma = new PrismaClient()
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'
 
 const ALLOWED_TYPES: Record<string, string> = {
@@ -127,8 +126,6 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[dataset/upload] error:', error)
     return NextResponse.json({ error: error.message || 'Upload failed' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }
 

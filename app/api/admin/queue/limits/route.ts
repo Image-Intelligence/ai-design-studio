@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 
+function checkAuth(req: Request) {
+  const pass = process.env.ADMIN_PASSWORD
+  if (!pass) return true
+  return req.headers.get('x-admin-password') === pass
+}
+
 // Default model configurations
 const DEFAULT_MODELS = [
   // Global FAL.ai concurrency cap (applies to all FAL models combined)
@@ -55,6 +61,7 @@ export async function GET(request: Request) {
 
 // POST - Add new model limit
 export async function POST(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { modelId, modelType, maxConcurrent } = await request.json();
 
@@ -97,6 +104,7 @@ export async function POST(request: Request) {
 
 // PUT - Update model limit
 export async function PUT(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { modelId, maxConcurrent } = await request.json();
 
@@ -122,6 +130,7 @@ export async function PUT(request: Request) {
 
 // DELETE - Remove model limit
 export async function DELETE(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { searchParams } = new URL(request.url);
     const modelId = searchParams.get('modelId');

@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 
-const prisma = new PrismaClient();
+
+function checkAuth(req: Request) {
+  const pass = process.env.ADMIN_PASSWORD
+  if (!pass) return true
+  return req.headers.get('x-admin-password') === pass
+}
 
 // GET: Fetch galleries
 export async function GET(request: Request) {
@@ -54,9 +59,10 @@ export async function GET(request: Request) {
 
 // POST: Create new gallery
 export async function POST(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json();
-    
+
     const { title, description, coverImageUrl, price, isFeatured, loreIntro, loreOutro, accessType, images } = body;
 
     if (!title || !description || !coverImageUrl || price === undefined) {
@@ -96,6 +102,7 @@ export async function POST(request: Request) {
 
 // PUT: Update gallery
 export async function PUT(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json();
     const { id, title, description, coverImageUrl, price, isActive, isFeatured, loreIntro, loreOutro, accessType, images } = body;
@@ -153,6 +160,7 @@ export async function PUT(request: Request) {
 
 // DELETE: Delete gallery
 export async function DELETE(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');

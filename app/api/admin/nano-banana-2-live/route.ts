@@ -7,7 +7,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
-import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -107,6 +107,9 @@ export async function POST(req: Request) {
 
     // Server-side ticket check — cost: 12 for 4K, 7 otherwise
     const ticketCost = (resolution as string) === '4K' ? 12 : 7
+    // Amount actually debited from the DB — 0 for admins (image gens bypass
+    // charging). Stored on the queue row so a failure refunds exactly this.
+    const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
     const ticketResult = await deductGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
     if (!ticketResult.ok) {
       return NextResponse.json(
@@ -136,7 +139,7 @@ export async function POST(req: Request) {
           prompt:    (prompt as string).trim(),
           parameters: { falEndpoint: endpoint, falInput: input, usePolling: true, permanentReferenceUrls } as any,
           status:    'queued',
-          ticketCost: 0,
+          ticketCost: chargedCost,
         },
       })
       console.log(`NanoBanana 2 queued (at capacity, max=${maxConcurrent}) → queueId #${queueEntry.id}`)
@@ -155,7 +158,7 @@ export async function POST(req: Request) {
           prompt:      (prompt as string).trim(),
           parameters:  { falEndpoint: endpoint, falInput: input, usePolling: true, permanentReferenceUrls } as any,
           status:      'processing',
-          ticketCost:  0,
+          ticketCost:  chargedCost,
           falRequestId: submitted.request_id,
           startedAt:   new Date(),
         },
@@ -186,7 +189,5 @@ export async function POST(req: Request) {
       { error: error.message || 'Submission failed' },
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }

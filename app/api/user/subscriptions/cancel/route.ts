@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 
-const prisma = new PrismaClient();
 
 const PAYPAL_API = process.env.PAYPAL_API_URL || 'https://api-m.sandbox.paypal.com';
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
@@ -184,7 +183,5 @@ export async function POST(req: NextRequest) {
       { success: false, error: error.message || 'Failed to cancel subscription' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

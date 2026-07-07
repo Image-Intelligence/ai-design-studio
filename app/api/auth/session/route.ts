@@ -19,8 +19,7 @@ export async function GET(request: Request) {
 
     // Ensure user has a Ticket record (for legacy users)
     if (!user.tickets) {
-      const { PrismaClient } = await import('@prisma/client')
-      const prisma = new PrismaClient()
+      const { default: prisma } = await import('@/lib/prisma')
       try {
         await prisma.ticket.create({
           data: {
@@ -33,8 +32,6 @@ export async function GET(request: Request) {
         console.log(`Created Ticket record for user ${user.id} with 10 free tickets`)
       } catch (err) {
         console.error('Failed to create Ticket record:', err)
-      } finally {
-        await prisma.$disconnect()
       }
     }
 

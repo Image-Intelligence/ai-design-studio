@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { uploadToR2 } from '@/lib/r2'
 import sharp from 'sharp'
 
-const prisma = new PrismaClient()
 
 // Authenticated image proxy — serves a user's image by DB ID.
 // The direct Vercel Blob URL is never exposed to the browser.
@@ -27,31 +27,38 @@ export async function GET(
     // Only serve images that belong to this user and are not deleted
     const image = await prisma.generatedImage.findFirst({
       where: { id, userId: user.id, isDeleted: false },
-      select: { imageUrl: true },
+      select: { imageUrl: true, thumbnailUrl: true },
     })
 
     if (!image) return new NextResponse('Not found', { status: 404 })
 
-    const blobRes = await fetch(image.imageUrl)
-    if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
-
     const searchParams = new URL(request.url).searchParams
     const isDownload = searchParams.get('download') === '1'
     const isThumb = searchParams.get('thumb') === '1'
-    const contentType = blobRes.headers.get('content-type') || 'image/png'
-    const ext = contentType.includes('jpeg') ? 'jpg'
-              : contentType.includes('webp') ? 'webp'
-              : contentType.includes('mp4')  ? 'mp4'
-              : contentType.includes('webm') ? 'webm'
-              : contentType.includes('video') ? 'mp4'
-              : 'png'
 
     if (isThumb) {
+      // Fast path: a thumbnail was already generated and stored on public R2 — the
+      // feed normally uses that URL directly, but if this route is hit, redirect to it
+      // (no full-image download, no resize).
+      if (image.thumbnailUrl) {
+        return NextResponse.redirect(image.thumbnailUrl, 302)
+      }
+      // First view of this image — generate the thumbnail once, store it on R2 so
+      // every future request (this route or the direct URL) is a cheap CDN-served file.
+      const blobRes = await fetch(image.imageUrl)
+      if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
       const buffer = Buffer.from(await blobRes.arrayBuffer())
       const thumb = await sharp(buffer)
         .resize({ width: 600, withoutEnlargement: true })
         .webp({ quality: 75 })
         .toBuffer()
+      // Persist for next time (best-effort — on failure we simply regenerate later)
+      try {
+        const thumbUrl = await uploadToR2(`thumb/${id}-${Date.now()}.webp`, Buffer.from(thumb), 'image/webp')
+        await prisma.generatedImage.update({ where: { id }, data: { thumbnailUrl: thumbUrl } })
+      } catch (storeErr) {
+        console.error('Thumbnail store failed (non-fatal):', storeErr)
+      }
       return new NextResponse(new Uint8Array(thumb), {
         status: 200,
         headers: {
@@ -60,6 +67,17 @@ export async function GET(
         },
       })
     }
+
+    // Full image / download
+    const blobRes = await fetch(image.imageUrl)
+    if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
+    const contentType = blobRes.headers.get('content-type') || 'image/png'
+    const ext = contentType.includes('jpeg') ? 'jpg'
+              : contentType.includes('webp') ? 'webp'
+              : contentType.includes('mp4')  ? 'mp4'
+              : contentType.includes('webm') ? 'webm'
+              : contentType.includes('video') ? 'mp4'
+              : 'png'
 
     const headers: HeadersInit = {
       'Content-Type': contentType,
@@ -74,7 +92,5 @@ export async function GET(
   } catch (error) {
     console.error('Image proxy error:', error)
     return new NextResponse('Server error', { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

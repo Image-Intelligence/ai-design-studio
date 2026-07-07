@@ -1,23 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
+import { cookies } from 'next/headers';
+import { getUserFromSession } from '@/lib/auth';
 
-const prisma = new PrismaClient();
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
-    const userId = searchParams.get('userId');
-
-    if (!userId) {
-      return NextResponse.json(
-        { success: false, error: 'userId is required' },
-        { status: 400 }
-      );
+    // Derive the user from the session cookie — never from a client-supplied
+    // ?userId. Previously any caller could read any user's balance by id (IDOR).
+    const token = (await cookies()).get('session')?.value;
+    const sessionUser = token ? await getUserFromSession(token) : null;
+    if (!sessionUser) {
+      return NextResponse.json({ success: false, error: 'Not authenticated' }, { status: 401 });
     }
-
-    const userIdNum = parseInt(userId);
+    const userIdNum = sessionUser.id;
 
     const ticket = await prisma.ticket.findUnique({
       where: { userId: userIdNum }
@@ -45,7 +43,5 @@ export async function GET(req: NextRequest) {
       { success: false, error: error.message || 'Failed to fetch tickets' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

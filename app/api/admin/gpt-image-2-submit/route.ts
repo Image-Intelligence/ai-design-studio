@@ -192,7 +192,5 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('GPT Image 2 submit error:', error)
     return NextResponse.json({ error: error.message || 'Submission failed' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

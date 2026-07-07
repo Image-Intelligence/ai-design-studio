@@ -3,14 +3,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { fal } from "@fal-ai/client";
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { uploadToR2 } from '@/lib/r2';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { isGenerationBlocked } from '@/lib/generation-guard';
 
-const prisma = new PrismaClient();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 // Configure Fal.ai
@@ -106,6 +105,21 @@ export async function POST(req: NextRequest) {
     }
 
     console.log('💰 Ticket cost:', ticketCost);
+
+    // Per-account concurrency cap — the DB row below was meant to enforce this
+    // ("concurrency is enforced per-account") but nothing ever checked it, so a
+    // user could fire unlimited concurrent FAL jobs. checkUserConcurrency counts
+    // the user's in-flight image jobs; owners get 999 (admins effectively unlimited).
+    {
+      const { checkUserConcurrency } = await import('@/lib/user-concurrency')
+      const { allowed, activeCount, limit } = await checkUserConcurrency(userId)
+      if (!allowed) {
+        return NextResponse.json(
+          { success: false, error: `Too many generations in progress (${activeCount}/${limit}). Wait for one to finish.` },
+          { status: 429 }
+        )
+      }
+    }
 
     // jobId is declared above the try block so it's accessible in the catch handler
 
@@ -885,7 +899,5 @@ export async function POST(req: NextRequest) {
       },
       { status: isSensitiveContent ? 400 : 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

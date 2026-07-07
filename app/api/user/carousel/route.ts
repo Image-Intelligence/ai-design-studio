@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { uploadToR2 } from '@/lib/r2';
 
-const prisma = new PrismaClient();
 
 const MAX_IMAGES_PER_SIDE = 5;
 

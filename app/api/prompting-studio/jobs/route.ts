@@ -4,11 +4,10 @@
 // and enforce per-account concurrency limits.
 
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 
-const prisma = new PrismaClient()
 
 export const dynamic = 'force-dynamic'
 
@@ -101,7 +100,5 @@ export async function GET(request: Request) {
   } catch (error: any) {
     console.error('Jobs fetch error:', error)
     return NextResponse.json({ error: 'Failed to fetch jobs' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

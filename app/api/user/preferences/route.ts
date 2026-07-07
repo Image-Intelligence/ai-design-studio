@@ -24,8 +24,6 @@ export async function GET() {
     return NextResponse.json({ preferences: row?.portalPreferences ?? {} })
   } catch {
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }
 
@@ -52,7 +50,5 @@ export async function PUT(req: Request) {
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

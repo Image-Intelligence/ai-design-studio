@@ -168,7 +168,5 @@ export async function POST(req: Request) {
       { error: `${detailMsg || error.message || 'Submission failed'} | FAL body: ${rawBody}` },
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }

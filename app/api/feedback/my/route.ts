@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/lib/prisma'
 
-const prisma = new PrismaClient()
 
 export async function GET() {
   try {
@@ -31,7 +30,5 @@ export async function GET() {
   } catch (error) {
     console.error('Feedback my GET error:', error)
     return NextResponse.json({ error: 'Failed to fetch' }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
   }
 }

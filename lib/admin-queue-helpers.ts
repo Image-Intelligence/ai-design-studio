@@ -90,11 +90,39 @@ export async function releaseQueueSlot(falRequestId: string, failed: boolean, er
       return
     }
 
-    // Decrement global FAL concurrency counter
-    await prisma.modelConcurrencyLimit.updateMany({
-      where: { modelId: FAL_GLOBAL_ID },
-      data: { currentActive: { decrement: 1 } },
-    })
+    // Server-authoritative ticket refund on failure. Because the status flip
+    // above is guarded by `status: 'processing'`, exactly one poll call reaches
+    // this branch per job, so the refund can never double-fire. The refund runs
+    // regardless of whether the user's tab is open — fixing tickets silently
+    // lost on tab-close/crash. `ticketCost` on the row is the amount actually
+    // debited from the DB (0 for models the user was never charged for, e.g.
+    // admin image gens), so this never credits an uncharged user.
+    if (failed) {
+      try {
+        const row = await prisma.generationQueue.findFirst({
+          where: { falRequestId },
+          select: { userId: true, ticketCost: true },
+          orderBy: { id: 'desc' },
+        })
+        if (row && row.ticketCost > 0) {
+          await prisma.ticket.update({
+            where: { userId: row.userId },
+            data: { balance: { increment: row.ticketCost } },
+          }).catch(() => {})
+        }
+      } catch (refundErr) {
+        console.error('[admin-queue-helpers] refund on failure error:', refundErr)
+      }
+    }
+
+    // Decrement global FAL concurrency counter, floored at 0. The floor guards
+    // against jobs that were released without a matching claim (e.g. non-admin
+    // video, which doesn't pre-claim a slot) drifting the counter negative.
+    await prisma.$executeRaw`
+      UPDATE "ModelConcurrencyLimit"
+      SET "currentActive" = GREATEST(0, "currentActive" - 1)
+      WHERE "modelId" = ${FAL_GLOBAL_ID}
+    `
 
     // Promote the next waiting job
     await promoteNextQueuedJob()

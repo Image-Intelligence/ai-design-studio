@@ -103,7 +103,7 @@ export default function AdminFeedbackPage() {
     setIsLoading(true)
     try {
       const [feedbackRes, echoRes] = await Promise.all([
-        fetch(`/api/feedback?password=${pwd}`),
+        fetch('/api/feedback', { headers: { 'x-admin-password': pwd } }),
         fetch('/api/echo'),
       ])
       if (feedbackRes.ok) {
@@ -243,8 +243,8 @@ export default function AdminFeedbackPage() {
     try {
       await fetch('/api/feedback', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: adminPassword, id, status, adminNotes: notes ?? null }),
+        headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
+        body: JSON.stringify({ id, status, adminNotes: notes ?? null }),
       })
       fetchData(adminPassword)
     } catch {
@@ -255,7 +255,7 @@ export default function AdminFeedbackPage() {
   const deleteFeedback = async (id: number) => {
     if (!confirm('Delete this submission?')) return
     try {
-      await fetch(`/api/feedback?password=${adminPassword}&id=${id}`, { method: 'DELETE' })
+      await fetch(`/api/feedback?id=${id}`, { method: 'DELETE', headers: { 'x-admin-password': adminPassword } })
       fetchData(adminPassword)
       setSelectedFeedbackIds(prev => { const n = new Set(prev); n.delete(id); return n })
     } catch {
@@ -286,9 +286,8 @@ export default function AdminFeedbackPage() {
     try {
       await fetch('/api/feedback', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
         body: JSON.stringify({
-          password: adminPassword,
           ids,
           status,
           adminNotes: bulkNote || undefined,
@@ -312,8 +311,8 @@ export default function AdminFeedbackPage() {
     try {
       await fetch('/api/feedback', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: adminPassword, ids }),
+        headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
+        body: JSON.stringify({ ids }),
       })
       setSelectedFeedbackIds(new Set())
       fetchData(adminPassword)
