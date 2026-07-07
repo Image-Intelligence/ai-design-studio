@@ -60,6 +60,10 @@ model User {
 
   // User-uploaded LoRA weights
   userLoras           UserLora[]
+
+  // Account-scoped reference image library (portal-v2 Refs dropdown)
+  userRefFolders      UserRefFolder[]
+  userReferences      UserReference[]
 }
 
 model Session {
@@ -803,6 +807,47 @@ model UserModel {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+// ============================================
+// USER REFERENCE LIBRARY (portal-v2 Refs dropdown)
+// Account-scoped: refs sync across devices. "Clear" is a soft delete
+// (isCleared) so admins can browse everything ever uploaded.
+// ============================================
+
+model UserRefFolder {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  name      String
+  parentId  Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent     UserRefFolder?  @relation("UserRefFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children   UserRefFolder[] @relation("UserRefFolderTree")
+  references UserReference[]
+
+  @@index([userId])
+  @@index([parentId])
+}
+
+model UserReference {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  url       String    // permanent R2 URL (never a data URL)
+  folderId  Int?
+  isCleared Boolean   @default(false) // soft delete — hidden from user, kept for admin
+  clearedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder UserRefFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isCleared])
+  @@index([folderId])
+  @@index([userId, createdAt])
 }
 
 // ============================================

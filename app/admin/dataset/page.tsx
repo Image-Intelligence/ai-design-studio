@@ -12,6 +12,8 @@ import {
   UploadCloud, FileImage, HardDrive, Ruler, Check
 } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
+import { MultiFilterSelect } from "@/components/MultiFilterSelect"
+import { ReferencePanel } from "./ReferencePanel"
 
 const UPLOADS_BUCKET_NAME = '__uploads__'
 
@@ -58,113 +60,7 @@ const FilterSelect = memo(function FilterSelect({ value, onChange, options }: {
   )
 })
 
-// Multi-select dropdown — allows picking multiple options simultaneously
-const MultiFilterSelect = memo(function MultiFilterSelect({ values, onChange, options, placeholder, searchable = false }: {
-  values:       string[]
-  onChange:     (v: string[]) => void
-  options:      { value: string; label: string }[]
-  placeholder:  string
-  searchable?:  boolean
-}) {
-  const [open,   setOpen]   = useState(false)
-  const [query,  setQuery]  = useState("")
-  const ref                 = useRef<HTMLDivElement>(null)
-  const searchRef           = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setQuery("") }
-    }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [])
-
-  useEffect(() => {
-    if (open && searchable) setTimeout(() => searchRef.current?.focus(), 50)
-  }, [open, searchable])
-
-  function toggle(v: string) {
-    onChange(values.includes(v) ? values.filter(x => x !== v) : [...values, v])
-  }
-
-  const active   = values.length > 0
-  const filtered = searchable && query
-    ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
-    : options
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-all whitespace-nowrap
-          ${active
-            ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300"
-            : "bg-white/[0.05] border-white/[0.08] text-slate-300 hover:text-white hover:border-white/20"}`}
-      >
-        {active ? `${placeholder.split(':')[0]}: ${values.length}` : placeholder}
-        {active && (
-          <span
-            onClick={e => { e.stopPropagation(); onChange([]) }}
-            className="ml-0.5 text-cyan-500 hover:text-white cursor-pointer"
-            title="Clear"
-          >
-            <X size={9} />
-          </span>
-        )}
-        <ChevronDown size={10} className={`text-slate-600 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-[260px] rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl overflow-hidden">
-          {searchable && (
-            <div className="p-2 border-b border-white/[0.06]">
-              <div className="relative">
-                <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
-                <input
-                  ref={searchRef}
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  placeholder="Search…"
-                  className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-white/[0.06] border border-white/[0.08] text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/40"
-                />
-                {query && (
-                  <button onClick={() => setQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
-                    <X size={9} />
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-          <div className="overflow-y-auto max-h-56 py-1">
-            {filtered.length === 0 ? (
-              <p className="px-3 py-3 text-[11px] text-slate-600 text-center">No results</p>
-            ) : filtered.map(opt => {
-              const checked = values.includes(opt.value)
-              return (
-                <button key={opt.value} onClick={() => toggle(opt.value)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs transition-colors text-left
-                    ${checked ? "text-cyan-300 bg-cyan-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}>
-                  <span className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 border transition-colors
-                    ${checked ? "bg-cyan-500 border-cyan-500" : "border-white/20"}`}>
-                    {checked && <span className="text-black text-[8px] font-bold leading-none">✓</span>}
-                  </span>
-                  <span className="truncate">{opt.label}</span>
-                </button>
-              )
-            })}
-          </div>
-          {values.length > 0 && (
-            <div className="border-t border-white/[0.06] p-1">
-              <button onClick={() => onChange([])}
-                className="w-full text-left px-3 py-1.5 text-[11px] text-slate-600 hover:text-slate-400 transition-colors rounded-lg hover:bg-white/[0.04]">
-                Clear {values.length} selected
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-})
+// Multi-select dropdown moved to components/MultiFilterSelect.tsx (shared with ReferencePanel)
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2056,6 +1952,8 @@ export default function DatasetPage() {
   const [recentBucketIds, setRecentBucketIds] = useState<number[]>(() => _p.recentBucketIds ?? [])
   const [page,         setPage]         = useState<number>(() => _p.page          ?? 1)
   const [filtersOpen,  setFiltersOpen]  = useState<boolean>(() => _p.filtersOpen  ?? false)
+  // Feed mode: generation records (default) or user reference libraries
+  const [viewMode,     setViewMode]     = useState<"generation" | "reference">(() => _p.viewMode === "reference" ? "reference" : "generation")
 
   const searchTimer         = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isMountedRef        = useRef(false)
@@ -2155,11 +2053,11 @@ export default function DatasetPage() {
     savePrefs(PAGE_PREFS_KEY, {
       search, models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag,
       tagFilter, userFilters, mediaType, markedOnly, sort, pageSize, page,
-      bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds,
+      bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode,
     })
   }, [search, models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag,
       tagFilter, userFilters, mediaType, markedOnly, sort, pageSize, page,
-      bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds])
+      bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode])
 
   // ── Search debounce ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2189,6 +2087,7 @@ export default function DatasetPage() {
   // ── Fetch ────────────────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     if (!isAuthenticated) return
+    if (viewMode === "reference") return // Reference mode fetches via ReferencePanel
 
     // Cancel any in-flight request — prevents stale data from the first of a
     // double-fetch (e.g. filter change + filterResetDeps page-reset firing separately)
@@ -2223,7 +2122,7 @@ export default function DatasetPage() {
       setError(e.message)
       setLoading(false)
     }
-  }, [isAuthenticated, page, pageSize, sort, models, aspectRatios, qualities, userFilters, hasRefs, hasRating, hasCaption, hasTag, tagFilter, mediaType, bucketFilter, markedOnly, debouncedSearch])
+  }, [isAuthenticated, viewMode, page, pageSize, sort, models, aspectRatios, qualities, userFilters, hasRefs, hasRating, hasCaption, hasTag, tagFilter, mediaType, bucketFilter, markedOnly, debouncedSearch])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -2690,14 +2589,27 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
 
         {/* Action buttons — flex-wrap so they never overflow on any screen */}
         <div className="border-t border-white/[0.04] px-3 py-1.5 flex flex-wrap gap-1.5">
+          {/* Feed mode: generation records vs user reference libraries */}
           <div className="flex items-center rounded-lg border border-white/[0.07] overflow-hidden">
-            {[8, 12, 24, 48, 96].map(n => (
-              <button key={n} onClick={() => setPageSize(n)}
-                className={`px-2 py-1.5 text-[11px] transition-colors ${pageSize === n ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-white'}`}>
-                {n}
-              </button>
-            ))}
+            <button onClick={() => setViewMode("generation")}
+              className={`px-2.5 py-1.5 text-[11px] transition-colors ${viewMode === "generation" ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-white'}`}>
+              Generation
+            </button>
+            <button onClick={() => setViewMode("reference")}
+              className={`px-2.5 py-1.5 text-[11px] border-l border-white/[0.07] transition-colors ${viewMode === "reference" ? 'bg-violet-500/15 text-violet-300' : 'text-slate-500 hover:text-white'}`}>
+              Reference
+            </button>
           </div>
+          {viewMode === "generation" && (
+            <div className="flex items-center rounded-lg border border-white/[0.07] overflow-hidden">
+              {[8, 12, 24, 48, 96].map(n => (
+                <button key={n} onClick={() => setPageSize(n)}
+                  className={`px-2 py-1.5 text-[11px] transition-colors ${pageSize === n ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-white'}`}>
+                  {n}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-center rounded-lg border border-white/[0.07] overflow-hidden">
             <span className="px-1.5 py-1.5 border-r border-white/[0.07] flex items-center">
               <Layers size={9} className="text-slate-600" />
@@ -2709,38 +2621,42 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
               </button>
             ))}
           </div>
-          <button onClick={() => { setSelectMode(v => !v); setSelected(new Set()) }}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-              ${selectMode ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-300" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white"}`}>
-            {selectMode ? <><CheckSquare size={11} /> Selecting</> : <><MousePointer2 size={11} /> Select</>}
-          </button>
-          <button onClick={() => setFiltersOpen(v => !v)}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-              ${filtersOpen || hasActiveFilters ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white"}`}>
-            <SlidersHorizontal size={11} /> Filters{hasActiveFilters ? " •" : ""}
-          </button>
-          <button onClick={() => setAutoFillOpen(v => !v)}
-            className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-              ${autoFillOpen || hasRunningJob ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300' : 'bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white'}`}>
-            <Sparkles size={11} /> Auto Fill
-            {hasRunningJob && !autoFillOpen && (
-              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
-            )}
-          </button>
-          {uploadsBucketId && (
-            <button onClick={() => { setUploadModalOpen(true); setBucketFilter(String(uploadsBucketId)) }}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[11px] hover:bg-violet-500/15 transition-all">
-              <UploadCloud size={11} /> Upload
-            </button>
+          {viewMode === "generation" && (
+            <>
+              <button onClick={() => { setSelectMode(v => !v); setSelected(new Set()) }}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                  ${selectMode ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-300" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white"}`}>
+                {selectMode ? <><CheckSquare size={11} /> Selecting</> : <><MousePointer2 size={11} /> Select</>}
+              </button>
+              <button onClick={() => setFiltersOpen(v => !v)}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                  ${filtersOpen || hasActiveFilters ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white"}`}>
+                <SlidersHorizontal size={11} /> Filters{hasActiveFilters ? " •" : ""}
+              </button>
+              <button onClick={() => setAutoFillOpen(v => !v)}
+                className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                  ${autoFillOpen || hasRunningJob ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300' : 'bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white'}`}>
+                <Sparkles size={11} /> Auto Fill
+                {hasRunningJob && !autoFillOpen && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
+                )}
+              </button>
+              {uploadsBucketId && (
+                <button onClick={() => { setUploadModalOpen(true); setBucketFilter(String(uploadsBucketId)) }}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[11px] hover:bg-violet-500/15 transition-all">
+                  <UploadCloud size={11} /> Upload
+                </button>
+              )}
+              <button onClick={handleExport} disabled={selected.size === 0}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] hover:bg-emerald-500/15 transition-all disabled:opacity-30 disabled:cursor-not-allowed">
+                <Download size={11} /> Export{selected.size > 0 ? ` (${selected.size})` : ""}
+              </button>
+            </>
           )}
-          <button onClick={handleExport} disabled={selected.size === 0}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] hover:bg-emerald-500/15 transition-all disabled:opacity-30 disabled:cursor-not-allowed">
-            <Download size={11} /> Export{selected.size > 0 ? ` (${selected.size})` : ""}
-          </button>
         </div>
 
         {/* Filter bar */}
-        {filtersOpen && (
+        {viewMode === "generation" && filtersOpen && (
           <div className="w-full border-t border-white/[0.06] px-3 py-3 max-w-7xl mx-auto space-y-2.5">
             {/* Row 1 */}
             <div className="flex flex-wrap gap-2 items-center">
@@ -2841,6 +2757,12 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
       {/* Body */}
       <div className="w-full max-w-7xl mx-auto px-3 py-4">
 
+        {/* Reference mode: user reference libraries (account refs incl. cleared) */}
+        {viewMode === "reference" && (
+          <ReferencePanel authHeaders={authHeaders} cols={cols} />
+        )}
+
+        {viewMode === "generation" && (<>
         {/* ── Bucket bar ── */}
         {(buckets.length > 0 || folders.length > 0) && (
           <div className="mb-3 flex items-end gap-2 overflow-x-auto pb-2 scrollbar-hide">
@@ -3384,6 +3306,7 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
             )}
           </>
         )}
+        </>)}
       </div>
 
       </div>{/* end main content column */}

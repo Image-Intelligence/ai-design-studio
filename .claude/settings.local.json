@@ -108,7 +108,8 @@
       "PowerShell(npx tsc --noEmit)",
       "PowerShell(curl.exe -s -o NUL -w \"%{http_code}\" -L http://localhost:3000/admin/portal-v2)",
       "Bash(awk -F: '$1 > 12600 && $1 < 14900')",
-      "Bash(echo \"prefs GET \\(no session\\): $\\(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/user/preferences\\)\")"
+      "Bash(echo \"prefs GET \\(no session\\): $\\(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/user/preferences\\)\")",
+      "Bash(grep -n \"Bucket bar\\\\|bulk-action\\\\|Bulk action\\\\|stats row\\\\|Stats row\\\\|{/\\\\* Grid\\\\|PageNav\\\\b\" app/admin/dataset/page.tsx)"
     ]
   }
 }

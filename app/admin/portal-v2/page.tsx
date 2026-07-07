@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } fro
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
 
@@ -273,6 +273,70 @@ async function refImageToBase64(img: RefImage): Promise<string> {
   const blob = await res.blob()
   return compressBlobToDataUrl(blob, 1920, 0.85)
 }
+
+// --- ACCOUNT REFERENCE LIBRARY HELPERS ---
+// Compress a File to a JPEG Blob at generation-input quality (1920px/0.85 —
+// same as the preset pipeline; the old 800px library path degraded gen inputs).
+async function compressFileToBlob(file: File, maxSize = 1920, quality = 0.85): Promise<Blob> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error("Failed to read file"))
+    reader.readAsDataURL(file)
+  })
+  return new Promise((resolve, reject) => {
+    const img = new window.Image()
+    img.onload = () => {
+      let w = img.width, h = img.height
+      if (w > maxSize || h > maxSize) {
+        if (w > h) { h = (h / w) * maxSize; w = maxSize } else { w = (w / h) * maxSize; h = maxSize }
+      }
+      const canvas = document.createElement("canvas")
+      canvas.width = w; canvas.height = h
+      const ctx = canvas.getContext("2d")
+      if (!ctx) { reject(new Error("Canvas unavailable")); return }
+      ctx.drawImage(img, 0, 0, w, h)
+      canvas.toBlob(
+        (blob) => { img.src = ""; canvas.width = 0; canvas.height = 0; blob ? resolve(blob) : reject(new Error("Compression failed")) },
+        "image/jpeg",
+        quality
+      )
+    }
+    img.onerror = () => reject(new Error("Failed to load image"))
+    img.src = dataUrl
+  })
+}
+
+// Upload a compressed blob to R2 via the session-authed upload endpoint → permanent URL
+async function uploadRefBlob(blob: Blob): Promise<string> {
+  const fd = new FormData()
+  fd.append("file", new File([blob], "reference.jpg", { type: "image/jpeg" }))
+  const res = await fetch("/api/upload-reference", { method: "POST", body: fd })
+  if (!res.ok) throw new Error(`Upload failed (${res.status})`)
+  const data = await res.json()
+  if (!data?.url) throw new Error("Upload returned no URL")
+  return data.url as string
+}
+
+// Run tasks with bounded concurrency (bulk ref uploads: 100+ files, 4 at a time)
+async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length)
+  let next = 0
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      try {
+        results[i] = { status: "fulfilled", value: await worker(items[i], i) }
+      } catch (reason) {
+        results[i] = { status: "rejected", reason }
+      }
+    }
+  })
+  await Promise.all(lanes)
+  return results
+}
+
+interface RefFolder { id: number; name: string; parentId: number | null }
 
 // --- PENDING SLOT ---
 interface PendingSlot {
@@ -2318,13 +2382,19 @@ function RefDropdown({
   library,
   activeIds,
   modelMaxRefs,
-  onUpload,
+  onUploadFiles,
   onDelete,
   onDeleteMultiple,
   onClearAll,
   onActivate,
   onDeactivate,
   onEditSave,
+  folders = [],
+  uploadProgress = null,
+  onMove,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
   disabled = false,
   libraryLimit = 50,
 }: {
@@ -2333,13 +2403,20 @@ function RefDropdown({
   library: RefImage[]
   activeIds: string[]
   modelMaxRefs: number
-  onUpload: (items: RefImage[]) => void
+  // Raw files — page-level helper compresses, uploads to R2 and creates account rows
+  onUploadFiles: (files: File[], folderId: number | null) => Promise<{ added: number; failed: number; limitHit: boolean }>
   onDelete: (id: string) => void
   onDeleteMultiple: (ids: string[]) => void
   onClearAll: () => void
   onActivate: (id: string) => void
   onDeactivate: (id: string) => void
   onEditSave: (id: string, newUrl: string) => void
+  folders?: RefFolder[]
+  uploadProgress?: { done: number; total: number } | null
+  onMove?: (ids: string[], folderId: number | null) => void
+  onCreateFolder?: (name: string, parentId: number | null) => Promise<RefFolder | null>
+  onRenameFolder?: (id: number, name: string) => void
+  onDeleteFolder?: (id: number) => void
   disabled?: boolean
   libraryLimit?: number
 }) {
@@ -2355,12 +2432,41 @@ function RefDropdown({
   const [uploading, setUploading] = useState(false)
   const [consentGiven, setConsentGiven] = useState(false)
   const [showConsentModal, setShowConsentModal] = useState(false)
+  // Wide mode: double-width panel, rows of 10 (persisted)
+  const [wide, setWide] = useState(false)
+  // Folder navigation (account library folder tree)
+  const [folderPath, setFolderPath] = useState<RefFolder[]>([])
+  const [newFolderMode, setNewFolderMode] = useState(false)
+  const [newFolderName, setNewFolderName] = useState("")
+  const [folderMenuId, setFolderMenuId] = useState<number | null>(null)
+  const [renamingFolderId, setRenamingFolderId] = useState<number | null>(null)
+  const [renameValue, setRenameValue] = useState("")
+  const [movePicker, setMovePicker] = useState<{ path: RefFolder[] } | null>(null)
   const activeCount = disabled ? 0 : activeIds.filter((id) => library.some((img) => img.id === id)).length
   const atLimit = !disabled && modelMaxRefs > 0 && activeCount >= modelMaxRefs
 
+  const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : null
+  // Drop path segments whose folders were deleted (e.g. from another device)
+  useEffect(() => {
+    if (folderPath.some(p => !folders.some(f => f.id === p.id))) {
+      setFolderPath(prev => prev.filter(p => folders.some(f => f.id === p.id)))
+    }
+  }, [folders, folderPath])
+  const visibleFolders = folders.filter(f => (f.parentId ?? null) === currentFolderId)
+  const visibleRefs = library.filter(i => (i.folderId ?? null) === currentFolderId)
+  const refCountIn = (folderId: number) => library.filter(i => i.folderId === folderId).length
+
   useEffect(() => {
     setConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
+    try { setWide(localStorage.getItem("pv2-ref-wide") === "true") } catch {}
   }, [])
+
+  const toggleWide = () => {
+    setWide(w => {
+      try { localStorage.setItem("pv2-ref-wide", String(!w)) } catch {}
+      return !w
+    })
+  }
 
   // Exit select/edit mode + clear errors when dropdown closes
   useEffect(() => {
@@ -2369,6 +2475,10 @@ function RefDropdown({
       setSelectedForDelete(new Set())
       setEditMode(false)
       setUploadError(null)
+      setNewFolderMode(false)
+      setFolderMenuId(null)
+      setRenamingFolderId(null)
+      setMovePicker(null)
     }
   }, [open])
 
@@ -2388,9 +2498,10 @@ function RefDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 328) })
+      const panelW = wide ? Math.min(640, window.innerWidth - 16) : 320
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
     }
-  }, [open])
+  }, [open, wide])
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
@@ -2402,19 +2513,16 @@ function RefDropdown({
       return
     }
     const toProcess = files.slice(0, slots)
-    setUploadError(null)
+    setUploadError(files.length > slots ? `Only ${slots} slot${slots === 1 ? "" : "s"} left — uploading the first ${slots}` : null)
     setUploading(true)
     try {
-      const items: RefImage[] = await Promise.all(
-        toProcess.map(async (file) => ({
-          id: `lib-${Date.now()}-${Math.random()}`,
-          url: await compressFileToDataUrl(file),
-        }))
-      )
-      onUpload(items)
+      // Compress + upload to R2 + create account rows happens in the page helper
+      const result = await onUploadFiles(toProcess, currentFolderId)
+      if (result.limitHit) setUploadError("Library limit reached — some images were not added")
+      else if (result.failed > 0) setUploadError(`${result.failed} image${result.failed === 1 ? "" : "s"} failed to upload`)
     } catch (err) {
       console.error("Ref upload failed:", err)
-      setUploadError("Upload failed — try again or use a smaller image")
+      setUploadError("Upload failed — check your connection and try again")
     } finally {
       setUploading(false)
     }
@@ -2488,10 +2596,20 @@ function RefDropdown({
       </button>
 
       {open && (
-        <div className="fixed w-80 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]" style={{ top: menuPos.top, left: menuPos.left }}>
+        <div className={`fixed ${wide ? "w-[min(640px,calc(100vw-16px))]" : "w-80"} rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]`} style={{ top: menuPos.top, left: menuPos.left }}>
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-            <span className="text-sm font-semibold text-white">Reference Images</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-white">Reference Images</span>
+              {/* Wide mode toggle — 2x width, rows of 10 */}
+              <button
+                onClick={toggleWide}
+                title={wide ? "Compact view (rows of 5)" : "Wide view (rows of 10)"}
+                className={`p-1.5 rounded-md border transition-all ${wide ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300" : "border-white/10 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10"}`}
+              >
+                {wide ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+              </button>
+            </div>
             <div className="flex items-center gap-2">
               {/* Stacked Total / Active pills */}
               <div className="flex flex-col gap-1">
@@ -2559,7 +2677,7 @@ function RefDropdown({
           {!selectMode && !editMode && (
             <div className="px-4 py-2.5 border-b border-white/5 bg-white/2">
               <p className="text-[10px] text-slate-400 leading-relaxed">
-                Upload images here to use as visual references. <span className="text-white">Tap an image to toggle it on/off</span> — only <span className="text-cyan-400">active</span> images are sent with your generation. Your library is saved between sessions.
+                Upload images here to use as visual references. <span className="text-white">Tap an image to toggle it on/off</span> — only <span className="text-cyan-400">active</span> images are sent with your generation. Your library is <span className="text-white">saved to your account</span> and syncs across devices.
               </p>
             </div>
           )}
@@ -2581,7 +2699,10 @@ function RefDropdown({
                 className="w-full py-2 rounded-lg border border-dashed border-white/10 text-[11px] text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {uploading
-                  ? <><div className="w-2.5 h-2.5 rounded-full border border-slate-500 border-t-slate-200 animate-spin" />Compressing…</>
+                  ? <>
+                      <div className="w-2.5 h-2.5 rounded-full border border-slate-500 border-t-slate-200 animate-spin" />
+                      {uploadProgress ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…` : "Preparing…"}
+                    </>
                   : <><Plus size={11} />{library.length >= libraryLimit ? `Library full (${libraryLimit}/${libraryLimit})` : `Upload Images · ${libraryLimit - library.length} slots left`}</>
                 }
               </button>
@@ -2619,13 +2740,135 @@ function RefDropdown({
             </div>
           )}
 
+          {/* Folder breadcrumb + new-folder */}
+          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-white/5 overflow-x-auto">
+            <button
+              onClick={() => setFolderPath([])}
+              className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors shrink-0 ${currentFolderId === null ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
+            >
+              Library
+            </button>
+            {folderPath.map((f, i) => (
+              <span key={f.id} className="flex items-center gap-1 shrink-0">
+                <span className="text-slate-700 text-[10px]">/</span>
+                <button
+                  onClick={() => setFolderPath(folderPath.slice(0, i + 1))}
+                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors max-w-[90px] truncate ${i === folderPath.length - 1 ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
+                >
+                  {f.name}
+                </button>
+              </span>
+            ))}
+            <div className="flex-1" />
+            {!selectMode && !editMode && onCreateFolder && (
+              newFolderMode ? (
+                <form
+                  className="flex items-center gap-1 shrink-0"
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    const name = newFolderName.trim()
+                    if (!name) return
+                    const created = await onCreateFolder(name, currentFolderId)
+                    if (created) { setNewFolderName(""); setNewFolderMode(false) }
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={newFolderName}
+                    onChange={e => setNewFolderName(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Escape") { setNewFolderMode(false); setNewFolderName("") } }}
+                    placeholder="Folder name"
+                    className="w-24 px-1.5 py-0.5 rounded bg-black/60 border border-white/15 text-[10px] text-white focus:outline-none focus:border-cyan-500/40"
+                  />
+                  <button type="submit" className="p-1 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300"><Check size={9} /></button>
+                  <button type="button" onClick={() => { setNewFolderMode(false); setNewFolderName("") }} className="p-1 rounded bg-white/5 border border-white/10 text-slate-400"><X size={9} /></button>
+                </form>
+              ) : (
+                <button
+                  onClick={() => setNewFolderMode(true)}
+                  title="New folder"
+                  className="p-1 rounded-md border border-white/10 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 transition-all shrink-0"
+                >
+                  <FolderPlus size={11} />
+                </button>
+              )
+            )}
+          </div>
+
           {/* Thumbnail grid */}
-          <div className="p-3 max-h-72 overflow-y-auto">
-            {library.length === 0 ? (
-              <p className="text-center text-slate-600 text-[11px] py-8">No images in library yet</p>
+          <div className="p-3 max-h-72 overflow-y-auto" style={wide ? { maxHeight: "24rem" } : undefined}>
+            {/* Folder tiles (current level) */}
+            {visibleFolders.length > 0 && (
+              <div className={`grid ${wide ? "grid-cols-4" : "grid-cols-2"} gap-1.5 mb-2`}>
+                {visibleFolders.map((f) => (
+                  <div key={f.id} className="relative">
+                    {renamingFolderId === f.id ? (
+                      <form
+                        className="flex items-center gap-1 px-2 py-1.5 rounded-md border border-cyan-500/30 bg-black/60"
+                        onSubmit={(e) => {
+                          e.preventDefault()
+                          const name = renameValue.trim()
+                          if (name && onRenameFolder) onRenameFolder(f.id, name)
+                          setRenamingFolderId(null)
+                        }}
+                      >
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={e => setRenameValue(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Escape") setRenamingFolderId(null) }}
+                          className="w-full min-w-0 bg-transparent text-[10px] text-white focus:outline-none"
+                        />
+                        <button type="submit" className="text-cyan-300 shrink-0"><Check size={9} /></button>
+                      </form>
+                    ) : (
+                      <button
+                        onClick={() => { setFolderMenuId(null); setFolderPath([...folderPath, f]) }}
+                        className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-amber-500/20 bg-amber-500/[0.06] hover:bg-amber-500/[0.12] hover:border-amber-500/35 transition-all"
+                      >
+                        <Folder size={11} className="text-amber-400/80 shrink-0" />
+                        <span className="text-[10px] text-slate-200 font-medium truncate flex-1 text-left">{f.name}</span>
+                        <span className="text-[9px] text-slate-600 font-mono shrink-0">{refCountIn(f.id)}</span>
+                      </button>
+                    )}
+                    {/* Folder context menu */}
+                    {!selectMode && !editMode && renamingFolderId !== f.id && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setFolderMenuId(folderMenuId === f.id ? null : f.id) }}
+                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/15 text-slate-400 hover:text-white text-[9px] leading-none flex items-center justify-center z-10"
+                      >
+                        ⋯
+                      </button>
+                    )}
+                    {folderMenuId === f.id && (
+                      <div className="absolute right-0 top-4 z-20 w-28 rounded-lg border border-white/10 bg-slate-900 shadow-xl overflow-hidden">
+                        <button
+                          onClick={() => { setRenameValue(f.name); setRenamingFolderId(f.id); setFolderMenuId(null) }}
+                          className="w-full px-2.5 py-1.5 text-left text-[10px] text-slate-300 hover:bg-white/10 hover:text-white"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => { onDeleteFolder?.(f.id); setFolderMenuId(null) }}
+                          className="w-full px-2.5 py-1.5 text-left text-[10px] text-rose-400 hover:bg-rose-500/10"
+                        >
+                          Delete folder
+                        </button>
+                        <p className="px-2.5 py-1 text-[8px] text-slate-600 border-t border-white/5">Images move up a level</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {visibleRefs.length === 0 && visibleFolders.length === 0 ? (
+              <p className="text-center text-slate-600 text-[11px] py-8">
+                {currentFolderId === null ? "No images in library yet" : "This folder is empty"}
+              </p>
             ) : (
-              <div className="grid grid-cols-5 gap-1.5">
-                {library.map((img) => {
+              <div className={`grid ${wide ? "grid-cols-10" : "grid-cols-5"} gap-1.5`}>
+                {visibleRefs.map((img) => {
                   const isActive = !selectMode && !editMode && activeIds.includes(img.id)
                   const isDisabled = !selectMode && !editMode && !isActive && atLimit
                   const isSelectedForDelete = selectMode && selectedForDelete.has(img.id)
@@ -2658,7 +2901,7 @@ function RefDropdown({
                             : "border-transparent hover:border-white/30"
                         }`}
                       >
-                        <img src={img.url} alt="" className={`w-full h-full object-cover transition-opacity ${isSelectedForDelete ? "opacity-60" : ""}`} />
+                        <img src={img.url} alt="" loading="lazy" className={`w-full h-full object-cover transition-opacity ${isSelectedForDelete ? "opacity-60" : ""}`} />
                         {/* Edit hint overlay (edit mode) */}
                         {editMode && (
                           <div className="absolute inset-0 rounded-md bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
@@ -2705,14 +2948,90 @@ function RefDropdown({
               <span className="text-[11px] text-slate-400">
                 {selectedForDelete.size > 0 ? `${selectedForDelete.size} selected` : "None selected"}
               </span>
-              <button
-                onClick={handleDeleteSelected}
-                disabled={selectedForDelete.size === 0}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-medium hover:bg-rose-500/25 hover:border-rose-500/50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-              >
-                <Trash2 size={11} />
-                Delete ({selectedForDelete.size})
-              </button>
+              <div className="flex items-center gap-1.5">
+                {onMove && (
+                  <button
+                    onClick={() => setMovePicker({ path: [] })}
+                    disabled={selectedForDelete.size === 0}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px] font-medium hover:bg-amber-500/20 hover:border-amber-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  >
+                    <FolderInput size={11} />
+                    Move
+                  </button>
+                )}
+                <button
+                  onClick={handleDeleteSelected}
+                  disabled={selectedForDelete.size === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-medium hover:bg-rose-500/25 hover:border-rose-500/50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                >
+                  <Trash2 size={11} />
+                  Delete ({selectedForDelete.size})
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Move-to-folder picker (select mode) */}
+          {movePicker && (
+            <div className="px-3 py-2.5 border-t border-white/5 bg-black/40">
+              <div className="flex items-center gap-1 mb-1.5 overflow-x-auto">
+                <span className="text-[10px] text-slate-500 shrink-0">Move to:</span>
+                <button
+                  onClick={() => setMovePicker({ path: [] })}
+                  className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${movePicker.path.length === 0 ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
+                >
+                  Library
+                </button>
+                {movePicker.path.map((f, i) => (
+                  <span key={f.id} className="flex items-center gap-1 shrink-0">
+                    <span className="text-slate-700 text-[10px]">/</span>
+                    <button
+                      onClick={() => setMovePicker({ path: movePicker.path.slice(0, i + 1) })}
+                      className={`text-[10px] px-1.5 py-0.5 rounded max-w-[80px] truncate ${i === movePicker.path.length - 1 ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
+                    >
+                      {f.name}
+                    </button>
+                  </span>
+                ))}
+              </div>
+              {(() => {
+                const pickerFolderId = movePicker.path.length > 0 ? movePicker.path[movePicker.path.length - 1].id : null
+                const subFolders = folders.filter(f => (f.parentId ?? null) === pickerFolderId)
+                return subFolders.length > 0 ? (
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    {subFolders.map(f => (
+                      <button
+                        key={f.id}
+                        onClick={() => setMovePicker({ path: [...movePicker.path, f] })}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md border border-amber-500/20 bg-amber-500/[0.06] hover:bg-amber-500/[0.12] text-[10px] text-slate-300"
+                      >
+                        <Folder size={9} className="text-amber-400/80" />
+                        <span className="max-w-[80px] truncate">{f.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null
+              })()}
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    const targetId = movePicker.path.length > 0 ? movePicker.path[movePicker.path.length - 1].id : null
+                    onMove?.([...selectedForDelete], targetId)
+                    setMovePicker(null)
+                    setSelectedForDelete(new Set())
+                    setSelectMode(false)
+                  }}
+                  className="flex-1 py-1.5 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[11px] font-medium hover:bg-cyan-500/25 transition-all"
+                >
+                  Move {selectedForDelete.size} here
+                </button>
+                <button
+                  onClick={() => setMovePicker(null)}
+                  className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-400 hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -4968,9 +5287,10 @@ interface UserPreset {
 }
 
 interface RefImage {
-  id: string
-  url: string      // blob URL for uploads, permanent URL for preset-loaded
-  file?: File      // undefined when loaded from a preset
+  id: string       // String(UserReference.id) for account refs
+  url: string      // permanent R2 URL for account refs (data URL only transiently)
+  file?: File      // only set for transient, not-yet-uploaded uses
+  folderId?: number | null // account library folder (null/undefined = root)
 }
 
 // --- PRESETS PANEL ---
@@ -8672,7 +8992,8 @@ function PromptBox({
     const items: RefImage[] = await Promise.all(
       files.map(async (file) => ({
         id: `upload-${Date.now()}-${Math.random()}`,
-        url: await compressFileToDataUrl(file),
+        // 1920/0.85 matches generation-input quality (account library standard)
+        url: await compressFileToDataUrl(file, 1920, 0.85),
       }))
     )
     onUploadRef(items)
@@ -12935,6 +13256,13 @@ export default function PortalV2Page() {
   const [savedFails, setSavedFails] = useState<ImageItem[]>([])
   const [refLibrary, setRefLibrary] = useState<RefImage[]>([])
   const [activeRefIds, setActiveRefIds] = useState<string[]>([])
+  // Account reference library: folder tree, server-enforced limit, bulk-upload progress
+  const [refFolders, setRefFolders] = useState<RefFolder[]>([])
+  const [refLimit, setRefLimit] = useState<number | null>(null)
+  const [refUploadProgress, setRefUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  // Mirror for async callbacks (avoids stale closures in upload/edit flows)
+  const refLibraryRef = useRef<RefImage[]>([])
+  useEffect(() => { refLibraryRef.current = refLibrary }, [refLibrary])
   const [hasPromptStudioDev, setHasPromptStudioDev] = useState(false)
   const [isAdminAccount, setIsAdminAccount] = useState(false)
   const [isAuditAccount, setIsAuditAccount] = useState(false)
@@ -14166,7 +14494,8 @@ export default function PortalV2Page() {
   // Queue limits — owner accounts: unlimited, dev tier: 6 image / 2 video, free: 2 image / 1 video
   const isOwner = user?.email === "dirtysecretai@gmail.com" || user?.email === "promptandprotocol@gmail.com"
   const hasEffectiveDevAccess = hasPromptStudioDev || isAdminAccount || isAuditAccount
-  const refLibraryLimit = isAdminAccount ? 250 : hasEffectiveDevAccess ? 100 : 50
+  // Server value wins once fetched; fallback mirrors lib/ref-limits.ts tiers
+  const refLibraryLimit = refLimit ?? (isAdminAccount ? 1000 : hasEffectiveDevAccess ? 250 : 50)
   const maxConcurrent = isOwner ? Infinity : hasEffectiveDevAccess ? 6 : 2
   const videoMaxConcurrent = isOwner ? Infinity : hasEffectiveDevAccess ? 2 : 1
   const videoActiveJobCount = videoPendingSlots.length
@@ -14297,57 +14626,254 @@ export default function PortalV2Page() {
     .filter((img) => activeRefIds.includes(img.id))
     .slice(0, selectedModel.maxReferenceImages)
 
-  const handleLibraryUpload = useCallback((items: RefImage[]) => {
-    setRefLibrary((prev) => [...prev, ...items].slice(0, refLibraryLimit))
-  }, [refLibraryLimit])
+  // --- ACCOUNT REFERENCE LIBRARY CORE ---
+  // Every path that adds refs funnels through here: compress → upload to R2 →
+  // create account rows (chunks of 25) → append server-backed items to state.
+  // Fixes the localStorage-quota bug (bulk uploads vanished on refresh) and
+  // makes the library sync across devices.
+  const addRefsToAccount = useCallback(async (
+    inputs: (File | { url: string })[],
+    folderId: number | null,
+    opts?: { autoActivate?: boolean }
+  ): Promise<{ added: number; failed: number; limitHit: boolean }> => {
+    const slots = Math.max(0, refLibraryLimit - refLibraryRef.current.length)
+    const toProcess = inputs.slice(0, slots)
+    const limitHitEarly = inputs.length > toProcess.length
+    if (toProcess.length === 0) return { added: 0, failed: 0, limitHit: true }
 
-  // Upload from prompt box: add to library + auto-activate up to model limit
-  const handleUploadRef = useCallback((items: RefImage[]) => {
-    setRefLibrary((prev) => [...prev, ...items].slice(0, refLibraryLimit))
-    setActiveRefIds((prev) => {
-      const slots = Math.max(0, selectedModel.maxReferenceImages - prev.length)
-      const toActivate = items.slice(0, slots).map((i) => i.id)
-      return [...prev, ...toActivate]
+    setRefUploadProgress({ done: 0, total: toProcess.length })
+    let done = 0
+    const settled = await runWithConcurrency(toProcess, 4, async (input) => {
+      let url: string
+      if (input instanceof File) {
+        const blob = await compressFileToBlob(input)
+        url = await uploadRefBlob(blob)
+      } else if (input.url.startsWith("data:")) {
+        const blob = await (await fetch(input.url)).blob()
+        url = await uploadRefBlob(blob)
+      } else {
+        url = input.url // already a permanent URL (presets, generated images)
+      }
+      done++
+      setRefUploadProgress({ done, total: toProcess.length })
+      return url
     })
-  }, [selectedModel.maxReferenceImages, refLibraryLimit])
+    const urls = settled.filter((s): s is PromiseFulfilledResult<string> => s.status === "fulfilled").map(s => s.value)
+    const failed = settled.length - urls.length
+
+    // Create account rows in chunks so a mid-batch tab close loses at most one chunk
+    const createdItems: RefImage[] = []
+    let limitHit = limitHitEarly
+    for (let i = 0; i < urls.length; i += 25) {
+      const chunk = urls.slice(i, i + 25)
+      try {
+        const res = await fetch("/api/user/references", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: chunk.map(u => ({ url: u, folderId })) }),
+        })
+        if (res.status === 409) { limitHit = true; break }
+        if (!res.ok) continue
+        const data = await res.json()
+        for (const row of data.references || []) {
+          createdItems.push({ id: String(row.id), url: row.url, folderId: row.folderId ?? null })
+        }
+        if (typeof data.limit === "number") setRefLimit(data.limit)
+      } catch {
+        // network failure — R2 files for this chunk stay orphaned (acceptable)
+      }
+    }
+    setRefUploadProgress(null)
+
+    if (createdItems.length > 0) {
+      setRefLibrary(prev => [...prev, ...createdItems])
+      if (opts?.autoActivate) {
+        setActiveRefIds(prev => {
+          const slotsLeft = Math.max(0, selectedModel.maxReferenceImages - prev.length)
+          return [...prev, ...createdItems.slice(0, slotsLeft).map(i => i.id)]
+        })
+      }
+    }
+    return { added: createdItems.length, failed: failed + (urls.length - createdItems.length), limitHit }
+  }, [refLibraryLimit, selectedModel.maxReferenceImages])
+
+  // Dropdown upload (raw files, into the currently open folder)
+  const handleLibraryUploadFiles = useCallback(
+    (files: File[], folderId: number | null) => addRefsToAccount(files, folderId),
+    [addRefsToAccount]
+  )
+
+  // Upload from prompt box / detail-modal "Add Ref": items carry data URLs or
+  // permanent URLs — sync to account root + auto-activate up to model limit
+  const handleUploadRef = useCallback((items: RefImage[]) => {
+    void addRefsToAccount(items.map(i => ({ url: i.url })), null, { autoActivate: true })
+  }, [addRefsToAccount])
 
   const handleLibraryDelete = useCallback((id: string) => {
     setRefLibrary((prev) => prev.filter((i) => i.id !== id))
     setActiveRefIds((prev) => prev.filter((rid) => rid !== id))
+    if (/^\d+$/.test(id)) fetch(`/api/user/references?ids=${id}`, { method: "DELETE" }).catch(() => {})
   }, [])
 
   const handleLibraryDeleteMultiple = useCallback((ids: string[]) => {
     const idSet = new Set(ids)
     setRefLibrary((prev) => prev.filter((i) => !idSet.has(i.id)))
     setActiveRefIds((prev) => prev.filter((rid) => !idSet.has(rid)))
+    const numeric = ids.filter(id => /^\d+$/.test(id))
+    if (numeric.length > 0) fetch(`/api/user/references?ids=${numeric.join(",")}`, { method: "DELETE" }).catch(() => {})
   }, [])
 
   const handleLibraryClearAll = useCallback(() => {
     setRefLibrary([])
     setActiveRefIds([])
+    fetch("/api/user/references?all=true", { method: "DELETE" }).catch(() => {})
   }, [])
 
   const handleActivateRef   = useCallback((id: string) => setActiveRefIds((prev) => [...prev, id]), [])
   const handleDeactivateRef = useCallback((id: string) => setActiveRefIds((prev) => prev.filter((rid) => rid !== id)), [])
-  const handleEditRef       = useCallback((id: string, newUrl: string) => {
+
+  // Edited image: free the old slot first (soft clear — admin keeps the original),
+  // then upload the edited version and swap it into the same position.
+  const handleEditRef = useCallback(async (id: string, newUrl: string) => {
+    const old = refLibraryRef.current.find(r => r.id === id)
+    // Optimistic: show the edited image immediately
     setRefLibrary(prev => prev.map(r => r.id === id ? { ...r, url: newUrl } : r))
+    if (!old) return
+    try {
+      if (/^\d+$/.test(id)) await fetch(`/api/user/references?ids=${id}`, { method: "DELETE" })
+      const blob = await (await fetch(newUrl)).blob()
+      const url = await uploadRefBlob(blob)
+      const res = await fetch("/api/user/references", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ url, folderId: old.folderId ?? null }] }),
+      })
+      if (!res.ok) throw new Error(`row create failed (${res.status})`)
+      const row = (await res.json()).references?.[0]
+      if (!row) throw new Error("no row returned")
+      const newId = String(row.id)
+      setRefLibrary(prev => prev.map(r => r.id === id ? { id: newId, url: row.url, folderId: row.folderId ?? null } : r))
+      setActiveRefIds(prev => prev.map(a => a === id ? newId : a))
+    } catch (err) {
+      console.error("Edited ref sync failed (kept locally):", err)
+    }
   }, [])
 
+  // Presets already store permanent R2 URLs — register rows without re-uploading
   const handleLoadPreset = useCallback((urls: string[]) => {
-    const newItems: RefImage[] = urls.map((url) => ({
-      id: `preset-${Date.now()}-${Math.random()}`,
-      url,
-    }))
-    setRefLibrary((prev) => [...prev, ...newItems].slice(0, refLibraryLimit))
-    setActiveRefIds((prev) => {
-      const slots = Math.max(0, selectedModel.maxReferenceImages - prev.length)
-      const toActivate = newItems.slice(0, slots).map((i) => i.id)
-      return [...prev, ...toActivate]
-    })
-  }, [selectedModel.maxReferenceImages, refLibraryLimit])
+    void addRefsToAccount(urls.map(url => ({ url })), null, { autoActivate: true })
+  }, [addRefsToAccount])
+
+  // Folder management
+  const handleMoveRefs = useCallback((ids: string[], folderId: number | null) => {
+    const idSet = new Set(ids)
+    setRefLibrary(prev => prev.map(r => idSet.has(r.id) ? { ...r, folderId } : r))
+    const numeric = ids.filter(id => /^\d+$/.test(id)).map(Number)
+    if (numeric.length > 0) {
+      fetch("/api/user/references", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "move", ids: numeric, folderId }),
+      }).catch(() => {})
+    }
+  }, [])
+
+  const handleCreateRefFolder = useCallback(async (name: string, parentId: number | null): Promise<RefFolder | null> => {
+    try {
+      const res = await fetch("/api/user/reference-folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, parentId }),
+      })
+      if (!res.ok) return null
+      const { folder } = await res.json()
+      setRefFolders(prev => [...prev, folder])
+      return folder
+    } catch { return null }
+  }, [])
+
+  const handleRenameRefFolder = useCallback((id: number, name: string) => {
+    setRefFolders(prev => prev.map(f => f.id === id ? { ...f, name } : f))
+    fetch("/api/user/reference-folders", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name }),
+    }).catch(() => {})
+  }, [])
+
+  const handleDeleteRefFolder = useCallback((id: number) => {
+    // Mirror the server: contents re-parent to the deleted folder's parent
+    const parentId = refFolders.find(f => f.id === id)?.parentId ?? null
+    setRefLibrary(lib => lib.map(r => r.folderId === id ? { ...r, folderId: parentId } : r))
+    setRefFolders(prev => prev.filter(f => f.id !== id).map(f => f.parentId === id ? { ...f, parentId } : f))
+    fetch(`/api/user/reference-folders?id=${id}`, { method: "DELETE" }).catch(() => {})
+  }, [refFolders])
+
+  // Load the account reference library once per signed-in user, then migrate any
+  // legacy localStorage refs (the old client-only library) up to the account.
+  const refsFetchedForUserRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!user?.id || refsFetchedForUserRef.current === user.id) return
+    refsFetchedForUserRef.current = user.id
+    ;(async () => {
+      try {
+        const res = await fetch("/api/user/references")
+        if (!res.ok) return
+        const data = await res.json()
+        const refs: RefImage[] = (data.references || []).map((r: any) => ({
+          id: String(r.id), url: r.url, folderId: r.folderId ?? null,
+        }))
+        // Merge (don't clobber) anything the user added while this fetch was in flight
+        setRefLibrary(prev => {
+          const ids = new Set(refs.map(r => r.id))
+          return [...refs, ...prev.filter(p => !ids.has(p.id))]
+        })
+        setRefFolders(data.folders || [])
+        if (typeof data.limit === "number") setRefLimit(data.limit)
+        // Prune active ids that no longer exist on the account
+        const valid = new Set(refs.map(r => r.id))
+        setActiveRefIds(prev => prev.filter(id => valid.has(id) || !/^\d+$/.test(id)))
+
+        // One-time migration of the legacy localStorage library
+        try {
+          const legacyRaw = localStorage.getItem("pv2-ref-library")
+          const pending = localStorage.getItem("pv2-ref-migration-pending") === "true"
+          if (legacyRaw && (refs.length === 0 || pending)) {
+            const parsed = JSON.parse(legacyRaw)
+            const legacy: { id?: string; url?: string }[] = Array.isArray(parsed?.library) ? parsed.library : []
+            const toMigrate = legacy.filter(l => typeof l?.url === "string" && (l.url.startsWith("data:") || l.url.startsWith("https://")))
+            if (toMigrate.length > 0) {
+              localStorage.setItem("pv2-ref-migration-pending", "true")
+              const result = await addRefsToAccount(toMigrate.map(l => ({ url: l.url as string })), null)
+              if (result.added > 0 || result.failed === 0) {
+                // Success or partial success: clear the legacy key either way — a
+                // retry would duplicate the rows that DID migrate, which is worse
+                // than losing stragglers that were already at risk pre-overhaul.
+                localStorage.removeItem("pv2-ref-library")
+                localStorage.removeItem("pv2-ref-migration-pending")
+                console.log(`[refs] Migrated ${result.added} reference image(s) to your account${result.failed ? ` (${result.failed} failed)` : ""}`)
+              } else {
+                // Nothing made it (offline?) — keep the key + pending flag and retry next load
+                console.warn(`[refs] Migration failed entirely — will retry on next load`)
+              }
+            } else {
+              localStorage.removeItem("pv2-ref-library")
+              localStorage.removeItem("pv2-ref-migration-pending")
+            }
+          }
+        } catch (mErr) { console.error("[refs] migration error:", mErr) }
+      } catch (err) {
+        console.error("[refs] library fetch failed:", err)
+        refsFetchedForUserRef.current = null // allow retry on next render
+      }
+    })()
+  }, [user?.id, addRefsToAccount])
 
   // Storage keys
-  const REF_STORAGE_KEY = "pv2-ref-library"
+  // NOTE: the library itself now lives on the account (see /api/user/references).
+  // Only the per-device ACTIVE selection is kept locally — a tiny id array, so the
+  // old localStorage-quota bug (bulk uploads silently vanishing) can't recur.
+  const ACTIVE_REFS_KEY = "pv2-active-ref-ids"
   const SETTINGS_STORAGE_KEY = "pv2-settings"
 
   // Single effect: first run = restore all session/local storage, subsequent runs = persist.
@@ -14383,12 +14909,11 @@ export default function PortalV2Page() {
         const stored = sessionStorage.getItem("pv2-video-failed-items")
         if (stored) setSavedVideoFails(JSON.parse(stored) as VideoItem[])
       } catch {}
-      // ref library + active IDs
+      // Active ref ids (library itself comes from the account — see fetch effect)
       try {
-        const stored = localStorage.getItem(REF_STORAGE_KEY)
+        const stored = localStorage.getItem(ACTIVE_REFS_KEY)
         if (stored) {
-          const { library, activeIds } = JSON.parse(stored)
-          if (Array.isArray(library)) setRefLibrary(library)
+          const activeIds = JSON.parse(stored)
           if (Array.isArray(activeIds)) setActiveRefIds(activeIds)
         }
       } catch {}
@@ -14399,8 +14924,8 @@ export default function PortalV2Page() {
     try { sessionStorage.setItem("pv2-failed-images", JSON.stringify(savedFails)) } catch {}
     try { localStorage.setItem("pv2-video-pending-slots", JSON.stringify(videoPendingSlots)) } catch {}
     try { sessionStorage.setItem("pv2-video-failed-items", JSON.stringify(savedVideoFails)) } catch {}
-    try { localStorage.setItem(REF_STORAGE_KEY, JSON.stringify({ library: refLibrary, activeIds: activeRefIds })) } catch {}
-  }, [pendingSlots, savedFails, videoPendingSlots, savedVideoFails, refLibrary, activeRefIds])
+    try { localStorage.setItem(ACTIVE_REFS_KEY, JSON.stringify(activeRefIds)) } catch {}
+  }, [pendingSlots, savedFails, videoPendingSlots, savedVideoFails, activeRefIds])
 
   // Single effect: first run = restore from localStorage, subsequent runs = save.
   // This prevents the "save default over stored value" race that separate restore/save effects cause.
@@ -14832,15 +15357,21 @@ export default function PortalV2Page() {
               library={refLibrary}
               activeIds={activeRefIds}
               modelMaxRefs={selectedModel.maxReferenceImages}
-              onUpload={handleLibraryUpload}
+              onUploadFiles={handleLibraryUploadFiles}
               onDelete={handleLibraryDelete}
               onDeleteMultiple={handleLibraryDeleteMultiple}
               onClearAll={handleLibraryClearAll}
               onActivate={handleActivateRef}
               onDeactivate={handleDeactivateRef}
               onEditSave={handleEditRef}
+              folders={refFolders}
+              uploadProgress={refUploadProgress}
+              onMove={handleMoveRefs}
+              onCreateFolder={handleCreateRefFolder}
+              onRenameFolder={handleRenameRefFolder}
+              onDeleteFolder={handleDeleteRefFolder}
               disabled={scannerMode === "video"}
-              libraryLimit={isAdminAccount ? 250 : hasEffectiveDevAccess ? 100 : 50}
+              libraryLimit={refLibraryLimit}
             />
             <ShopDropdown
               open={openDropdown === "shop"}
