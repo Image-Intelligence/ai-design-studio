@@ -5118,8 +5118,13 @@ function ImageGrid({
   return (
     <div>
       {(() => {
-        // Build the ordered feed nodes once; all three layouts render from this single
-        // list so grid / masonry-flow / masonry-rows stay perfectly in sync.
+        // Build the ordered feed nodes once; all three layouts render from these
+        // lists so grid / masonry-flow / masonry-rows stay perfectly in sync.
+        // Pending + fresh live in a separate HEAD list: in masonry-rows they render
+        // in their own pinned strip above the masonry, because shortest-column
+        // packing re-shuffles every tile when items are PREPENDED — without the
+        // split, each new generation visually rebuilt the whole feed.
+        const headNodes: { weight: number; node: ReactNode }[] = []
         const nodes: { weight: number; node: ReactNode }[] = []
 
         // Pending + fresh (top of feed) — only in the normal (non-admin, non-hidden) view
@@ -5132,13 +5137,13 @@ function ImageGrid({
                     ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
                     : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
               : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
-            nodes.push({ weight: 1, node })
+            headNodes.push({ weight: 1, node })
           })
           freshImages.forEach((img) => {
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
-            nodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
+            headNodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
           })
         }
 
@@ -5173,17 +5178,26 @@ function ImageGrid({
           })
         }
 
-        // Masonry "Rows": JS shortest-column packing — left-to-right, and tiles never move
-        // as more load in (stable, no reflow/jump).
+        // Masonry "Rows": JS shortest-column packing — left-to-right, and tiles never
+        // move as more load in (append-only is stable). Pending/fresh render in a
+        // pinned grid strip ABOVE the masonry so new generations slot in at the top
+        // without redistributing (= visually rebuilding) the whole feed.
         if (fullSize && fullSizeLayout === "masonry" && masonryMode === "rows") {
           const columns = distributeMasonry(nodes, cols ?? autoCols)
           return (
-            <div className="flex gap-2 items-start">
-              {columns.map((colItems, i) => (
-                <div key={i} className="flex-1 min-w-0 flex flex-col gap-2">
-                  {colItems.map(it => it.node)}
+            <div>
+              {headNodes.length > 0 && (
+                <div className={`grid gap-2 items-start mb-2 ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
+                  {headNodes.map(it => it.node)}
                 </div>
-              ))}
+              )}
+              <div className="flex gap-2 items-start">
+                {columns.map((colItems, i) => (
+                  <div key={i} className="flex-1 min-w-0 flex flex-col gap-2">
+                    {colItems.map(it => it.node)}
+                  </div>
+                ))}
+              </div>
             </div>
           )
         }
@@ -5192,7 +5206,7 @@ function ImageGrid({
         if (fullSize && fullSizeLayout === "masonry") {
           return (
             <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? "columns-2 sm:columns-4" : "columns-2 sm:columns-4"} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
-              {nodes.map(it => it.node)}
+              {[...headNodes, ...nodes].map(it => it.node)}
             </div>
           )
         }
@@ -5200,7 +5214,7 @@ function ImageGrid({
         // Grid / normal
         return (
           <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
-            {nodes.map(it => it.node)}
+            {[...headNodes, ...nodes].map(it => it.node)}
           </div>
         )
       })()}
