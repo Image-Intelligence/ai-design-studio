@@ -857,96 +857,32 @@ function GroupedTaskbarDropdown({
 }
 
 // --- SELECT DROPDOWN ---
+// Direct select-mode toggle — no dropdown. All selection actions (download,
+// delete, hide, add-to-bucket) live in the floating SelectModeOverlay panel.
 function SelectDropdown({
-  open,
-  onToggle,
   selectMode,
   onToggleSelectMode,
   selectedCount,
-  isAdmin = false,
-  onAddToBucket,
 }: {
-  open: boolean
-  onToggle: () => void
   selectMode: boolean
   onToggleSelectMode: () => void
   selectedCount: number
-  isAdmin?: boolean
-  onAddToBucket?: () => void
 }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        if (open) onToggle()
-      }
-    }
-    document.addEventListener("mousedown", handleClick)
-    return () => document.removeEventListener("mousedown", handleClick)
-  }, [open, onToggle])
-
-  useEffect(() => {
-    if (open && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 240) })
-    }
-  }, [open])
-
   return (
-    <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
+    <div className="relative flex-none min-w-[90px] sm:flex-1">
       <button
-        ref={buttonRef}
-        onClick={onToggle}
+        onClick={onToggleSelectMode}
+        title={selectMode ? "Exit select mode" : "Select images in your feed"}
         className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open || selectMode ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+          selectMode ? "bg-cyan-500/15 text-cyan-300" : "text-slate-400 hover:text-white hover:bg-white/5"
         }`}
       >
-        <SlidersHorizontal size={15} />
+        {selectMode ? <Check size={15} className="text-cyan-400" /> : <SlidersHorizontal size={15} />}
         Select
         {selectMode && selectedCount > 0 && (
           <span className="text-[10px] font-mono bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded-full leading-none">{selectedCount}</span>
         )}
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
-
-      {open && (
-        <div className="fixed w-60 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-[9999] p-3 space-y-2" style={{ top: menuPos.top, left: menuPos.left }}>
-          {/* Toggle select mode */}
-          <button
-            onClick={() => { onToggleSelectMode(); onToggle() }}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${
-              selectMode
-                ? "bg-cyan-500/15 border border-cyan-500/30 text-cyan-300"
-                : "bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white"
-            }`}
-          >
-            <Check size={13} className={selectMode ? "text-cyan-400" : "text-slate-500"} />
-            {selectMode ? "Exit Select Mode" : "Enter Select Mode"}
-          </button>
-
-          {/* Admin only: add selection to a dataset bucket */}
-          {selectMode && isAdmin && onAddToBucket && (
-            <button
-              onClick={() => { onAddToBucket(); onToggle() }}
-              disabled={selectedCount === 0}
-              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <FolderPlus size={13} />
-              Add to Bucket
-            </button>
-          )}
-
-          {/* Bulk controls live in the floating panel while select mode is on */}
-          {selectMode && (
-            <p className="text-[10px] text-slate-500 leading-snug px-1">
-              Tap images to select them. Download and delete controls are in the panel at the top right of your screen.
-            </p>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -15379,13 +15315,9 @@ export default function PortalV2Page() {
               user={user}
             />
             <SelectDropdown
-              open={openDropdown === "select"}
-              onToggle={() => toggle("select")}
               selectMode={selectMode}
               onToggleSelectMode={handleToggleSelectMode}
               selectedCount={selectedImageIds.size}
-              isAdmin={isAdminAccount}
-              onAddToBucket={handleOpenAddToBucket}
             />
             <NewsDropdown
               open={openDropdown === "news"}

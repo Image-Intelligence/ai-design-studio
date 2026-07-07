@@ -111,7 +111,9 @@
       "Bash(echo \"prefs GET \\(no session\\): $\\(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/user/preferences\\)\")",
       "Bash(grep -n \"Bucket bar\\\\|bulk-action\\\\|Bulk action\\\\|stats row\\\\|Stats row\\\\|{/\\\\* Grid\\\\|PageNav\\\\b\" app/admin/dataset/page.tsx)",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total refs:', d['pagination']['total']\\); print\\('users:', [\\(u['email'], u['count']\\) for u in d['facets']['users'][:10]]\\)\")",
-      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total active library:', d['pagination']['total']\\)\")"
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total active library:', d['pagination']['total']\\)\")",
+      "Bash(echo \"prod admin/references \\(no header\\): $\\(curl -s -o /dev/null -w '%{http_code}' https://prompt-protocol.vercel.app/api/admin/references\\)\")",
+      "Bash(echo \"prod admin/dataset:                $\\(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 https://prompt-protocol.vercel.app/admin/dataset\\)\")"
     ]
   }
 }
