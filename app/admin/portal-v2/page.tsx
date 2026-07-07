@@ -2540,10 +2540,11 @@ function TextDropdown({
             <p className="text-[12px] font-semibold text-white/85 leading-none">Text Tools</p>
             <p className="text-[10px] text-slate-500 mt-1 leading-snug">Generate a prompt with AI, or load from 16 saved slots.</p>
           </div>
-          <div className="grid grid-cols-[2fr_3fr] divide-x divide-white/5">
+          {/* Mobile: panes stack and the whole body scrolls; sm+: side-by-side with per-pane scroll */}
+          <div className="grid grid-cols-1 sm:grid-cols-[2fr_3fr] divide-y sm:divide-y-0 sm:divide-x divide-white/5 max-h-[calc(100vh-170px)] overflow-y-auto sm:max-h-none sm:overflow-visible">
 
             {/* LEFT: AI Prompting */}
-            <div className="p-4 space-y-3 max-h-[520px] overflow-y-auto">
+            <div className="p-4 space-y-3 sm:max-h-[520px] sm:overflow-y-auto">
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
                 <p className="text-[10px] font-bold text-cyan-400/70 uppercase tracking-widest font-mono">AI Prompting</p>
@@ -2668,13 +2669,14 @@ function TextDropdown({
             </div>
 
             {/* RIGHT: Saved Prompts */}
-            <div className="p-4 max-h-[520px] overflow-y-auto">
+            <div className="p-4 sm:max-h-[520px] sm:overflow-y-auto">
               <div className="flex items-center gap-1.5 mb-3">
                 <div className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 shrink-0" />
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Saved Prompts</p>
                 <span className="text-[9px] text-slate-600 font-mono">· 16 slots</span>
               </div>
-              <div className="grid grid-cols-4 gap-1.5">
+              {/* 2 columns on phones so the Copy/Use buttons fit inside each slot */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                 {savedPrompts.map((p, i) => (
                   <div key={i} className="flex flex-col gap-1">
                     <textarea
