@@ -1,0 +1,7 @@
+AI/
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.gguf
