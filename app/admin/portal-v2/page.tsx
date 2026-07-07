@@ -661,7 +661,9 @@ function GroupedTaskbarDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 444) })
+      // Cap the menu to the viewport and clamp so it never hangs off either edge
+      const menuW = Math.min(428, window.innerWidth - 16)
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)) })
     }
   }, [open])
 
@@ -683,7 +685,7 @@ function GroupedTaskbarDropdown({
       {open && (
         <div
           className="fixed rounded-xl border border-white/10 bg-[#080c18] backdrop-blur-md shadow-2xl z-[9999] overflow-hidden"
-          style={{ top: menuPos.top, left: menuPos.left, width: 428 }}
+          style={{ top: menuPos.top, left: menuPos.left, width: "min(428px, calc(100vw - 16px))" }}
         >
           {/* Header — tells the user exactly what this is and what to do */}
           <div className="px-4 pt-3 pb-2.5 border-b border-white/5">
@@ -5595,7 +5597,9 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           )}
           {tool === 'crop' && (
             <>
-              <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
+              {/* shrink-0 keeps the toggle intact on narrow screens — without it the
+                  overflow-hidden segmented control gets squeezed and clips "Drag" */}
+              <div className="flex rounded-lg overflow-hidden border border-white/[0.08] shrink-0">
                 <button
                   onClick={() => setCropMode('frame')}
                   title="Crop frame with draggable corners and edges"
@@ -5609,7 +5613,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
                   Drag
                 </button>
               </div>
-              <span className="text-[11px] text-slate-500">
+              <span className="flex-1 min-w-0 text-[11px] text-slate-500 leading-snug">
                 {cropMode === 'frame'
                   ? 'Drag corners or edges to resize the frame — drag inside it to move'
                   : 'Drag to select crop area'}
