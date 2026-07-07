@@ -205,7 +205,10 @@ export default function MaintenancePage() {
     try {
       await fetch('/api/admin/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('admin-password') : '') || '',
+        },
         body: JSON.stringify(newState),
       })
     } catch {}

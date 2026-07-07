@@ -225,6 +225,9 @@ model SystemState {
   // Scanner maintenance toggles (entire scanner on/off)
   mainScannerMaintenance   Boolean  @default(false) // Main scanner (multiverse-portal.tsx)
   legacyScannerMaintenance Boolean  @default(false) // Legacy scanner
+
+  // Shop dropdown animations (shimmer/pulse/sheen) — admin-toggled, applies to all users
+  shopEffectsEnabled       Boolean  @default(true)
   adminScannerMaintenance  Boolean  @default(false) // Admin scanner
   canvasScannerMaintenance Boolean  @default(false) // Canvas scanner
   videoScannerMaintenance      Boolean  @default(false) // Video scanner

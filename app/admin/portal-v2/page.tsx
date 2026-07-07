@@ -13053,11 +13053,16 @@ function NewsManagerModal({ initialSection, initialArticleId, onClose }: {
 
 // --- SHOP DROPDOWN ---
 function ShopDropdown({
-  open, onToggle, user,
+  open, onToggle, user, isAdmin = false, effectsEnabled = true, onToggleEffects,
 }: {
   open: boolean
   onToggle: () => void
   user: UserData | null
+  isAdmin?: boolean
+  // Animated shimmer/pulse/sheen — global flag (SystemState.shopEffectsEnabled),
+  // admins toggle it for ALL users from inside this dropdown
+  effectsEnabled?: boolean
+  onToggleEffects?: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -13103,6 +13108,26 @@ function ShopDropdown({
 
       {open && (
         <div className="fixed w-[min(340px,calc(100vw-16px))] rounded-2xl border border-white/10 bg-[#0a0f1e] backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
+          {effectsEnabled && (
+            <style>{`
+              @keyframes pv2ShopPulse {
+                0%, 100% { box-shadow: 0 0 10px rgba(0,255,255,0.08), inset 0 0 12px rgba(0,0,0,0.6) }
+                50%      { box-shadow: 0 0 18px rgba(0,255,255,0.28), inset 0 0 12px rgba(0,0,0,0.6) }
+              }
+              @keyframes pv2ShopSheen {
+                0%, 55%   { transform: translateX(-160%) skewX(-18deg) }
+                85%, 100% { transform: translateX(320%) skewX(-18deg) }
+              }
+              @keyframes pv2ShopBadge {
+                0%, 45%   { transform: translateX(-110%) }
+                70%, 100% { transform: translateX(110%) }
+              }
+              @keyframes pv2ShopTwinkle {
+                0%, 100% { opacity: 1;    transform: scale(1) }
+                50%      { opacity: 0.55; transform: scale(0.85) rotate(-8deg) }
+              }
+            `}</style>
+          )}
 
           {/* ── Header: title + live balance ── */}
           <div className="relative px-4 py-3 flex items-center justify-between border-b border-white/[0.07] overflow-hidden">
@@ -13115,7 +13140,13 @@ function ShopDropdown({
               <span className="text-sm font-bold text-white tracking-wide">Shop</span>
             </div>
             {user && (
-              <div className="relative flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-cyan-500/25 bg-black font-mono text-xs" style={{ boxShadow: "0 0 10px rgba(0,255,255,0.08), inset 0 0 12px rgba(0,0,0,0.6)" }} title="Your ticket balance">
+              <div
+                className="relative flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-cyan-500/25 bg-black font-mono text-xs"
+                style={effectsEnabled
+                  ? { animation: "pv2ShopPulse 3.2s ease-in-out infinite" }
+                  : { boxShadow: "0 0 10px rgba(0,255,255,0.08), inset 0 0 12px rgba(0,0,0,0.6)" }}
+                title="Your ticket balance"
+              >
                 <Ticket size={10} className="text-cyan-500/80" />
                 <span className="text-cyan-400 font-bold">{user.ticketBalance.toLocaleString()}</span>
               </div>
@@ -13126,8 +13157,12 @@ function ShopDropdown({
           <div className="p-3 pb-1.5">
             <button
               onClick={() => handleNav("/buy-tickets")}
-              className="w-full rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/[0.10] via-slate-900/50 to-transparent hover:border-cyan-400/50 hover:shadow-[0_0_24px_rgba(34,211,238,0.12)] transition-all duration-200 group overflow-hidden"
+              className="relative w-full rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/[0.10] via-slate-900/50 to-transparent hover:border-cyan-400/50 hover:shadow-[0_0_24px_rgba(34,211,238,0.12)] transition-all duration-200 group overflow-hidden"
             >
+              {/* periodic light sweep */}
+              {effectsEnabled && (
+                <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent pointer-events-none" style={{ animation: "pv2ShopSheen 7s ease-in-out infinite" }} />
+              )}
               <div className="px-4 py-3.5 text-left">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5">
@@ -13157,18 +13192,26 @@ function ShopDropdown({
           <div className="p-3 pt-1.5">
             <button
               onClick={() => handleNav("/prompting-studio/subscribe")}
-              className="w-full rounded-xl border border-violet-500/30 bg-gradient-to-br from-violet-500/[0.12] via-slate-900/50 to-transparent hover:border-violet-400/55 hover:shadow-[0_0_24px_rgba(167,139,250,0.14)] transition-all duration-200 group overflow-hidden"
+              className="relative w-full rounded-xl border border-violet-500/30 bg-gradient-to-br from-violet-500/[0.12] via-slate-900/50 to-transparent hover:border-violet-400/55 hover:shadow-[0_0_24px_rgba(167,139,250,0.14)] transition-all duration-200 group overflow-hidden"
             >
+              {/* periodic light sweep — staggered behind the ticket card's */}
+              {effectsEnabled && (
+                <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent pointer-events-none" style={{ animation: "pv2ShopSheen 7s ease-in-out 3.5s infinite" }} />
+              )}
               <div className="px-4 py-3.5 text-left">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/35 flex items-center justify-center shrink-0 group-hover:bg-violet-500/25 transition-colors">
-                      <Sparkles size={14} className="text-violet-300" />
+                      <Sparkles size={14} className="text-violet-300" style={effectsEnabled ? { animation: "pv2ShopTwinkle 4s ease-in-out infinite" } : undefined} />
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-[13px] font-bold text-white">Dev Tier</span>
-                      <span className="text-[8.5px] font-black uppercase tracking-wider text-fuchsia-200 bg-gradient-to-r from-violet-500/30 to-fuchsia-500/30 border border-fuchsia-400/30 px-1.5 py-0.5 rounded-full">
+                      <span className="relative overflow-hidden text-[8.5px] font-black uppercase tracking-wider text-fuchsia-200 bg-gradient-to-r from-violet-500/30 to-fuchsia-500/30 border border-fuchsia-400/30 px-1.5 py-0.5 rounded-full">
                         Best value
+                        {/* shimmer sweep across the badge */}
+                        {effectsEnabled && (
+                          <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent pointer-events-none" style={{ animation: "pv2ShopBadge 3.5s ease-in-out infinite" }} />
+                        )}
                       </span>
                     </div>
                   </div>
@@ -13211,6 +13254,26 @@ function ShopDropdown({
               <a href="/dashboard" className="text-[11px] text-cyan-400 hover:text-cyan-300 hover:underline transition-colors">
                 Go to login →
               </a>
+            </div>
+          )}
+
+          {/* Admin only: global effects toggle (shimmer/pulse/sheen for ALL users) */}
+          {isAdmin && onToggleEffects && (
+            <div className="px-4 py-2 border-t border-white/[0.06] bg-black/30 flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+                <span className="text-[10px] font-medium text-slate-500">Effects <span className="text-slate-600">(all users)</span></span>
+              </div>
+              <button
+                onClick={onToggleEffects}
+                className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border transition-all ${
+                  effectsEnabled
+                    ? "bg-violet-500/20 border-violet-500/40 text-violet-300"
+                    : "bg-white/5 border-white/10 text-slate-500 hover:text-white"
+                }`}
+              >
+                {effectsEnabled ? "On" : "Off"}
+              </button>
             </div>
           )}
         </div>
@@ -14953,8 +15016,26 @@ export default function PortalV2Page() {
 
   useEffect(() => {
     fetch("/api/admin/config").then(r => r.ok ? r.json() : null).then(data => {
-      if (data) setIsGenerationMaintenance(!!data.aiGenerationMaintenance)
+      if (data) {
+        setIsGenerationMaintenance(!!data.aiGenerationMaintenance)
+        setShopEffects(data.shopEffectsEnabled !== false) // default on
+      }
     }).catch(() => {})
+  }, [])
+
+  // Shop dropdown animations — global flag, admin-toggled from inside the dropdown
+  const [shopEffects, setShopEffects] = useState(true)
+  const handleToggleShopEffects = useCallback(() => {
+    setShopEffects(prev => {
+      const next = !prev
+      const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
+      fetch("/api/admin/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(pass ? { "x-admin-password": pass } : {}) },
+        body: JSON.stringify({ shopEffectsEnabled: next }),
+      }).catch(() => {})
+      return next
+    })
   }, [])
 
   // Autofill watchdog — re-kick stuck caption jobs while user is on this page.
@@ -15354,6 +15435,9 @@ export default function PortalV2Page() {
               open={openDropdown === "shop"}
               onToggle={() => toggle("shop")}
               user={user}
+              isAdmin={isAdminAccount}
+              effectsEnabled={shopEffects}
+              onToggleEffects={handleToggleShopEffects}
             />
             <SelectDropdown
               selectMode={selectMode}

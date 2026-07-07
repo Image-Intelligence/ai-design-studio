@@ -25,8 +25,17 @@ export async function GET() {
   }
 }
 
+function checkAuth(req: Request) {
+  const pass = process.env.ADMIN_PASSWORD
+  if (!pass) return true
+  return req.headers.get('x-admin-password') === pass
+}
+
 // POST - Update admin configuration
+// GET stays open (many public pages read maintenance flags), but mutations
+// were previously unauthenticated — anyone could flip maintenance/shop state.
 export async function POST(request: Request) {
+  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json()
 
