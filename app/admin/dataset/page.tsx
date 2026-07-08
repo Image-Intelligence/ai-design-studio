@@ -1892,6 +1892,39 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
 export default function DatasetPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [sessionChecked,  setSessionChecked]  = useState(false)
+  // Inline unlock on the auth gate — sessionStorage is per-tab, so a fresh tab
+  // has no stored password and the old static gate dead-ended the user
+  const [gatePassword,  setGatePassword]  = useState("")
+  const [gateVerifying, setGateVerifying] = useState(false)
+  const [gateError,     setGateError]     = useState<string | null>(null)
+
+  const handleGateUnlock = async () => {
+    if (!gatePassword.trim() || gateVerifying) return
+    setGateVerifying(true)
+    setGateError(null)
+    try {
+      const res = await fetch('/api/admin/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: gatePassword }),
+      })
+      if (res.ok) {
+        try {
+          sessionStorage.setItem('admin-password', gatePassword)
+          localStorage.setItem('multiverse-admin-auth', 'true')
+        } catch {}
+        setGatePassword("")
+        setIsAuthenticated(true) // data loads via the isAuthenticated-keyed effects
+      } else {
+        const data = await res.json().catch(() => null)
+        setGateError(data?.error || 'Incorrect password')
+      }
+    } catch {
+      setGateError('Verification failed — check your connection.')
+    } finally {
+      setGateVerifying(false)
+    }
+  }
 
   // Load persisted prefs once on mount
   const [_p] = useState(() => loadPrefs(PAGE_PREFS_KEY))
@@ -1939,6 +1972,9 @@ export default function DatasetPage() {
   const [hasTag,       setHasTag]       = useState<string>(() => _p.hasTag        ?? "")
   const [tagFilter,    setTagFilter]    = useState<string>(() => _p.tagFilter     ?? "")
   const [userFilters,  setUserFilters]  = useState<string[]>(() => _p.userFilters ?? [])
+  // Exclude sorted work: values are "b:<bucketId>" or "f:<folderId>" (folder = whole subtree).
+  // Generations already in any excluded bucket are hidden — leaving only what still needs sorting.
+  const [excludeSel,   setExcludeSel]   = useState<string[]>(() => _p.excludeSel ?? [])
   const [mediaType,    setMediaType]    = useState<string>(() => _p.mediaType     ?? "")
   const [markedOnly,   setMarkedOnly]   = useState<boolean>(() => _p.markedOnly   ?? false)
   const [sort,         setSort]         = useState<string>(() => _p.sort          ?? "newest")
@@ -2052,11 +2088,11 @@ export default function DatasetPage() {
   useEffect(() => {
     savePrefs(PAGE_PREFS_KEY, {
       search, models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag,
-      tagFilter, userFilters, mediaType, markedOnly, sort, pageSize, page,
+      tagFilter, userFilters, excludeSel, mediaType, markedOnly, sort, pageSize, page,
       bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode,
     })
   }, [search, models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag,
-      tagFilter, userFilters, mediaType, markedOnly, sort, pageSize, page,
+      tagFilter, userFilters, excludeSel, mediaType, markedOnly, sort, pageSize, page,
       bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode])
 
   // ── Search debounce ─────────────────────────────────────────────────────────
@@ -2071,7 +2107,7 @@ export default function DatasetPage() {
   }, [search])
 
   // ── Reset page on filter change (skip on first mount) ────────────────────────
-  const filterResetDeps = [models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag, tagFilter, userFilters, mediaType, markedOnly, bucketFilter, sort, pageSize]
+  const filterResetDeps = [models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag, tagFilter, userFilters, excludeSel, mediaType, markedOnly, bucketFilter, sort, pageSize]
   useEffect(() => {
     if (isMountedRef.current) setPage(1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2083,6 +2119,26 @@ export default function DatasetPage() {
 
   // ── Exit select mode when selection is cleared ───────────────────────────────
   useEffect(() => { if (selected.size === 0 && selectMode) { /* keep mode on intentionally */ } }, [selected])
+
+  // Exclude sorted work: expand folder picks ("f:id") into every bucket in that
+  // folder's subtree, union with direct bucket picks ("b:id"), append as repeated
+  // excludeBucket params. Shared by the feed fetch and Select All so they agree.
+  function appendExcludeParams(params: URLSearchParams) {
+    if (excludeSel.length === 0) return
+    const excludeBucketIds = new Set<number>()
+    excludeSel.forEach(v => {
+      if (v.startsWith('b:')) {
+        const id = Number(v.slice(2))
+        if (!isNaN(id)) excludeBucketIds.add(id)
+      } else if (v.startsWith('f:')) {
+        const folderId = Number(v.slice(2))
+        if (isNaN(folderId)) return
+        const subtree = getDescendantIds(folderId)
+        buckets.forEach(b => { if (b.folderId != null && subtree.has(b.folderId)) excludeBucketIds.add(b.id) })
+      }
+    })
+    excludeBucketIds.forEach(id => params.append('excludeBucket', String(id)))
+  }
 
   // ── Fetch ────────────────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
@@ -2111,6 +2167,7 @@ export default function DatasetPage() {
       if (bucketFilter)   params.set('bucketId',   bucketFilter)
       if (markedOnly)     params.set('markedOnly', 'true')
       if (debouncedSearch) params.set('search',    debouncedSearch)
+      appendExcludeParams(params)
       const res  = await fetch(`/api/admin/dataset?${params}`, { headers: authHeaders(), signal: ctrl.signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
@@ -2122,7 +2179,7 @@ export default function DatasetPage() {
       setError(e.message)
       setLoading(false)
     }
-  }, [isAuthenticated, viewMode, page, pageSize, sort, models, aspectRatios, qualities, userFilters, hasRefs, hasRating, hasCaption, hasTag, tagFilter, mediaType, bucketFilter, markedOnly, debouncedSearch])
+  }, [isAuthenticated, viewMode, page, pageSize, sort, models, aspectRatios, qualities, userFilters, excludeSel, buckets, folders, hasRefs, hasRating, hasCaption, hasTag, tagFilter, mediaType, bucketFilter, markedOnly, debouncedSearch])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -2232,6 +2289,7 @@ export default function DatasetPage() {
       if (bucketFilter)   params.set('bucketId',   bucketFilter)
       if (markedOnly)     params.set('markedOnly', 'true')
       if (debouncedSearch) params.set('search',    debouncedSearch)
+      appendExcludeParams(params)
       const res  = await fetch(`/api/admin/dataset?${params}`, { headers: authHeaders() })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const { ids } = await res.json()
@@ -2428,13 +2486,29 @@ export default function DatasetPage() {
   )
   const tagSuggestions   = useMemo(() => facets?.tags.map(t => t.value) ?? [], [facets?.tags])
   const hasActiveFilters = useMemo(
-    () => !!(models.length || aspectRatios.length || qualities.length || hasRefs || hasRating || hasCaption || hasTag || tagFilter || userFilters.length || mediaType || bucketFilter || markedOnly || search),
-    [models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag, tagFilter, userFilters, mediaType, bucketFilter, markedOnly, search]
+    () => !!(models.length || aspectRatios.length || qualities.length || hasRefs || hasRating || hasCaption || hasTag || tagFilter || userFilters.length || excludeSel.length || mediaType || bucketFilter || markedOnly || search),
+    [models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag, tagFilter, userFilters, excludeSel, mediaType, bucketFilter, markedOnly, search]
   )
 const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ value: m.value,       label: `${m.value.replace('fal-ai/', '')} (${m.count})` })), [facets?.models])
   const aspectOptions     = useMemo(() => (facets?.aspects   ?? []).map(a => ({ value: a.value ?? '', label: `${a.value} (${a.count})` })),                          [facets?.aspects])
   const qualityOptions    = useMemo(() => (facets?.qualities ?? []).map(q => ({ value: q.value ?? '', label: `${q.value} (${q.count})` })),                          [facets?.qualities])
   const userOptions       = useMemo(() => (facets?.users     ?? []).map(u => ({ value: String(u.id), label: `${u.name ? `${u.name} · ` : ''}${u.email} (${u.count})` })), [facets?.users])
+  // Exclude picker: folders first (exclude the whole subtree), then individual buckets
+  // labeled with their parent folder for context
+  const excludeOptions    = useMemo(() => {
+    const folderName = new Map(folders.map(f => [f.id, f.name]))
+    const folderOpts = folders.map(f => {
+      const subtree = getDescendantIds(f.id)
+      const bucketCount = buckets.filter(b => b.folderId != null && subtree.has(b.folderId)).length
+      return { value: `f:${f.id}`, label: `📁 ${f.name} — whole tree (${bucketCount} bucket${bucketCount === 1 ? '' : 's'})` }
+    })
+    const bucketOpts = buckets.map(b => ({
+      value: `b:${b.id}`,
+      label: b.folderId != null && folderName.has(b.folderId) ? `${folderName.get(b.folderId)} / ${b.name}` : b.name,
+    }))
+    return [...folderOpts, ...bucketOpts]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folders, buckets])
   const sortOptions       = useMemo(() => [{ value: "newest", label: "Newest first" }, { value: "oldest", label: "Oldest first" }, { value: "rating", label: "Highest rated" }, { value: "cost", label: "Highest cost" }], [])
   const mediaTypeOptions  = useMemo(() => [{ value: "", label: "Images & videos" }, { value: "image", label: "Images only" }, { value: "video", label: "Videos only" }], [])
   const hasRefsOptions    = useMemo(() => [{ value: "", label: "Refs: any" }, { value: "true", label: "Has refs" }, { value: "false", label: "No refs" }, { value: "1", label: "1 ref" }, { value: "2", label: "2 refs" }, { value: "3", label: "3 refs" }, { value: "4+", label: "4+ refs" }], [])
@@ -2455,11 +2529,35 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
   )
   if (!isAuthenticated) return (
     <div className="min-h-screen bg-[#09090f] flex items-center justify-center p-6">
-      <div className="text-center">
-        <p className="text-slate-400 mb-4">Admin access required.</p>
+      <div className="w-full max-w-sm rounded-2xl border border-white/[0.08] bg-white/[0.02] p-6 text-center">
+        <div className="w-10 h-10 mx-auto mb-3 rounded-xl bg-cyan-500/15 border border-cyan-500/25 flex items-center justify-center">
+          <Database size={16} className="text-cyan-400" />
+        </div>
+        <p className="text-white font-semibold mb-1">Admin access required</p>
+        <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+          Enter the admin password to unlock this tab. (Each browser tab needs it once.)
+        </p>
+        <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); handleGateUnlock() }}>
+          <input
+            type="password"
+            autoFocus
+            value={gatePassword}
+            onChange={e => setGatePassword(e.target.value)}
+            placeholder="Admin password"
+            className="flex-1 px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/40"
+          />
+          <button
+            type="submit"
+            disabled={!gatePassword.trim() || gateVerifying}
+            className="px-3.5 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-sm font-medium hover:bg-cyan-500/25 disabled:opacity-40 transition-all"
+          >
+            {gateVerifying ? <Loader2 size={14} className="animate-spin" /> : "Unlock"}
+          </button>
+        </form>
+        {gateError && <p className="text-[11px] text-rose-400 mt-2.5">{gateError}</p>}
         <button onClick={() => window.location.href = '/admin'}
-          className="px-4 py-2 rounded-xl bg-white/[0.06] border border-white/10 text-sm text-slate-300 hover:text-white transition-colors">
-          Go to Admin
+          className="mt-4 text-[11px] text-slate-600 hover:text-slate-400 transition-colors">
+          Go to Admin panel instead →
         </button>
       </div>
     </div>
@@ -2688,13 +2786,16 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
               {userOptions.length > 0 && (
                 <MultiFilterSelect values={userFilters} onChange={setUserFilters} placeholder="User: any" searchable options={userOptions} />
               )}
+              {excludeOptions.length > 0 && (
+                <MultiFilterSelect values={excludeSel} onChange={setExcludeSel} placeholder="Exclude: none" searchable options={excludeOptions} />
+              )}
               <button onClick={() => setMarkedOnly(v => !v)}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-all
                   ${markedOnly ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-white/[0.05] border-white/[0.08] text-slate-400 hover:text-white"}`}>
                 <BookMarked size={11} /> Training only
               </button>
               {hasActiveFilters && (
-                <button onClick={() => { setModels([]); setAspectRatios([]); setQualities([]); setHasRefs(""); setHasRating(""); setHasCaption(""); setHasTag(""); setTagFilter(""); setUserFilters([]); setMediaType(""); setBucketFilter(""); setMarkedOnly(false); setSearch("") }}
+                <button onClick={() => { setModels([]); setAspectRatios([]); setQualities([]); setHasRefs(""); setHasRating(""); setHasCaption(""); setHasTag(""); setTagFilter(""); setUserFilters([]); setExcludeSel([]); setMediaType(""); setBucketFilter(""); setMarkedOnly(false); setSearch("") }}
                   className="text-[11px] text-slate-600 hover:text-slate-400 transition-colors">
                   Clear all
                 </button>

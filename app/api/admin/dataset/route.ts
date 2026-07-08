@@ -32,6 +32,9 @@ export async function GET(req: Request) {
   const mediaType   = searchParams.get('mediaType')   || ''   // 'image' | 'video' | ''
   const markedOnly  = searchParams.get('markedOnly') === 'true'
   const bucketId    = searchParams.get('bucketId')    || ''
+  // Exclusion: hide generations already sorted into any of these buckets
+  // (client expands excluded folders into their full bucket subtree)
+  const excludeBuckets = searchParams.getAll('excludeBucket').map(Number).filter(n => !isNaN(n) && n > 0)
   const search      = searchParams.get('search')      || ''
   const sort        = searchParams.get('sort')        || 'newest'
 
@@ -46,7 +49,12 @@ export async function GET(req: Request) {
   if (qualityList.length === 1)    where.quality = qualityList[0]
   else if (qualityList.length > 1) where.quality = { in: qualityList }
   if (markedOnly)  where.markedForTraining = true
-  if (bucketId)    where.bucketImages = { some: { bucketId: parseInt(bucketId) } }
+  if (bucketId || excludeBuckets.length > 0) {
+    where.bucketImages = {
+      ...(bucketId ? { some: { bucketId: parseInt(bucketId) } } : {}),
+      ...(excludeBuckets.length > 0 ? { none: { bucketId: { in: excludeBuckets } } } : {}),
+    }
+  }
   if (mediaType === 'video') where.NOT = { videoMetadata: { equals: Prisma.JsonNull } }
   if (mediaType === 'image') where.videoMetadata = { equals: Prisma.AnyNull }
 

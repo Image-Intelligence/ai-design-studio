@@ -113,7 +113,10 @@
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total refs:', d['pagination']['total']\\); print\\('users:', [\\(u['email'], u['count']\\) for u in d['facets']['users'][:10]]\\)\")",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total active library:', d['pagination']['total']\\)\")",
       "Bash(echo \"prod admin/references \\(no header\\): $\\(curl -s -o /dev/null -w '%{http_code}' https://prompt-protocol.vercel.app/api/admin/references\\)\")",
-      "Bash(echo \"prod admin/dataset:                $\\(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 https://prompt-protocol.vercel.app/admin/dataset\\)\")"
+      "Bash(echo \"prod admin/dataset:                $\\(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 https://prompt-protocol.vercel.app/admin/dataset\\)\")",
+      "Bash(echo \"prod config POST \\(no header\\): $\\(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"shopEffectsEnabled\":true}' https://prompt-protocol.vercel.app/api/admin/config\\)\")",
+      "Bash(echo \"prod config GET \\(public\\):     $\\(curl -s -o /dev/null -w '%{http_code}' https://prompt-protocol.vercel.app/api/admin/config\\)\")",
+      "Bash(python -c \"import json,sys; print\\('excluded total:', json.load\\(sys.stdin\\)['pagination']['total']\\)\")"
     ]
   }
 }
