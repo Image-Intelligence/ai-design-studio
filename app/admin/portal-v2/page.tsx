@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } fro
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, Pin } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
 
@@ -167,6 +167,94 @@ function seedream5LiteImageSize(quality: Quality, aspectRatio: AspectRatio): Rec
 
 function getModelDisplayName(apiId: string): string {
   return IMAGE_MODEL_CONFIGS.find((m) => m.apiId === apiId)?.name ?? apiId
+}
+
+// --- PROMPT TABS ---
+// A tab captures the prompt-box configuration only. Reference images, LoRA
+// selection, and upscaler params stay global (not per-tab) by design.
+interface PromptTab {
+  id: string
+  name?: string          // user-set label; falls back to the model display name
+  modelId: string
+  prompt: string
+  aspectRatio: string    // validated against the model when APPLIED, not when stored
+  quality: string
+  outputFormat: "png" | "jpeg" | "webp"
+  imageCount: number
+  seedreamSafetyChecker?: boolean
+  wanSafetyChecker?: boolean
+  fluxDevSafetyChecker?: boolean
+}
+interface PromptTabsState {
+  version: 1
+  tabs: PromptTab[]
+  activeTabId: string
+  pinnedTabId: string | null
+  updatedAt: number      // reconciliation key: local vs server, newer wins
+}
+const MAX_PROMPT_TABS = 6
+const PROMPT_TABS_LS_KEY = "pv2-prompt-tabs"
+const MAX_TAB_PROMPT_LEN = 5000 // keeps the whole blob well under fetch-keepalive's 64KB body cap
+
+function newTabId(): string {
+  try { return crypto.randomUUID() } catch { return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
+}
+
+// Upscaler/local/custom-flux models can't be pinned for Quick Generate
+function isPinnableModelId(modelId: string): boolean {
+  const cfg = IMAGE_MODEL_CONFIGS.find(m => m.id === modelId)
+  return !!cfg && !cfg.isUpscaler && !cfg.isLocalModel && !cfg.isCustomFlux
+}
+
+function defaultPromptTab(model: ImageModelConfig): PromptTab {
+  return {
+    id: newTabId(),
+    modelId: model.isCustomFlux ? "nano-banana-pro-2" : model.id,
+    prompt: "",
+    aspectRatio: model.aspectRatios[0],
+    quality: "2k",
+    outputFormat: "png",
+    imageCount: 1,
+  }
+}
+
+function sanitizePromptTabsState(raw: unknown): PromptTabsState | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  if (!Array.isArray(r.tabs)) return null
+  const tabs: PromptTab[] = []
+  for (const t of r.tabs as unknown[]) {
+    if (tabs.length >= MAX_PROMPT_TABS) break
+    if (!t || typeof t !== "object") continue
+    const o = t as Record<string, unknown>
+    if (typeof o.id !== "string" || !o.id) continue
+    const cfg = IMAGE_MODEL_CONFIGS.find(m => m.id === o.modelId && !m.isCustomFlux)
+    tabs.push({
+      id: o.id,
+      name: typeof o.name === "string" && o.name.trim() ? o.name.trim().slice(0, 20) : undefined,
+      modelId: cfg ? cfg.id : "nano-banana-pro-2",
+      prompt: typeof o.prompt === "string" ? o.prompt.slice(0, MAX_TAB_PROMPT_LEN) : "",
+      aspectRatio: typeof o.aspectRatio === "string" ? o.aspectRatio : "1:1",
+      quality: typeof o.quality === "string" ? o.quality : "2k",
+      outputFormat: o.outputFormat === "jpeg" || o.outputFormat === "webp" ? o.outputFormat : "png",
+      imageCount: Math.min(Math.max(1, Number(o.imageCount) || 1), 4),
+      seedreamSafetyChecker: o.seedreamSafetyChecker === true || undefined,
+      wanSafetyChecker: o.wanSafetyChecker === true || undefined,
+      fluxDevSafetyChecker: o.fluxDevSafetyChecker === true || undefined,
+    })
+  }
+  if (tabs.length === 0) return null
+  const activeTabId = tabs.some(t => t.id === r.activeTabId) ? (r.activeTabId as string) : tabs[0].id
+  // Pin defaults to ON: when no valid pin is stored, pin the active tab
+  // (or the first pinnable one) so Quick Generate is discoverable out of the box.
+  let pinnedTabId = tabs.some(t => t.id === r.pinnedTabId) ? (r.pinnedTabId as string) : null
+  if (!pinnedTabId) {
+    const activeTab = tabs.find(t => t.id === activeTabId)
+    pinnedTabId = activeTab && isPinnableModelId(activeTab.modelId)
+      ? activeTab.id
+      : tabs.find(t => isPinnableModelId(t.modelId))?.id ?? null
+  }
+  return { version: 1, tabs, activeTabId, pinnedTabId, updatedAt: Number(r.updatedAt) || 0 }
 }
 
 function copyToClipboard(text: string): Promise<void> {
@@ -1057,6 +1145,16 @@ const arHeightWeight = (ar?: string): number => {
   const [w, h] = ar.replace(/x/i, ":").split(":").map(parseFloat)
   return w > 0 && h > 0 ? h / w : 1
 }
+// Small thumbnail for reference-image tiles via the Next image optimizer (CDN-cached,
+// ~15KB webp instead of the full 1920px original). Ref grids can show 60+ images at
+// once — full originals decode to ~15MB each and blank out iPad Safari. Data URLs
+// (transient, pre-upload) pass through untouched.
+function refTileThumb(url: string, w: 128 | 256 = 256): string {
+  // w must be one of Next's configured image sizes and q must be 75 — Vercel's
+  // optimizer 400s anything else (verified against prod)
+  return url.startsWith("https://") ? `/_next/image?url=${encodeURIComponent(url)}&w=${w}&q=75` : url
+}
+
 // Deterministic shortest-column packing: assign each item, in order, to the currently
 // shortest column. Because a given item's placement depends only on the items before it,
 // appending new items never moves existing ones (no reflow/jump), and the first row fills
@@ -2423,7 +2521,11 @@ function RefDropdown({
       // The ref editor modal is portaled to document.body, so clicks inside it
       // register as "outside" the dropdown — don't close the dropdown under it
       if (editingImage) return
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      const el = e.target as HTMLElement
+      // Firing a generation shouldn't collapse the refs panel — users keep it
+      // open to cycle reference images between runs
+      if (el.closest?.("[data-keep-refs-open]")) return
+      if (ref.current && !ref.current.contains(el)) {
         if (open) onToggle()
       }
     }
@@ -2837,7 +2939,9 @@ function RefDropdown({
                             : "border-transparent hover:border-white/30"
                         }`}
                       >
-                        <img src={img.url} alt="" loading="lazy" className={`w-full h-full object-cover transition-opacity ${isSelectedForDelete ? "opacity-60" : ""}`} />
+                        {/* Eager small thumbs: loading="lazy" never fires in this nested
+                            scroller on iPad Safari, and the optimizer keeps them tiny */}
+                        <img src={refTileThumb(img.url)} alt="" decoding="async" className={`w-full h-full object-cover transition-opacity ${isSelectedForDelete ? "opacity-60" : ""}`} />
                         {/* Edit hint overlay (edit mode) */}
                         {editMode && (
                           <div className="absolute inset-0 rounded-md bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
@@ -4965,6 +5069,9 @@ function ImageGrid({
   // Cursor for keyset pagination of the my-images feed — constant-speed at any depth
   const cursorRef = useRef<{ before: string; beforeId: number } | null>(null)
   const hasMoreRef = useRef(true)
+  // Sticky column assignment for pending/fresh tiles woven into the masonry tops —
+  // keyed by tile key so a finishing generation stays in its spinner's column
+  const headColMapRef = useRef(new Map<string, number>())
   const pageLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
   // Bumped whenever the filter set changes — in-flight responses from the old
   // filter set are discarded instead of being appended to the fresh list
@@ -5124,7 +5231,7 @@ function ImageGrid({
         // in their own pinned strip above the masonry, because shortest-column
         // packing re-shuffles every tile when items are PREPENDED — without the
         // split, each new generation visually rebuilt the whole feed.
-        const headNodes: { weight: number; node: ReactNode }[] = []
+        const headNodes: { weight: number; node: ReactNode; key: string }[] = []
         const nodes: { weight: number; node: ReactNode }[] = []
 
         // Pending + fresh (top of feed) — only in the normal (non-admin, non-hidden) view
@@ -5137,13 +5244,13 @@ function ImageGrid({
                     ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
                     : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
               : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
-            headNodes.push({ weight: 1, node })
+            headNodes.push({ weight: 1, node, key: slot.slotId })
           })
           freshImages.forEach((img) => {
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
-            headNodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
+            headNodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node, key: `fresh-${img.id}` })
           })
         }
 
@@ -5179,25 +5286,41 @@ function ImageGrid({
         }
 
         // Masonry "Rows": JS shortest-column packing — left-to-right, and tiles never
-        // move as more load in (append-only is stable). Pending/fresh render in a
-        // pinned grid strip ABOVE the masonry so new generations slot in at the top
-        // without redistributing (= visually rebuilding) the whole feed.
+        // move as more load in (append-only is stable). Pending/fresh tiles are WOVEN
+        // into the tops of the columns with sticky per-tile column assignments:
+        // prepending into one column only pushes that column down, so new generations
+        // land in masonry style without redistributing (= visually rebuilding) the
+        // feed, and a finishing generation reuses its spinner's freed column.
         if (fullSize && fullSizeLayout === "masonry" && masonryMode === "rows") {
-          const columns = distributeMasonry(nodes, cols ?? autoCols)
+          const n = cols ?? autoCols
+          const columns = distributeMasonry(nodes, n)
+          const colMap = headColMapRef.current
+          const liveKeys = new Set(headNodes.map(h => h.key))
+          for (const k of Array.from(colMap.keys())) if (!liveKeys.has(k)) colMap.delete(k)
+          // Count live tiles already holding a column, then hand new tiles the
+          // least-occupied column (freed columns get reused first)
+          const counts = new Array(n).fill(0)
+          colMap.forEach(c => { if (c < n) counts[c]++ })
+          headNodes.forEach(h => {
+            let c = colMap.get(h.key)
+            if (c === undefined || c >= n) {
+              c = 0
+              for (let i = 1; i < n; i++) if (counts[i] < counts[c]) c = i
+              colMap.set(h.key, c)
+              counts[c]++
+            }
+          })
+          for (let i = headNodes.length - 1; i >= 0; i--) {
+            const c = colMap.get(headNodes[i].key)!
+            columns[c] = [headNodes[i], ...columns[c]]
+          }
           return (
-            <div>
-              {headNodes.length > 0 && (
-                <div className={`grid gap-2 items-start mb-2 ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
-                  {headNodes.map(it => it.node)}
+            <div className="flex gap-2 items-start">
+              {columns.map((colItems, i) => (
+                <div key={i} className="flex-1 min-w-0 flex flex-col gap-2">
+                  {colItems.map(it => it.node)}
                 </div>
-              )}
-              <div className="flex gap-2 items-start">
-                {columns.map((colItems, i) => (
-                  <div key={i} className="flex-1 min-w-0 flex flex-col gap-2">
-                    {colItems.map(it => it.node)}
-                  </div>
-                ))}
-              </div>
+              ))}
             </div>
           )
         }
@@ -8254,7 +8377,7 @@ function CustomFluxPanel({
                 {activeRefImages.slice(0, 3).map((img, i) => (
                   <div key={img.id} className="relative w-14 h-14 rounded-md overflow-hidden border border-teal-500/30">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.url} alt="" className="w-full h-full object-cover" />
+                    <img src={refTileThumb(img.url, 128)} alt="" className="w-full h-full object-cover" />
                     {i === 0 && activeRefImages.length > 3 && (
                       <span className="absolute bottom-0 right-0 text-[9px] bg-black/70 text-teal-300 px-1">+{activeRefImages.length - 3}</span>
                     )}
@@ -8789,6 +8912,25 @@ function PromptBox({
   const [seedreamSafetyChecker, setSeedreamSafetyChecker] = useState(false)
   const [wanSafetyChecker, setWanSafetyChecker] = useState(false)
   const [fluxDevSafetyChecker, setFluxDevSafetyChecker] = useState(false)
+  // --- Prompt tabs ---
+  const [tabs, setTabs] = useState<PromptTab[]>([])            // empty until restore
+  const [activeTabId, setActiveTabId] = useState<string>("")
+  const [pinnedTabId, setPinnedTabId] = useState<string | null>(null)
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState("")
+  const tabsRestoredRef = useRef(false)        // gate: no sync/persist until local restore ran
+  const tabsServerSyncedRef = useRef<number | null>(null)
+  const tabSwitchRef = useRef(false)           // suppress model-change resets during a tab switch
+  const tabsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const tabsDirtyRef = useRef(false)
+  const tabsStateRef = useRef<PromptTabsState | null>(null)
+  // Restores/adoptions must not stamp a fresh updatedAt (it would make this device
+  // always "newer" and break cross-device reconciliation) — skip that persist run.
+  const tabsPersistSkipRef = useRef(false)
+  const modelRef = useRef(model)
+  useEffect(() => { modelRef.current = model }, [model])
+  const userIdRef = useRef(userId)
+  useEffect(() => { userIdRef.current = userId }, [userId])
   const [showSafetyModal, setShowSafetyModal] = useState(false)
   const [safetyAgeConfirmed, setSafetyAgeConfirmed] = useState(false)
   const [safetyConfirmCallback, setSafetyConfirmCallback] = useState<(() => void) | null>(null)
@@ -8911,18 +9053,68 @@ function PromptBox({
     setSelectedLocalCheckpoint(filtered.length > 0 ? filtered[filtered.length - 1].path : '')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.id])
-  // Restore saved prompt state after mount to avoid SSR/client hydration mismatch
+  // Restore prompt tabs after mount (avoids SSR/client hydration mismatch).
+  // Deliberately does NOT push the tab's model upward — the parent's pv2-settings
+  // restore runs after this and is authoritative on cold load; on this device the
+  // two were always saved together so they agree, and the sync effect self-heals
+  // any divergence by writing the restored model into the active tab.
   useEffect(() => {
-    try {
-      const s = JSON.parse(sessionStorage.getItem(PROMPT_STORAGE_KEY) || "{}")
-      if (s.prompt) setPrompt(s.prompt)
-      if (s.aspectRatio) setAspectRatio(s.aspectRatio as AspectRatio)
-      if (s.quality) setQuality(s.quality as Quality)
-      if (s.outputFormat) setOutputFormat(s.outputFormat)
-      if (s.imageCount) setImageCount(Math.min(Math.max(1, s.imageCount), model.maxImages ?? 1))
-    } catch {}
+    let restored: PromptTabsState | null = null
+    try { restored = sanitizePromptTabsState(JSON.parse(localStorage.getItem(PROMPT_TABS_LS_KEY) || "null")) } catch {}
+    if (restored) {
+      adoptTabsState(restored)
+      const at = restored.tabs.find(t => t.id === restored!.activeTabId)!
+      applyTabToLiveStates(at)
+      // Parent restoring the same model must not reset the tab's imageCount
+      prevModelIdRef.current = at.modelId
+    } else {
+      // One-time migration from the legacy single-config sessionStorage key
+      let legacy: Record<string, unknown> = {}
+      try { legacy = JSON.parse(sessionStorage.getItem(PROMPT_STORAGE_KEY) || "{}") } catch {}
+      const seed: PromptTab = {
+        ...defaultPromptTab(model),
+        prompt: typeof legacy.prompt === "string" ? legacy.prompt.slice(0, MAX_TAB_PROMPT_LEN) : "",
+        aspectRatio: typeof legacy.aspectRatio === "string" ? legacy.aspectRatio : model.aspectRatios[0],
+        quality: typeof legacy.quality === "string" ? legacy.quality : "2k",
+        outputFormat: legacy.outputFormat === "jpeg" || legacy.outputFormat === "webp" ? legacy.outputFormat : "png",
+        imageCount: Math.min(Math.max(1, Number(legacy.imageCount) || 1), model.maxImages ?? 1),
+      }
+      // updatedAt 0 so a real server copy always wins the reconcile.
+      // Pin defaults ON so Quick Generate is visible from the start.
+      adoptTabsState({ version: 1, tabs: [seed], activeTabId: seed.id, pinnedTabId: isPinnableModelId(seed.modelId) ? seed.id : null, updatedAt: 0 })
+      applyTabToLiveStates(seed, model)
+      try { sessionStorage.removeItem(PROMPT_STORAGE_KEY) } catch {}
+    }
+    tabsRestoredRef.current = true
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Server restore + reconcile (account-scoped tabs, synced across devices)
+  useEffect(() => {
+    if (!userId || tabsServerSyncedRef.current === userId) return
+    tabsServerSyncedRef.current = userId
+    fetch("/api/user/preferences")
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data) return
+        const server = sanitizePromptTabsState(data.preferences?.promptTabs)
+        if (!server) return                                  // nothing on the server yet
+        const local = tabsStateRef.current
+        if (local && local.updatedAt >= server.updatedAt) return  // local newer — keep
+        adoptTabsState(server)
+        const at = server.tabs.find(t => t.id === server.activeTabId)
+        if (at) {
+          const cfg = IMAGE_MODEL_CONFIGS.find(m => m.id === at.modelId)
+          applyTabToLiveStates(at, cfg)
+          if (cfg && cfg.id !== modelRef.current.id && !cfg.isCustomFlux) {
+            tabSwitchRef.current = true
+            onModelChange(cfg)
+          }
+        }
+      })
+      .catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
   const [showPresets, setShowPresets] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [showRefConsent, setShowRefConsent] = useState(false)
@@ -8949,19 +9141,171 @@ function PromptBox({
     onUploadRef(items)
   }
 
-  // Save prompt box settings whenever they change
+  // Mirror the live composer state into the active tab on every change
   useEffect(() => {
+    if (!tabsRestoredRef.current || !activeTabId || model.isCustomFlux) return
+    setTabs(prev => {
+      const i = prev.findIndex(t => t.id === activeTabId)
+      if (i === -1) return prev
+      const t = prev[i]
+      if (t.modelId === model.id && t.prompt === prompt && t.aspectRatio === aspectRatio &&
+          t.quality === quality && t.outputFormat === outputFormat && t.imageCount === imageCount &&
+          !!t.seedreamSafetyChecker === seedreamSafetyChecker && !!t.wanSafetyChecker === wanSafetyChecker &&
+          !!t.fluxDevSafetyChecker === fluxDevSafetyChecker) return prev
+      const next = [...prev]
+      next[i] = {
+        ...t, modelId: model.id, prompt, aspectRatio, quality, outputFormat, imageCount,
+        seedreamSafetyChecker: seedreamSafetyChecker || undefined,
+        wanSafetyChecker: wanSafetyChecker || undefined,
+        fluxDevSafetyChecker: fluxDevSafetyChecker || undefined,
+      }
+      return next
+    })
+  }, [prompt, aspectRatio, quality, outputFormat, imageCount, model.id,
+      seedreamSafetyChecker, wanSafetyChecker, fluxDevSafetyChecker, activeTabId])
+
+  // Persist tabs: synchronous localStorage write + debounced account-scoped save
+  useEffect(() => {
+    if (!tabsRestoredRef.current || tabs.length === 0 || !activeTabId) return
+    if (tabsPersistSkipRef.current) { tabsPersistSkipRef.current = false; return }
+    const snapshot: PromptTabsState = { version: 1, tabs, activeTabId, pinnedTabId, updatedAt: Date.now() }
+    tabsStateRef.current = snapshot
+    try { localStorage.setItem(PROMPT_TABS_LS_KEY, JSON.stringify(snapshot)) } catch {}
+    if (!userIdRef.current) return
+    tabsDirtyRef.current = true
+    if (tabsSaveTimer.current) clearTimeout(tabsSaveTimer.current)
+    tabsSaveTimer.current = setTimeout(() => flushTabsToServer(), 1200)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeTabId, pinnedTabId])
+
+  const flushTabsToServer = useCallback((keepalive = false) => {
+    if (!tabsDirtyRef.current || !tabsStateRef.current || !userIdRef.current) return
+    tabsDirtyRef.current = false
+    if (tabsSaveTimer.current) { clearTimeout(tabsSaveTimer.current); tabsSaveTimer.current = null }
     try {
-      sessionStorage.setItem(PROMPT_STORAGE_KEY, JSON.stringify({ prompt, aspectRatio, quality, outputFormat, imageCount }))
+      fetch("/api/user/preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ promptTabs: tabsStateRef.current }),
+        keepalive,
+      }).catch(() => {})
     } catch {}
-  }, [prompt, aspectRatio, quality, outputFormat, imageCount])
+  }, [])
+
+  // Flush pending tab saves when the page hides or PromptBox unmounts (CustomFlux swap)
+  useEffect(() => {
+    const onHide = () => flushTabsToServer(true)
+    const onVis = () => { if (document.visibilityState === "hidden") flushTabsToServer(true) }
+    window.addEventListener("pagehide", onHide)
+    document.addEventListener("visibilitychange", onVis)
+    return () => {
+      window.removeEventListener("pagehide", onHide)
+      document.removeEventListener("visibilitychange", onVis)
+      flushTabsToServer(true)
+    }
+  }, [flushTabsToServer])
+
+  // Adopt a full tabs snapshot (restore/migration/server reconcile) without
+  // bumping updatedAt — see tabsPersistSkipRef.
+  function adoptTabsState(s: PromptTabsState) {
+    tabsPersistSkipRef.current = true
+    tabsStateRef.current = s
+    try { localStorage.setItem(PROMPT_TABS_LS_KEY, JSON.stringify(s)) } catch {}
+    setTabs(s.tabs)
+    setActiveTabId(s.activeTabId)
+    setPinnedTabId(s.pinnedTabId)
+  }
+
+  // Apply a tab's config to the live composer state, validating against its model
+  function applyTabToLiveStates(t: PromptTab, cfgIn?: ImageModelConfig) {
+    const m = cfgIn ?? IMAGE_MODEL_CONFIGS.find(x => x.id === t.modelId) ?? model
+    setPrompt(t.prompt)
+    setAspectRatio(((m.aspectRatios as string[]).includes(t.aspectRatio) ? t.aspectRatio : m.aspectRatios[0]) as AspectRatio)
+    const qs: Quality[] = m.qualityOptions ?? (["2k", "4k"] as Quality[])
+    setQuality(qs.includes(t.quality as Quality) ? (t.quality as Quality) : qs[0])
+    setOutputFormat(t.outputFormat)
+    setImageCount(Math.min(Math.max(1, t.imageCount), m.maxImages ?? 1))
+    setSeedreamSafetyChecker(t.seedreamSafetyChecker ?? false)
+    setWanSafetyChecker(t.wanSafetyChecker ?? false)
+    setFluxDevSafetyChecker(t.fluxDevSafetyChecker ?? false)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px" }
+    })
+  }
+
+  const handleTabSwitch = (id: string) => {
+    if (id === activeTabId) return
+    const t = tabs.find(x => x.id === id)
+    if (!t) return
+    const cfg = IMAGE_MODEL_CONFIGS.find(m => m.id === t.modelId)
+    setActiveTabId(id)
+    applyTabToLiveStates(t, cfg)
+    if (cfg && cfg.id !== model.id && !cfg.isCustomFlux) {
+      tabSwitchRef.current = true
+      onModelChange(cfg)
+    }
+    setTimeout(() => flushTabsToServer(), 0)
+  }
+
+  const handleAddTab = () => {
+    if (tabs.length >= MAX_PROMPT_TABS) return
+    const src = tabs.find(t => t.id === activeTabId)
+    const nt: PromptTab = { ...(src ?? defaultPromptTab(model)), id: newTabId(), name: undefined }
+    setTabs(prev => (prev.length >= MAX_PROMPT_TABS ? prev : [...prev, nt]))
+    setActiveTabId(nt.id)
+    // Clone of the active tab — live composer state already matches
+  }
+
+  const handleCloseTab = (id: string) => {
+    if (tabs.length <= 1) return
+    const idx = tabs.findIndex(t => t.id === id)
+    if (idx === -1) return
+    const next = tabs.filter(t => t.id !== id)
+    setTabs(next)
+    if (pinnedTabId === id) {
+      // Pin defaults ON — transfer it rather than leaving nothing pinned
+      const nb = next[Math.max(0, idx - 1)]
+      setPinnedTabId(isPinnableModelId(nb.modelId) ? nb.id : next.find(t => isPinnableModelId(t.modelId))?.id ?? null)
+    }
+    if (activeTabId === id) {
+      const neighbor = next[Math.max(0, idx - 1)]
+      const cfg = IMAGE_MODEL_CONFIGS.find(m => m.id === neighbor.modelId)
+      setActiveTabId(neighbor.id)
+      applyTabToLiveStates(neighbor, cfg)
+      if (cfg && cfg.id !== model.id && !cfg.isCustomFlux) {
+        tabSwitchRef.current = true
+        onModelChange(cfg)
+      }
+    }
+    setTimeout(() => flushTabsToServer(), 0)
+  }
+
+  const handleTogglePin = (id: string) => {
+    if (pinnedTabId !== id) {
+      const t = tabs.find(x => x.id === id)
+      const cfg = t && IMAGE_MODEL_CONFIGS.find(m => m.id === t.modelId)
+      if (!cfg || cfg.isUpscaler || cfg.isLocalModel || cfg.isCustomFlux) return
+    }
+    setPinnedTabId(p => (p === id ? null : id))
+    setTimeout(() => flushTabsToServer(), 0)
+  }
+
+  const beginRenameTab = (t: PromptTab) => { setRenamingTabId(t.id); setRenameDraft(t.name ?? "") }
+  const commitRenameTab = () => {
+    if (!renamingTabId) return
+    const name = renameDraft.trim().slice(0, 20)
+    setTabs(prev => prev.map(t => (t.id === renamingTabId ? { ...t, name: name || undefined } : t)))
+    setRenamingTabId(null)
+  }
 
   // Reset imageCount to 1 when model changes (avoids stale count from a previous model inflating the price)
   const prevModelIdRef = useRef(model.id)
   useEffect(() => {
     if (prevModelIdRef.current !== model.id) {
       prevModelIdRef.current = model.id
-      setImageCount(1)
+      // Tab switches already applied the tab's own (validated) count
+      if (!tabSwitchRef.current) setImageCount(1)
     }
   }, [model.id])
 
@@ -9005,8 +9349,45 @@ function PromptBox({
     ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint) && hasEnoughTickets
     : !isGenerationMaintenance && !!userId && prompt.trim().length > 0 && !generating && !needsRefImage && !queueFull && hasEnoughTickets
 
-  const handleGenerate = async () => {
-    if (!canGenerate) return
+  // --- Quick Generate (pinned tab) ---
+  const pinnedTab = pinnedTabId ? tabs.find(t => t.id === pinnedTabId) ?? null : null
+  const pinnedModel = pinnedTab ? IMAGE_MODEL_CONFIGS.find(m => m.id === pinnedTab.modelId) ?? null : null
+  const pinnedRunnable = !!pinnedModel && !pinnedModel.isUpscaler && !pinnedModel.isLocalModel && !pinnedModel.isCustomFlux
+  const pinnedImageCount = pinnedTab && pinnedModel
+    ? Math.min(Math.max(1, pinnedTab.imageCount), pinnedModel.maxImages ?? 1)
+    : 1
+  const pinnedCost = pinnedRunnable && pinnedTab && pinnedModel
+    ? calcTicketCost(pinnedModel.id, pinnedTab.quality as Quality, pinnedTab.aspectRatio as AspectRatio, false, activeRefImages.length > 0)
+      * (pinnedModel.maxImages ? pinnedImageCount : 1)
+    : 0
+  const pinnedSlotsNeeded = pinnedRunnable && pinnedModel
+    ? ((pinnedModel.isFal || pinnedModel.id === "nano-banana-pro-2" || pinnedModel.id === "gpt-image-2") ? pinnedImageCount : 1)
+    : 0
+  const canQuickGenerate = pinnedRunnable && !!pinnedTab && !!pinnedModel
+    && !isGenerationMaintenance && !!userId && !generating
+    && pinnedTab.prompt.trim().length > 0
+    && !(pinnedModel.requiresReferenceImage && activeRefImages.length === 0)
+    && activeJobCount + pinnedSlotsNeeded <= maxConcurrent
+    && (isAdminAccount || ticketBalance >= pinnedCost)
+
+  // Core generation pipeline. The destructured config names shadow the component
+  // state of the same names, so every model-specific branch below reads from the
+  // passed config — normal Generate passes current state, Quick Generate passes
+  // the pinned tab's config.
+  const runGenerate = async (cfg: {
+    model: ImageModelConfig
+    prompt: string
+    aspectRatio: AspectRatio
+    quality: Quality
+    outputFormat: "png" | "jpeg" | "webp"
+    imageCount: number
+    seedreamSafetyChecker: boolean
+    wanSafetyChecker: boolean
+    fluxDevSafetyChecker: boolean
+    selectedLoraUrl: string | null
+  }) => {
+    const { model, prompt, aspectRatio, quality, outputFormat, imageCount,
+            seedreamSafetyChecker, wanSafetyChecker, fluxDevSafetyChecker, selectedLoraUrl } = cfg
     setGenerating(true)
     const selectedLoraJob = loraJobs.find(j => j.loraUrl === selectedLoraUrl)
     const triggerWord = selectedLoraJob?.triggerWord?.trim()
@@ -9594,20 +9975,55 @@ function PromptBox({
     }
   }
 
+  const handleGenerate = async () => {
+    if (!canGenerate) return
+    return runGenerate({
+      model, prompt, aspectRatio, quality, outputFormat, imageCount,
+      seedreamSafetyChecker, wanSafetyChecker, fluxDevSafetyChecker, selectedLoraUrl,
+    })
+  }
+
+  // Fire the PINNED tab's config with the CURRENTLY selected reference images —
+  // the pinned tab does not need to be the active one.
+  const handleQuickGenerate = async () => {
+    if (!canQuickGenerate || !pinnedTab || !pinnedModel) return
+    const m = pinnedModel
+    const qs: Quality[] = m.qualityOptions ?? (["2k", "4k"] as Quality[])
+    return runGenerate({
+      model: m,
+      prompt: pinnedTab.prompt,
+      aspectRatio: ((m.aspectRatios as string[]).includes(pinnedTab.aspectRatio)
+        ? pinnedTab.aspectRatio : m.aspectRatios[0]) as AspectRatio,
+      quality: qs.includes(pinnedTab.quality as Quality) ? (pinnedTab.quality as Quality) : qs[0],
+      outputFormat: pinnedTab.outputFormat,
+      imageCount: pinnedImageCount,
+      seedreamSafetyChecker: pinnedTab.seedreamSafetyChecker ?? false,
+      wanSafetyChecker: pinnedTab.wanSafetyChecker ?? false,
+      fluxDevSafetyChecker: pinnedTab.fluxDevSafetyChecker ?? false,
+      selectedLoraUrl: null, // LoRA is not part of a tab — never attach the live LoRA to a quick run
+    })
+  }
+
   const handleLoadPreset = (urls: string[]) => onLoadPreset(urls)
 
   // Reset aspect ratio, quality, and image count when model changes
   useEffect(() => {
-    if (!model.aspectRatios.includes(aspectRatio)) {
-      setAspectRatio(model.aspectRatios[0])
+    // Tab switches already validated these against the tab's model — don't clobber.
+    // This effect is declared after the imageCount reset effect, so clearing the
+    // flag here covers both (React runs effects in declaration order).
+    if (!tabSwitchRef.current) {
+      if (!model.aspectRatios.includes(aspectRatio)) {
+        setAspectRatio(model.aspectRatios[0])
+      }
+      const availableQualities = model.qualityOptions ?? (["2k", "4k"] as Quality[])
+      if (!availableQualities.includes(quality)) {
+        setQuality(availableQualities[0])
+      }
+      if (imageCount > (model.maxImages ?? 1)) {
+        setImageCount(1)
+      }
     }
-    const availableQualities = model.qualityOptions ?? (["2k", "4k"] as Quality[])
-    if (!availableQualities.includes(quality)) {
-      setQuality(availableQualities[0])
-    }
-    if (imageCount > (model.maxImages ?? 1)) {
-      setImageCount(1)
-    }
+    tabSwitchRef.current = false
   }, [model])
 
   const CUSTOM_LORAS_KEY = "portal-v2-custom-loras"
@@ -9754,7 +10170,7 @@ function PromptBox({
               <div key={img.id} className="relative shrink-0 w-14 h-14 rounded-lg overflow-hidden border border-cyan-500/30 group cursor-pointer"
                 onClick={() => setEditingRefImage(img)}
                 title="Click to edit">
-                <img src={img.url} alt="reference" className="w-full h-full object-cover" />
+                <img src={refTileThumb(img.url, 128)} alt="reference" className="w-full h-full object-cover" />
                 {/* Edit hint overlay */}
                 <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                   <Pencil size={14} className="text-white" />
@@ -9800,6 +10216,81 @@ function PromptBox({
         {/* Prompt card */}
         <div className="rounded-2xl border border-white/10 bg-slate-900/80 backdrop-blur-md shadow-2xl">
 
+          {/* Prompt tabs — first row INSIDE the card so popups (model picker etc.)
+              naturally stack above them. Chips share the row width (flex-1 + truncate)
+              so all 6 always fit; controls stay visible for touch devices. */}
+          {tabs.length > 0 && (
+            <div className="flex items-center gap-1 px-2 pt-2">
+              {tabs.map(t => {
+                const active = t.id === activeTabId
+                const pinned = t.id === pinnedTabId
+                const cfg = IMAGE_MODEL_CONFIGS.find(m => m.id === t.modelId)
+                const pinnable = !!cfg && !cfg.isUpscaler && !cfg.isLocalModel && !cfg.isCustomFlux
+                const label = t.name || cfg?.name || "Tab"
+                return (
+                  <div
+                    key={t.id}
+                    className={`flex items-center gap-0.5 min-w-0 flex-1 max-w-[150px] pl-2 pr-1 py-1 rounded-md border text-[11px] cursor-pointer transition-colors ${
+                      active
+                        ? "border-cyan-500/40 bg-cyan-500/10 text-white"
+                        : "border-white/10 bg-white/[0.05] text-slate-400 hover:text-white hover:bg-white/10"
+                    }`}
+                    onClick={() => handleTabSwitch(t.id)}
+                    onDoubleClick={() => beginRenameTab(t)}
+                    title={t.name ? `${t.name} · ${cfg?.name ?? ""}` : cfg?.name}
+                  >
+                    {renamingTabId === t.id ? (
+                      <input
+                        autoFocus
+                        value={renameDraft}
+                        onChange={e => setRenameDraft(e.target.value.slice(0, 20))}
+                        onBlur={commitRenameTab}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") commitRenameTab()
+                          if (e.key === "Escape") setRenamingTabId(null)
+                          e.stopPropagation()
+                        }}
+                        onClick={e => e.stopPropagation()}
+                        className="w-full min-w-0 bg-transparent text-[11px] text-white focus:outline-none"
+                      />
+                    ) : (
+                      <span className="truncate flex-1">{label}</span>
+                    )}
+                    {pinnable && (
+                      <button
+                        onClick={e => { e.stopPropagation(); handleTogglePin(t.id) }}
+                        title={pinned ? "Unpin from Quick Generate" : "Pin for Quick Generate"}
+                        className={`shrink-0 p-0.5 rounded hover:bg-white/10 ${
+                          pinned ? "text-amber-400" : "text-slate-600 hover:text-amber-300"
+                        }`}
+                      >
+                        <Pin size={9} className={pinned ? "fill-amber-400/40" : ""} />
+                      </button>
+                    )}
+                    {tabs.length > 1 && (
+                      <button
+                        onClick={e => { e.stopPropagation(); handleCloseTab(t.id) }}
+                        title="Close tab"
+                        className="shrink-0 p-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-white/10"
+                      >
+                        <X size={9} />
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+              {tabs.length < MAX_PROMPT_TABS && (
+                <button
+                  onClick={handleAddTab}
+                  title="New tab (clones current config)"
+                  className="flex items-center justify-center w-5 h-5 rounded-md border border-white/10 bg-white/[0.05] text-slate-400 hover:text-white hover:bg-white/10 transition-colors shrink-0"
+                >
+                  <Plus size={10} />
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Upscaler source picker — unified for all 5 upscaler models */}
           {model.isUpscaler && (
             <div className="px-4 pt-4 pb-3 space-y-2.5 border-b border-white/5">
@@ -9829,7 +10320,7 @@ function PromptBox({
                         }`}
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={img.url} alt="" className="w-full h-full object-cover" />
+                        <img src={refTileThumb(img.url, 128)} alt="" className="w-full h-full object-cover" />
                         {isUploading && (
                           <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
                             <Loader2 size={14} className="animate-spin text-cyan-400" />
@@ -10710,9 +11201,26 @@ function PromptBox({
               )
             })()}
 
-            {/* Generate button — own row on mobile, pushed right on desktop */}
-            <div className="hidden sm:block sm:flex-1" />
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+            {/* Generate button — own row on mobile; right-aligned on desktop even when the strip wraps */}
+            <div className="flex items-center gap-2 w-full sm:w-auto sm:ml-auto">
+              {pinnedTab && (
+                <button
+                  onClick={handleQuickGenerate}
+                  disabled={!canQuickGenerate}
+                  data-keep-refs-open
+                  title={pinnedRunnable
+                    ? `Quick Generate — ${pinnedTab.name || pinnedModel?.name}: fires the pinned tab's prompt & settings with the current refs (${pinnedCost} tickets)`
+                    : "The pinned tab's model can't quick-generate"}
+                  className={`flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold transition-all shrink-0 ${
+                    canQuickGenerate
+                      ? "bg-amber-500/15 border border-amber-500/40 text-amber-300 hover:bg-amber-500/25"
+                      : "bg-white/5 text-slate-600 border border-white/10 cursor-not-allowed"
+                  }`}
+                >
+                  <Zap size={12} className={canQuickGenerate ? "fill-amber-400/40" : ""} />
+                  <span className="opacity-70">{pinnedCost}</span>
+                </button>
+              )}
               {needsRefImage && !queueFull && (
                 <span className="text-[10px] text-amber-400/80 shrink-0">Requires ≥1 ref image</span>
               )}
@@ -10722,6 +11230,7 @@ function PromptBox({
               <button
                 onClick={handleGenerate}
                 disabled={!canGenerate}
+                data-keep-refs-open
                 className={`flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg text-[12px] font-semibold transition-all flex-1 sm:flex-none ${
                   canGenerate
                     ? "bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black hover:opacity-90"
