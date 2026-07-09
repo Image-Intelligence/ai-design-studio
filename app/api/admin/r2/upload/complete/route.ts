@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server'
 import { S3Client, CompleteMultipartUploadCommand } from '@aws-sdk/client-s3'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 function r2() {
   return new S3Client({

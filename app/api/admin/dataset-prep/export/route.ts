@@ -2,17 +2,13 @@ import path from 'path'
 import fs from 'fs'
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { checkAuth } from '@/lib/admin-auth'
 
 const TEMPLATES_PATH = path.join(process.cwd(), 'AI', 'export-templates.json')
 
 // Module-level cancel flag — reset at the start of each POST
 let _cancelRequested = false
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 interface ExportRule {
   id: string

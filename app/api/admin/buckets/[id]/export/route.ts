@@ -1,12 +1,8 @@
 import { NextResponse } from 'next/server'
 import JSZip from 'jszip'
 import { prisma } from '@/lib/prisma'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 // GET /api/admin/buckets/[id]/export
 // Streams a zip of all images in the bucket plus a .txt caption file for each.

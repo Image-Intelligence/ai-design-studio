@@ -6,12 +6,8 @@ import {
   completeMultipartUpload,
   MULTIPART_CHUNK_SIZE,
 } from '@/lib/r2'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 const PREFIX: Record<string, string> = {
   checkpoint: 'training/checkpoints',

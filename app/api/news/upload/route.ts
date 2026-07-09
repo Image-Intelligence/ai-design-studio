@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { uploadToR2 } from '@/lib/r2'
+import { checkAuth } from '@/lib/admin-auth'
 
 const ALLOWED_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp',
   'video/mp4', 'video/webm', 'video/quicktime', 'video/x-m4v',
 ]
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 export async function POST(req: NextRequest) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

@@ -6,7 +6,8 @@ const ADMIN_EMAILS = new Set(['dirtysecretai@gmail.com', 'promptandprotocol@gmai
 
 async function authOk(req: NextRequest): Promise<boolean> {
   const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
+  // Fail closed: a missing ADMIN_PASSWORD must deny, not allow
+  if (!pass) return false
   if (req.headers.get('x-admin-password') === pass) return true
   const token = req.cookies.get('session')?.value
   if (token) {

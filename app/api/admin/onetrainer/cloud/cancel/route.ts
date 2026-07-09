@@ -1,12 +1,8 @@
 import { NextResponse } from 'next/server'
+import { checkAuth } from '@/lib/admin-auth'
 
 const RUNPOD_API = 'https://api.runpod.ai/v2'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 export async function POST(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

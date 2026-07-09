@@ -1,16 +1,11 @@
 import { NextResponse } from "next/server"
+import { checkAuth } from '@/lib/admin-auth'
 
 const BLOB_TOKEN  = process.env.BLOB_READ_WRITE_TOKEN!
-const ADMIN_PASS  = process.env.ADMIN_PASSWORD
 const BLOB_API    = 'https://blob.vercel-storage.com'
 const HEADERS     = { authorization: `Bearer ${BLOB_TOKEN}`, 'x-api-version': '7' }
 const BATCH_SIZE  = 100   // conservative — matches official Vercel recommendation
 const MAX_RETRIES = 3
-
-function checkAuth(req: Request) {
-  if (!ADMIN_PASS) return true
-  return req.headers.get('x-admin-password') === ADMIN_PASS
-}
 
 async function listBlobs(limit: number, cursor?: string) {
   const params = new URLSearchParams({ limit: String(limit) })

@@ -117,7 +117,11 @@
       "Bash(echo \"prod config POST \\(no header\\): $\\(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"shopEffectsEnabled\":true}' https://prompt-protocol.vercel.app/api/admin/config\\)\")",
       "Bash(echo \"prod config GET \\(public\\):     $\\(curl -s -o /dev/null -w '%{http_code}' https://prompt-protocol.vercel.app/api/admin/config\\)\")",
       "Bash(python -c \"import json,sys; print\\('excluded total:', json.load\\(sys.stdin\\)['pagination']['total']\\)\")",
-      "Bash(node \"C:\\\\Users\\\\Owner\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Owner-Desktop-Website-ai-design-studio\\\\a94f9a63-a68c-4ef6-9479-252aeda272fa\\\\scratchpad\\\\refcheck.mjs\")"
+      "Bash(node \"C:\\\\Users\\\\Owner\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Owner-Desktop-Website-ai-design-studio\\\\a94f9a63-a68c-4ef6-9479-252aeda272fa\\\\scratchpad\\\\refcheck.mjs\")",
+      "Bash(node -e \"require\\('dotenv'\\).config\\({path:'.env.local'}\\);process.stdout.write\\(process.env.ADMIN_PASSWORD||''\\)\")",
+      "Bash(node -e \"const j=require\\(process.env.HOME+'/.claude-tmp-buckets.json'\\);const list=j.buckets||j;console.log\\('first bucket:',list[0]&&list[0].id,list[0]&&list[0].name\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);const m=fs.readFileSync\\('.env.local','utf8'\\).match\\(/^ADMIN_PASSWORD=[\\\\\"']?\\([^\\\\r\\\\n\\\\\"']+\\)/m\\);process.stdout.write\\(m?m[1]:''\\)\")",
+      "Bash(node \"C:\\\\Users\\\\Owner\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Owner-Desktop-Website-ai-design-studio\\\\a94f9a63-a68c-4ef6-9479-252aeda272fa\\\\scratchpad\\\\harden-admin-auth.js\")"
     ]
   }
 }

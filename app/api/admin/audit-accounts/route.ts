@@ -1,12 +1,8 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { hashPassword } from '@/lib/auth'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 function generateUsername(): string {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789'

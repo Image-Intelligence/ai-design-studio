@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prismaDirectDb } from '@/lib/prisma'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 // ONE-TIME migration route — delete this file after running it once.
 export async function POST(req: Request) {

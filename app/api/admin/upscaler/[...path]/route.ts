@@ -1,13 +1,9 @@
 // Proxy: /api/admin/upscaler/<anything> → http://localhost:8766/<anything>
 import { NextResponse } from 'next/server'
+import { checkAuth } from '@/lib/admin-auth'
 
 const BASE = 'http://localhost:8766'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 async function proxy(req: Request, segments: string[]) {
   const qs   = new URL(req.url).search        // forward query string (?name=..., etc.)

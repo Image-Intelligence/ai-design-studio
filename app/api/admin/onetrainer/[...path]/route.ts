@@ -1,13 +1,9 @@
 // Proxy for all OneTrainer server calls: /api/admin/onetrainer/<anything> → http://localhost:8765/<anything>
 import { NextResponse } from 'next/server'
+import { checkAuth } from '@/lib/admin-auth'
 
 const OT = 'http://localhost:8765'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 async function proxy(req: Request, segments: string[]) {
   const url  = `${OT}/${segments.join('/')}`

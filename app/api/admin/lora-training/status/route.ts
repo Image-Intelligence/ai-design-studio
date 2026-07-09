@@ -4,7 +4,8 @@ import { fal } from '@fal-ai/client'
 
 function authOk(req: NextRequest) {
   const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
+  // Fail closed: a missing ADMIN_PASSWORD must deny, not allow
+  if (!pass) return false
   return req.headers.get('x-admin-password') === pass
 }
 

@@ -1,15 +1,11 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { checkAuth } from '@/lib/admin-auth'
 
 // Admin browser for user reference libraries (dataset page "Reference" mode).
 // Includes soft-cleared refs when includeCleared=true — admins can see
 // everything a user has ever uploaded, even after they "clear" it.
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 export async function GET(request: Request) {
   if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

@@ -1,12 +1,8 @@
 import { NextResponse } from 'next/server'
 import { readdirSync } from 'fs'
 import path from 'path'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 function guessArch(name: string): string {
   const n = name.toLowerCase()

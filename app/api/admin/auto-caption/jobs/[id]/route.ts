@@ -1,11 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { getBaseUrl, autoStartNextQueued } from '../_processor'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 // GET — poll job status + recent results
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {

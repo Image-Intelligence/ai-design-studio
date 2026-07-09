@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { checkAuth } from '@/lib/admin-auth'
 
 
 // GET - Fetch current admin configuration
@@ -25,11 +26,6 @@ export async function GET() {
   }
 }
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 // POST - Update admin configuration
 // GET stays open (many public pages read maintenance flags), but mutations

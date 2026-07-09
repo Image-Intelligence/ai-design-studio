@@ -2,14 +2,10 @@ import { NextResponse } from 'next/server'
 import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
 import http from 'http'
+import { checkAuth } from '@/lib/admin-auth'
 
 let serverProcess: ChildProcess | null = null
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 function ping(): Promise<boolean> {
   return new Promise(resolve => {

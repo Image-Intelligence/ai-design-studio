@@ -1,14 +1,10 @@
 import { NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
+import { checkAuth } from '@/lib/admin-auth'
 
 const TEMPLATES_PATH = path.join(process.cwd(), 'AI', 'export-templates.json')
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 function readTemplates(): unknown[] {
   try {

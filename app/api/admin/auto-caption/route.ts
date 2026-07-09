@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { checkAuth } from '@/lib/admin-auth'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY!
 
@@ -7,11 +8,6 @@ const MODELS = {
   flash: 'gemini-3.1-flash-lite-preview',
 }
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 type ImagePart = { inlineData: { data: string; mimeType: string } }
 type TextPart  = { text: string }

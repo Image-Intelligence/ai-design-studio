@@ -1,12 +1,8 @@
 import { after }  from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { processChunk, getBaseUrl } from '../../_processor'
+import { checkAuth } from '@/lib/admin-auth'
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 // POST — create a new job re-running the same images (skipping already-processed ones)
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {

@@ -1,13 +1,9 @@
 import { NextResponse } from 'next/server'
 import { presignGetUrl } from '@/lib/r2'
+import { checkAuth } from '@/lib/admin-auth'
 
 const PUBLIC_URL = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
 
-function checkAuth(req: Request) {
-  const pass = process.env.ADMIN_PASSWORD
-  if (!pass) return true
-  return req.headers.get('x-admin-password') === pass
-}
 
 // GET /api/admin/onetrainer/cloud/download?key=training/loras/foo.safetensors
 // Returns a public URL (preferred) or 1-hour presigned URL for any R2 key under training/ or inference/
