@@ -34,7 +34,7 @@ export async function GET(
     take: limit,
     include: {
       image: {
-        select: { id: true, imageUrl: true, adminCaption: true, prompt: true, model: true },
+        select: { id: true, imageUrl: true, adminCaption: true, adminTags: true, prompt: true, model: true, referenceImageUrls: true },
       },
     },
   })
@@ -48,13 +48,16 @@ export async function GET(
   const images = rows
     .map(r => r.image)
     .filter(img => img.imageUrl && !/\.(mp4|webm|mov|avi|mkv)$/i.test(img.imageUrl))
-    .map(img => {
-      // Caption: adminCaption first; fall back to prompt only for AI-generated
-      // images (uploads have prompt = filename, useless as a training caption)
-      const isUpload = img.model === '__upload__'
-      const caption = img.adminCaption?.trim() || (!isUpload ? img.prompt.trim() : '')
-      return { id: img.id, url: img.imageUrl, caption, model: img.model }
-    })
+    .map(img => ({
+      id: img.id,
+      url: img.imageUrl,
+      prompt: img.prompt,
+      // adminCaption EXACTLY as stored — null when unset, no prompt fallback
+      adminCaption: img.adminCaption,
+      tags: img.adminTags,
+      model: img.model,
+      referenceImageUrls: img.referenceImageUrls,
+    }))
 
   return NextResponse.json(
     { bucket: { id: bucket.id, name: bucket.name }, images, nextCursor, hasMore },
