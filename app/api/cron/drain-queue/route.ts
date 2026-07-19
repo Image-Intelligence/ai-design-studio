@@ -100,7 +100,31 @@ export async function GET(request: Request) {
       console.log(`[cron-drain] Re-kicked ${stuckAutofillJobs.length} stuck autofill job(s)`)
     }
 
-    return NextResponse.json({ success: true, staleReset, promoted, autofillKicked: stuckAutofillJobs.length })
+    // ── 4. Promote a queued AutoFill job if the queue has stalled ─────────────
+    // Normally a finishing job auto-starts the next queued one, but if a running
+    // job died without triggering that hand-off (crash mid-transition), a full
+    // queue would sit forever with nothing running. If there are queued jobs and
+    // ZERO running jobs, start the oldest queued one. Guarded on running === 0 so
+    // it never runs a second job concurrently (autofill is one-at-a-time; stale
+    // running jobs are handled by the re-kick above).
+    let autofillPromoted = 0
+    const runningAutofill = await prisma.autoFillJob.count({ where: { status: 'running' } })
+    if (runningAutofill === 0) {
+      const nextQueued = await prisma.autoFillJob.findFirst({
+        where:   { status: 'queued' },
+        orderBy: { createdAt: 'asc' },
+        select:  { id: true },
+      })
+      if (nextQueued) {
+        await prisma.autoFillJob.update({ where: { id: nextQueued.id }, data: { status: 'running' } })
+        const baseUrl = getBaseUrl(request)
+        after(async () => { await processChunk(nextQueued.id, baseUrl) })
+        autofillPromoted = 1
+        console.log(`[cron-drain] Promoted stalled queued autofill job ${nextQueued.id}`)
+      }
+    }
+
+    return NextResponse.json({ success: true, staleReset, promoted, autofillKicked: stuckAutofillJobs.length, autofillPromoted })
   } catch (error) {
     console.error('[cron-drain] Error:', error)
     return NextResponse.json({ error: 'Drain failed' }, { status: 500 })

@@ -6,16 +6,42 @@ import { checkAuth } from '@/lib/admin-auth'
 
 export async function GET(req: Request) {
   if (!checkAuth(req)) return new Response('Unauthorized', { status: 401 })
-  const jobs = await prisma.autoFillJob.findMany({
-    where:   { createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
-    orderBy: { createdAt: 'desc' },
-    take:    20,
-    select:  {
-      id: true, status: true, mode: true, modelKey: true, advanced: true,
-      totalCount: true, nextIndex: true, processedCount: true, skippedCount: true, failedCount: true,
-      triggerWord: true, curatorContext: true,
-      createdAt: true, updatedAt: true,
-    },
+  const select = {
+    id: true, status: true, mode: true, modelKey: true, advanced: true,
+    totalCount: true, nextIndex: true, processedCount: true, skippedCount: true, failedCount: true,
+    triggerWord: true, curatorContext: true,
+    createdAt: true, updatedAt: true,
+  } as const
+
+  // ALWAYS return EVERY active job (running/queued/paused) — no take limit and
+  // no age filter. The old `take: 20` truncated to the newest 20 jobs, so a big
+  // queue (e.g. 20 queued) would push the jobs that are actually PROCESSING out
+  // of the response and they'd vanish from the UI after a refresh. Finished
+  // jobs get a small recent tail for history.
+  const [active, finished] = await Promise.all([
+    prisma.autoFillJob.findMany({
+      where:   { status: { in: ['running', 'queued', 'paused'] } },
+      orderBy: { createdAt: 'desc' },
+      take:    500,
+      select,
+    }),
+    prisma.autoFillJob.findMany({
+      where:   { status: { in: ['done', 'cancelled'] }, createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+      orderBy: { createdAt: 'desc' },
+      take:    20,
+      select,
+    }),
+  ])
+
+  // Order for the queue feed: in-progress first (running, then paused), then the
+  // queue in FIFO order (next-to-run first), then finished newest-first.
+  const rank = (s: string) => (s === 'running' ? 0 : s === 'paused' ? 1 : s === 'queued' ? 2 : 3)
+  const jobs = [...active, ...finished].sort((a, b) => {
+    const ra = rank(a.status), rb = rank(b.status)
+    if (ra !== rb) return ra - rb
+    return ra === 3
+      ? b.createdAt.getTime() - a.createdAt.getTime() // finished: newest first
+      : a.createdAt.getTime() - b.createdAt.getTime() // active: oldest first (FIFO / processing order)
   })
   return Response.json({ jobs })
 }
