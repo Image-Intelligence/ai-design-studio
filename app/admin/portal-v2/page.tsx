@@ -9480,8 +9480,22 @@ function PromptBox({
     const slotId = slotIds[0] // alias for single-image paths
 
     try {
-      // Convert ref images to base64
-      const referenceImages = await Promise.all(activeRefImages.map(refImageToBase64))
+      // Convert ref images to base64. Only encode as many as the model actually
+      // uses (the server slices to this anyway) and do it ONE AT A TIME —
+      // decoding many full-res images into <img>+canvas simultaneously blows
+      // iPad Safari's canvas/memory limits and throws a cryptic
+      // "The string did not match the expected pattern." before any job is
+      // created. Per-ref try/catch surfaces exactly which image failed.
+      const maxRefs = model.maxReferenceImages || activeRefImages.length
+      const refsToEncode = activeRefImages.slice(0, maxRefs)
+      const referenceImages: string[] = []
+      for (let ri = 0; ri < refsToEncode.length; ri++) {
+        try {
+          referenceImages.push(await refImageToBase64(refsToEncode[ri]))
+        } catch (e) {
+          throw new Error(`Reference image ${ri + 1} of ${refsToEncode.length} failed to load — ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
 
       // --- SeeDream 5.0 Lite: async FAL queue ---
       if (model.id === "seedream-5-lite") {
