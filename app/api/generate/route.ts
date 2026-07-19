@@ -18,6 +18,23 @@ fal.config({
   credentials: process.env.FAL_KEY
 })
 
+// A reference image arrives either as an https URL (library images — the client
+// sends the URL directly instead of base64-encoding megabytes into <img>+canvas
+// on iPad Safari) or as a base64 data URL (File/pre-upload refs). These
+// normalize both shapes for the various downstream consumers.
+async function refToBuffer(ref: string): Promise<Buffer> {
+  if (/^https?:\/\//i.test(ref)) {
+    const r = await fetch(ref, { signal: AbortSignal.timeout(20_000) })
+    if (!r.ok) throw new Error(`reference fetch ${r.status}`)
+    return Buffer.from(await r.arrayBuffer())
+  }
+  return Buffer.from(ref.split(',')[1] || ref, 'base64')
+}
+async function refToBase64(ref: string): Promise<string> {
+  if (/^https?:\/\//i.test(ref)) return (await refToBuffer(ref)).toString('base64')
+  return ref.split(',')[1] || ref
+}
+
 export async function POST(request: Request) {
   try {
     console.log('=== UNIVERSE SCAN STARTED ===')
@@ -909,18 +926,24 @@ export async function POST(request: Request) {
           const imagesToUpload = referenceImages.slice(0, maxImages)
 
           const imageUrls: string[] = []
-          for (const imageBase64 of imagesToUpload) {
+          for (const ref of imagesToUpload) {
             try {
-              const base64Data = imageBase64.split(',')[1] || imageBase64
-              const imageBuffer = Buffer.from(base64Data, 'base64')
-              const blob = new Blob([imageBuffer], { type: 'image/jpeg' })
+              // Refs arrive either as an https URL (library images — the client
+              // no longer base64-encodes those) or as a base64 data URL.
+              const imageBuffer = await refToBuffer(ref)
+              const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' })
               const uploadedUrl = await fal.storage.upload(blob)
               imageUrls.push(uploadedUrl)
 
-              // Also save to permanent R2 storage for the DB record
-              const refFilename = `reference-${user.id}-${Date.now()}-${imageUrls.length}.jpg`
-              const refUrl = await uploadToR2(refFilename, imageBuffer, 'image/jpeg')
-              permanentReferenceUrls.push(refUrl)
+              // Also save to permanent R2 storage for the DB record. If the ref
+              // was already a permanent https URL, reuse it rather than re-hosting.
+              if (typeof ref === 'string' && /^https?:\/\//i.test(ref)) {
+                permanentReferenceUrls.push(ref)
+              } else {
+                const refFilename = `reference-${user.id}-${Date.now()}-${imageUrls.length}.jpg`
+                const refUrl = await uploadToR2(refFilename, imageBuffer, 'image/jpeg')
+                permanentReferenceUrls.push(refUrl)
+              }
             } catch (uploadError) {
               console.error('Failed to upload reference image:', uploadError)
             }
@@ -1172,8 +1195,8 @@ export async function POST(request: Request) {
       // Add reference images first if provided
       if (referenceImages && referenceImages.length > 0) {
         console.log(`Adding ${referenceImages.length} reference images`)
-        for (const imageBase64 of referenceImages) {
-          const base64Data = imageBase64.split(',')[1] || imageBase64
+        for (const ref of referenceImages) {
+          const base64Data = await refToBase64(ref)
           contentParts.push({
             inlineData: {
               mimeType: 'image/jpeg',
@@ -1360,8 +1383,12 @@ export async function POST(request: Request) {
       console.log(`Uploading ${referenceImages.length} reference image(s) to permanent storage...`)
       for (let i = 0; i < referenceImages.length; i++) {
         try {
-          const base64Data = referenceImages[i].split(',')[1] || referenceImages[i]
-          const refBuffer = Buffer.from(base64Data, 'base64')
+          // Already a permanent https URL (library ref) — reuse as-is, no re-host
+          if (/^https?:\/\//i.test(referenceImages[i])) {
+            permanentReferenceUrls.push(referenceImages[i])
+            continue
+          }
+          const refBuffer = await refToBuffer(referenceImages[i])
           const refFilename = `reference-${user.id}-${Date.now()}-${i}.jpg`
 
           const refUrl = await uploadToR2(refFilename, refBuffer, 'image/jpeg')

@@ -9480,18 +9480,24 @@ function PromptBox({
     const slotId = slotIds[0] // alias for single-image paths
 
     try {
-      // Convert ref images to base64. Only encode as many as the model actually
-      // uses (the server slices to this anyway) and do it ONE AT A TIME —
-      // decoding many full-res images into <img>+canvas simultaneously blows
-      // iPad Safari's canvas/memory limits and throws a cryptic
-      // "The string did not match the expected pattern." before any job is
-      // created. Per-ref try/catch surfaces exactly which image failed.
+      // Build the reference list, capped to the model's max (the server slices
+      // to this anyway).
       const maxRefs = model.maxReferenceImages || activeRefImages.length
       const refsToEncode = activeRefImages.slice(0, maxRefs)
       const referenceImages: string[] = []
       for (let ri = 0; ri < refsToEncode.length; ri++) {
+        const ref = refsToEncode[ri]
         try {
-          referenceImages.push(await refImageToBase64(refsToEncode[ri]))
+          // Library refs are already permanent https URLs — pass the URL straight
+          // through and let the server fetch it, instead of decoding megabytes of
+          // base64 into <img>+canvas client-side (iPad Safari throws "The string
+          // did not match the expected pattern." and the body balloons). Only
+          // File-backed / data-URL refs (no permanent URL yet) need base64.
+          if (!ref.file && typeof ref.url === "string" && ref.url.startsWith("https://")) {
+            referenceImages.push(ref.url)
+          } else {
+            referenceImages.push(await refImageToBase64(ref))
+          }
         } catch (e) {
           throw new Error(`Reference image ${ri + 1} of ${refsToEncode.length} failed to load — ${e instanceof Error ? e.message : String(e)}`)
         }
@@ -9947,6 +9953,19 @@ function PromptBox({
         return
       }
 
+      // Robust response reader: some failure modes (huge base64 ref bodies →
+      // 413, proxy/HTML error pages, empty bodies) make res.json() throw the
+      // cryptic Safari "The string did not match the expected pattern." — read
+      // as text first and report the HTTP status + body so the real cause shows.
+      const readGen = async (res: Response): Promise<any> => {
+        const text = await res.text().catch(() => "")
+        try {
+          return text ? JSON.parse(text) : {}
+        } catch {
+          throw new Error(`Server returned a non-JSON response (HTTP ${res.status})${text ? ` — ${text.slice(0, 200)}` : " — empty body"}`)
+        }
+      }
+
       // --- FAL async (NB Pro, SeeDream 4.5, FLUX 2 multi-image) ---
       if (model.isFal && count > 1) {
         // Submit N separate jobs concurrently — each gets its own queue entry and slot
@@ -9957,7 +9976,7 @@ function PromptBox({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}) }),
             })
-            const data = await res.json()
+            const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
             if (data.newBalance !== undefined) onBalanceChange(data.newBalance)
             onUpdatePending(sid, { queueId: data.queueId })
@@ -9973,7 +9992,7 @@ function PromptBox({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}) }),
         })
-        const data = await res.json()
+        const data = await readGen(res)
         if (!res.ok) {
           onUpdatePending(slotId, { status: "failed", error: data.error || "Generation failed" })
           return
