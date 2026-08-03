@@ -4,5 +4,10 @@
       "path": "/api/cron/drain-queue",
       "schedule": "* * * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "backup/recovered-2026-08-02": false
+    }
+  }
 }
