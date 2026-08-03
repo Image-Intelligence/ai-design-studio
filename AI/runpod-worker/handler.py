@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-03-v69'
+HANDLER_VERSION = '2026-08-04-v70'
 
 import importlib
 
@@ -1178,6 +1178,13 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     steps           = int(inp.get('steps', 20))
     guidance        = float(inp.get('guidance', 3.5))
     seed            = inp.get('seed')
+    # Sampler = sigma schedule variant for the FlowMatch Euler scheduler
+    sampler         = str(inp.get('sampler', 'euler') or 'euler')
+    # Negative prompt via true CFG — a second (unconditional) forward pass per
+    # step, so ~2× slower when active. Flux's guidance_scale alone is distilled
+    # guidance and ignores negative prompts entirely.
+    negative_prompt = str(inp.get('negative_prompt', '') or '').strip()
+    true_cfg        = float(inp.get('true_cfg', 4.0))
     out_key         = inp.get('output_r2_key') or f'inference/outputs/{job_id}.png'
     # Post-processing options
     refine          = bool(inp.get('refine', False))
@@ -1488,6 +1495,24 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
         _PIPE_CACHE[ckpt_cache_key] = pipe
         logs.append('[inference] Pipeline ready (cached for reuse).')
         _flush_logs(r2, bucket, job_id, logs)
+
+    # 3b. Sampler — always reset per job (pipeline is cached across jobs, so a
+    # previous job's sigma schedule must not leak into this one). pipe_i2i is
+    # built from pipe.components later, so it inherits this scheduler too.
+    _SIGMA_FLAGS = {'euler-beta': 'use_beta_sigmas',
+                    'euler-karras': 'use_karras_sigmas',
+                    'euler-exp': 'use_exponential_sigmas'}
+    try:
+        _sched_cfg = dict(pipe.scheduler.config)
+        for _flag in _SIGMA_FLAGS.values():
+            _sched_cfg.pop(_flag, None)
+        _sched_kw = {_SIGMA_FLAGS[sampler]: True} if sampler in _SIGMA_FLAGS else {}
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config(_sched_cfg, **_sched_kw)
+        if sampler != 'euler':
+            logs.append(f'[inference] Sampler: {sampler}')
+            _flush_logs(r2, bucket, job_id, logs)
+    except Exception as _samp_err:
+        logs.append(f'[inference] Sampler setup failed ({_samp_err}) — using default Euler.')
 
     # 4. Load LoRAs — manual weight merge.
     # Saved weights are stored on CPU so they don't consume VRAM.
@@ -1822,7 +1847,21 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                                       width=width, height=height)
             if ip_ref_image is not None:
                 _base_kwargs['ip_adapter_image'] = ip_ref_image
-            image = pipe_i2i(**_base_kwargs).images[0]
+            if negative_prompt:
+                _base_kwargs['negative_prompt'] = negative_prompt
+                _base_kwargs['true_cfg_scale']  = true_cfg
+                logs.append(f'[img2img] Negative prompt active (true CFG {true_cfg}) — 2 passes per step.')
+                _flush_logs(r2, bucket, job_id, logs)
+            try:
+                image = pipe_i2i(**_base_kwargs).images[0]
+            except TypeError as _neg_err:
+                if 'true_cfg_scale' not in _base_kwargs:
+                    raise
+                # Older diffusers without true-CFG support — retry without it
+                logs.append(f'[img2img] Negative prompt unsupported here ({_neg_err}) — retrying without.')
+                _base_kwargs.pop('negative_prompt', None)
+                _base_kwargs.pop('true_cfg_scale', None)
+                image = pipe_i2i(**_base_kwargs).images[0]
             logs.append(f'[img2img] Done — {image.width}×{image.height}.')
         else:
             logs.append(f'[inference] Generating {width}×{height} ({steps} steps)...')
@@ -1831,6 +1870,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                                       num_inference_steps=steps, guidance_scale=guidance, generator=gen)
             if ip_ref_image is not None:
                 _pipe_kwargs['ip_adapter_image'] = ip_ref_image
+            # Negative prompt: only on the plain pipeline — the ControlNet call
+            # already has its own TypeError fallback that would mis-handle it
+            if negative_prompt and not (pipe_cn is not None and ctrl_images):
+                _pipe_kwargs['negative_prompt'] = negative_prompt
+                _pipe_kwargs['true_cfg_scale']  = true_cfg
+                logs.append(f'[inference] Negative prompt active (true CFG {true_cfg}) — 2 passes per step.')
+                _flush_logs(r2, bucket, job_id, logs)
+            elif negative_prompt:
+                logs.append('[inference] Note: negative prompt is skipped when ControlNet is active.')
             if pipe_cn is not None and ctrl_images:
                 _n = len(ctrl_images)
                 _pipe_kwargs['control_image']                 = ctrl_images[0] if _n == 1 else ctrl_images
@@ -1852,7 +1900,17 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
                     logs.append(f'[controlnet] control_guidance params not supported ({_cg_err}) — running full steps.')
                     image = pipe_cn(**_pipe_kwargs).images[0]
             else:
-                image = pipe(**_pipe_kwargs).images[0]
+                try:
+                    image = pipe(**_pipe_kwargs).images[0]
+                except TypeError as _neg_err:
+                    if 'true_cfg_scale' not in _pipe_kwargs:
+                        raise
+                    # Older diffusers without true-CFG support — retry without it
+                    logs.append(f'[inference] Negative prompt unsupported here ({_neg_err}) — retrying without.')
+                    _flush_logs(r2, bucket, job_id, logs)
+                    _pipe_kwargs.pop('negative_prompt', None)
+                    _pipe_kwargs.pop('true_cfg_scale', None)
+                    image = pipe(**_pipe_kwargs).images[0]
             logs.append('[inference] Base generation done.')
         _flush_logs(r2, bucket, job_id, logs)
 
