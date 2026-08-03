@@ -4,9 +4,44 @@ import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } fro
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, Pin } from "lucide-react"
+import ChatHub, { ChatProviderSettings, ChatLayoutSettings, ChatAgentSettings, ChatAgentCapabilities, ChatApiKeysSettings } from "@/components/chat-hub"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, Pin, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2 } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
+import { HomeView } from "@/components/home/HomeView"
+import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
+
+// Signed-out state for the session feeds (image + video) — same brand treatment
+// as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
+function FeedSignInPrompt() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 sm:py-24 px-4">
+      <div className="w-full max-w-sm text-center">
+        <SiteBrandHero />
+        <div className="mt-8 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 sm:p-6 text-left">
+          <h2 className="text-sm font-bold text-white tracking-tight">Sign in to get started</h2>
+          <p className="text-[11px] text-slate-500 mt-0.5 mb-4">Your generations and saved work will appear here.</p>
+          <div className="flex flex-col gap-2">
+            <Link href="/login" className="block">
+              <button className="relative overflow-hidden w-full py-2.5 rounded-xl bg-white/10 border border-white/25 text-white text-sm font-bold hover:bg-white/15 hover:border-white/40 transition-all flex items-center justify-center gap-2">
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                  style={{ animation: "sheen-sweep 2.6s infinite" }}
+                />
+                Sign In
+              </button>
+            </Link>
+            <Link href="/signup" className="block">
+              <button className="w-full py-2.5 rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 text-sm font-medium hover:bg-white/10 hover:text-white transition-all">
+                Create Account
+              </button>
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // --- TYPES ---
 interface CNCondition {
@@ -22,6 +57,7 @@ interface UserData {
   id: number
   email: string
   ticketBalance: number
+  avatarUrl?: string | null
 }
 
 interface ImageItem {
@@ -34,6 +70,11 @@ interface ImageItem {
   referenceImageUrls?: string[]
   failed?: boolean
   failError?: string
+  // Failed-tile identity: server GenerationQueue row id + a stable key used to
+  // dedupe an optimistic local fail against its server row ("qf-<rowId>" or
+  // "rf-<falRequestId>"). Fails are per-account and persist until dismissed.
+  queueRowId?: number
+  failKey?: string
   aspectRatio?: string
   quality?: string
   videoMetadata?: Record<string, any>
@@ -62,6 +103,7 @@ interface ImageModelConfig {
   isUpscaler?: boolean             // special upscaler UI — takes image URL + params instead of prompt
   isLocalModel?: boolean           // admin-only: runs on local GPU via upscaler-server.py
   isCustomFlux?: boolean           // admin-only: custom Flux checkpoint + LoRA inference
+  supportsSafetyChecker?: boolean  // fal content-safety toggle: admins can flip it (default off), non-admins are forced ON (CCBill)
 }
 
 const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
@@ -71,6 +113,8 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "kling-o3-image",       apiId: "kling-o3-image",           name: "Kling O3",            aspectRatios: ["auto", "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: false, maxImages: 4 },
   { id: "seedream-4.5",         apiId: "seedream-4.5",             name: "SeeDream 4.5",        aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: true,  maxImages: 4 },
   { id: "seedream-5-lite",      apiId: "seedream-5-lite",          name: "SeeDream 5.0 Lite",   aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5"],                     supportsQuality: true,  qualityOptions: ["2k", "3k"], maxReferenceImages: 10, isFal: false, maxImages: 4 },
+  { id: "seedream-5-pro",       apiId: "seedream-5-pro",           name: "SeeDream 5.0 Pro",    aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"],       supportsQuality: true,  qualityOptions: ["2k"], maxReferenceImages: 10, isFal: false, maxImages: 4, supportsSafetyChecker: true },
+  { id: "recraft-v4.1",         apiId: "recraft-v4.1",             name: "Recraft v4.1",        aspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"],                            supportsQuality: false, maxReferenceImages: 0,  isFal: false, maxImages: 4, supportsSafetyChecker: true },
   { id: "wan-2.7-pro",          apiId: "wan-2.7-pro",              name: "Wan 2.7 Pro",         aspectRatios: ["1:1", "4:3", "16:9", "3:4", "9:16"],                     supportsQuality: false, maxReferenceImages: 4,  isFal: false, maxImages: 4 },
   { id: "flux-1-dev",           apiId: "flux-1-dev",               name: "FLUX 1 Dev",          aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 1, isFal: true, maxImages: 1 },
   { id: "flux-2",               apiId: "flux-2",                   name: "FLUX 2",              aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, maxReferenceImages: 4,  isFal: true  },
@@ -95,6 +139,8 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (modelId === "nano-banana-pro-2")   return quality === "4k" ? 12 : 7
   if (modelId === "seedream-4.5")        return quality === "4k" ? 4 : 2
   if (modelId === "seedream-5-lite")     return quality === "3k" ? 4 : 2
+  if (modelId === "seedream-5-pro")      return 10   // flat 10 tickets/generation
+  if (modelId === "recraft-v4.1")        return 15   // flat 15 tickets/generation
   if (modelId === "flux-1-dev") {
     if (hasRefImages) return quality === "4k" ? 8 : quality === "2k" ? 6 : 3  // i2i
     return quality === "4k" ? 6 : quality === "2k" ? 5 : 2                    // t2i
@@ -395,10 +441,22 @@ async function compressFileToBlob(file: File, maxSize = 1920, quality = 0.85): P
   })
 }
 
-// Upload a compressed blob to R2 via the session-authed upload endpoint → permanent URL
+// Library uploads preserve FULL original quality: web-native formats within the
+// upload cap go to R2 byte-for-byte untouched. Only exotic formats (HEIC, TIFF…)
+// or oversized files are re-encoded — and then at 4096px/q0.92, not the old
+// 1920px/q0.85 (which permanently degraded every stored ref).
+async function prepareRefUpload(file: File): Promise<Blob> {
+  const webNative = ["image/jpeg", "image/png", "image/webp"].includes(file.type)
+  if (webNative && file.size <= 10 * 1024 * 1024) return file
+  return compressFileToBlob(file, 4096, 0.92)
+}
+
+// Upload a ref blob to R2 via the session-authed upload endpoint → permanent URL
 async function uploadRefBlob(blob: Blob): Promise<string> {
+  const type = blob.type === "image/png" ? "image/png" : blob.type === "image/webp" ? "image/webp" : "image/jpeg"
+  const ext = type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg"
   const fd = new FormData()
-  fd.append("file", new File([blob], "reference.jpg", { type: "image/jpeg" }))
+  fd.append("file", new File([blob], `reference.${ext}`, { type }))
   const res = await fetch("/api/upload-reference", { method: "POST", body: fd })
   if (!res.ok) throw new Error(`Upload failed (${res.status})`)
   const data = await res.json()
@@ -465,6 +523,7 @@ interface VideoModelConfig {
   supportsSD20Modes?: boolean      // SeeDance 2.0 — shows T2V/I2V/Ref mode switcher inside panel
   supportsLipsync?: boolean        // Lipsync v3 — takes video + audio, no prompt
   startFrameLocksAspect?: boolean  // when a start frame is provided, aspect ratio is ignored by the model
+  videoModes?: ("t2v" | "i2v" | "r2v" | "edit")[] // renders the per-model mode switcher (Gemini Omni Flash)
 }
 
 interface VideoItem {
@@ -479,6 +538,8 @@ interface VideoItem {
   createdAt: string
   failed?: boolean
   failError?: string
+  queueRowId?: number   // server GenerationQueue row backing a failed tile
+  failKey?: string      // dedupe key for optimistic vs server fails
   audioEnabled?: boolean
   startFrameUrl?: string
   endFrameUrl?: string
@@ -518,6 +579,10 @@ interface VideoDetailData {
   createdAt?: string
   failed?: boolean
   failError?: string
+  // Failed tiles: identity for the Dismiss action (VideoItem.id + server row link)
+  failId?: string
+  queueRowId?: number
+  failKey?: string
   audioEnabled?: boolean
   startFrameUrl?: string
   endFrameUrl?: string
@@ -545,6 +610,20 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     audioType: "upload",
   },
   {
+    // ADMIN ONLY (testing) — fal-ai/wan/v2.7/{image,text}-to-video.
+    // Schema: image_url first frame + end_image_url last frame, driving audio_url,
+    // resolution 720p/1080p (default 1080p), duration 2-15s (default 5).
+    id: "wan-2.7",
+    name: "Wan 2.7",
+    durations: ["2","3","4","5","6","7","8","9","10","11","12","13","14","15"],
+    resolutions: ["720p", "1080p"],
+    // t2v-only per fal schema (i2v infers from the start image; route sends it only for t2v)
+    aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    supportsEndFrame: true,
+    audioType: "upload",
+    textToVideo: true,
+  },
+  {
     id: "kling-v3-motion",
     name: "Kling V3 Motion",
     durations: [],
@@ -566,12 +645,16 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   {
     id: "seedance-2.0",
     name: "SeeDance 2.0",
-    durations: ["auto","5","6","7","8","9","10"],
-    resolutions: ["480p","720p","1080p"],
+    // fal schema: duration enum auto + 4-15s; resolution enum 480p/720p ONLY (no 1080p)
+    durations: ["auto","4","5","6","7","8","9","10","11","12","13","14","15"],
+    resolutions: ["480p","720p"],
     aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"],
     supportsEndFrame: true,
     audioType: "toggle",
     textToVideo: true,
+    // Unified multi-ref panel: up to 9 images (+3 videos/3 audio); start/end frames
+    // are picked from the references (S/E tags) — i2v or r2v is auto-routed on submit
+    supportsReferenceVideo: true,
   },
   {
     id: "seedance-2.0-fast",
@@ -582,6 +665,17 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     supportsEndFrame: true,
     audioType: "toggle",
     textToVideo: true,
+    supportsReferenceVideo: true,
+  },
+  {
+    id: "gemini-omni-flash",
+    name: "Gemini Omni Flash",
+    durations: ["3","4","5","6","7","8","9","10"],
+    aspectRatios: ["16:9", "9:16"],
+    supportsEndFrame: false,
+    audioType: "none", // audio is native — the model has no generate_audio knob
+    textToVideo: true,
+    videoModes: ["t2v", "i2v", "r2v", "edit"],
   },
   {
     id: "lipsync-v3",
@@ -607,6 +701,8 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "flash-scanner-v2.5": "$",
   "seedream-4.5":        "$",
   "seedream-5-lite":     "$",
+  "seedream-5-pro":      "$$$",
+  "recraft-v4.1":        "$$$",
   "flux-2":              "$",
   "flux-1-dev":          "$$",
   "kling-v3-image":      "$",
@@ -627,9 +723,11 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "local-neosr":         "$",
 }
 const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
+  "gemini-omni-flash":  "$$$+",
   "lipsync-v3":         "$",
   "seedance-1.5":       "$$",
   "wan-2.5":            "$$",
+  "wan-2.7":            "$$$",
   "kling-v3-motion":    "$$$",
   "seedance-2.0-fast":  "$$$+",
   "seedance-2.0":       "$$$+",
@@ -653,15 +751,18 @@ const IMAGE_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Ob
   IMAGE_MODEL_CONFIGS.map(m => [m.name, IMAGE_MODEL_COST[m.id] ?? "$"])
 )
 const IMAGE_MODEL_GROUPS = [
-  { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2", "Flash Scanner v2.5", "Pro Scanner v3"] },
+  { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2"] },
   { label: "Kling",             type: "text to image",             accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling V3", "Kling O3"] },
-  { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite"] },
+  { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro"] },
+  { label: "Recraft",           type: "text to image",             accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1"] },
   { label: "Wan",               type: "text to image",             accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.7 Pro"] },
   { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 1 Dev", "FLUX 2"] },
   { label: "OpenAI",            type: "text to image",             accent: "text-green-400",   dot: "bg-green-400",   items: ["ChatGPT Images 2.0"] },
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
 ]
 const ADMIN_IMAGE_MODEL_GROUPS = [
+  // Gemini scanners retired from the public offering 2026-07-29 — admin only now
+  { label: "Gemini",    type: "text to image",              accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Flash Scanner v2.5", "Pro Scanner v3"] },
   { label: "RunPod",    type: "local · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
   { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
 ]
@@ -675,6 +776,163 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Lipsync",     type: "lip sync video",        accent: "text-pink-400",    dot: "bg-pink-400",    items: ["Lipsync v3"] },
   { label: "Alibaba",     type: "image to video",        accent: "text-yellow-400",  dot: "bg-yellow-400",  items: ["Happy Horse"] },
 ]
+const ADMIN_VIDEO_MODEL_GROUPS = [
+  { label: "Google", type: "text · image · ref · edit to video · pricing TBD", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash"] },
+  { label: "Wan",    type: "image & text to video · pricing TBD",             accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.7"] },
+]
+// Model ids only admins may see/select in the video UI (also gated server-side)
+const ADMIN_VIDEO_MODEL_IDS = new Set(["gemini-omni-flash", "wan-2.7"])
+
+// Flagship models — their rows in the model dropdowns get the animated silver rim
+const SILVER_RIM_MODELS = new Set([
+  "NanoBanana Pro 2", "ChatGPT Images 2.0", "Recraft v4.1",          // image
+  "SeeDance 2.0", "Kling 3.0", "Wan 2.7", "Gemini Omni Flash",       // video
+])
+const SILVER_RIM_CONIC =
+  "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))"
+// Detail-modal frame: a SOLID silver ring with a single travelling break (gap)
+// orbiting it. The base must be one uniform color — any gradient in the silver
+// would visibly shimmer as the layer rotates; a flat color hides the rotation
+// entirely except for the moving notch.
+const SILVER_ORBIT_CONIC =
+  "conic-gradient(from 0deg, #cbd5e1 0deg, #cbd5e1 330deg, rgba(203,213,225,0) 340deg, rgba(203,213,225,0) 350deg, #cbd5e1 360deg)"
+// Silver orbit ring that hugs the RENDERED media box: object-contain leaves
+// letterbox bars, so the ring is measured to the picture itself, not the pane.
+// Re-measures on pane/media resize (ResizeObserver catches load + layout shifts).
+function OrbitMediaFrame({ containerRef, mediaRef, deps, hidden = false, innerHidden = false, mediaRotateDeg = 0, mediaScale = 1 }: {
+  containerRef: React.RefObject<HTMLElement | null>
+  mediaRef: React.RefObject<HTMLElement | null>
+  deps: unknown[]
+  hidden?: boolean
+  // Hide just the media-hugging ring (e.g. while pinch-zoomed) — the outer
+  // pane ring stays
+  innerHidden?: boolean
+  // When the media is CSS-rotated, its bounding box no longer matches its face —
+  // pass the rotation (deg) + uniform scale so the inner ring can trace the
+  // actual face instead of the axis-aligned box (Edit Reference workspace).
+  mediaRotateDeg?: number
+  mediaScale?: number
+}) {
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  useEffect(() => {
+    const measure = () => {
+      const c = containerRef.current, m = mediaRef.current
+      if (!c || !m) { setRect(null); return }
+      const cr = c.getBoundingClientRect(), mr = m.getBoundingClientRect()
+      if (mr.width < 4 || mr.height < 4) { setRect(null); return }
+      if (mediaRotateDeg) {
+        // Face size = untransformed layout size × scale, centered on the bbox center
+        const w = (m as HTMLElement).offsetWidth * mediaScale
+        const h = (m as HTMLElement).offsetHeight * mediaScale
+        setRect({ left: mr.left - cr.left + (mr.width - w) / 2, top: mr.top - cr.top + (mr.height - h) / 2, width: w, height: h })
+        return
+      }
+      setRect({ left: mr.left - cr.left, top: mr.top - cr.top, width: mr.width, height: mr.height })
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    if (containerRef.current) ro.observe(containerRef.current)
+    if (mediaRef.current) ro.observe(mediaRef.current)
+    window.addEventListener("resize", measure)
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+  if (hidden) return null
+  // Both rings share one wall-clock-anchored phase, so the travelling break
+  // sweeps the outer pane frame and the inner media frame in perfect sync —
+  // one motion moving through the whole grid, no matter when each ring mounted.
+  const phase = `-${Date.now() % 9000}ms`
+  const ringMask = {
+    padding: "2px",
+    WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+    WebkitMaskComposite: "xor" as const,
+    mask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+    maskComposite: "exclude" as const,
+  }
+  const spinner = (
+    <span
+      className="absolute -inset-[75%] animate-spin"
+      style={{ background: SILVER_ORBIT_CONIC, animationDuration: "9s", animationDelay: phase }}
+    />
+  )
+  return (
+    <>
+      {/* Outer ring — frames the whole display section */}
+      <div className="absolute inset-0 pointer-events-none rounded overflow-hidden z-10" style={ringMask}>
+        {spinner}
+      </div>
+      {/* Inner ring — hugs the rendered media box (masked to a 2px band);
+          rotates with the media face when a workspace rotation is passed */}
+      {rect && !innerHidden && (
+        <div
+          className="absolute pointer-events-none rounded overflow-hidden z-10"
+          style={{
+            left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+            ...(mediaRotateDeg ? { transform: `rotate(${mediaRotateDeg}deg)` } : {}),
+            ...ringMask,
+          }}
+        >
+          {spinner}
+        </div>
+      )}
+    </>
+  )
+}
+
+// Branded letterbox backdrop for the detail popups: a subtle diagonal
+// step-and-repeat wall of the synced site logo + wordmark filling the whole
+// pane BEHIND the media. Works for every aspect ratio automatically — the
+// media covers the middle, the black bars show the brand. Fully static
+// (no animation) so it can never hit Safari's compositing bugs.
+function BrandBackdrop() {
+  const [logoUrl, setLogoUrl] = useState<string | null>(null)
+  useEffect(() => {
+    fetch("/api/admin/config")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d?.logoUrl) setLogoUrl(d.logoUrl) })
+      .catch(() => {})
+  }, [])
+  return (
+    <div aria-hidden className="absolute inset-0 -z-10 overflow-hidden pointer-events-none select-none">
+      {/* soft center glow so the bars aren't dead black */}
+      <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at center, rgba(148,163,184,0.07), transparent 70%)" }} />
+      {/* silver glint anchored in the top corner */}
+      <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 18% 12%, rgba(248,250,252,0.08), transparent 45%)" }} />
+      {/* diagonal step-and-repeat brand wall */}
+      <div
+        className="absolute -inset-[45%] flex flex-wrap items-center justify-center content-center opacity-[0.09]"
+        style={{ transform: "rotate(-14deg)" }}
+      >
+        {Array.from({ length: 120 }).map((_, i) => (
+          <span key={i} className="inline-flex items-center gap-2 mx-7 my-5 shrink-0">
+            {logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={logoUrl} alt="" className="w-5 h-5 rounded-[5px] object-cover" />
+            ) : (
+              <Sparkles size={13} className="text-slate-200" />
+            )}
+            <span
+              className="text-[11px] font-black tracking-[0.25em] uppercase whitespace-nowrap bg-clip-text text-transparent"
+              style={{ backgroundImage: "linear-gradient(100deg,#94a3b8,#f8fafc,#cbd5e1,#e2e8f0,#94a3b8)" }}
+            >AI Design Studio</span>
+          </span>
+        ))}
+      </div>
+      {/* one slow band of silver light drifting across the backdrop */}
+      <div
+        className="absolute inset-y-0 left-0 w-1/2 pointer-events-none"
+        style={{
+          background: "linear-gradient(100deg, transparent, rgba(226,232,240,0.08), rgba(248,250,252,0.14), rgba(226,232,240,0.08), transparent)",
+          animation: "sheen-sweep 9s ease-in-out infinite",
+        }}
+      />
+    </div>
+  )
+}
+
+// Brighter variant for the Borders "Thick" mode — more white, fewer dark troughs
+const SILVER_RIM_CONIC_BRIGHT =
+  "conic-gradient(from 0deg, rgba(248,250,252,0.45), #ffffff, #cbd5e1, rgba(248,250,252,0.6), #f1f5f9, #94a3b8, rgba(248,250,252,0.45))"
 
 const PROMPT_MODELS = [
   { id: "gemini-3-flash",       label: "Gemini 3 Flash" },
@@ -684,6 +942,12 @@ const PROMPT_MODELS = [
 ]
 const SAVED_PROMPTS_KEY = "pv2-saved-prompts"
 const TEXT_STATE_KEY = "pv2-text-state"
+
+// Cumulative CSS zoom applied to an element (Feed → Taskbar Size setting).
+// Fixed-position menus inside the zoomed taskbar subtree get their coordinates
+// multiplied by the zoom when rendered, so we convert visual viewport coords
+// back to local ones (divide by z) when positioning them.
+const cssZoomOf = (el: HTMLElement) => (el.offsetWidth > 0 ? el.getBoundingClientRect().width / el.offsetWidth : 1)
 
 // --- TASKBAR DROPDOWN ---
 function TaskbarDropdown({
@@ -707,7 +971,7 @@ function TaskbarDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
 
   const activeCost = activeItem && itemCosts ? itemCosts[activeItem] : undefined
 
@@ -724,7 +988,8 @@ function TaskbarDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.min(rect.left, window.innerWidth - 216) })
+      const z = cssZoomOf(buttonRef.current)
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.min(rect.left, window.innerWidth - 216 * z) / z, z })
     }
   }, [open])
 
@@ -769,6 +1034,272 @@ function TaskbarDropdown({
   )
 }
 
+// --- SHARED MODEL MENU PANEL ---
+// The full model-picker menu (header w/ logo + List/Cards toggle, grouped body
+// in both display modes, cost legend). Used by BOTH the taskbar Image/Video
+// dropdowns and the prompt box's inline model picker so the two surfaces always
+// look and behave identically — including the persisted List/Cards preference.
+function ModelMenuPanel({
+  label,
+  groups,
+  adminGroups,
+  onSelect,
+  activeItem,
+  itemCosts,
+  menuTitle,
+  menuDescription,
+  cardMedia,
+  cardPrefix,
+  bodyMaxHeight,
+}: {
+  label: string
+  groups: { label: string; type: string; accent: string; dot: string; items: string[] }[]
+  adminGroups?: { label: string; type: string; accent: string; dot: string; items: string[] }[]
+  onSelect: (item: string) => void
+  activeItem?: string
+  itemCosts?: Record<string, "$" | "$$" | "$$$" | "$$$+">
+  menuTitle?: string
+  menuDescription?: string
+  cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
+  cardPrefix?: "image" | "video"
+  bodyMaxHeight: string
+}) {
+  // Display mode: "list" (grouped rows) or "cards" (home-page media tiles).
+  // Persisted per menu (image / video) so each can be set independently.
+  const [viewMode, setViewMode] = useState<"list" | "cards">("list")
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(`pv2-model-menu-${cardPrefix ?? label}`)
+      if (v === "cards" || v === "list") setViewMode(v)
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const changeViewMode = (m: "list" | "cards") => {
+    setViewMode(m)
+    try { localStorage.setItem(`pv2-model-menu-${cardPrefix ?? label}`, m) } catch {}
+  }
+
+  // One model row; flagship models (SILVER_RIM_MODELS) render as a chip wrapped
+  // in the animated silver rim — same conic sweep as the site logo.
+  const renderItem = (item: string) => {
+    const row = (
+      <button
+        key={item}
+        onClick={() => onSelect(item)}
+        className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
+          activeItem === item
+            ? "bg-white/8 text-white font-medium"
+            : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
+        }`}
+      >
+        <span className="truncate leading-tight">{item}</span>
+        <span className="shrink-0 flex items-center gap-1">
+          {activeItem === item && <span className="w-1 h-1 rounded-full bg-white" />}
+          {itemCosts?.[item] && <CostBadge tier={itemCosts[item]} />}
+        </span>
+      </button>
+    )
+    if (!SILVER_RIM_MODELS.has(item)) return row
+    return (
+      <div key={item} className="relative isolate m-1 rounded-lg overflow-hidden p-[1.5px]">
+        <span
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+          style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+        />
+        <div className="relative rounded-[6px] overflow-hidden bg-[#0a0f1a]">{row}</div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+          {/* Header — synced site logo + what this menu is for + display toggle */}
+          <div className="flex items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-white/[0.06]">
+            <SiteLogoBox size={22} rounded={7} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[12px] font-semibold text-white leading-none">{menuTitle ?? label}</p>
+              <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+                {menuDescription ?? "Select a model. Models are grouped by company."}{" "}
+                <span className="text-slate-600">Active: <span className="text-slate-400">{activeItem ?? "none"}</span></span>
+              </p>
+            </div>
+            {/* List / Cards display toggle */}
+            <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20 shrink-0">
+              <button
+                onClick={() => changeViewMode("list")}
+                title="List view"
+                className={`p-1.5 transition-colors ${viewMode === "list" ? "bg-white/15 text-white" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+              >
+                <List size={12} />
+              </button>
+              <button
+                onClick={() => changeViewMode("cards")}
+                title="Card view — home page media"
+                className={`p-1.5 border-l border-white/10 transition-colors ${viewMode === "cards" ? "bg-white/15 text-white" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+              >
+                <LayoutGrid size={12} />
+              </button>
+            </div>
+          </div>
+
+          {/* Cards view — the home page's uploaded media tiles, sectioned by
+              company exactly like list view. Same 2-col responsive frame as the
+              list (works landscape/portrait, down to small phones) with compact
+              16:9 tiles so the whole menu fits one screen. */}
+          {viewMode === "cards" ? (() => {
+            const renderCard = (item: string) => {
+              const media = cardMedia?.[`${cardPrefix}:${item}`]
+              const active = activeItem === item
+              const card = (
+                <button
+                  key={item}
+                  onClick={() => onSelect(item)}
+                  className={`relative w-full aspect-video rounded-md overflow-hidden text-left transition-all ${
+                    active ? "ring-2 ring-white ring-inset" : "hover:ring-1 hover:ring-white/40 hover:ring-inset"
+                  } ${SILVER_RIM_MODELS.has(item) ? "" : "border border-white/10"}`}
+                >
+                  {media ? (
+                    media.mediaType === "video" ? (
+                      <video
+                        src={`${media.mediaUrl}${media.mediaUrl.includes("#") ? "" : "#t=0.001"}`}
+                        className="absolute inset-0 w-full h-full object-cover"
+                        autoPlay
+                        muted
+                        loop
+                        playsInline
+                      />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={media.mediaUrl} alt={item} className="absolute inset-0 w-full h-full object-cover" />
+                    )
+                  ) : (
+                    <div className="absolute inset-0 bg-white/[0.04]" />
+                  )}
+                  {/* Bottom scrim: name + cost */}
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-1.5 pt-3 pb-1 pointer-events-none">
+                    <div className="flex items-center gap-1">
+                      {active && <span className="w-1 h-1 rounded-full bg-white shrink-0" />}
+                      <span className="text-[9px] font-bold text-white leading-tight truncate flex-1">{item}</span>
+                      {itemCosts?.[item] && <CostBadge tier={itemCosts[item]} />}
+                    </div>
+                  </div>
+                </button>
+              )
+              return SILVER_RIM_MODELS.has(item) ? (
+                <div key={item} className="relative isolate rounded-md overflow-hidden p-[1.5px]">
+                  <span
+                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                    style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+                  />
+                  <div className="relative rounded-[5px] overflow-hidden">{card}</div>
+                </div>
+              ) : card
+            }
+            return (
+              <div
+                className="p-2.5 grid grid-cols-2 gap-x-2 gap-y-2 overflow-y-auto"
+                style={{ maxHeight: bodyMaxHeight }}
+              >
+                {groups.map((group) => (
+                  <div key={group.label}>
+                    <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                      <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
+                      <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{group.label}</span>
+                      <span className="text-[8px] text-slate-600 leading-none truncate">· {group.type}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {group.items.map(renderCard)}
+                    </div>
+                  </div>
+                ))}
+                {adminGroups && adminGroups.length > 0 && (
+                  <div className="col-span-2 mt-0.5 rounded-lg border border-violet-500/25 bg-violet-500/[0.04] overflow-hidden">
+                    <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-violet-500/15">
+                      <div className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+                      <span className="text-[9px] font-bold tracking-widest uppercase text-violet-300">Admin Models</span>
+                      <span className="text-[8px] text-slate-600">· admin only</span>
+                    </div>
+                    <div className="p-2 grid grid-cols-2 gap-x-2">
+                      {adminGroups.map((sub) => (
+                        <div key={sub.label}>
+                          <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
+                            <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sub.label}</span>
+                            <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1">
+                            {sub.items.map(renderCard)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })() : (
+          <div
+            className="p-2.5 grid grid-cols-2 gap-x-2 gap-y-2 overflow-y-auto"
+            style={{ maxHeight: bodyMaxHeight }}
+          >
+            {groups.map((group) => (
+              <div key={group.label}>
+                {/* Company label — monochrome text; the small colored dot alone
+                    carries the per-company wayfinding */}
+                <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
+                  <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{group.label}</span>
+                  <span className="text-[8px] text-slate-600 leading-none truncate">· {group.type}</span>
+                </div>
+                {/* Model rows */}
+                <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
+                  {group.items.map(renderItem)}
+                </div>
+              </div>
+            ))}
+
+            {/* Admin Models — full-width block containing subsections */}
+            {adminGroups && adminGroups.length > 0 && (
+              <div className="col-span-2 mt-0.5 rounded-lg border border-violet-500/25 bg-violet-500/[0.04] overflow-hidden">
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-violet-500/15">
+                  <div className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+                  <span className="text-[9px] font-bold tracking-widest uppercase text-violet-300">Admin Models</span>
+                  <span className="text-[8px] text-slate-600">· admin only</span>
+                </div>
+                <div className="p-2 grid grid-cols-2 gap-x-2">
+                  {adminGroups.map((sub) => (
+                    <div key={sub.label}>
+                      <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
+                        <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sub.label}</span>
+                        <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
+                      </div>
+                      <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
+                        {sub.items.map(renderItem)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+
+          {/* Footer — explains the cost symbols plainly */}
+          <div className="px-4 py-2 border-t border-white/5 flex items-center gap-2 flex-wrap">
+            <span className="text-[9px] text-slate-600">Ticket cost:</span>
+            <span className="text-[9px] text-slate-500"><span className="text-green-400 font-bold font-mono">$</span> budget</span>
+            <span className="text-[9px] text-slate-600">·</span>
+            <span className="text-[9px] text-slate-500"><span className="text-amber-400 font-bold font-mono">$$</span> standard</span>
+            <span className="text-[9px] text-slate-600">·</span>
+            <span className="text-[9px] text-slate-500"><span className="text-rose-400 font-bold font-mono">$$$</span> premium</span>
+            <span className="text-[9px] text-slate-600">·</span>
+            <span className="text-[9px] text-slate-500"><span className="text-rose-300 font-bold font-mono">$$$+</span> expensive</span>
+          </div>
+    </>
+  )
+}
+
 // --- GROUPED TASKBAR DROPDOWN (Image model picker — 2-column company cards) ---
 function GroupedTaskbarDropdown({
   label,
@@ -782,6 +1313,8 @@ function GroupedTaskbarDropdown({
   itemCosts,
   menuTitle,
   menuDescription,
+  cardMedia,
+  cardPrefix,
 }: {
   label: string
   icon: React.ElementType
@@ -794,10 +1327,13 @@ function GroupedTaskbarDropdown({
   itemCosts?: Record<string, "$" | "$$" | "$$$" | "$$$+">
   menuTitle?: string
   menuDescription?: string
+  // Cards view: the home page's admin-uploaded card media, keyed `${cardPrefix}:${name}`
+  cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
+  cardPrefix?: "image" | "video"
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
 
   const activeCost = activeItem && itemCosts ? itemCosts[activeItem] : undefined
 
@@ -814,9 +1350,12 @@ function GroupedTaskbarDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      // Cap the menu to the viewport and clamp so it never hangs off either edge
-      const menuW = Math.min(428, window.innerWidth - 16)
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)) })
+      // Cap the menu to the viewport and clamp so it never hangs off either
+      // edge — in VISUAL pixels (the taskbar may be zoomed), then convert to
+      // local coords for the fixed menu inside the zoomed subtree
+      const z = cssZoomOf(buttonRef.current)
+      const menuW = Math.min(428 * z, window.innerWidth - 16)
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)) / z, z })
     }
   }, [open])
 
@@ -825,119 +1364,43 @@ function GroupedTaskbarDropdown({
       <button
         ref={buttonRef}
         onClick={onToggle}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm transition-all ${
+          open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
-        <Icon size={15} />
-        {label}
+        {/* Animated silver-shimmer title — the flagship Image/Video dropdowns */}
+        <span
+          className="font-extrabold tracking-wide bg-clip-text text-transparent"
+          style={{
+            backgroundImage: "linear-gradient(90deg,#94a3b8,#f8fafc,#e2e8f0,#64748b,#f8fafc,#94a3b8)",
+            backgroundSize: "200% 100%",
+            animation: "silver-shimmer 3.5s linear infinite",
+            filter: "drop-shadow(0 0 5px rgba(248,250,252,0.28))",
+          }}
+        >
+          {label}
+        </span>
         {activeCost && <CostBadge tier={activeCost} />}
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
         <div
-          className="fixed rounded-xl border border-white/10 bg-[#080c18] backdrop-blur-md shadow-2xl z-[9999] overflow-hidden"
-          style={{ top: menuPos.top, left: menuPos.left, width: "min(428px, calc(100vw - 16px))" }}
+          className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden"
+          style={{ top: menuPos.top, left: menuPos.left, width: Math.min(428, (window.innerWidth - 16) / menuPos.z) }}
         >
-          {/* Header — tells the user exactly what this is and what to do */}
-          <div className="px-4 pt-3 pb-2.5 border-b border-white/5">
-            <p className="text-[12px] font-semibold text-white/85 leading-none">{menuTitle ?? label}</p>
-            <p className="text-[10px] text-slate-500 mt-1 leading-snug">
-              {menuDescription ?? "Select a model. Models are grouped by company."}{" "}
-              <span className="text-slate-600">Active: <span className="text-slate-400">{activeItem ?? "none"}</span></span>
-            </p>
-          </div>
-
-          {/* 2-col grid of company sections */}
-          <div
-            className="p-2.5 grid grid-cols-2 gap-x-2 gap-y-2 overflow-y-auto"
-            style={{ maxHeight: `calc(100vh - ${menuPos.top + 100}px)` }}
-          >
-            {groups.map((group) => (
-              <div key={group.label}>
-                {/* Company label + what type of model it is */}
-                <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
-                  <span className={`text-[9px] font-bold tracking-widest uppercase leading-none ${group.accent}`}>{group.label}</span>
-                  <span className="text-[8px] text-slate-600 leading-none truncate">· {group.type}</span>
-                </div>
-                {/* Model rows */}
-                <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
-                  {group.items.map((item) => (
-                    <button
-                      key={item}
-                      onClick={() => { onSelect?.(item); onToggle() }}
-                      className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
-                        activeItem === item
-                          ? "bg-white/8 text-white font-medium"
-                          : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
-                      }`}
-                    >
-                      <span className="truncate leading-tight">{item}</span>
-                      <span className="shrink-0 flex items-center gap-1">
-                        {activeItem === item && <span className="w-1 h-1 rounded-full bg-cyan-400" />}
-                        {itemCosts?.[item] && <CostBadge tier={itemCosts[item]} />}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-
-            {/* Admin Models — full-width block containing subsections */}
-            {adminGroups && adminGroups.length > 0 && (
-              <div className="col-span-2 mt-0.5 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.03] overflow-hidden">
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-cyan-500/10">
-                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 shrink-0" />
-                  <span className="text-[9px] font-bold tracking-widest uppercase text-cyan-400">Admin Models</span>
-                  <span className="text-[8px] text-slate-600">· admin only</span>
-                </div>
-                <div className="p-2 grid grid-cols-2 gap-x-2">
-                  {adminGroups.map((sub) => (
-                    <div key={sub.label}>
-                      <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
-                        <span className={`text-[9px] font-bold tracking-widest uppercase leading-none ${sub.accent}`}>{sub.label}</span>
-                        <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
-                      </div>
-                      <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
-                        {sub.items.map((item) => (
-                          <button
-                            key={item}
-                            onClick={() => { onSelect?.(item); onToggle() }}
-                            className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
-                              activeItem === item
-                                ? "bg-white/8 text-white font-medium"
-                                : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
-                            }`}
-                          >
-                            <span className="truncate leading-tight">{item}</span>
-                            <span className="shrink-0 flex items-center gap-1">
-                              {activeItem === item && <span className="w-1 h-1 rounded-full bg-cyan-400" />}
-                              {itemCosts?.[item] && <CostBadge tier={itemCosts[item]} />}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Footer — explains the cost symbols plainly */}
-          <div className="px-4 py-2 border-t border-white/5 flex items-center gap-2 flex-wrap">
-            <span className="text-[9px] text-slate-600">Ticket cost:</span>
-            <span className="text-[9px] text-slate-500"><span className="text-green-400 font-bold font-mono">$</span> budget</span>
-            <span className="text-[9px] text-slate-600">·</span>
-            <span className="text-[9px] text-slate-500"><span className="text-amber-400 font-bold font-mono">$$</span> standard</span>
-            <span className="text-[9px] text-slate-600">·</span>
-            <span className="text-[9px] text-slate-500"><span className="text-rose-400 font-bold font-mono">$$$</span> premium</span>
-            <span className="text-[9px] text-slate-600">·</span>
-            <span className="text-[9px] text-slate-500"><span className="text-rose-300 font-bold font-mono">$$$+</span> expensive</span>
-          </div>
+          <ModelMenuPanel
+            label={label}
+            groups={groups}
+            adminGroups={adminGroups}
+            onSelect={(item) => { onSelect?.(item); onToggle() }}
+            activeItem={activeItem}
+            itemCosts={itemCosts}
+            menuTitle={menuTitle}
+            menuDescription={menuDescription}
+            cardMedia={cardMedia}
+            cardPrefix={cardPrefix}
+            bodyMaxHeight={`calc(100vh - ${menuPos.top + 100}px)`}
+          />
         </div>
       )}
     </div>
@@ -961,14 +1424,14 @@ function SelectDropdown({
       <button
         onClick={onToggleSelectMode}
         title={selectMode ? "Exit select mode" : "Select images in your feed"}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          selectMode ? "bg-cyan-500/15 text-cyan-300" : "text-slate-400 hover:text-white hover:bg-white/5"
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+          selectMode ? "bg-white/15" : "hover:bg-white/5"
         }`}
       >
-        {selectMode ? <Check size={15} className="text-cyan-400" /> : <SlidersHorizontal size={15} />}
+        {selectMode ? <Check size={15} className="text-white" /> : <SlidersHorizontal size={15} className="text-slate-300" />}
         Select
         {selectMode && selectedCount > 0 && (
-          <span className="text-[10px] font-mono bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded-full leading-none">{selectedCount}</span>
+          <span className="text-[10px] font-mono bg-white/20 text-white px-1.5 py-0.5 rounded-full leading-none">{selectedCount}</span>
         )}
       </button>
     </div>
@@ -1013,10 +1476,10 @@ function SelectModeOverlay({
   useEffect(() => { setConfirmDelete(false) }, [selectedCount])
 
   return createPortal(
-    <div className="fixed right-3 top-[92px] sm:top-[60px] z-[9970] w-60 rounded-xl border border-cyan-500/25 bg-slate-900/95 backdrop-blur-md shadow-2xl p-3 space-y-2">
+    <div className="fixed right-3 top-[92px] sm:top-[60px] z-[9970] w-60 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl p-3 space-y-2">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono text-cyan-400/80 uppercase tracking-widest">Select Mode</span>
+        <span className="text-[10px] font-mono text-slate-300 font-semibold uppercase tracking-[0.2em]">Select Mode</span>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
             {selectedCount === 0 ? "Tap images" : `${selectedCount} selected`}
@@ -1064,7 +1527,7 @@ function SelectModeOverlay({
           disabled={selectedCount === 0 || hiding}
           className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${
             hiddenView
-              ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20"
+              ? "bg-white/10 border-white/25 text-white hover:bg-white/15"
               : "bg-amber-500/10 border-amber-500/25 text-amber-300 hover:bg-amber-500/20"
           }`}
         >
@@ -1175,16 +1638,17 @@ function distributeMasonry<T extends { weight: number }>(items: T[], n: number):
 // Segmented pill control used throughout the Feed settings panel.
 function FeedSeg<T extends string>({ value, options, onChange }: {
   value: T
-  options: { value: T; label: string; accent?: "cyan" | "amber" }[]
+  options: { value: T; label: string; accent?: "white" | "amber" }[]
   onChange: (v: T) => void
 }) {
   return (
     <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
       {options.map((opt, i) => {
         const active = value === opt.value
-        const activeCls = (opt.accent ?? "cyan") === "amber"
+        // Monochrome by default; amber is reserved for heavy/warning options
+        const activeCls = opt.accent === "amber"
           ? "bg-amber-500/20 text-amber-300"
-          : "bg-cyan-500/20 text-cyan-300"
+          : "bg-white/15 text-white"
         return (
           <button
             key={opt.value}
@@ -1210,17 +1674,18 @@ function FeedOptionRow({ label, children }: { label: string; children: ReactNode
 }
 
 // ON/OFF toggle row (Full Size, View Hidden).
-function FeedToggleRow({ label, icon, on, onChange, accent = "cyan" }: {
+function FeedToggleRow({ label, icon, on, onChange, accent = "white" }: {
   label: string
   icon?: ReactNode
   on: boolean
   onChange: (v: boolean) => void
-  accent?: "cyan" | "amber"
+  accent?: "white" | "amber"
 }) {
+  // Monochrome by default; amber flags "you're in a special view" (View Hidden)
   const activeCls = accent === "amber"
     ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
-    : "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
-  const pillCls = accent === "amber" ? "bg-amber-500/25 text-amber-300" : "bg-cyan-500/25 text-cyan-300"
+    : "bg-white/10 border-white/30 text-white"
+  const pillCls = accent === "amber" ? "bg-amber-500/25 text-amber-300" : "bg-white/25 text-white"
   return (
     <button
       onClick={() => onChange(!on)}
@@ -1232,11 +1697,42 @@ function FeedToggleRow({ label, icon, on, onChange, accent = "cyan" }: {
   )
 }
 
+// Columns picker — one per feed (image / video) so each can be tuned separately
+function FeedColsPicker({ label, cols, onChange }: {
+  label: string
+  cols: number | null
+  onChange: (n: number | null) => void
+}) {
+  const on = "bg-white/15 text-white"
+  const badge = "border-white/25 text-white"
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">{label}</span>
+        <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border ${cols === null ? "border-white/10 text-slate-500" : badge}`}>{cols ?? "Auto"}</span>
+      </div>
+      <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
+        <button onClick={() => onChange(null)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${cols === null ? on : "text-slate-500 hover:text-white hover:bg-white/5"}`}>Auto</button>
+        {[1, 2, 3, 4, 5, 6].map(n => (
+          <button key={n} onClick={() => onChange(n)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? on : "text-slate-500 hover:text-white hover:bg-white/5"}`}>{n}</button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2.5 px-0.5">
+        <span className="text-[10px] font-mono text-slate-600">1</span>
+        <input type="range" min={1} max={6} step={1} value={cols ?? 4} onChange={e => onChange(+e.target.value)} className="flex-1 cursor-pointer accent-white" />
+        <span className="text-[10px] font-mono text-slate-600">6</span>
+      </div>
+    </section>
+  )
+}
+
 function FeedDropdown({
   open,
   onToggle,
   cols,
   onColsChange,
+  videoCols,
+  onVideoColsChange,
   fullSize,
   onFullSizeChange,
   fullSizeLayout,
@@ -1245,6 +1741,16 @@ function FeedDropdown({
   onMasonryModeChange,
   tileRes,
   onTileResChange,
+  videoAutoplay,
+  onVideoAutoplayChange,
+  tileBorders,
+  onTileBordersChange,
+  borderMode,
+  onBorderModeChange,
+  taskbarScale,
+  onTaskbarScaleChange,
+  promptScale,
+  onPromptScaleChange,
   showHidden,
   onShowHiddenChange,
   isAdmin = false,
@@ -1256,6 +1762,8 @@ function FeedDropdown({
   onToggle: () => void
   cols: number | null
   onColsChange: (n: number | null) => void
+  videoCols: number | null
+  onVideoColsChange: (n: number | null) => void
   fullSize: boolean
   onFullSizeChange: (on: boolean) => void
   fullSizeLayout: "grid" | "masonry"
@@ -1264,6 +1772,16 @@ function FeedDropdown({
   onMasonryModeChange: (mode: "flow" | "rows") => void
   tileRes: "thumb" | "full"
   onTileResChange: (res: "thumb" | "full") => void
+  videoAutoplay: boolean
+  onVideoAutoplayChange: (on: boolean) => void
+  tileBorders: boolean
+  onTileBordersChange: (on: boolean) => void
+  borderMode: "slim" | "fill" | "smart"
+  onBorderModeChange: (mode: "slim" | "fill" | "smart") => void
+  taskbarScale: 1 | 1.5
+  onTaskbarScaleChange: (scale: 1 | 1.5) => void
+  promptScale: 1 | 1.5
+  onPromptScaleChange: (scale: 1 | 1.5) => void
   showHidden: boolean
   onShowHiddenChange: (on: boolean) => void
   isAdmin?: boolean
@@ -1273,7 +1791,7 @@ function FeedDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
 
   // --- Inline admin feed filters (previously the AdminFeedFilterPanel modal) ---
   // Starts expanded — admins use it constantly
@@ -1306,10 +1824,13 @@ function FeedDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      const panelW = Math.min(540, window.innerWidth - 16)
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
+      const z = cssZoomOf(buttonRef.current)
+      const panelW = Math.min(540 * z, window.innerWidth - 16)
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
-  }, [open])
+  // taskbarScale in deps: changing the size FROM this open panel re-anchors it
+  // immediately under the resized button (no page refresh needed)
+  }, [open, taskbarScale])
 
   // Whenever the panel opens, reset the filter draft to whatever is currently applied
   useEffect(() => {
@@ -1391,59 +1912,65 @@ function FeedDropdown({
       <button
         ref={buttonRef}
         onClick={onToggle}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+          open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
-        <Layers size={15} />
+        <Layers size={15} className="text-slate-300" />
         Feed
-        {cols !== null && (
-          <span className="text-[10px] font-mono bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded-full leading-none">{cols}</span>
-        )}
         {showHidden && (
           <EyeOff size={11} className="text-amber-400 shrink-0" aria-label="Viewing hidden generations" />
         )}
         {adminFilterCount > 0 && (
           <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" title={`${adminFilterCount} feed filters active`} />
         )}
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
-        <div className="fixed w-[min(540px,calc(100vw-16px))] rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
-          {/* Header */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-white/5">
-            <Layers size={13} className="text-cyan-400" />
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(540, (window.innerWidth - 16) / menuPos.z) }}>
+          {/* Header — synced site logo in the silver rim, like the page heroes */}
+          <div className="flex items-center gap-2.5 px-3 py-2.5 border-b border-white/[0.06]">
+            <SiteLogoBox size={22} rounded={7} />
             <span className="text-[12px] font-semibold text-white">Feed Settings</span>
+            <Layers size={12} className="ml-auto text-slate-500" />
           </div>
 
           <div className="p-3 space-y-3 max-h-[calc(100vh-140px)] overflow-y-auto">
             {/* Two-column layout: Columns + View | Display */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
               <div className="space-y-3">
-                {/* COLUMNS */}
-                <section className="space-y-2">
+                {/* COLUMNS — separate settings for the image & video feeds */}
+                <FeedColsPicker label="Image Columns" cols={cols} onChange={onColsChange} />
+                <FeedColsPicker label="Video Columns" cols={videoCols} onChange={onVideoColsChange} />
+                <p className="text-[9.5px] text-slate-600 leading-relaxed"><span className="text-slate-400">Auto</span> adapts to your screen size.</p>
+
+                {/* TASKBAR SIZE */}
+                <section className="border-t border-white/5 pt-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Columns</span>
-                    <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border ${cols === null ? "border-white/10 text-slate-500" : "border-cyan-500/30 text-cyan-300"}`}>{cols ?? "Auto"}</span>
+                    <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Taskbar Size</span>
+                    <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border ${taskbarScale === 1 ? "border-white/10 text-slate-500" : "border-white/25 text-white"}`}>{taskbarScale}x</span>
                   </div>
-                  <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
-                    <button onClick={() => onColsChange(null)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${cols === null ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>Auto</button>
-                    {[1, 2, 3, 4, 5, 6].map(n => (
-                      <button key={n} onClick={() => onColsChange(n)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>{n}</button>
-                    ))}
+                  <FeedSeg
+                    value={String(taskbarScale)}
+                    onChange={(v) => onTaskbarScaleChange(parseFloat(v) as 1 | 1.5)}
+                    options={[{ value: "1", label: "1x" }, { value: "1.5", label: "1.5x" }]}
+                  />
+                  <p className="text-[9.5px] text-slate-600 leading-relaxed">Scales the whole top taskbar (and its menus).</p>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Prompt Box Size</span>
+                    <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border ${promptScale === 1 ? "border-white/10 text-slate-500" : "border-white/25 text-white"}`}>{promptScale}x</span>
                   </div>
-                  <div className="flex items-center gap-2.5 px-0.5">
-                    <span className="text-[10px] font-mono text-slate-600">1</span>
-                    <input type="range" min={1} max={6} step={1} value={cols ?? 4} onChange={e => onColsChange(+e.target.value)} className="flex-1 accent-cyan-400 cursor-pointer" />
-                    <span className="text-[10px] font-mono text-slate-600">6</span>
-                  </div>
-                  <p className="text-[9.5px] text-slate-600 leading-relaxed"><span className="text-slate-400">Auto</span> adapts to your screen size.</p>
+                  <FeedSeg
+                    value={String(promptScale)}
+                    onChange={(v) => onPromptScaleChange(parseFloat(v) as 1 | 1.5)}
+                    options={[{ value: "1", label: "1x" }, { value: "1.5", label: "1.5x" }]}
+                  />
+                  <p className="text-[9.5px] text-slate-600 leading-relaxed">Scales the image and video composer bars.</p>
                 </section>
 
                 {/* VIEW */}
                 <section className="border-t border-white/5 pt-3 space-y-1.5">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">View</span>
+                  <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">View</span>
                   <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={showHidden} onChange={onShowHiddenChange} accent="amber" />
                   {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
                 </section>
@@ -1451,7 +1978,7 @@ function FeedDropdown({
 
               {/* DISPLAY */}
               <section className="space-y-2 border-t border-white/5 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:border-white/5 sm:pl-4">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Display</span>
+                <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Display</span>
                 <FeedToggleRow label="Full Size" on={fullSize} onChange={onFullSizeChange} />
                 {fullSize && (
                   <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-2">
@@ -1472,6 +1999,25 @@ function FeedDropdown({
                         : fullSizeLayout === "masonry"
                           ? <><span className="text-white">Rows</span> stays put as images load; <span className="text-white">Flow</span> fills each column top-to-bottom.</>
                           : <>Whole images at their natural shape — nothing cropped. Tap any for full resolution.</>}
+                    </p>
+                  </div>
+                )}
+                {/* Video-feed only: autoplay tiles while they're on screen */}
+                <FeedToggleRow label="Autoplay Videos" icon={<Video size={11} />} on={videoAutoplay} onChange={onVideoAutoplayChange} />
+                {videoAutoplay && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Video feed tiles play automatically (muted) while visible. Uses more data.</p>}
+                {/* Silver animated border around every feed thumbnail */}
+                <FeedToggleRow label="Borders" icon={<Square size={11} />} on={tileBorders} onChange={onTileBordersChange} />
+                {tileBorders && (
+                  <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-2">
+                    <FeedOptionRow label="Style">
+                      <FeedSeg value={borderMode} onChange={onBorderModeChange} options={[{ value: "slim", label: "Slim" }, { value: "fill", label: "Thick" }, { value: "smart", label: "Smart" }]} />
+                    </FeedOptionRow>
+                    <p className="text-[9.5px] text-slate-600 leading-relaxed">
+                      {borderMode === "smart"
+                        ? <><span className="text-white">Smart</span> fills the whole feed with flowing silver — no black space between or around generations.</>
+                        : borderMode === "fill"
+                        ? <><span className="text-white">Thick</span> frames each thumbnail with a wide animated silver border.</>
+                        : <><span className="text-white">Slim</span> hugs each thumbnail with a thin animated silver outline.</>}
                     </p>
                   </div>
                 )}
@@ -2241,11 +2787,247 @@ function AdminFeedFilterPanel({ initial, onApply, onClose }: {
 
 const ADMIN_EMAILS = ["dirtysecretai@gmail.com", "promptandprotocol@gmail.com"]
 
-// --- PROFILE BUBBLE ---
-function ProfileBubble({ user, onSignOut }: { user: UserData | null; onSignOut: () => void }) {
+// --- IMAGE FRAMING / CROP MODAL ---
+// Lets the user align an uploaded image inside the profile/logo frame before it's
+// saved. Pan (drag), zoom (slider), and pinch-to-zoom on touch; the visible frame is
+// exported as a square (object-cover in the round/rounded display shows the framing).
+// Reused for profile pictures (circle, JPEG) and the site logo (square, PNG for
+// transparency).
+function AvatarCropModal({ src, uploading, onCancel, onConfirm, title = "Position your photo", shape = "circle", outputType = "image/jpeg" }: {
+  src: string
+  uploading: boolean
+  onCancel: () => void
+  onConfirm: (dataUrl: string) => void
+  title?: string
+  shape?: "circle" | "square"
+  outputType?: "image/jpeg" | "image/png"
+}) {
+  const D = 260               // display diameter of the crop circle (px)
+  const OUT = 512             // exported square size (px)
+  const imgRef = useRef<HTMLImageElement | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null)
+  const [zoom, setZoom] = useState(1)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  // Active pointers (for pinch), a single-finger/mouse drag baseline, and a pinch
+  // baseline captured when the 2nd finger lands — so the gesture math never depends
+  // on mid-gesture React state (no lag/jump).
+  const drag = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
+  const pointers = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const pinch = useRef<{ startDist: number; startZoom: number; anchorX: number; anchorY: number } | null>(null)
+
+  const baseScale = nat ? D / Math.min(nat.w, nat.h) : 1
+  const scale = baseScale * zoom
+
+  // Keep the image covering the circle at all times.
+  const clamp = useCallback((x: number, y: number, s: number) => {
+    if (!nat) return { x, y }
+    const rw = nat.w * s, rh = nat.h * s
+    return {
+      x: Math.min(0, Math.max(D - rw, x)),
+      y: Math.min(0, Math.max(D - rh, y)),
+    }
+  }, [nat])
+
+  // Load the image and center it when the source changes.
+  useEffect(() => {
+    const im = new window.Image()
+    im.onload = () => {
+      imgRef.current = im
+      setNat({ w: im.naturalWidth, h: im.naturalHeight })
+      const s = (D / Math.min(im.naturalWidth, im.naturalHeight)) * 1
+      setZoom(1)
+      setOffset({ x: (D - im.naturalWidth * s) / 2, y: (D - im.naturalHeight * s) / 2 })
+    }
+    im.src = src
+  }, [src])
+
+  // Midpoint of two pointers in container-local coordinates.
+  const localMid = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const r = containerRef.current?.getBoundingClientRect()
+    const lx = r?.left ?? 0, ty = r?.top ?? 0
+    return { x: (a.x + b.x) / 2 - lx, y: (a.y + b.y) / 2 - ty }
+  }
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y)
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const pts = [...pointers.current.values()]
+    if (pts.length >= 2) {
+      // Second finger down → start a pinch; anchor the image point under the midpoint.
+      drag.current = null
+      const mid = localMid(pts[0], pts[1])
+      pinch.current = {
+        startDist: dist(pts[0], pts[1]) || 1,
+        startZoom: zoom,
+        anchorX: (mid.x - offset.x) / scale,
+        anchorY: (mid.y - offset.y) / scale,
+      }
+    } else {
+      drag.current = { px: e.clientX, py: e.clientY, ox: offset.x, oy: offset.y }
+    }
+  }
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!pointers.current.has(e.pointerId)) return
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const pts = [...pointers.current.values()]
+    if (pts.length >= 2 && pinch.current) {
+      // Pinch-to-zoom (touch): scale by the finger-distance ratio, keeping the anchor
+      // image point pinned under the live midpoint.
+      const p = pinch.current
+      const newZoom = Math.min(3, Math.max(1, p.startZoom * (dist(pts[0], pts[1]) / p.startDist)))
+      const newScale = baseScale * newZoom
+      const mid = localMid(pts[0], pts[1])
+      setZoom(newZoom)
+      setOffset(clamp(mid.x - p.anchorX * newScale, mid.y - p.anchorY * newScale, newScale))
+    } else if (drag.current) {
+      const nx = drag.current.ox + (e.clientX - drag.current.px)
+      const ny = drag.current.oy + (e.clientY - drag.current.py)
+      setOffset(clamp(nx, ny, scale))
+    }
+  }
+  const onPointerUp = (e: React.PointerEvent) => {
+    pointers.current.delete(e.pointerId)
+    const pts = [...pointers.current.values()]
+    if (pts.length < 2) pinch.current = null
+    // If one finger remains after a pinch, hand it a fresh drag baseline so panning
+    // resumes without jumping.
+    drag.current = pts.length === 1 ? { px: pts[0].x, py: pts[0].y, ox: offset.x, oy: offset.y } : null
+  }
+
+  const onZoom = (z: number) => {
+    if (!nat) { setZoom(z); return }
+    const oldScale = scale
+    const newScale = baseScale * z
+    // Keep the circle's center anchored on the same image point.
+    const cx = (D / 2 - offset.x) / oldScale
+    const cy = (D / 2 - offset.y) / oldScale
+    const nx = D / 2 - cx * newScale
+    const ny = D / 2 - cy * newScale
+    setZoom(z)
+    setOffset(clamp(nx, ny, newScale))
+  }
+
+  const handleConfirm = () => {
+    const im = imgRef.current
+    if (!im) return
+    const canvas = document.createElement("canvas")
+    canvas.width = OUT
+    canvas.height = OUT
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    const srcX = (0 - offset.x) / scale
+    const srcY = (0 - offset.y) / scale
+    const srcSize = D / scale
+    // JPEG has no alpha, so fill a backdrop; PNG (logos) stays transparent.
+    if (outputType === "image/jpeg") {
+      ctx.fillStyle = "#0f172a"
+      ctx.fillRect(0, 0, OUT, OUT)
+    }
+    ctx.drawImage(im, srcX, srcY, srcSize, srcSize, 0, 0, OUT, OUT)
+    onConfirm(outputType === "image/png" ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", 0.9))
+  }
+
+  return createPortal(
+    // Portaled to <body>: a header ancestor with backdrop-blur/transform creates a
+    // containing block that would otherwise anchor this `fixed` overlay to the header
+    // (pushing it off the top of the screen) instead of the viewport.
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto" onMouseDown={onCancel}>
+      <div className="rounded-2xl border border-white/10 bg-slate-900 p-5 w-[min(340px,calc(100vw-24px))] my-auto shadow-2xl" onMouseDown={e => e.stopPropagation()}>
+        <div className="flex items-center gap-2 mb-4">
+          <Crop size={15} className="text-cyan-400" />
+          <span className="text-sm font-semibold text-white">{title}</span>
+          <button onClick={onCancel} className="ml-auto p-1 text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
+        </div>
+
+        {/* Circular crop viewport */}
+        <div className="flex justify-center mb-4">
+          <div
+            ref={containerRef}
+            className={`relative overflow-hidden bg-slate-950 border border-white/10 cursor-grab active:cursor-grabbing touch-none select-none ${shape === "square" ? "rounded-2xl" : "rounded-full"}`}
+            style={{ width: D, height: D }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+          >
+            {nat && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={src}
+                alt="Crop preview"
+                draggable={false}
+                style={{
+                  position: "absolute",
+                  left: offset.x,
+                  top: offset.y,
+                  width: nat.w * scale,
+                  height: nat.h * scale,
+                  maxWidth: "none",
+                }}
+              />
+            )}
+            {/* Frame hint */}
+            <div className={`absolute inset-0 ring-1 ring-inset ring-white/20 pointer-events-none ${shape === "square" ? "rounded-2xl" : "rounded-full"}`} />
+          </div>
+        </div>
+
+        {/* Zoom */}
+        <div className="flex items-center gap-2.5 mb-4 px-1">
+          <span className="text-[10px] font-mono text-slate-600">−</span>
+          <input
+            type="range" min={1} max={3} step={0.01} value={zoom}
+            onChange={e => onZoom(parseFloat(e.target.value))}
+            className="flex-1 accent-cyan-400 cursor-pointer"
+          />
+          <span className="text-[10px] font-mono text-slate-600">+</span>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={uploading}
+            className="flex-1 py-2 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-medium transition-all disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={uploading || !nat}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 text-xs font-semibold transition-all disabled:opacity-50"
+          >
+            {uploading ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+            {uploading ? "Saving…" : "Save photo"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// --- SITE LOGO (header, far left) ---
+// Shows the site logo to everyone. For ADMIN accounts it's a dropdown button whose
+// only action (for now) is uploading/replacing the logo — routed through the same
+// framing crop modal, exporting a transparent PNG. Non-admins see a static logo.
+function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGoChat, size = 36, openUp = false }: {
+  logoUrl: string | null
+  isAdmin: boolean
+  onLogoChange?: (url: string | null) => void
+  onGoHome?: () => void
+  onGoFeed?: () => void
+  // Admin-only: opens the AI Chat Hub (rendered in the ADMIN section of the menu)
+  onGoChat?: () => void
+  size?: number
+  // Prompt-box placement: the bar sits at the bottom, so the menu opens upward
+  openUp?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const isAdmin = user !== null && ADMIN_EMAILS.includes(user.email)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [cropSrc, setCropSrc] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -2255,66 +3037,409 @@ function ProfileBubble({ user, onSignOut }: { user: UserData | null; onSignOut: 
     return () => document.removeEventListener("mousedown", handleClick)
   }, [])
 
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file || !file.type.startsWith("image/")) return
+    const reader = new FileReader()
+    reader.onload = () => setCropSrc(reader.result as string)
+    reader.readAsDataURL(file)
+  }
+
+  const onConfirm = async (dataUrl: string) => {
+    setUploading(true)
+    try {
+      const res = await fetch("/api/admin/logo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl }),
+      })
+      if (res.ok) {
+        const d = await res.json()
+        onLogoChange?.(d.logoUrl)
+        setCropSrc(null)
+        setOpen(false)
+      }
+    } catch {}
+    finally { setUploading(false) }
+  }
+
+  const logoBox = (
+    // Sleek animated silver rim: a slowly-rotating conic sheen sits behind the logo,
+    // which is inset by ~1.5px so the rim shows as a thin metallic ring.
+    <span
+      className="relative flex items-center justify-center rounded-xl overflow-hidden shrink-0"
+      style={{ width: size, height: size }}
+    >
+      <span
+        className="absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 animate-spin -z-10"
+        style={{
+          background: "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",
+          animationDuration: "5s",
+        }}
+      />
+      <span className="absolute inset-[1.5px] flex items-center justify-center rounded-[10px] overflow-hidden bg-slate-900">
+        {logoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={logoUrl} alt="AI Design Studio" className="w-full h-full object-cover" />
+        ) : (
+          <Sparkles size={Math.round(size * 0.45)} className="text-white/50" />
+        )}
+      </span>
+    </span>
+  )
+
   return (
     <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className={`w-8 h-8 rounded-full border-2 flex items-center justify-center transition-all ${
-          open
-            ? "border-cyan-400 bg-cyan-500/20 text-cyan-400"
-            : "border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-400 hover:text-white"
-        }`}
-      >
-        <User size={14} />
+      <button type="button" onClick={() => setOpen(v => !v)} title="Menu" className="flex items-center">
+        {logoBox}
       </button>
 
+      <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onPick} />
+      {cropSrc && (
+        <AvatarCropModal
+          src={cropSrc}
+          uploading={uploading}
+          title="Frame your logo"
+          shape="square"
+          outputType="image/png"
+          onCancel={() => { if (!uploading) setCropSrc(null) }}
+          onConfirm={onConfirm}
+        />
+      )}
+
       {open && (
-        <div className="absolute top-full right-0 mt-2 w-64 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl p-4 z-50">
-          {user !== null ? (
-            <div className="space-y-3">
-              <div>
-                <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-1">Email</p>
-                <p className="text-sm text-white break-all">{user.email}</p>
+        <div className={`absolute left-0 w-52 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden ${openUp ? "bottom-full mb-2" : "top-full mt-2"}`}>
+          {/* Navigation — shown to everyone */}
+          <button
+            onClick={() => { onGoHome?.(); setOpen(false) }}
+            className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+          >
+            <Sparkles size={13} className="text-slate-300 shrink-0" />
+            <span className="flex-1 text-left">Home</span>
+          </button>
+          <button
+            onClick={() => { onGoFeed?.(); setOpen(false) }}
+            className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors border-t border-white/5"
+          >
+            <Layers size={13} className="text-slate-300 shrink-0" />
+            <span className="flex-1 text-left">Regular feed</span>
+          </button>
+
+          {/* Admin-only section: chat hub + site logo management */}
+          {isAdmin && (
+            <>
+              <div className="px-3 py-2 border-t border-white/5 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-violet-400/70">Admin Only</div>
+              <button
+                onClick={() => { onGoChat?.(); setOpen(false) }}
+                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+              >
+                <MessagesSquare size={13} className="text-violet-400 shrink-0" />
+                <span className="flex-1 text-left">AI Chat Hub</span>
+              </button>
+              <div className="px-3 py-2 border-t border-white/5 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Site Logo · Admin</div>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+              >
+                <Upload size={13} className="text-slate-300 shrink-0" />
+                <span className="flex-1 text-left">{logoUrl ? "Replace logo" : "Upload logo"}</span>
+              </button>
+              {logoUrl && (
+                <button
+                  onClick={async () => {
+                    try { await fetch("/api/admin/logo", { method: "DELETE" }) } catch {}
+                    onLogoChange?.(null)
+                    setOpen(false)
+                  }}
+                  className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors border-t border-white/5"
+                >
+                  <Trash2 size={13} className="shrink-0" />
+                  <span className="flex-1 text-left">Remove logo</span>
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange }: { user: UserData | null; isAdminAccount?: boolean; onSignOut: () => void; onAvatarChange?: (url: string | null) => void }) {
+  const [open, setOpen] = useState(false)
+  const [chatSettingsOpen, setChatSettingsOpen] = useState(false)
+  const [chatTab, setChatTab] = useState<"layout" | "providers" | "agent" | "capabilities" | "keys">("layout")
+  const ref = useRef<HTMLDivElement>(null)
+  const isAdmin = isAdminAccount || (user !== null && ADMIN_EMAILS.includes(user.email))
+
+  // Profile picture: pick a file → crop against the circle → upload.
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [cropSrc, setCropSrc] = useState<string | null>(null)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+
+  const onPickAvatar = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = "" // allow re-picking the same file later
+    if (!file || !file.type.startsWith("image/")) return
+    const reader = new FileReader()
+    reader.onload = () => setCropSrc(reader.result as string)
+    reader.readAsDataURL(file)
+  }
+
+  const onCropConfirm = async (dataUrl: string) => {
+    setUploadingAvatar(true)
+    try {
+      const res = await fetch("/api/user/avatar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        onAvatarChange?.(data.avatarUrl)
+        setCropSrc(null)
+      }
+    } catch {}
+    finally { setUploadingAvatar(false) }
+  }
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [])
+
+  // Reopening the dropdown always starts on the profile view
+  useEffect(() => {
+    if (!open) setChatSettingsOpen(false)
+  }, [open])
+
+  return (
+    <div className="relative" ref={ref}>
+      {/* Trigger — animated silver rim, same treatment as the site logo box */}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`relative isolate w-8 h-8 rounded-full overflow-hidden flex items-center justify-center transition-all ${
+          open ? "" : "opacity-90 hover:opacity-100"
+        }`}
+      >
+        <span
+          className="absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 animate-spin -z-10"
+          style={{
+            background:
+              "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",
+            animationDuration: "5s",
+          }}
+        />
+        <span className={`absolute inset-[1.5px] flex items-center justify-center rounded-full overflow-hidden transition-colors ${
+          open ? "bg-slate-800 text-white" : "bg-slate-900 text-slate-400"
+        }`}>
+          {user?.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={user.avatarUrl} alt="Profile" className="w-full h-full object-cover" />
+          ) : (
+            <User size={14} />
+          )}
+        </span>
+      </button>
+
+      {/* Hidden file picker + crop modal for the profile picture */}
+      <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onPickAvatar} />
+      {cropSrc && (
+        <AvatarCropModal
+          src={cropSrc}
+          uploading={uploadingAvatar}
+          onCancel={() => { if (!uploadingAvatar) setCropSrc(null) }}
+          onConfirm={onCropConfirm}
+        />
+      )}
+
+      {open && (
+        <div className={`absolute top-full right-0 mt-2 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden ${
+          chatSettingsOpen && isAdmin && user !== null
+            ? "w-[min(600px,calc(100vw-16px))]"
+            : "w-72 max-h-[80vh] overflow-y-auto"
+        }`}>
+          {user !== null && chatSettingsOpen && isAdmin ? (
+            /* ── Chat Settings mode: wide tabbed panel replaces the list ── */
+            <>
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
+                <button
+                  onClick={() => setChatSettingsOpen(false)}
+                  className="p-1.5 -ml-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                  title="Back to profile"
+                >
+                  <ChevronDown size={14} className="rotate-90" />
+                </button>
+                <SlidersHorizontal size={14} className="text-slate-300 shrink-0" />
+                <span className="flex-1 text-sm text-white font-medium">Chat Settings</span>
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-white/15 bg-black font-mono text-[11px] shrink-0">
+                  <Ticket size={10} className="text-slate-400" />
+                  <span className="text-white tabular-nums">{user.ticketBalance.toLocaleString()}</span>
+                </span>
               </div>
-              <div>
-                <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-1">User ID</p>
-                <p className="text-sm text-white font-mono">#{user.id}</p>
+              <div className="flex border-b border-white/5">
+                {([
+                  ["layout", "Layout"],
+                  ["providers", "Providers"],
+                  ["agent", "Agent"],
+                  ["capabilities", "Capabilities"],
+                  ["keys", "API Keys"],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    onClick={() => setChatTab(id)}
+                    className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors border-b-2 ${
+                      chatTab === id
+                        ? "border-white/80 text-white bg-white/[0.05]"
+                        : "border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-              <div className="pt-1 border-t border-white/10">
-                <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-1">Tickets</p>
-                <div className="flex items-center gap-2">
-                  <Ticket size={14} className="text-cyan-400" />
-                  <p className="text-lg font-bold text-cyan-400">{user.ticketBalance.toLocaleString()}</p>
+              <div className="max-h-[62vh] overflow-y-auto overscroll-contain px-4 py-3.5">
+                {chatTab === "layout" && <ChatLayoutSettings />}
+                {chatTab === "providers" && <ChatProviderSettings />}
+                {chatTab === "agent" && <ChatAgentSettings />}
+                {chatTab === "capabilities" && <ChatAgentCapabilities />}
+                {chatTab === "keys" && <ChatApiKeysSettings />}
+              </div>
+            </>
+          ) : user !== null ? (
+            <>
+              {/* Identity header — silver-rimmed avatar, same treatment as the site logo */}
+              <div className="flex items-center gap-3 px-4 py-3.5 border-b border-white/[0.06]">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Change profile picture"
+                  className="relative w-11 h-11 shrink-0 group grid [grid-template-columns:100%] [grid-template-rows:100%]"
+                >
+                  {/* Animated silver rim (conic sweep) around the round-clipped avatar */}
+                  <span className="col-start-1 row-start-1 relative isolate flex w-full h-full items-center justify-center rounded-full overflow-hidden">
+                    <span
+                      className="absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 animate-spin -z-10"
+                      style={{
+                        background:
+                          "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",
+                        animationDuration: "5s",
+                      }}
+                    />
+                    <span className="absolute inset-[1.5px] flex items-center justify-center rounded-full overflow-hidden bg-slate-900">
+                      {user.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={user.avatarUrl} alt="Profile" className="w-full h-full object-cover" />
+                      ) : (
+                        <User size={16} className="text-slate-300" />
+                      )}
+                      <span className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </span>
+                  </span>
+                  {/* "+" badge — grid-stacked into the corner (NOT position:absolute):
+                      Safari mis-places absolutely positioned overlays inside these
+                      fixed panels when the taskbar is CSS-zoomed at 1.5x. */}
+                  <span className="col-start-1 row-start-1 self-end justify-self-end pointer-events-none z-10">
+                    <span className="w-4 h-4 -mb-0.5 -mr-0.5 rounded-full bg-white border-2 border-[#070b14] flex items-center justify-center text-slate-900">
+                      <Plus size={9} strokeWidth={3.5} />
+                    </span>
+                  </span>
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-white font-medium truncate" title={user.email}>{user.email}</p>
+                  <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 mt-0.5">User #{user.id}</p>
                 </div>
               </div>
+
+              {/* Tickets */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
+                <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Tickets</span>
+                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/15 bg-black font-mono text-xs">
+                  <Ticket size={11} className="text-slate-400" />
+                  <span className="text-white tabular-nums tracking-wider">{user.ticketBalance.toLocaleString()}</span>
+                </span>
+              </div>
+
+              {/* Settings — opens the wide tabbed Chat Settings panel */}
               {isAdmin && (
-                <Link
-                  href="/admin"
-                  className="block w-full py-2 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 hover:border-cyan-500/40 text-sm text-cyan-400 hover:text-cyan-300 text-center transition-colors"
-                  onClick={() => setOpen(false)}
-                >
-                  Admin Portal →
-                </Link>
+                <div className="border-b border-white/[0.06]">
+                  <div className="px-4 pt-3 pb-1 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">
+                    Settings
+                  </div>
+                  <button
+                    onClick={() => { setChatTab("layout"); setChatSettingsOpen(true) }}
+                    className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                  >
+                    <SlidersHorizontal size={13} className="text-slate-400 shrink-0" />
+                    <span className="flex-1 text-left">Chat Settings</span>
+                    <ChevronDown size={12} className="text-slate-500 -rotate-90" />
+                  </button>
+                </div>
               )}
-              <button
-                onClick={async () => {
-                  await fetch("/api/auth/logout", { method: "POST" })
-                  setOpen(false)
-                  onSignOut()
-                }}
-                className="w-full py-2 rounded-lg bg-white/5 hover:bg-red-500/10 border border-white/10 hover:border-red-500/30 text-sm text-slate-400 hover:text-red-400 transition-colors"
-              >
-                Sign out
-              </button>
-            </div>
+
+              {/* Actions */}
+              <div className="p-3 space-y-2">
+                {isAdmin && (
+                  <Link
+                    href="/admin"
+                    className="relative overflow-hidden block w-full py-2 rounded-xl bg-white/10 border border-white/25 hover:bg-white/15 hover:border-white/40 text-xs font-bold text-white text-center transition-all"
+                    onClick={() => setOpen(false)}
+                  >
+                    <span
+                      className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                      style={{ animation: "sheen-sweep 2.6s infinite" }}
+                    />
+                    Admin Portal →
+                  </Link>
+                )}
+                <button
+                  onClick={async () => {
+                    await fetch("/api/auth/logout", { method: "POST" })
+                    setOpen(false)
+                    onSignOut()
+                  }}
+                  className="w-full py-2 rounded-xl bg-white/[0.04] hover:bg-red-500/10 border border-white/10 hover:border-red-500/30 text-xs text-slate-400 hover:text-red-400 transition-colors"
+                >
+                  Sign out
+                </button>
+              </div>
+            </>
           ) : (
-            <div className="text-center">
+            <div className="p-4 text-center">
+              {/* Signed out — same brand treatment as the feed prompt, compact */}
+              <span className="relative isolate flex w-11 h-11 mx-auto mb-2.5 items-center justify-center rounded-full overflow-hidden">
+                <span
+                  className="absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 animate-spin -z-10"
+                  style={{
+                    background:
+                      "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",
+                    animationDuration: "5s",
+                  }}
+                />
+                <span className="absolute inset-[1.5px] flex items-center justify-center rounded-full bg-slate-900">
+                  <User size={16} className="text-slate-400" />
+                </span>
+              </span>
               <p className="text-sm text-slate-500 mb-3">Not signed in</p>
               <Link
                 href="/login"
-                className="block w-full py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-sm text-white text-center transition-colors"
+                className="relative overflow-hidden block w-full py-2 rounded-xl bg-white/10 border border-white/25 hover:bg-white/15 hover:border-white/40 text-sm font-bold text-white text-center transition-all"
               >
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                  style={{ animation: "sheen-sweep 2.6s infinite" }}
+                />
                 Sign in
+              </Link>
+              <Link
+                href="/signup"
+                className="block w-full py-2 mt-2 rounded-xl border border-white/10 bg-white/[0.04] text-xs text-slate-300 hover:bg-white/10 hover:text-white text-center transition-all"
+              >
+                Create Account
               </Link>
             </div>
           )}
@@ -2334,27 +3459,25 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
     <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4" onClick={onDecline}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
-        className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#0e0e18] shadow-2xl p-6"
+        className="relative w-full max-w-sm rounded-2xl border border-white/[0.08] bg-[#070b14] shadow-2xl p-6"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start gap-3 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
-            <Lock size={16} className="text-cyan-400" />
-          </div>
+          <SiteLogoBox size={36} rounded={12} />
           <div>
             <h2 className="text-sm font-bold text-white leading-tight">Before You Upload</h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">Please read and confirm the following</p>
+            <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 mt-1">Reference library · unlock</p>
           </div>
         </div>
         <div className="space-y-3 mb-5">
           <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
+            <div className="w-1.5 h-1.5 rounded-full bg-white/70 shrink-0 mt-1.5" />
             <p className="text-[12px] text-slate-300 leading-relaxed">
               I own the rights to any images I upload here, or have explicit permission to use them as references for AI generation.
             </p>
           </div>
           <div className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0 mt-1.5" />
+            <div className="w-1.5 h-1.5 rounded-full bg-white/70 shrink-0 mt-1.5" />
             <p className="text-[12px] text-slate-300 leading-relaxed">
               If any image contains the likeness of a real person, I have obtained their consent to use it online.
             </p>
@@ -2367,17 +3490,17 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
             onClick={() => setChecked(c => !c)}
             className={`w-4 h-4 rounded shrink-0 mt-0.5 border flex items-center justify-center transition-all ${
               checked
-                ? "bg-cyan-500 border-cyan-500"
+                ? "bg-white border-white"
                 : "bg-white/[0.04] border-white/20 group-hover:border-white/40"
             }`}
           >
-            {checked && <Check size={10} className="text-white" strokeWidth={3} />}
+            {checked && <Check size={10} className="text-slate-900" strokeWidth={3} />}
           </div>
           <p className="text-[11px] text-slate-400 leading-relaxed">
             I have read and agree to the{" "}
-            <a href="/terms" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-cyan-400 hover:underline">Terms of Service</a>,{" "}
-            <a href="/privacy" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-cyan-400 hover:underline">Privacy Policy</a>, and{" "}
-            <a href="/refund" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-cyan-400 hover:underline">Refund Policy</a>.
+            <a href="/terms" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-white hover:underline">Terms of Service</a>,{" "}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-white hover:underline">Privacy Policy</a>, and{" "}
+            <a href="/refund" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-white hover:underline">Refund Policy</a>.
           </p>
         </label>
 
@@ -2394,13 +3517,109 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
           <button
             onClick={() => { if (checked) onAgree() }}
             disabled={!checked}
-            className={`flex-1 py-2 rounded-xl text-[12px] font-semibold transition-all ${
+            className={`relative overflow-hidden flex-1 py-2 rounded-xl text-[12px] font-bold transition-all ${
               checked
+                ? "bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40 cursor-pointer"
+                : "bg-white/[0.03] border border-white/10 text-slate-600 cursor-not-allowed"
+            }`}
+          >
+            {checked && (
+              <span
+                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                style={{ animation: "sheen-sweep 2.6s infinite" }}
+              />
+            )}
+            I Agree
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// --- AGE ATTESTATION MODAL ---
+// CCBill compliance: blocking one-time 18+ certification for accounts created
+// before signup persisted the attestation. No backdrop dismiss, no cancel —
+// the only ways out are certifying (stored server-side) or leaving the site.
+function AgeAttestModal({ onDone }: { onDone: () => void }) {
+  const [checked, setChecked] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState(false)
+  if (typeof document === 'undefined') return null
+  const confirm = async () => {
+    if (!checked || saving) return
+    setSaving(true)
+    setSaveError(false)
+    // Only dismiss once the server confirms the save — a silent failure here
+    // would bring the modal back on every reload
+    try {
+      const res = await fetch('/api/user/attest-age', { method: 'POST' })
+      if (res.ok) {
+        onDone()
+        return
+      }
+    } catch {}
+    setSaveError(true)
+    setSaving(false)
+  }
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#0e0e18] shadow-2xl p-6">
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
+            <span className="text-cyan-400 text-[11px] font-bold">18+</span>
+          </div>
+          <div>
+            <h2 className="text-sm font-bold text-white leading-tight">Age Certification Required</h2>
+            <p className="text-[11px] text-slate-500 mt-0.5">One-time confirmation for your account</p>
+          </div>
+        </div>
+        <p className="text-[12px] text-slate-300 leading-relaxed mb-4">
+          This service provides AI-generated content intended for adults. To continue
+          using your account, please certify that you are at least 18 years of age
+          (or the age of majority in your jurisdiction).
+        </p>
+        <label className="flex items-start gap-2.5 mb-5 cursor-pointer group">
+          <div
+            onClick={() => setChecked(c => !c)}
+            className={`w-4 h-4 rounded shrink-0 mt-0.5 border flex items-center justify-center transition-all ${
+              checked
+                ? "bg-cyan-500 border-cyan-500"
+                : "bg-white/[0.04] border-white/20 group-hover:border-white/40"
+            }`}
+          >
+            {checked && <Check size={10} className="text-white" strokeWidth={3} />}
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            I certify that I am at least 18 years of age and agree to the{" "}
+            <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Terms of Service</a>.
+          </p>
+        </label>
+        {saveError && (
+          <p className="text-[11px] text-red-400 mb-3 leading-relaxed">
+            Couldn&apos;t save your certification — please try again. If this keeps
+            happening, the server may need a restart.
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={() => { window.location.href = "https://www.google.com" }}
+            className="flex-1 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-[12px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-all"
+          >
+            Leave
+          </button>
+          <button
+            onClick={confirm}
+            disabled={!checked || saving}
+            className={`flex-1 py-2 rounded-xl text-[12px] font-semibold transition-all ${
+              checked && !saving
                 ? "bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 cursor-pointer"
                 : "bg-white/[0.03] border border-white/10 text-slate-600 cursor-not-allowed"
             }`}
           >
-            I Agree
+            {saving ? "Saving..." : "I certify — Continue"}
           </button>
         </div>
       </div>
@@ -2423,6 +3642,8 @@ function RefDropdown({
   onActivate,
   onDeactivate,
   onEditSave,
+  canUseLayers = false,
+  onSaveLayers,
   folders = [],
   uploadProgress = null,
   onMove,
@@ -2444,7 +3665,10 @@ function RefDropdown({
   onClearAll: () => void
   onActivate: (id: string) => void
   onDeactivate: (id: string) => void
-  onEditSave: (id: string, newUrl: string) => void
+  onEditSave: (id: string, newUrl: string) => void | Promise<RefImage | null>
+  // Dev-Tier multi-layer canvases
+  canUseLayers?: boolean
+  onSaveLayers?: (id: string, stack: RefLayerStack | null) => void
   folders?: RefFolder[]
   uploadProgress?: { done: number; total: number } | null
   onMove?: (ids: string[], folderId: number | null) => void
@@ -2457,11 +3681,33 @@ function RefDropdown({
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
   const [selectMode, setSelectMode] = useState(false)
   const [selectedForDelete, setSelectedForDelete] = useState<Set<string>>(new Set())
   const [editMode, setEditMode] = useState(false)
   const [editingImage, setEditingImage] = useState<RefImage | null>(null)
+  // The open editor survives a page refresh: remember which image is being
+  // edited and re-open it once the account library has loaded
+  const editRestoreTried = useRef(false)
+  useEffect(() => {
+    if (editRestoreTried.current || library.length === 0) return
+    editRestoreTried.current = true
+    try {
+      const id = sessionStorage.getItem('pv2-editing-ref-id')
+      if (id) {
+        const img = library.find(r => r.id === id)
+        if (img) setEditingImage(img)
+        else sessionStorage.removeItem('pv2-editing-ref-id')
+      }
+    } catch {}
+  }, [library])
+  const hadEditingImage = useRef(false)
+  useEffect(() => {
+    try {
+      if (editingImage) { hadEditingImage.current = true; sessionStorage.setItem('pv2-editing-ref-id', editingImage.id) }
+      else if (hadEditingImage.current) { hadEditingImage.current = false; sessionStorage.removeItem('pv2-editing-ref-id') }
+    } catch {}
+  }, [editingImage])
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [consentGiven, setConsentGiven] = useState(false)
@@ -2477,7 +3723,9 @@ function RefDropdown({
   const [renameValue, setRenameValue] = useState("")
   const [movePicker, setMovePicker] = useState<{ path: RefFolder[] } | null>(null)
   const activeCount = disabled ? 0 : activeIds.filter((id) => library.some((img) => img.id === id)).length
-  const atLimit = !disabled && modelMaxRefs > 0 && activeCount >= modelMaxRefs
+  // modelMaxRefs === 0 (model takes no refs) blocks activation entirely —
+  // previously the `> 0` guard let refs activate despite the no-support notice
+  const atLimit = !disabled && activeCount >= modelMaxRefs
 
   const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : null
   // Drop path segments whose folders were deleted (e.g. from another device)
@@ -2492,6 +3740,10 @@ function RefDropdown({
 
   useEffect(() => {
     setConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
+    // Admin auto-unlock fires after mount — pick it up live
+    const grant = () => setConsentGiven(true)
+    window.addEventListener("pv2-ref-consent", grant)
+    return () => window.removeEventListener("pv2-ref-consent", grant)
     try { setWide(localStorage.getItem("pv2-ref-wide") === "true") } catch {}
   }, [])
 
@@ -2536,8 +3788,9 @@ function RefDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      const panelW = wide ? Math.min(640, window.innerWidth - 16) : 320
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
+      const z = cssZoomOf(buttonRef.current!)
+      const panelW = Math.min((wide ? 640 : 320) * z, window.innerWidth - 16)
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
   }, [open, wide])
 
@@ -2619,31 +3872,31 @@ function RefDropdown({
       <button
         ref={buttonRef}
         onClick={handleButtonClick}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : consentGiven ? "text-slate-400 hover:text-white hover:bg-white/5" : "text-slate-500 hover:text-slate-300 hover:bg-white/5"
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+          open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
-        {consentGiven ? <ImagePlus size={15} /> : <Lock size={13} className="text-slate-600" />}
+        {consentGiven ? <ImagePlus size={15} className="text-slate-300" /> : <Lock size={13} className="text-slate-500" />}
         Refs
         {consentGiven && activeCount > 0 && (
-          <span className="px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-bold leading-none">
+          <span className="px-1.5 py-0.5 rounded-full bg-white/15 text-white text-[10px] font-bold leading-none">
             {activeCount}
           </span>
         )}
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
-        <div className={`fixed ${wide ? "w-[min(640px,calc(100vw-16px))]" : "w-80"} rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]`} style={{ top: menuPos.top, left: menuPos.left }}>
-          {/* Header */}
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(wide ? 640 : 320, (window.innerWidth - 16) / menuPos.z) }}>
+          {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
+              <SiteLogoBox size={22} rounded={7} />
               <span className="text-sm font-semibold text-white">Reference Images</span>
               {/* Wide mode toggle — 2x width, rows of 10 */}
               <button
                 onClick={toggleWide}
                 title={wide ? "Compact view (rows of 5)" : "Wide view (rows of 10)"}
-                className={`p-1.5 rounded-md border transition-all ${wide ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300" : "border-white/10 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10"}`}
+                className={`p-1.5 rounded-md border transition-all ${wide ? "border-white/30 bg-white/10 text-white" : "border-white/10 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10"}`}
               >
                 {wide ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
               </button>
@@ -2663,11 +3916,11 @@ function RefDropdown({
                   atLimit
                     ? "border-amber-500/30 bg-amber-500/10"
                     : activeCount > 0
-                    ? "border-cyan-500/25 bg-black/60"
+                    ? "border-white/25 bg-black/60"
                     : "border-white/8 bg-black/40"
                 }`} title={modelMaxRefs > 0 ? `Images currently sent with your generation — max ${modelMaxRefs} for this model` : "Images currently sent with your generation"}>
                   <span className="text-[10px] text-slate-500 uppercase tracking-wide font-medium">Active</span>
-                  <span className={`text-xs font-mono font-bold ${atLimit ? "text-amber-400" : activeCount > 0 ? "text-cyan-400" : "text-slate-500"}`}>
+                  <span className={`text-xs font-mono font-bold ${atLimit ? "text-amber-400" : activeCount > 0 ? "text-white" : "text-slate-500"}`}>
                     {activeCount}{modelMaxRefs > 0 ? `/${modelMaxRefs}` : ""}
                   </span>
                 </div>
@@ -2688,7 +3941,7 @@ function RefDropdown({
                   </button>
                   <button
                     onClick={() => setEditMode(true)}
-                    className="flex-1 text-[10px] font-bold text-cyan-400 hover:text-cyan-300 transition-all h-7 rounded-md border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 hover:border-cyan-500/50 whitespace-nowrap flex items-center justify-center"
+                    className="flex-1 text-[10px] font-bold text-white transition-all h-7 rounded-md border border-white/25 bg-white/10 hover:bg-white/15 hover:border-white/40 whitespace-nowrap flex items-center justify-center"
                   >
                     Edit
                   </button>
@@ -2715,7 +3968,7 @@ function RefDropdown({
           {!selectMode && !editMode && (
             <div className="px-4 py-2.5 border-b border-white/5 bg-white/2">
               <p className="text-[10px] text-slate-400 leading-relaxed">
-                Upload images here to use as visual references. <span className="text-white">Tap an image to toggle it on/off</span> — only <span className="text-cyan-400">active</span> images are sent with your generation. Your library is <span className="text-white">saved to your account</span> and syncs across devices.
+                Upload images here to use as visual references. <span className="text-white">Tap an image to toggle it on/off</span> — only <span className="text-white font-semibold">active</span> images are sent with your generation. Your library is <span className="text-white">saved to your account</span> and syncs across devices.
               </p>
             </div>
           )}
@@ -2750,6 +4003,20 @@ function RefDropdown({
             </div>
           )}
 
+          {/* Jump to the full generations gallery */}
+          {!selectMode && !editMode && (
+            <div className="px-3 py-2 border-b border-white/5">
+              <Link
+                href="/my-generations"
+                className="w-full py-2 rounded-lg border border-white/10 bg-white/[0.04] text-[11px] text-slate-300 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all flex items-center justify-center gap-2"
+              >
+                <Image size={11} />
+                My Generations
+                <ArrowUpRight size={11} className="text-slate-500" />
+              </Link>
+            </div>
+          )}
+
           {/* Select mode hint */}
           {selectMode && (
             <div className="px-4 py-2 border-b border-white/5 bg-rose-500/5">
@@ -2759,8 +4026,8 @@ function RefDropdown({
 
           {/* Edit mode hint */}
           {editMode && (
-            <div className="px-4 py-2 border-b border-white/5 bg-cyan-500/5">
-              <p className="text-[10px] text-cyan-400/80">Tap an image to open the editor — crop, draw, blur and more</p>
+            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.04]">
+              <p className="text-[10px] text-slate-300">Tap an image to open the editor — crop, draw, blur and more</p>
             </div>
           )}
 
@@ -2816,9 +4083,9 @@ function RefDropdown({
                     onChange={e => setNewFolderName(e.target.value)}
                     onKeyDown={e => { if (e.key === "Escape") { setNewFolderMode(false); setNewFolderName("") } }}
                     placeholder="Folder name"
-                    className="w-24 px-1.5 py-0.5 rounded bg-black/60 border border-white/15 text-[10px] text-white focus:outline-none focus:border-cyan-500/40"
+                    className="w-24 px-1.5 py-0.5 rounded bg-black/60 border border-white/15 text-[10px] text-white focus:outline-none focus:border-white/40"
                   />
-                  <button type="submit" className="p-1 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300"><Check size={9} /></button>
+                  <button type="submit" className="p-1 rounded bg-white/15 border border-white/30 text-white"><Check size={9} /></button>
                   <button type="button" onClick={() => { setNewFolderMode(false); setNewFolderName("") }} className="p-1 rounded bg-white/5 border border-white/10 text-slate-400"><X size={9} /></button>
                 </form>
               ) : (
@@ -2842,7 +4109,7 @@ function RefDropdown({
                   <div key={f.id} className="relative">
                     {renamingFolderId === f.id ? (
                       <form
-                        className="flex items-center gap-1 px-2 py-1.5 rounded-md border border-cyan-500/30 bg-black/60"
+                        className="flex items-center gap-1 px-2 py-1.5 rounded-md border border-white/30 bg-black/60"
                         onSubmit={(e) => {
                           e.preventDefault()
                           const name = renameValue.trim()
@@ -2857,7 +4124,7 @@ function RefDropdown({
                           onKeyDown={e => { if (e.key === "Escape") setRenamingFolderId(null) }}
                           className="w-full min-w-0 bg-transparent text-[10px] text-white focus:outline-none"
                         />
-                        <button type="submit" className="text-cyan-300 shrink-0"><Check size={9} /></button>
+                        <button type="submit" className="text-white shrink-0"><Check size={9} /></button>
                       </form>
                     ) : (
                       <button
@@ -2911,7 +4178,11 @@ function RefDropdown({
                   const isDisabled = !selectMode && !editMode && !isActive && atLimit
                   const isSelectedForDelete = selectMode && selectedForDelete.has(img.id)
                   return (
-                    <div key={img.id} className="relative group aspect-square">
+                    // Overlays are stacked via CSS grid (every child in cell 1/1), NOT
+                    // position:absolute — iPad Safari mis-places absolutely positioned
+                    // elements inside this fixed panel when the taskbar is CSS-zoomed
+                    // (the active checkmark rendered half a tile away at 1.5x).
+                    <div key={img.id} className="relative group aspect-square grid [grid-template-columns:100%] [grid-template-rows:100%]">
                       <button
                         onClick={() => editMode ? setEditingImage(img) : selectMode ? toggleSelectForDelete(img.id) : handleToggle(img)}
                         disabled={!selectMode && !editMode && (isDisabled || disabled)}
@@ -2923,9 +4194,9 @@ function RefDropdown({
                             : isDisabled ? `Limit reached (${modelMaxRefs})`
                             : isActive ? "Click to deactivate" : "Click to activate"
                         }
-                        className={`w-full h-full rounded-md overflow-hidden border-2 transition-all ${
+                        className={`col-start-1 row-start-1 w-full h-full rounded-md overflow-hidden border-2 transition-all ${
                           editMode
-                            ? "border-transparent hover:border-cyan-400/70"
+                            ? "border-transparent hover:border-white/70"
                             : selectMode
                             ? isSelectedForDelete
                               ? "border-rose-400 ring-1 ring-rose-400/30"
@@ -2933,7 +4204,7 @@ function RefDropdown({
                             : disabled
                             ? "border-transparent opacity-30 cursor-not-allowed"
                             : isActive
-                            ? "border-cyan-400 ring-1 ring-cyan-400/30"
+                            ? "border-white ring-1 ring-white/40"
                             : isDisabled
                             ? "border-transparent opacity-25 cursor-not-allowed"
                             : "border-transparent hover:border-white/30"
@@ -2952,14 +4223,14 @@ function RefDropdown({
 
                       {/* Active checkmark (normal mode) */}
                       {!selectMode && isActive && (
-                        <div className="absolute bottom-0.5 right-0.5 w-4 h-4 rounded-full bg-cyan-400 flex items-center justify-center pointer-events-none">
+                        <div className="col-start-1 row-start-1 self-end justify-self-end m-0.5 w-4 h-4 rounded-full bg-white flex items-center justify-center pointer-events-none z-10">
                           <Check size={9} className="text-black" />
                         </div>
                       )}
 
                       {/* Selected-for-delete indicator (select mode) */}
                       {selectMode && (
-                        <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center pointer-events-none transition-all ${
+                        <div className={`col-start-1 row-start-1 self-start justify-self-start m-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center pointer-events-none transition-all z-10 ${
                           isSelectedForDelete ? "bg-rose-500 border-rose-400" : "bg-black/50 border-white/40"
                         }`}>
                           {isSelectedForDelete && <Check size={8} className="text-white" />}
@@ -2970,7 +4241,7 @@ function RefDropdown({
                       {!selectMode && !editMode && (
                         <button
                           onClick={(e) => { e.stopPropagation(); onDelete(img.id) }}
-                          className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-black/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          className="col-start-1 row-start-1 self-start justify-self-start m-0.5 w-4 h-4 rounded-full bg-black/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
                         >
                           <X size={8} className="text-white" />
                         </button>
@@ -3061,7 +4332,7 @@ function RefDropdown({
                     setSelectedForDelete(new Set())
                     setSelectMode(false)
                   }}
-                  className="flex-1 py-1.5 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[11px] font-medium hover:bg-cyan-500/25 transition-all"
+                  className="flex-1 py-1.5 rounded-lg bg-white/15 border border-white/30 text-white text-[11px] font-medium hover:bg-white/20 transition-all"
                 >
                   Move {selectedForDelete.size} here
                 </button>
@@ -3085,9 +4356,15 @@ function RefDropdown({
       {editingImage && (
         <RefImageEditorModal
           image={editingImage}
+          canUseLayers={canUseLayers}
+          layerStack={editingImage.layers ?? null}
+          onLayerStackChange={(st) => onSaveLayers?.(editingImage.id, st)}
           onApply={(newUrl) => {
-            onEditSave(editingImage.id, newUrl)
-            setEditingImage(null)
+            // Stay open: swap to the re-created reference once the save lands
+            void Promise.resolve(onEditSave(editingImage.id, newUrl)).then((next) => {
+              if (next) setEditingImage(cur => cur ? next : cur)
+              else setEditingImage(null)
+            })
           }}
           onClose={() => setEditingImage(null)}
         />
@@ -3114,7 +4391,7 @@ function TextDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
 
   // AI Prompting state
   const [promptModel, setPromptModel] = useState<string>(PROMPT_MODELS[0].id)
@@ -3216,8 +4493,9 @@ function TextDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      const panelW = Math.min(1080, window.innerWidth - 8)
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(4, Math.min(rect.left, window.innerWidth - panelW - 4)) })
+      const z = cssZoomOf(buttonRef.current!)
+      const panelW = Math.min(1080 * z, window.innerWidth - 8)
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(4, Math.min(rect.left, window.innerWidth - panelW - 4)) / z, z })
     }
   }, [open])
 
@@ -3277,21 +4555,22 @@ function TextDropdown({
       <button
         ref={buttonRef}
         onClick={onToggle}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+          open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
-        <Type size={15} />
         Text
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
-        <div className="fixed rounded-xl border border-white/10 bg-[#080c18] backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(1080, window.innerWidth - 8) }}>
-          {/* Header */}
-          <div className="px-4 pt-3 pb-2.5 border-b border-white/5">
-            <p className="text-[12px] font-semibold text-white/85 leading-none">Text Tools</p>
-            <p className="text-[10px] text-slate-500 mt-1 leading-snug">Generate a prompt with AI, or load from 16 saved slots.</p>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(1080, (window.innerWidth - 8) / menuPos.z) }}>
+          {/* Header — synced site logo in the silver rim, like the page heroes */}
+          <div className="flex items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-white/[0.06]">
+            <SiteLogoBox size={22} rounded={7} />
+            <div>
+              <p className="text-[12px] font-semibold text-white leading-none">Text Tools</p>
+              <p className="text-[10px] text-slate-500 mt-1 leading-snug">Generate a prompt with AI, or load from 16 saved slots.</p>
+            </div>
           </div>
           {/* Mobile: panes stack and the whole body scrolls; sm+: side-by-side with per-pane scroll */}
           <div className="grid grid-cols-1 sm:grid-cols-[2fr_3fr] divide-y sm:divide-y-0 sm:divide-x divide-white/5 max-h-[calc(100vh-170px)] overflow-y-auto sm:max-h-none sm:overflow-visible">
@@ -3299,14 +4578,14 @@ function TextDropdown({
             {/* LEFT: AI Prompting */}
             <div className="p-4 space-y-3 sm:max-h-[520px] sm:overflow-y-auto">
               <div className="flex items-center gap-1.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
-                <p className="text-[10px] font-bold text-cyan-400/70 uppercase tracking-widest font-mono">AI Prompting</p>
+                <div className="w-1.5 h-1.5 rounded-full bg-white/70 shrink-0" />
+                <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.2em] font-mono">AI Prompting</p>
               </div>
 
               {!hasDevAccess ? (
                 <div className="py-8 text-center space-y-2">
                   <p className="text-sm text-slate-500">Dev tier required</p>
-                  <a href="/prompting-studio/subscribe" className="text-[11px] text-cyan-400 hover:underline">Upgrade →</a>
+                  <a href="/prompting-studio/subscribe" className="text-[11px] text-white hover:underline">Upgrade →</a>
                 </div>
               ) : (
                 <>
@@ -3316,7 +4595,7 @@ function TextDropdown({
                     <select
                       value={promptModel}
                       onChange={(e) => setPromptModel(e.target.value)}
-                      className="w-full px-2 py-1.5 rounded-md bg-slate-800 border border-white/10 text-xs text-white focus:outline-none focus:border-white/20"
+                      className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
                     >
                       {PROMPT_MODELS.map((m) => (
                         <option key={m.id} value={m.id}>{m.label}</option>
@@ -3329,7 +4608,7 @@ function TextDropdown({
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="text-[10px] text-slate-500">Names ({names.length}/5)</label>
                       {names.length < 5 && (
-                        <button onClick={() => setNames((p) => [...p, ""])} className="text-[10px] text-cyan-400 hover:text-cyan-300">+ Add</button>
+                        <button onClick={() => setNames((p) => [...p, ""])} className="text-[10px] text-slate-300 hover:text-white">+ Add</button>
                       )}
                     </div>
                     <div className="space-y-1.5">
@@ -3339,7 +4618,7 @@ function TextDropdown({
                             value={name}
                             onChange={(e) => setNames((p) => p.map((n, idx) => idx === i ? e.target.value : n))}
                             placeholder={`Name ${i + 1}`}
-                            className="flex-1 px-2 py-1 rounded-md bg-slate-800 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/20"
+                            className="flex-1 px-2 py-1 rounded-md bg-black/30 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/30"
                           />
                           {names.length > 1 && (
                             <button onClick={() => setNames((p) => p.filter((_, idx) => idx !== i))} className="text-slate-600 hover:text-red-400 transition-colors shrink-0">
@@ -3356,7 +4635,7 @@ function TextDropdown({
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="text-[10px] text-slate-500">Enhancements ({enhancements.length}/10)</label>
                       {enhancements.length < 10 && (
-                        <button onClick={() => setEnhancements((p) => [...p, ""])} className="text-[10px] text-cyan-400 hover:text-cyan-300">+ Add</button>
+                        <button onClick={() => setEnhancements((p) => [...p, ""])} className="text-[10px] text-slate-300 hover:text-white">+ Add</button>
                       )}
                     </div>
                     <div className="space-y-1.5 max-h-28 overflow-y-auto">
@@ -3366,7 +4645,7 @@ function TextDropdown({
                             value={enh}
                             onChange={(e) => setEnhancements((p) => p.map((en, idx) => idx === i ? e.target.value : en))}
                             placeholder={`Enhancement ${i + 1}`}
-                            className="flex-1 px-2 py-1 rounded-md bg-slate-800 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/20"
+                            className="flex-1 px-2 py-1 rounded-md bg-black/30 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/30"
                           />
                           {enhancements.length > 1 && (
                             <button onClick={() => setEnhancements((p) => p.filter((_, idx) => idx !== i))} className="text-slate-600 hover:text-red-400 transition-colors shrink-0">
@@ -3383,12 +4662,18 @@ function TextDropdown({
                   <button
                     onClick={handleGenerate}
                     disabled={!canGenerate}
-                    className={`w-full py-1.5 rounded-md text-xs font-semibold transition-all ${
+                    className={`relative overflow-hidden w-full py-1.5 rounded-lg text-xs font-bold transition-all ${
                       canGenerate
-                        ? "bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black hover:opacity-90"
-                        : "bg-white/5 text-slate-600 cursor-not-allowed"
+                        ? "bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40"
+                        : "bg-white/5 border border-white/10 text-slate-600 cursor-not-allowed"
                     }`}
                   >
+                    {canGenerate && (
+                      <span
+                        className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                        style={{ animation: "sheen-sweep 2.6s infinite" }}
+                      />
+                    )}
                     {generating ? "Generating…" : cooldownEnd ? `Wait ${cooldownLeft}s` : "Generate Prompt"}
                   </button>
 
@@ -3399,7 +4684,7 @@ function TextDropdown({
                         value={generatedPrompt}
                         onChange={(e) => setGeneratedPrompt(e.target.value)}
                         rows={4}
-                        className="w-full px-2 py-1.5 rounded-md bg-slate-800 border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-white/20 resize-none leading-relaxed"
+                        className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-white/30 resize-none leading-relaxed"
                       />
                       <div className="flex gap-2">
                         <button
@@ -3424,8 +4709,8 @@ function TextDropdown({
             {/* RIGHT: Saved Prompts */}
             <div className="p-4 sm:max-h-[520px] sm:overflow-y-auto">
               <div className="flex items-center gap-1.5 mb-3">
-                <div className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 shrink-0" />
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Saved Prompts</p>
+                <div className="w-1.5 h-1.5 rounded-full bg-white/70 shrink-0" />
+                <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.2em] font-mono">Saved Prompts</p>
                 <span className="text-[9px] text-slate-600 font-mono">· 16 slots</span>
               </div>
               {/* 2 columns on phones so the Copy/Use buttons fit inside each slot */}
@@ -3437,7 +4722,7 @@ function TextDropdown({
                       onChange={(e) => setSavedPrompts((prev) => prev.map((sp, idx) => idx === i ? e.target.value : sp))}
                       placeholder={`Prompt ${i + 1}`}
                       rows={3}
-                      className="w-full px-2 py-1.5 rounded-md bg-slate-800 border border-white/10 text-[11px] text-slate-200 placeholder-slate-700 focus:outline-none focus:border-white/20 resize-none leading-relaxed"
+                      className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-[11px] text-slate-200 placeholder-slate-700 focus:outline-none focus:border-white/30 resize-none leading-relaxed"
                     />
                     <div className="flex gap-1">
                       <button
@@ -3476,25 +4761,31 @@ function QueueDisplay({ active, max, label = "queue" }: { active: number; max: n
   const busy = active > 0
 
   return (
-    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[11px] font-mono transition-colors ${
+    <div className={`flex items-center gap-1 px-1.5 py-1.5 rounded-lg border text-[10px] font-mono transition-colors ${
       full
         ? "border-red-500/30 bg-red-500/10 text-red-400"
         : busy
-        ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+        ? "border-white/30 bg-white/10 text-white"
         : "border-white/10 bg-white/5 text-slate-500"
     }`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-        full ? "bg-red-400 animate-pulse" : busy ? "bg-amber-400 animate-pulse" : "bg-slate-600"
+        full ? "bg-red-400 animate-pulse" : busy ? "bg-white animate-pulse" : "bg-slate-600"
       }`} />
-      <span className="tabular-nums">{active}/{unlimited ? "∞" : max}</span>
-      <span className="text-[10px] hidden sm:inline opacity-70">{label}</span>
+      <span className="tabular-nums leading-none">{active}/{unlimited ? "∞" : max}</span>
+      <span className="text-[9px] leading-none opacity-70">{label}</span>
     </div>
   )
 }
 
 // --- GRID IMAGE CELL ---
-function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRatio, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false }: {
+function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRatio, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false, silverRim = false, letterbox = false }: {
   src: string; alt: string; onClick?: () => void; imageId?: number; directUrl?: string
+  // silverRim: Feed "Borders" setting — "slim" hugs the tile, "fill" is a thick
+  // frame; "smart" backgrounds the whole feed instead (no per-tile wrapper here)
+  silverRim?: false | "slim" | "fill" | "smart"
+  // letterbox (Full Size + Grid): uniform square cell, whole image shown
+  // object-contain on black — popup-style bars instead of ragged rows
+  letterbox?: boolean
   // thumbUrl: a pre-generated thumbnail on public R2 (CDN-cached) — used directly so
   // the feed skips the per-request resize + full-image download
   thumbUrl?: string | null
@@ -3527,16 +4818,16 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   // Full Size mode: reserve the tile's height from the known ratio ("2:3" → "2/3",
   // "1024x1536" → "1024/1536") so images don't shove the layout when they pop in.
   // Null → natural height.
-  const arCss = fullWidth && aspectRatio && aspectRatio !== "auto"
+  const arCss = fullWidth && !letterbox && aspectRatio && aspectRatio !== "auto"
     ? aspectRatio.replace(":", "/").replace("x", "/")
     : null
   const handleClick = () => {
     if (selectMode && imageId !== undefined) { onSelect?.(imageId); return }
     onClick?.()
   }
-  return (
+  const tile = (
     <div
-      className={`${fullWidth ? "" : "aspect-square"} bg-slate-800 overflow-hidden relative ${fullWidth && !loaded && !arCss ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+      className={`${fullWidth && !letterbox ? "" : "aspect-square"} ${letterbox ? "bg-black" : "bg-slate-800"} overflow-hidden relative ${fullWidth && !letterbox && !loaded && !arCss ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
       style={arCss ? { aspectRatio: arCss } : undefined}
       onClick={handleClick}
     >
@@ -3553,7 +4844,7 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
           playsInline
           preload="metadata"
           onLoadedData={() => setLoaded(true)}
-          className={`${fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
+          className={`${letterbox ? "w-full h-full object-contain" : fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
         />
       ) : (
         <img
@@ -3566,7 +4857,7 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
           decoding="async"
           loading="lazy"
           onLoad={() => setLoaded(true)}
-          className={`${fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
+          className={`${letterbox ? "w-full h-full object-contain" : fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-80 transition-opacity" : ""} ${selected ? "opacity-80" : ""}`}
         />
       )}
       {isVideo && loaded && (
@@ -3577,6 +4868,22 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
           {selected && <Check size={9} className="text-black" />}
         </div>
       )}
+    </div>
+  )
+  if (!silverRim || silverRim === "smart") return tile
+  // Feed "Borders" ON — "slim" clings to the thumbnail; "fill" is a thick
+  // animated frame ("smart" is handled at the feed container, not per tile)
+  const thick = silverRim === "fill"
+  return (
+    <div
+      className={`relative isolate rounded-lg overflow-hidden ${thick ? "p-2" : "p-[1.5px]"}`}
+      style={thick ? { boxShadow: "0 0 16px rgba(248,250,252,0.45), 0 0 5px rgba(255,255,255,0.35)" } : undefined}
+    >
+      <span
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        style={{ background: thick ? SILVER_RIM_CONIC_BRIGHT : SILVER_RIM_CONIC, animationDuration: "5s" }}
+      />
+      <div className={`relative overflow-hidden ${thick ? "rounded-md" : "rounded-[7px]"}`}>{tile}</div>
     </div>
   )
 }
@@ -3630,18 +4937,28 @@ function QueuedSlot({ onClick }: { onClick?: () => void }) {
   )
 }
 
-function FailedSlot({ prompt, error, onClick }: { prompt: string; error: string; onClick?: () => void }) {
+function FailedSlot({ prompt, error, onClick, onDismiss }: { prompt: string; error: string; onClick?: () => void; onDismiss?: () => void }) {
   return (
-    <button
+    <div
       onClick={onClick}
-      className="aspect-square w-full bg-slate-900 border border-red-500/20 hover:border-red-500/40 flex flex-col items-center justify-center p-3 gap-2 transition-colors cursor-pointer"
+      className="relative aspect-square w-full bg-slate-900 border border-red-500/20 hover:border-red-500/40 flex flex-col items-center justify-center p-3 gap-2 transition-colors cursor-pointer group/fail"
     >
+      {onDismiss && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDismiss() }}
+          title="Dismiss this error"
+          aria-label="Dismiss this error"
+          className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/50 border border-white/10 flex items-center justify-center text-slate-500 hover:text-white hover:border-red-400/50 transition-all opacity-70 sm:opacity-0 sm:group-hover/fail:opacity-100 z-10"
+        >
+          <X size={10} />
+        </button>
+      )}
       <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
         <X size={10} className="text-red-400" />
       </div>
       <p className="text-[9px] text-red-400/70 text-center leading-tight line-clamp-1">{error}</p>
       <p className="text-[9px] text-slate-600 text-center leading-tight line-clamp-2 italic">"{prompt}"</p>
-    </button>
+    </div>
   )
 }
 
@@ -3707,7 +5024,7 @@ function PendingDetailModal({
       onClick={onClose}
     >
       <div
-        className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:max-h-[90vh] sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex flex-col sm:flex-row"
+        className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:max-h-[90vh] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#070b14] sm:bg-[#070b14]/95 shadow-2xl overflow-hidden flex flex-col sm:flex-row"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close */}
@@ -3718,13 +5035,36 @@ function PendingDetailModal({
           <X size={13} />
         </button>
 
-        {/* Left: animated spinner */}
-        <div className="flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
-          <div className="flex flex-col items-center gap-4">
-            <div className={`w-16 h-16 rounded-full border-2 animate-spin ${isQueued ? "border-amber-500/30 border-t-amber-400" : "border-slate-600 border-t-slate-300"}`} />
-            <p className="text-[11px] font-mono tracking-widest uppercase" style={{ color: isQueued ? "rgb(251 191 36 / 0.6)" : "rgb(100 116 139)" }}>
-              {isQueued ? "Queued" : "Generating..."}
-            </p>
+        {/* Left: branded backdrop + silver spinner (queued keeps its amber state) */}
+        <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
+          <BrandBackdrop />
+          <div className="relative flex flex-col items-center gap-4">
+            <div className="relative isolate w-16 h-16 rounded-full overflow-hidden p-[2px]">
+              <span
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin -z-10"
+                style={{
+                  background: isQueued
+                    ? "conic-gradient(from 0deg, rgba(251,191,36,0.08), #fbbf24, rgba(251,191,36,0.15), #f59e0b, rgba(251,191,36,0.08))"
+                    : SILVER_RIM_CONIC,
+                  animationDuration: "2.5s",
+                }}
+              />
+              <div className="w-full h-full rounded-full bg-black" />
+            </div>
+            {isQueued ? (
+              <p className="text-[11px] font-mono tracking-widest uppercase text-amber-400/70">Queued</p>
+            ) : (
+              <p
+                className="text-[11px] font-mono tracking-widest uppercase bg-clip-text text-transparent"
+                style={{
+                  backgroundImage: "linear-gradient(90deg,#94a3b8,#f8fafc,#e2e8f0,#64748b,#f8fafc,#94a3b8)",
+                  backgroundSize: "200% 100%",
+                  animation: "silver-shimmer 3.5s linear infinite",
+                }}
+              >
+                Generating...
+              </p>
+            )}
           </div>
         </div>
 
@@ -3738,7 +5078,7 @@ function PendingDetailModal({
             </div>
             <div>
               <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Model</p>
-              <span className="inline-block px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[11px] font-mono">
+              <span className="inline-block px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/15 text-white text-[11px] font-mono">
                 {modelName}
               </span>
             </div>
@@ -3747,12 +5087,12 @@ function PendingDetailModal({
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Settings</p>
                 <div className="flex flex-wrap gap-1.5">
                   {aspectRatio && (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                       {aspectRatio}
                     </span>
                   )}
                   {quality && (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                       {quality.toUpperCase()}
                     </span>
                   )}
@@ -3764,8 +5104,8 @@ function PendingDetailModal({
                 <div>
                   <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Start Frame</p>
                   {startFrameUrl ? (
-                    <div className="w-14 h-14 rounded-lg overflow-hidden border border-white/10 bg-slate-800">
-                      <img src={startFrameUrl} alt="Start frame" className="w-full h-full object-cover" />
+                    <div className="w-14 h-14 rounded-lg overflow-hidden border border-white/10 bg-black">
+                      <img src={startFrameUrl} alt="Start frame" className="w-full h-full object-contain" />
                     </div>
                   ) : (
                     <p className="text-[11px] text-slate-600 italic">No reference</p>
@@ -3774,8 +5114,8 @@ function PendingDetailModal({
                 <div>
                   <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">End Frame</p>
                   {endFrameUrl ? (
-                    <div className="w-14 h-14 rounded-lg overflow-hidden border border-white/10 bg-slate-800">
-                      <img src={endFrameUrl} alt="End frame" className="w-full h-full object-cover" />
+                    <div className="w-14 h-14 rounded-lg overflow-hidden border border-white/10 bg-black">
+                      <img src={endFrameUrl} alt="End frame" className="w-full h-full object-contain" />
                     </div>
                   ) : (
                     <p className="text-[11px] text-slate-600 italic">No reference</p>
@@ -3789,8 +5129,8 @@ function PendingDetailModal({
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {referenceImageUrls.map((url, i) => (
-                    <div key={i} className="w-11 h-11 rounded-lg overflow-hidden border border-white/10 bg-slate-800">
-                      <img src={url} alt="" className="w-full h-full object-cover" />
+                    <div key={i} className="w-14 h-14 rounded-lg overflow-hidden border border-white/10 bg-black">
+                      <img src={url} alt="" className="w-full h-full object-contain" />
                     </div>
                   ))}
                 </div>
@@ -3802,9 +5142,9 @@ function PendingDetailModal({
           <div className="sm:hidden px-4 pt-3 pb-2">
             <p className="text-[11px] text-slate-300 leading-relaxed line-clamp-2">{prompt}</p>
             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-              <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[10px] font-mono">{modelName}</span>
-              {aspectRatio && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{aspectRatio}</span>}
-              {quality && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{quality.toUpperCase()}</span>}
+              <span className="px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/15 text-white text-[10px] font-mono">{modelName}</span>
+              {aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{aspectRatio}</span>}
+              {quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{quality.toUpperCase()}</span>}
             </div>
           </div>
 
@@ -3820,8 +5160,12 @@ function PendingDetailModal({
               </button>
               <button
                 onClick={() => { onUsePrompt(prompt); onClose() }}
-                className="flex-1 py-1.5 rounded-lg border border-white/10 bg-white/8 hover:bg-white/12 text-[11px] text-white font-medium transition-all flex items-center justify-center gap-1.5"
+                className="relative overflow-hidden flex-1 py-1.5 rounded-lg border border-white/25 bg-white/10 hover:bg-white/15 hover:border-white/40 text-[11px] text-white font-bold transition-all flex items-center justify-center gap-1.5"
               >
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                  style={{ animation: "sheen-sweep 2.6s infinite" }}
+                />
                 Use Prompt
               </button>
             </div>
@@ -4028,6 +5372,18 @@ function useModalSwipeNav({ hasPrev, hasNext, onPrev, onNext, disabled = false }
       setDragging(false)
       return
     }
+    // Native <video> controls (play/scrubber) live in the bottom strip of the
+    // video element — a horizontal drag there is the user seeking the timeline,
+    // never a navigation swipe. Ignore gestures that start in that strip.
+    const vid = (e.target as HTMLElement).closest?.("video")
+    if (vid) {
+      const r = vid.getBoundingClientRect()
+      const controlsZone = Math.min(96, Math.max(48, r.height * 0.25))
+      if (e.touches[0].clientY > r.bottom - controlsZone) {
+        startRef.current = null
+        return
+      }
+    }
     startRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
     multiTouchRef.current = false
     axisLockRef.current = null
@@ -4216,6 +5572,9 @@ function ImageDetailModal({
   navList,
   navIndex,
   onNavigate,
+  chatMode = false,
+  onChatEdit,
+  onDismissFail,
 }: {
   image: ImageItem
   onClose: () => void
@@ -4225,9 +5584,18 @@ function ImageDetailModal({
   navList?: ImageItem[]
   navIndex?: number
   onNavigate?: (item: ImageItem) => void
+  // Chat-hub variant: primary action = "Edit" (prompt sent back to the chat
+  // with this image attached) instead of Rescan
+  chatMode?: boolean
+  onChatEdit?: (prompt: string) => void
+  // Failed generations: permanently remove this error from the feed
+  onDismissFail?: (image: ImageItem) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [addedRef, setAddedRef] = useState(false)
+  const modalImgRef = useRef<HTMLImageElement>(null)
+  const [chatEditOpen, setChatEditOpen] = useState(false)
+  const [chatEditPrompt, setChatEditPrompt] = useState("")
   const [showRefConsent, setShowRefConsent] = useState(false)
   const [consentGiven, setConsentGiven] = useState(() =>
     typeof window !== 'undefined' && sessionStorage.getItem("ref-rights-consent") === "true"
@@ -4327,12 +5695,21 @@ function ImageDetailModal({
           </button>
         )}
 
-        {/* Image — or failed state */}
+        {/* Image — or failed state. The silver orbit ring hugs the rendered
+            image itself (not the letterboxed pane); hidden while pinch-zoomed. */}
         <div
           ref={zoom.paneRef}
-          className="flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0"
+          className="relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0"
           {...(!image.failed ? { ...zoom.zoomHandlers, style: zoom.paneStyle } : {})}
         >
+          {!image.failed && <BrandBackdrop />}
+          <OrbitMediaFrame
+            containerRef={zoom.paneRef}
+            mediaRef={modalImgRef}
+            deps={[image.imageUrl, infoPos]}
+            hidden={!!image.failed}
+            innerHidden={zoom.scale > 1}
+          />
           {image.failed ? (
             <div className="flex flex-col items-center gap-3 p-8 text-center">
               <div className="w-14 h-14 rounded-full border-2 border-red-500/50 flex items-center justify-center">
@@ -4345,6 +5722,7 @@ function ImageDetailModal({
             </div>
           ) : (
             <img
+              ref={modalImgRef}
               src={image.imageUrl}
               alt={image.prompt}
               className="max-w-full max-h-full object-contain cursor-pointer hover:opacity-90"
@@ -4375,7 +5753,7 @@ function ImageDetailModal({
             </div>
             <div>
               <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Model</p>
-              <span className="inline-block px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[11px] font-mono">
+              <span className="inline-block px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/15 text-white text-[11px] font-mono">
                 {modelName}
               </span>
             </div>
@@ -4398,50 +5776,50 @@ function ImageDetailModal({
                       )}
                       {/* Clarity-specific */}
                       {image.videoMetadata?.upscaleCreativity != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           creativity {Number(image.videoMetadata.upscaleCreativity).toFixed(2)}
                         </span>
                       )}
                       {image.videoMetadata?.upscaleResemblance != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           resemblance {Number(image.videoMetadata.upscaleResemblance).toFixed(2)}
                         </span>
                       )}
                       {image.videoMetadata?.upscaleGuidance != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           CFG {Number(image.videoMetadata.upscaleGuidance).toFixed(1)}
                         </span>
                       )}
                       {image.videoMetadata?.upscaleSteps != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {image.videoMetadata.upscaleSteps} steps
                         </span>
                       )}
                       {/* AuraSR-specific */}
                       {image.videoMetadata?.auraSrCheckpoint != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {image.videoMetadata.auraSrCheckpoint}
                         </span>
                       )}
                       {image.videoMetadata?.auraSrOverlappingTiles != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           tiles {image.videoMetadata.auraSrOverlappingTiles ? "overlap" : "no overlap"}
                         </span>
                       )}
                       {/* DRCT-specific */}
                       {image.model === "drct" && image.videoMetadata?.drctTicketCost != null && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {image.videoMetadata.drctTicketCost} ticket{image.videoMetadata.drctTicketCost !== 1 ? "s" : ""}
                         </span>
                       )}
                       {/* ESRGAN-specific */}
                       {image.videoMetadata?.esrganModel && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {String(image.videoMetadata.esrganModel).replace("RealESRGAN_", "")}
                         </span>
                       )}
                       {image.videoMetadata?.esrganFace && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           face mode
                         </span>
                       )}
@@ -4452,7 +5830,7 @@ function ImageDetailModal({
                   ) : modelConfig?.isCustomFlux ? (
                     <>
                       {image.videoMetadata?.fluxWidth && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {String(image.videoMetadata.fluxWidth)}×{String(image.videoMetadata.fluxHeight)}
                         </span>
                       )}
@@ -4513,12 +5891,12 @@ function ImageDetailModal({
                   ) : (
                     <>
                       {image.aspectRatio && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {image.aspectRatio}
                         </span>
                       )}
                       {image.quality && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {image.quality.toUpperCase()}
                         </span>
                       )}
@@ -4546,8 +5924,8 @@ function ImageDetailModal({
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {image.referenceImageUrls.map((url, i) => (
-                    <div key={i} className="w-11 h-11 rounded-lg overflow-hidden border border-white/10 bg-slate-800">
-                      <img src={url} alt="" className="w-full h-full object-cover" />
+                    <div key={i} className="w-14 h-14 rounded-lg overflow-hidden border border-white/10 bg-black">
+                      <img src={url} alt="" className="w-full h-full object-contain" />
                     </div>
                   ))}
                 </div>
@@ -4564,10 +5942,10 @@ function ImageDetailModal({
           <div className="sm:hidden px-4 pt-3 pb-3">
             <p className="text-[11px] text-slate-300 leading-relaxed line-clamp-2">{image.prompt}</p>
             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-              <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[10px] font-mono">{modelName}</span>
+              <span className="px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/15 text-white text-[10px] font-mono">{modelName}</span>
               {isUpscalerImage && image.videoMetadata?.upscaleFactor != null && <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] font-mono">{image.videoMetadata.upscaleFactor}x upscale</span>}
-              {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{image.aspectRatio}</span>}
-              {!isUpscalerImage && image.quality && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{image.quality.toUpperCase()}</span>}
+              {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.aspectRatio}</span>}
+              {!isUpscalerImage && image.quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.quality.toUpperCase()}</span>}
               {image.loraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{image.loraName || "LoRA"}</span>}
               {formattedDate && <span className="text-[10px] text-slate-600">{formattedDate}</span>}
             </div>
@@ -4582,13 +5960,62 @@ function ImageDetailModal({
           <div className={horiz
             ? "p-3 sm:p-4 border-t sm:border-t-0 sm:border-l border-white/8 space-y-2 shrink-0 sm:w-64 sm:overflow-y-auto"
             : "p-3 sm:p-4 border-t border-white/8 space-y-2 shrink-0"}>
-            <button
-              onClick={() => { onRescan(image); onClose() }}
-              className="w-full py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
-            >
-              <RotateCcw size={12} />
-              {image.failed ? "Try Again" : "Rescan"}
-            </button>
+            {chatMode ? (
+              chatEditOpen ? (
+                <div className="flex gap-2">
+                  <input
+                    autoFocus
+                    value={chatEditPrompt}
+                    onChange={(e) => setChatEditPrompt(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && chatEditPrompt.trim()) {
+                        onChatEdit?.(chatEditPrompt.trim())
+                        onClose()
+                      }
+                      if (e.key === "Escape") setChatEditOpen(false)
+                    }}
+                    placeholder="Describe the edit — sent to the chat with this image…"
+                    className="flex-1 min-w-0 py-2 px-3 rounded-lg bg-black/30 border border-white/10 text-[12px] text-white placeholder:text-slate-600 outline-none focus:border-fuchsia-500/50"
+                  />
+                  <button
+                    onClick={() => {
+                      if (!chatEditPrompt.trim()) return
+                      onChatEdit?.(chatEditPrompt.trim())
+                      onClose()
+                    }}
+                    disabled={!chatEditPrompt.trim()}
+                    className="shrink-0 px-3 py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-40 text-white text-[12px] font-semibold transition-colors"
+                  >
+                    Send
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setChatEditOpen(true)}
+                  className="w-full py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+                >
+                  <Pencil size={12} />
+                  Edit
+                </button>
+              )
+            ) : (
+              <button
+                onClick={() => { onRescan(image); onClose() }}
+                className="w-full py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+              >
+                <RotateCcw size={12} />
+                {image.failed ? "Try Again" : "Rescan"}
+              </button>
+            )}
+            {image.failed && onDismissFail && (
+              <button
+                onClick={() => { onDismissFail(image); onClose() }}
+                className="w-full py-2 rounded-lg border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 hover:border-red-500/50 text-red-300 hover:text-red-200 text-[12px] font-semibold transition-all flex items-center justify-center gap-2"
+              >
+                <X size={12} />
+                Dismiss
+              </button>
+            )}
             <div className="flex gap-2">
               <button
                 onClick={handleCopy}
@@ -4680,6 +6107,7 @@ function VideoDetailModal({
   navList,
   navIndex,
   onNavigate,
+  onDismissFail,
 }: {
   video: VideoDetailData
   onClose: () => void
@@ -4688,9 +6116,13 @@ function VideoDetailModal({
   navList?: VideoDetailData[]
   navIndex?: number
   onNavigate?: (item: VideoDetailData) => void
+  // Failed generations: permanently remove this error from the feed
+  onDismissFail?: (video: VideoDetailData) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const videoPaneRef = useRef<HTMLDivElement>(null)
+  const videoElRef = useRef<HTMLVideoElement>(null)
 
   const modelName = getModelDisplayName(video.model)
   const formattedDate = video.createdAt
@@ -4803,8 +6235,16 @@ function VideoDetailModal({
           </button>
         )}
 
-        {/* Video player — or error state */}
-        <div className="flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
+        {/* Video player — or error state. The silver orbit ring hugs the
+            rendered video box itself (not the letterboxed pane). */}
+        <div ref={videoPaneRef} className="relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
+          {!video.failed && <BrandBackdrop />}
+          <OrbitMediaFrame
+            containerRef={videoPaneRef}
+            mediaRef={videoElRef}
+            deps={[video.videoUrl, infoPos]}
+            hidden={!!video.failed}
+          />
           {video.failed ? (
             <div className="flex flex-col items-center gap-3 p-8 text-center">
               <div className="w-12 h-12 rounded-full border-2 border-red-500/60 flex items-center justify-center">
@@ -4817,6 +6257,7 @@ function VideoDetailModal({
             </div>
           ) : (
             <video
+              ref={videoElRef}
               src={video.videoUrl}
               controls
               autoPlay
@@ -4986,22 +6427,33 @@ function VideoDetailModal({
               </div>
             )}
             {video.failed && (
-              <div className="flex gap-2">
-                <button
-                  onClick={handleCopy}
-                  className="flex-1 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/8 text-[11px] text-slate-300 hover:text-white transition-all flex items-center justify-center gap-1.5"
-                >
-                  {copied ? <Check size={11} /> : <Copy size={11} />}
-                  {copied ? "Copied Prompt" : "Copy Prompt"}
-                </button>
-                <button
-                  onClick={() => { onUsePrompt(video.prompt); onClose() }}
-                  className="flex-1 py-1.5 rounded-lg border border-white/10 bg-white/8 hover:bg-white/12 text-[11px] text-white font-medium transition-all flex items-center justify-center gap-1.5"
-                >
-                  <span className="hidden sm:inline">Use Prompt</span>
-                  <span className="sm:hidden">Use</span>
-                </button>
-              </div>
+              <>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleCopy}
+                    className="flex-1 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/8 text-[11px] text-slate-300 hover:text-white transition-all flex items-center justify-center gap-1.5"
+                  >
+                    {copied ? <Check size={11} /> : <Copy size={11} />}
+                    {copied ? "Copied Prompt" : "Copy Prompt"}
+                  </button>
+                  <button
+                    onClick={() => { onUsePrompt(video.prompt); onClose() }}
+                    className="flex-1 py-1.5 rounded-lg border border-white/10 bg-white/8 hover:bg-white/12 text-[11px] text-white font-medium transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <span className="hidden sm:inline">Use Prompt</span>
+                    <span className="sm:hidden">Use</span>
+                  </button>
+                </div>
+                {onDismissFail && (
+                  <button
+                    onClick={() => { onDismissFail(video); onClose() }}
+                    className="w-full py-2 rounded-lg border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 hover:border-red-500/50 text-red-300 hover:text-red-200 text-[12px] font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <X size={12} />
+                    Dismiss
+                  </button>
+                )}
+              </>
             )}
             <AIDisclaimer />
           </div>
@@ -5033,6 +6485,8 @@ function ImageGrid({
   tileRes = "thumb",
   adminFilters = null,
   showHidden = false,
+  onDismissFail,
+  tileBorders = false,
 }: {
   signedIn: boolean
   pendingSlots: PendingSlot[]
@@ -5051,6 +6505,8 @@ function ImageGrid({
   tileRes?: "thumb" | "full"
   adminFilters?: AdminFeedFilters | null
   showHidden?: boolean
+  onDismissFail?: (item: ImageItem) => void
+  tileBorders?: false | "slim" | "fill" | "smart"
 }) {
   const fullRes = tileRes === "full"
   // Responsive column count for JS "Rows" masonry (auto = 2 on mobile, 4 on desktop)
@@ -5176,7 +6632,15 @@ function ImageGrid({
     const freshIds = new Set(freshImages.map(i => i.id))
     const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
     const dbFiltered = images.filter(img => !freshIds.has(img.id))
-    const failsToMerge = savedFails.filter(f => !liveFailIds.has(f.id))
+    // Fails paginate WITH the images: only merge errors newer than the oldest
+    // loaded image while more pages remain — older errors reveal themselves as
+    // the user scrolls, instead of stacking into a wall at the bottom that
+    // every newly loaded page then shoves around.
+    const failFrontier = hasMoreRef.current && images.length > 0
+      ? Math.min(...images.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
+      : hasMoreRef.current ? Infinity : -Infinity
+    const failsToMerge = savedFails.filter(f =>
+      !liveFailIds.has(f.id) && (f.createdAt ? new Date(f.createdAt).getTime() : 0) >= failFrontier)
     const merged = [...dbFiltered, ...failsToMerge].sort((a, b) => {
       const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0
       const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0
@@ -5186,32 +6650,7 @@ function ImageGrid({
   }, [images, freshImages, savedFails, onNavListChange, adminFilters, showHidden])
 
   if (!signedIn) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24 px-4">
-        <div className="w-full max-w-sm text-center">
-          {/* Icon */}
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-fuchsia-500/20 border border-white/10 flex items-center justify-center mx-auto mb-5">
-            <User size={28} className="text-slate-400" />
-          </div>
-
-          <h2 className="text-lg font-bold text-white mb-1">Sign in to get started</h2>
-          <p className="text-sm text-slate-500 mb-6">Your generations and saved work will appear here.</p>
-
-          <div className="flex flex-col gap-2">
-            <Link href="/login" className="block">
-              <button className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black text-sm font-bold hover:opacity-90 transition-opacity">
-                Sign In
-              </button>
-            </Link>
-            <Link href="/signup" className="block">
-              <button className="w-full py-2.5 rounded-xl border border-white/10 bg-white/5 text-slate-300 text-sm font-medium hover:bg-white/10 hover:text-white transition-all">
-                Create Account
-              </button>
-            </Link>
-          </div>
-        </div>
-      </div>
-    )
+    return <FeedSignInPrompt />
   }
 
   if (!loading && images.length === 0 && !hasMoreRef.current && (adminFilters || showHidden || (pendingSlots.length === 0 && freshImages.length === 0))) {
@@ -5223,7 +6662,26 @@ function ImageGrid({
   }
 
   return (
-    <div>
+    <div className={tileBorders === "smart" ? "relative isolate p-1.5" : undefined}>
+      {/* Borders "Smart" mode: flowing silver behind the whole feed — every gap
+          between tiles and around the edges shows silver instead of black */}
+      {tileBorders === "smart" && (
+        <>
+          {/* pure-white breathing glow — bleeds past the edges and through the gaps */}
+          <div className="absolute -inset-3 -z-10 pointer-events-none blur-2xl bg-white opacity-50 animate-pulse" />
+          {/* crisp high-contrast silver sweep: bright white bands against deep slate
+              so the motion actually reads */}
+          <div
+            className="absolute inset-0 -z-10 pointer-events-none"
+            style={{
+              backgroundImage: "linear-gradient(100deg,#475569 0%,#ffffff 12%,#64748b 25%,#f8fafc 38%,#475569 50%,#ffffff 62%,#64748b 75%,#f8fafc 88%,#475569 100%)",
+              backgroundSize: "200% 100%",
+              animation: "silver-shimmer 6s linear infinite",
+              boxShadow: "inset 0 0 24px rgba(255,255,255,0.35)",
+            }}
+          />
+        </>
+      )}
       {(() => {
         // Build the ordered feed nodes once; all three layouts render from these
         // lists so grid / masonry-flow / masonry-rows stay perfectly in sync.
@@ -5249,7 +6707,7 @@ function ImageGrid({
           freshImages.forEach((img) => {
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
-              : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
+              : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
             headNodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node, key: `fresh-${img.id}` })
           })
         }
@@ -5258,20 +6716,25 @@ function ImageGrid({
           // Admin-filtered view: exactly the API results, in API order
           images.forEach((img) => nodes.push({
             weight: arHeightWeight(img.aspectRatio),
-            node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)} adminThumb />,
+            node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)} adminThumb silverRim={tileBorders} />,
           }))
         } else if (showHidden) {
           // Hidden view: exactly the API results (user's hidden items)
           images.forEach((img) => nodes.push({
             weight: arHeightWeight(img.aspectRatio),
-            node: <GridImage key={`h-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />,
+            node: <GridImage key={`h-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />,
           }))
         } else {
           // DB images merged with restored fails, sorted by createdAt so fails land in place
           const freshIds = new Set(freshImages.map(i => i.id))
           const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
           const dbFiltered = images.filter(img => !freshIds.has(img.id))
-          const failsToMerge = savedFails.filter(f => !liveFailIds.has(f.id))
+          // Same pagination gate as the nav-list effect (see comment there)
+          const failFrontier = hasMoreRef.current && images.length > 0
+            ? Math.min(...images.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
+            : hasMoreRef.current ? Infinity : -Infinity
+          const failsToMerge = savedFails.filter(f =>
+            !liveFailIds.has(f.id) && (f.createdAt ? new Date(f.createdAt).getTime() : 0) >= failFrontier)
           const merged = [...dbFiltered, ...failsToMerge].sort((a, b) => {
             const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0
             const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0
@@ -5279,8 +6742,8 @@ function ImageGrid({
           })
           merged.forEach((img) => {
             const node = img.failed
-              ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
-              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} />
+              ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} onDismiss={onDismissFail ? () => onDismissFail(img) : undefined} />
+              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
             nodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
           })
         }
@@ -5364,6 +6827,116 @@ interface RefImage {
   url: string      // permanent R2 URL for account refs (data URL only transiently)
   file?: File      // only set for transient, not-yet-uploaded uses
   folderId?: number | null // account library folder (null/undefined = root)
+  layers?: RefLayerStack | null // Dev-Tier multi-layer canvas (null/undefined = off)
+}
+
+// Dev-Tier multi-layer reference canvas (stored as JSON in UserReference.layers).
+// The BASE image is the canvas itself; each layer is a transparent sheet sized to
+// the canvas holding zero or more placed images. Item rects are FRACTIONS of the
+// canvas (x/y/w/h in 0..1 space) so they survive downscales; a rect-less item
+// auto-fits (contain, centered).
+interface RefLayerItem {
+  id: string
+  url: string      // permanent https URL (R2)
+  x?: number; y?: number; w?: number; h?: number
+  r?: number       // rotation in degrees around the rect center
+}
+interface RefLayer {
+  id: string
+  name: string
+  visible: boolean
+  opacity: number  // 0..1
+  auto?: boolean   // appended automatically by a finished generation
+  items: RefLayerItem[]
+}
+interface RefLayerStack {
+  enabled: boolean
+  layers: RefLayer[]
+  baseInLayer?: boolean // base image converted into "Layer 1" — the canvas is a transparent paint surface
+  baseW?: number        // canvas px dims at conversion (composite output size)
+  baseH?: number
+}
+
+// Accepts both the current shape and the v1 shape (layer.url, no items)
+function normalizeStack(raw: any): RefLayerStack | null {
+  if (!raw || typeof raw !== 'object') return null
+  const layers: RefLayer[] = (Array.isArray(raw.layers) ? raw.layers : []).map((l: any, i: number) => ({
+    id: typeof l?.id === 'string' ? l.id : `l-${i}`,
+    name: typeof l?.name === 'string' ? l.name : 'Layer',
+    visible: l?.visible !== false,
+    opacity: typeof l?.opacity === 'number' ? Math.min(1, Math.max(0, l.opacity)) : 1,
+    ...(l?.auto === true ? { auto: true } : {}),
+    items: Array.isArray(l?.items)
+      ? l.items.filter((it: any) => typeof it?.url === 'string').map((it: any, j: number) => ({
+          id: typeof it.id === 'string' ? it.id : `it-${i}-${j}`,
+          url: it.url,
+          ...(typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number'
+            ? { x: it.x, y: it.y, w: it.w, h: it.h } : {}),
+          ...(typeof it.r === 'number' ? { r: it.r } : {}),
+        }))
+      : (typeof l?.url === 'string' ? [{ id: `it-${i}-0`, url: l.url }] : []),
+  }))
+  return {
+    enabled: raw.enabled === true,
+    layers,
+    ...(raw.baseInLayer === true ? { baseInLayer: true } : {}),
+    ...(typeof raw.baseW === 'number' ? { baseW: raw.baseW } : {}),
+    ...(typeof raw.baseH === 'number' ? { baseH: raw.baseH } : {}),
+  }
+}
+
+// Flattens a multi-layer reference (base + visible layers, contain-fit, per-layer
+// opacity) into a JPEG data URL for generation submits. Images load through the
+// same-origin proxy so the canvas never taints.
+async function compositeLayeredRef(baseUrl: string, stack: RefLayerStack): Promise<string> {
+  const load = (u: string) => new Promise<HTMLImageElement>((ok, err) => {
+    const img = document.createElement("img")
+    img.onload = () => ok(img)
+    img.onerror = () => err(new Error("Layer image failed to load"))
+    img.src = u.startsWith("http") ? `/api/admin/image-proxy?url=${encodeURIComponent(u)}` : u
+  })
+  const canvas = document.createElement("canvas")
+  let baseImg: HTMLImageElement | null = null
+  if (!(stack.baseInLayer && stack.baseW && stack.baseH)) baseImg = await load(baseUrl)
+  canvas.width = stack.baseInLayer && stack.baseW ? stack.baseW : (baseImg!.naturalWidth || baseImg!.width)
+  canvas.height = stack.baseInLayer && stack.baseH ? stack.baseH : (baseImg!.naturalHeight || baseImg!.height)
+  const ctx = canvas.getContext("2d")!
+  if (stack.baseInLayer) {
+    // The base lives in Layer 1 — start from a black artboard (JPEG has no alpha)
+    ctx.fillStyle = "#000000"
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  } else if (baseImg) {
+    ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height)
+  }
+  for (const l of stack.layers) {
+    if (!l.visible) continue
+    for (const it of l.items) {
+      try {
+        const img = await load(it.url)
+        ctx.globalAlpha = Math.min(1, Math.max(0, l.opacity))
+        if (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number') {
+          const x = it.x * canvas.width, y = it.y * canvas.height, w = it.w * canvas.width, h = it.h * canvas.height
+          const rot = ((it.r || 0) * Math.PI) / 180
+          if (rot) {
+            ctx.save()
+            ctx.translate(x + w / 2, y + h / 2)
+            ctx.rotate(rot)
+            ctx.drawImage(img, -w / 2, -h / 2, w, h)
+            ctx.restore()
+          } else {
+            ctx.drawImage(img, x, y, w, h)
+          }
+        } else {
+          const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height
+          const sc = Math.min(canvas.width / iw, canvas.height / ih)
+          const w = iw * sc, h = ih * sc
+          ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h)
+        }
+      } catch { /* skip unloadable items rather than failing the run */ }
+    }
+  }
+  ctx.globalAlpha = 1
+  return canvas.toDataURL("image/jpeg", 0.92)
 }
 
 // --- PRESETS PANEL ---
@@ -5912,7 +7485,7 @@ function DownloadToR2Panel() {
 }
 
 // --- REF IMAGE EDITOR ---
-type EditorTool = 'draw' | 'erase' | 'blur' | 'shape' | 'crop'
+type EditorTool = 'select' | 'draw' | 'erase' | 'blur' | 'shape' | 'crop' | 'mask' | 'cut' | 'resize'
 type ShapeKind  = 'rect' | 'circle'
 type CropMode   = 'frame' | 'drag'
 type FrameHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
@@ -5933,13 +7506,19 @@ const frameHandlePoints = (r: CropRect): Record<FrameHandle, [number, number]> =
 })
 const clampNum = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
-function RefImageEditorModal({ image, onApply, onClose }: {
+function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, layerStack = null, onLayerStackChange }: {
   image: RefImage
   onApply: (newUrl: string) => void
   onClose: () => void
+  // Dev-Tier multi-layer canvas
+  canUseLayers?: boolean
+  layerStack?: RefLayerStack | null
+  onLayerStackChange?: (stack: RefLayerStack | null) => void
 }) {
   const canvasRef  = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
+  const editorPaneRef = useRef<HTMLDivElement>(null)
+  const artboardRef   = useRef<HTMLDivElement>(null)
   const historyRef  = useRef<string[]>([])
   const isDrawingRef = useRef(false)
   const lastPtRef    = useRef<{ x: number; y: number } | null>(null)
@@ -5949,7 +7528,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const cropRectRef  = useRef<CropRect | null>(null)
   const frameDragRef = useRef<{ kind: FrameHandle | 'move'; start: { x: number; y: number }; orig: CropRect } | null>(null)
 
-  const [tool,       setTool]       = useState<EditorTool>('draw')
+  const [tool,       setTool]       = useState<EditorTool>('select')
   const [cropMode,   setCropMode]   = useState<CropMode>('frame')
   const [brushSize,  setBrushSize]  = useState(20)
   const [drawColor,  setDrawColor]  = useState('#ffffff')
@@ -5961,6 +7540,701 @@ function RefImageEditorModal({ image, onApply, onClose }: {
   const [loaded,     setLoaded]     = useState(false)
   const [histLen,    setHistLen]    = useState(1)
   const [fitMode,    setFitMode]    = useState<'fit' | 'native'>('fit')
+  // Mask tool: AI segmentation (auto or text-prompted) → dashed outline → approve/reject
+  const [maskPrompt, setMaskPrompt] = useState('')
+  const [maskBusy,   setMaskBusy]   = useState(false)
+  const [maskReady,  setMaskReady]  = useState(false)
+  const [maskError,  setMaskError]  = useState<string | null>(null)
+  const maskSilRef = useRef<HTMLCanvasElement | null>(null) // opaque-where-masked silhouette
+  // Cut tool: freehand lasso → close path → keep/remove
+  const cutPtsRef = useRef<{ x: number; y: number }[]>([])
+  const [cutReady, setCutReady] = useState(false)
+  // "Touch and hold to save" overlay — renders a real <img> so iPad Safari's native
+  // long-press Save Image sheet works (canvas elements never get that sheet)
+  const [saveOverlay, setSaveOverlay] = useState<{ url: string; label: string } | null>(null)
+  // Current canvas resolution — shown in the header chip + Scale tool readout
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
+  // Fit mode: the canvas is DISPLAYED at pane-fit size regardless of its pixel
+  // resolution (a 512px downscale stays visually large, just lower quality).
+  // Plain max-width caps can only shrink — this computes the real contain-fit.
+  const [fitCss, setFitCss] = useState<{ w: number; h: number } | null>(null)
+  useEffect(() => {
+    if (fitMode !== 'fit') return
+    const compute = () => {
+      const pane = editorPaneRef.current, c = canvasRef.current
+      if (!pane || !c || !c.width || !c.height) return
+      const availW = Math.max(50, pane.clientWidth - 32)
+      const availH = Math.max(50, pane.clientHeight - 32)
+      const sc = Math.min(availW / c.width, availH / c.height)
+      setFitCss({ w: Math.max(1, Math.floor(c.width * sc)), h: Math.max(1, Math.floor(c.height * sc)) })
+    }
+    compute()
+    const ro = new ResizeObserver(compute)
+    if (editorPaneRef.current) ro.observe(editorPaneRef.current)
+    window.addEventListener('resize', compute)
+    return () => { ro.disconnect(); window.removeEventListener('resize', compute) }
+  }, [fitMode, dims, loaded])
+
+  // Synced site logo for the crop-frame handles (little brand chips)
+  const [cropHandleLogo, setCropHandleLogo] = useState<string | null>(null)
+  useEffect(() => {
+    fetch('/api/admin/config').then(r => r.ok ? r.json() : null).then(d => { if (d?.logoUrl) setCropHandleLogo(d.logoUrl) }).catch(() => {})
+  }, [])
+  // Same logo as a decoded image for the Select tool's canvas-drawn handles.
+  // Loaded through the same-origin proxy so the overlay canvas never taints
+  // (the Shape tool composites the overlay onto the exportable main canvas).
+  const handleLogoImgRef = useRef<HTMLImageElement | null>(null)
+  useEffect(() => {
+    if (!cropHandleLogo) return
+    const img = document.createElement('img')
+    img.onload = () => { handleLogoImgRef.current = img }
+    img.src = `/api/admin/image-proxy?url=${encodeURIComponent(cropHandleLogo)}`
+  }, [cropHandleLogo])
+  // ── Multi-layer canvas (Dev Tier) ────────────────────────────────────────
+  // The stack lives on the parent (persisted per reference); edits propagate up.
+  // Layers are transparent sheets over the base canvas, each holding placed
+  // images (items). Item rects are canvas fractions; selection gets crop-style
+  // transform handles on the canvas.
+  const [stack, setStack] = useState<RefLayerStack | null>(normalizeStack(layerStack))
+  const [layerBusy, setLayerBusy] = useState(false)
+  const [layerError, setLayerError] = useState<string | null>(null)
+  const [selLayerId, setSelLayerId] = useState<string | null>(null)
+  const [selItemId, setSelItemId] = useState<string | null>(null)
+  // Lock aspect ratio while resizing layer images (pinch always keeps ratio)
+  const [lockAspect, setLockAspect] = useState(false)
+  // Right-side layers column (slide-in, like the popup settings panel)
+  const [showLayersPanel, setShowLayersPanel] = useState(false)
+  // Paint-tool settings dropdown (draw/erase/blur/shape)
+  const [toolMenuOpen, setToolMenuOpen] = useState(false)
+  // Stroke opacity for draw / erase / blur (percent)
+  const [paintOpacity, setPaintOpacity] = useState(100)
+  // Faint alignment guides while a snap is engaged (canvas coords, null = off)
+  const snapGuidesRef = useRef<{ gx: number | null; gy: number | null }>({ gx: null, gy: null })
+  // Workspace view: pan/zoom the whole artboard (layers-tool gestures, resets
+  // each open). Scale+translate only — view rotation would break the
+  // rect-based pointer→canvas mapping every drawing tool depends on.
+  const [canvasView, setCanvasView] = useState({ s: 1, tx: 0, ty: 0, r: 0 })
+  const viewPanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
+  const viewPinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
+  const layerClientPtsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const layerInputRef = useRef<HTMLInputElement>(null)
+  const layerDragRef = useRef<{ kind: FrameHandle | 'move' | 'rot'; start: { x: number; y: number }; orig: CropRect; origR: number; layerId: string; itemId: string } | null>(null)
+  // Two-finger pinch (iPad): scales AND rotates the selected item around its center
+  const layerPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const layerPinchRef = useRef<{ startDist: number; startAngle: number; orig: CropRect; origR: number; layerId: string; itemId: string } | null>(null)
+  const layerImgSizes = useRef<Record<string, { w: number; h: number }>>({})
+  const stackRef = useRef(stack)
+  stackRef.current = stack
+  const updStack = (st: RefLayerStack | null) => {
+    // Sync the ref immediately — synchronous flows (crop-then-flatten on Apply)
+    // read stackRef before React re-renders
+    stackRef.current = st
+    setStack(st)
+    onLayerStackChange?.(st)
+  }
+  const patchLayer = (id: string, patch: Partial<RefLayer>) => {
+    if (stack) updStack({ ...stack, layers: stack.layers.map(l => l.id === id ? { ...l, ...patch } : l) })
+  }
+  const removeLayer = (id: string) => {
+    if (stack) updStack({ ...stack, layers: stack.layers.filter(l => l.id !== id) })
+    if (selLayerId === id) { setSelLayerId(null); setSelItemId(null); clearOverlay() }
+  }
+  const removeItem = (layerId: string, itemId: string) => {
+    if (stack) updStack({ ...stack, layers: stack.layers.map(l => l.id === layerId ? { ...l, items: l.items.filter(i2 => i2.id !== itemId) } : l) })
+    if (selItemId === itemId) { setSelItemId(null); clearOverlay() }
+  }
+  const moveLayer = (id: string, dir: 1 | -1) => {
+    if (!stack) return
+    const arr = [...stack.layers]
+    const i = arr.findIndex(l => l.id === id)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= arr.length) return
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    updStack({ ...stack, layers: arr })
+  }
+  const addEmptyLayer = () => {
+    const l: RefLayer = { id: `l-${Date.now()}`, name: `Layer ${(stack?.layers.length || 0) + 1}`, visible: true, opacity: 1, items: [] }
+    updStack({ enabled: true, layers: [...(stack?.layers || []), l] })
+    setSelLayerId(l.id); setSelItemId(null)
+  }
+  const addImageToLayer = async (file: File) => {
+    if (!file.type.startsWith('image/')) return
+    setLayerBusy(true); setLayerError(null)
+    try {
+      const dataUrl = await new Promise<string>((ok, err) => {
+        const r = new FileReader()
+        r.onload = () => ok(r.result as string)
+        r.onerror = () => err(new Error('Could not read the file'))
+        r.readAsDataURL(file)
+      })
+      const res = await fetch('/api/user/ref-layer-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed')
+      const item: RefLayerItem = { id: `it-${Date.now()}`, url: data.url as string }
+      const st = stackRef.current
+      if (st && selLayerId && st.layers.some(l => l.id === selLayerId)) {
+        updStack({ enabled: true, layers: st.layers.map(l => l.id === selLayerId ? { ...l, items: [...l.items, item] } : l) })
+      } else {
+        const l: RefLayer = { id: `l-${Date.now()}`, name: file.name.slice(0, 40) || 'Layer', visible: true, opacity: 1, items: [item] }
+        updStack({ enabled: true, layers: [...(st?.layers || []), l] })
+        setSelLayerId(l.id)
+      }
+      setSelItemId(item.id)
+    } catch (e: any) {
+      setLayerError(e?.message || 'Failed to add layer')
+    } finally {
+      setLayerBusy(false)
+    }
+  }
+
+  // Enable: the current canvas becomes "Layer 1 (base)" — hosted as a layer item
+  // covering the full artboard — and the canvas clears to a transparent paint
+  // surface over the branded backdrop. Apply re-flattens into the reference.
+  const enableMultiLayer = async () => {
+    const canvas = canvasRef.current; if (!canvas || !loaded || layerBusy) return
+    setLayerBusy(true); setLayerError(null)
+    try {
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+      const res = await fetch('/api/user/ref-layer-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.url) throw new Error(data.error || 'Could not host the base image')
+      const baseLayer: RefLayer = {
+        id: `l-base-${Date.now()}`, name: 'Layer 1 (base)', visible: true, opacity: 1,
+        items: [{ id: `it-base-${Date.now()}`, url: data.url as string, x: 0, y: 0, w: 1, h: 1 }],
+      }
+      // Base goes to the BOTTOM of any existing layers (draw order is bottom → top)
+      updStack({ enabled: true, baseInLayer: true, baseW: canvas.width, baseH: canvas.height, layers: [baseLayer, ...(stackRef.current?.layers || [])] })
+      canvas.getContext('2d')!.clearRect(0, 0, canvas.width, canvas.height)
+      // Restart history from the cleared state — undo/reset must never
+      // resurrect the pre-conversion base under Layer 1
+      try {
+        historyRef.current = [canvas.toDataURL('image/png')]
+        undoKindsRef.current = []
+        stackUndoRef.current = []
+        setStackUndoLen(0)
+        setHistLen(1)
+      } catch { /* keep old history if export fails */ }
+      setSelLayerId(baseLayer.id)
+      setSelItemId(baseLayer.items[0].id)
+    } catch (e: any) {
+      setLayerError(e?.message || 'Could not enable multi-layer')
+    } finally {
+      setLayerBusy(false)
+    }
+  }
+  const loadViaProxy = (u: string) => new Promise<HTMLImageElement>((ok, err) => {
+    const img = document.createElement('img')
+    img.onload = () => ok(img)
+    img.onerror = () => err(new Error('Image failed to load'))
+    img.src = u.startsWith('http') ? `/api/admin/image-proxy?url=${encodeURIComponent(u)}` : u
+  })
+  // Draw every visible item (with its layer's opacity) onto a context
+  const paintItems = async (pctx: CanvasRenderingContext2D, cw: number, ch: number, st: RefLayerStack) => {
+    for (const l of st.layers) {
+      if (!l.visible) continue
+      for (const it of l.items) {
+        try {
+          const img = await loadViaProxy(it.url)
+          pctx.globalAlpha = Math.min(1, Math.max(0, l.opacity))
+          if (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number') {
+            const x = it.x * cw, y = it.y * ch, w = it.w * cw, h = it.h * ch
+            const rot = ((it.r || 0) * Math.PI) / 180
+            if (rot) {
+              pctx.save()
+              pctx.translate(x + w / 2, y + h / 2)
+              pctx.rotate(rot)
+              pctx.drawImage(img, -w / 2, -h / 2, w, h)
+              pctx.restore()
+            } else {
+              pctx.drawImage(img, x, y, w, h)
+            }
+          } else {
+            const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height
+            const sc = Math.min(cw / iw, ch / ih)
+            pctx.drawImage(img, (cw - iw * sc) / 2, (ch - ih * sc) / 2, iw * sc, ih * sc)
+          }
+        } catch { /* skip broken items */ }
+      }
+    }
+    pctx.globalAlpha = 1
+  }
+  // Disable: flatten the composition back onto the canvas, then drop the stack
+  const disableMultiLayer = async () => {
+    const canvas = canvasRef.current; if (!canvas || layerBusy) return
+    const st = stackRef.current
+    setLayerBusy(true)
+    try {
+      if (st) {
+        const ctxD = canvas.getContext('2d')!
+        // Keep canvas paint as the top coat: items flatten UNDER the strokes
+        const snap = document.createElement('canvas')
+        snap.width = canvas.width; snap.height = canvas.height
+        snap.getContext('2d')!.drawImage(canvas, 0, 0)
+        ctxD.clearRect(0, 0, canvas.width, canvas.height)
+        await paintItems(ctxD, canvas.width, canvas.height, st)
+        ctxD.drawImage(snap, 0, 0)
+        pushHistory()
+      }
+      updStack(null)
+      setSelLayerId(null); setSelItemId(null); clearOverlay()
+    } finally {
+      setLayerBusy(false)
+    }
+  }
+
+  // Apply keeps the editor open on the re-created reference — when the image
+  // identity swaps, resync the stack + view for the fresh canvas (the canvas
+  // itself reloads via the image.url effect, which also resets history)
+  const lastImageIdRef = useRef(image.id)
+  useEffect(() => {
+    if (lastImageIdRef.current === image.id) return
+    lastImageIdRef.current = image.id
+    const st = normalizeStack(layerStack)
+    stackRef.current = st
+    setStack(st)
+    setSelLayerId(null); setSelItemId(null)
+    baseMigratedRef.current = false
+    setCanvasView({ s: 1, tx: 0, ty: 0, r: 0 })
+    clearOverlay()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image.id])
+
+  // Migrate stacks enabled before the base-as-Layer-1 upgrade: the base is
+  // still painted on the canvas, so convert it into a selectable "Layer 1
+  // (base)" automatically as soon as the editor opens.
+  const baseMigratedRef = useRef(false)
+  useEffect(() => {
+    if (baseMigratedRef.current || !loaded || !canUseLayers) return
+    const st = stackRef.current
+    // Dev Tier canvases are layered by default: convert fresh refs on open, and
+    // migrate stacks from before the base-as-Layer-1 upgrade
+    if (!st || (st.enabled && !st.baseInLayer)) {
+      baseMigratedRef.current = true
+      void enableMultiLayer()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, stack?.enabled])
+
+  // ── Layer item geometry + canvas interactions ────────────────────────────
+  const itemRectPx = (it: RefLayerItem): CropRect | null => {
+    const c = canvasRef.current; if (!c) return null
+    if (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number') {
+      return { x: it.x * c.width, y: it.y * c.height, w: it.w * c.width, h: it.h * c.height }
+    }
+    const nat = layerImgSizes.current[it.url]; if (!nat || !nat.w || !nat.h) return null
+    const sc = Math.min(c.width / nat.w, c.height / nat.h)
+    const w = nat.w * sc, h = nat.h * sc
+    return { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h }
+  }
+  const drawLayerSelOverlay = () => {
+    const overlay = overlayRef.current; if (!overlay) return
+    const octx = overlay.getContext('2d')!
+    octx.clearRect(0, 0, overlay.width, overlay.height)
+    const st = stackRef.current
+    if (!st?.enabled || !selLayerId || !selItemId) return
+    const it = st.layers.find(l => l.id === selLayerId)?.items.find(i2 => i2.id === selItemId)
+    if (!it) return
+    const r = itemRectPx(it); if (!r) return
+    const sDisp = displayScale()
+    // Faint alignment guides while a snap is engaged
+    const g = snapGuidesRef.current
+    if (g.gx !== null || g.gy !== null) {
+      octx.strokeStyle = 'rgba(248,250,252,0.35)'
+      octx.lineWidth = 1 * sDisp
+      octx.setLineDash([5 * sDisp, 5 * sDisp])
+      octx.beginPath()
+      if (g.gx !== null) { octx.moveTo(g.gx, 0); octx.lineTo(g.gx, overlay.height) }
+      if (g.gy !== null) { octx.moveTo(0, g.gy); octx.lineTo(overlay.width, g.gy) }
+      octx.stroke()
+      octx.setLineDash([])
+    }
+    const rad = itemRot(it)
+    octx.save()
+    octx.translate(r.x + r.w / 2, r.y + r.h / 2)
+    octx.rotate(rad)
+    // dashed frame (drawn in the item's local space)
+    octx.strokeStyle = 'rgba(255,255,255,0.9)'
+    octx.lineWidth = 1.5 * sDisp
+    octx.setLineDash([6 * sDisp, 4 * sDisp])
+    octx.strokeRect(-r.w / 2, -r.h / 2, r.w, r.h)
+    octx.setLineDash([])
+    // rotate stem + knob above the top edge
+    const gap = ROT_HANDLE_GAP * sDisp
+    octx.beginPath()
+    octx.moveTo(0, -r.h / 2)
+    octx.lineTo(0, -r.h / 2 - gap)
+    octx.strokeStyle = 'rgba(255,255,255,0.7)'
+    octx.lineWidth = 1 * sDisp
+    octx.stroke()
+    octx.beginPath()
+    octx.arc(0, -r.h / 2 - gap, 5 * sDisp, 0, Math.PI * 2)
+    octx.fillStyle = '#ffffff'
+    octx.fill()
+    octx.strokeStyle = 'rgba(0,0,0,0.5)'
+    octx.stroke()
+    // Corner + edge handles — synced-logo chips (white squares until it loads)
+    const logoImg = handleLogoImgRef.current
+    const hs = (logoImg ? 18 : 10) * sDisp
+    const locals: [number, number][] = [
+      [-r.w / 2, -r.h / 2], [0, -r.h / 2], [r.w / 2, -r.h / 2],
+      [-r.w / 2, 0], [r.w / 2, 0],
+      [-r.w / 2, r.h / 2], [0, r.h / 2], [r.w / 2, r.h / 2],
+    ]
+    const handlePath = (hx: number, hy: number) => {
+      octx.beginPath()
+      const rr = 5 * sDisp
+      if (typeof (octx as any).roundRect === 'function') {
+        (octx as any).roundRect(hx - hs / 2, hy - hs / 2, hs, hs, rr)
+      } else {
+        octx.rect(hx - hs / 2, hy - hs / 2, hs, hs)
+      }
+    }
+    for (const [hx, hy] of locals) {
+      if (logoImg) {
+        octx.save()
+        handlePath(hx, hy)
+        octx.clip()
+        octx.fillStyle = '#0f172a'
+        octx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
+        octx.drawImage(logoImg, hx - hs / 2, hy - hs / 2, hs, hs)
+        octx.restore()
+        handlePath(hx, hy)
+        octx.strokeStyle = '#ffffff'
+        octx.lineWidth = 1.5 * sDisp
+        octx.stroke()
+      } else {
+        octx.fillStyle = '#ffffff'
+        octx.strokeStyle = 'rgba(0,0,0,0.5)'
+        octx.lineWidth = 1 * sDisp
+        octx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
+        octx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs)
+      }
+    }
+    octx.restore()
+  }
+  const setItemRectLocal = (layerId: string, itemId: string, rect: CropRect, rot?: number) => {
+    const c = canvasRef.current; if (!c) return
+    setStack(prev => !prev ? prev : ({
+      ...prev,
+      layers: prev.layers.map(l => l.id !== layerId ? l : ({
+        ...l,
+        items: l.items.map(i2 => i2.id !== itemId ? i2 : {
+          ...i2,
+          x: rect.x / c.width, y: rect.y / c.height, w: rect.w / c.width, h: rect.h / c.height,
+          ...(typeof rot === 'number' ? { r: rot } : {}),
+        }),
+      })),
+    }))
+  }
+  const itemRot = (it: RefLayerItem) => ((it.r || 0) * Math.PI) / 180
+  // Rotate a point by -rad around the rect center (into the item's local space)
+  const toLocalPt = (pos: { x: number; y: number }, rect: CropRect, rad: number) => {
+    const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2
+    const dx = pos.x - cx, dy = pos.y - cy
+    const cos = Math.cos(-rad), sin = Math.sin(-rad)
+    return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }
+  }
+  const ROT_HANDLE_GAP = 26
+  // Unified undo: canvas paint frames and layer-transform snapshots interleave
+  // in one chronological list so the Undo button reverses the LAST action of
+  // either kind (double-tap fits, drags, pinches, rotations included)
+  const undoKindsRef = useRef<('canvas' | 'stack')[]>([])
+  const stackUndoRef = useRef<RefLayerStack[]>([])
+  const [stackUndoLen, setStackUndoLen] = useState(0)
+  const pushStackUndo = (pre: RefLayerStack) => {
+    stackUndoRef.current.push(pre)
+    undoKindsRef.current.push('stack')
+    setStackUndoLen(stackUndoRef.current.length)
+  }
+
+  // Double-tap on a selected image fits it to the canvas (contain, centered,
+  // rotation squared back to 0)
+  const lastTapRef = useRef<{ t: number; itemId: string; x: number; y: number } | null>(null)
+  const fitItemToCanvas = (layerId: string, itemId: string) => {
+    const c = canvasRef.current; if (!c) return
+    const st = stackRef.current
+    const it = st?.layers.find(l => l.id === layerId)?.items.find(i2 => i2.id === itemId)
+    if (!it) return
+    const nat = layerImgSizes.current[it.url]
+    // Prefer the image's natural aspect; fall back to the item's current shape
+    const aw = nat?.w || (typeof it.w === 'number' ? it.w * c.width : c.width)
+    const ah = nat?.h || (typeof it.h === 'number' ? it.h * c.height : c.height)
+    if (!aw || !ah) return
+    if (st) pushStackUndo(JSON.parse(JSON.stringify(st)))
+    const sc = Math.min(c.width / aw, c.height / ah)
+    const w = aw * sc, h = ah * sc
+    setItemRectLocal(layerId, itemId, { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h }, 0)
+    requestAnimationFrame(() => {
+      const st2 = stackRef.current
+      if (st2) onLayerStackChange?.(st2)
+      drawLayerSelOverlay()
+    })
+  }
+
+  const commitItemRect = (layerId: string, itemId: string, r: CropRect) => {
+    const c = canvasRef.current; if (!c) return
+    const st = stackRef.current; if (!st) return
+    updStack({
+      ...st,
+      layers: st.layers.map(l => l.id !== layerId ? l : ({
+        ...l,
+        items: l.items.map(i2 => i2.id !== itemId ? i2 : { ...i2, x: r.x / c.width, y: r.y / c.height, w: r.w / c.width, h: r.h / c.height }),
+      })),
+    })
+  }
+  const handleLayerPointerDown = (pos: { x: number; y: number }): boolean => {
+    const st = stackRef.current; if (!st?.enabled) return false
+    // Handles / rotate knob / move on the already-selected item win first
+    if (selLayerId && selItemId) {
+      const it = st.layers.find(l => l.id === selLayerId)?.items.find(i2 => i2.id === selItemId)
+      const r = it ? itemRectPx(it) : null
+      if (it && r) {
+        const rad = itemRot(it)
+        const lp = toLocalPt(pos, r, rad)
+        const tol = 12 * displayScale()
+        const knob = { x: r.x + r.w / 2, y: r.y - ROT_HANDLE_GAP * displayScale() }
+        if (Math.hypot(lp.x - knob.x, lp.y - knob.y) <= tol) {
+          layerDragRef.current = { kind: 'rot', start: pos, orig: r, origR: it.r || 0, layerId: selLayerId, itemId: selItemId }
+          return true
+        }
+        const pts = frameHandlePoints(r)
+        for (const h of FRAME_HANDLES) {
+          const [hx, hy] = pts[h]
+          if (Math.abs(lp.x - hx) <= tol && Math.abs(lp.y - hy) <= tol) {
+            layerDragRef.current = { kind: h, start: pos, orig: r, origR: it.r || 0, layerId: selLayerId, itemId: selItemId }
+            return true
+          }
+        }
+        if (lp.x > r.x && lp.x < r.x + r.w && lp.y > r.y && lp.y < r.y + r.h) {
+          // Double-tap → fit the image to the canvas
+          const prev = lastTapRef.current
+          if (prev && prev.itemId === selItemId && Date.now() - prev.t < 400 && Math.hypot(pos.x - prev.x, pos.y - prev.y) < 45 * displayScale()) {
+            lastTapRef.current = null
+            fitItemToCanvas(selLayerId, selItemId)
+            return true
+          }
+          lastTapRef.current = { t: Date.now(), itemId: selItemId, x: pos.x, y: pos.y }
+          layerDragRef.current = { kind: 'move', start: pos, orig: r, origR: it.r || 0, layerId: selLayerId, itemId: selItemId }
+          return true
+        }
+      }
+    }
+    // Otherwise hit-test items top-most first (rotation-aware)
+    for (let li = st.layers.length - 1; li >= 0; li--) {
+      const l = st.layers[li]
+      if (!l.visible) continue
+      for (let ii = l.items.length - 1; ii >= 0; ii--) {
+        const item = l.items[ii]
+        const r = itemRectPx(item)
+        if (!r) continue
+        const lp = toLocalPt(pos, r, itemRot(item))
+        if (lp.x > r.x && lp.x < r.x + r.w && lp.y > r.y && lp.y < r.y + r.h) {
+          setSelLayerId(l.id); setSelItemId(item.id)
+          // NOTE: the selecting tap deliberately does NOT arm the double-tap
+          // timer — the contract is 1 tap = select, then 2 taps = fit-to-canvas
+          layerDragRef.current = { kind: 'move', start: pos, orig: r, origR: item.r || 0, layerId: l.id, itemId: item.id }
+          // Materialize the auto-fit rect so future edits have concrete numbers
+          commitItemRect(l.id, item.id, r)
+          requestAnimationFrame(drawLayerSelOverlay)
+          return true
+        }
+      }
+    }
+    setSelItemId(null)
+    clearOverlay()
+    return false
+  }
+  const handleLayerPointerMove = (pos: { x: number; y: number }) => {
+    const d = layerDragRef.current; if (!d) return
+    const c = canvasRef.current; if (!c) return
+    const cx0 = d.orig.x + d.orig.w / 2, cy0 = d.orig.y + d.orig.h / 2
+    if (d.kind === 'rot') {
+      const a0 = Math.atan2(d.start.y - cy0, d.start.x - cx0)
+      const a1 = Math.atan2(pos.y - cy0, pos.x - cx0)
+      let deg = d.origR + ((a1 - a0) * 180) / Math.PI
+      const snap = Math.round(deg / 90) * 90
+      if (Math.abs(deg - snap) < 4) deg = snap
+      deg = ((deg % 360) + 360) % 360
+      setItemRectLocal(d.layerId, d.itemId, d.orig, deg)
+      requestAnimationFrame(drawLayerSelOverlay)
+      return
+    }
+    if (d.kind === 'move') {
+      const dx = pos.x - d.start.x, dy = pos.y - d.start.y
+      let x = d.orig.x + dx, y = d.orig.y + dy
+      // Magnetic snapping: canvas edges/centerlines + every other visible
+      // image's edges/centers. The engaged snap line is drawn as a faint guide.
+      const tol = 10 * displayScale()
+      const w = d.orig.w, h = d.orig.h
+      const targX: number[] = [0, c.width, c.width / 2]
+      const targY: number[] = [0, c.height, c.height / 2]
+      const stNow = stackRef.current
+      if (stNow) {
+        for (const l of stNow.layers) {
+          if (!l.visible) continue
+          for (const it2 of l.items) {
+            if (it2.id === d.itemId) continue
+            const r2 = itemRectPx(it2)
+            if (!r2) continue
+            targX.push(r2.x, r2.x + r2.w, r2.x + r2.w / 2)
+            targY.push(r2.y, r2.y + r2.h, r2.y + r2.h / 2)
+          }
+        }
+      }
+      const x0 = x, y0 = y
+      let gx: number | null = null, gy: number | null = null
+      let bestX = tol + 1
+      for (const t of targX) {
+        for (const [edge, off] of [[x0, 0], [x0 + w, -w], [x0 + w / 2, -w / 2]] as [number, number][]) {
+          const dist = Math.abs(edge - t)
+          if (dist <= tol && dist < bestX) { bestX = dist; x = t + off; gx = t }
+        }
+      }
+      let bestY = tol + 1
+      for (const t of targY) {
+        for (const [edge, off] of [[y0, 0], [y0 + h, -h], [y0 + h / 2, -h / 2]] as [number, number][]) {
+          const dist = Math.abs(edge - t)
+          if (dist <= tol && dist < bestY) { bestY = dist; y = t + off; gy = t }
+        }
+      }
+      snapGuidesRef.current = { gx, gy }
+      setItemRectLocal(d.layerId, d.itemId, { x, y, w, h })
+      requestAnimationFrame(drawLayerSelOverlay)
+      return
+    }
+    // Resize: work in the item's local (unrotated) space
+    const rad = (d.origR * Math.PI) / 180
+    const lp = toLocalPt(pos, d.orig, rad)
+    const ls = toLocalPt(d.start, d.orig, rad)
+    const dx = lp.x - ls.x, dy = lp.y - ls.y
+    const minSz = 16 * displayScale()
+    let x1 = d.orig.x, y1 = d.orig.y, x2 = d.orig.x + d.orig.w, y2 = d.orig.y + d.orig.h
+    if (d.kind.includes('w')) x1 = Math.min(d.orig.x + dx, x2 - minSz)
+    if (d.kind.includes('e')) x2 = Math.max(d.orig.x + d.orig.w + dx, x1 + minSz)
+    if (d.kind.includes('n')) y1 = Math.min(d.orig.y + dy, y2 - minSz)
+    if (d.kind.includes('s')) y2 = Math.max(d.orig.y + d.orig.h + dy, y1 + minSz)
+    // Dragged edges snap to the canvas bounds
+    const snapTol = 10 * displayScale()
+    if (d.kind.includes('w') && Math.abs(x1) <= snapTol) x1 = 0
+    if (d.kind.includes('e') && Math.abs(x2 - c.width) <= snapTol) x2 = c.width
+    if (d.kind.includes('n') && Math.abs(y1) <= snapTol) y1 = 0
+    if (d.kind.includes('s') && Math.abs(y2 - c.height) <= snapTol) y2 = c.height
+    let w = x2 - x1, h = y2 - y1
+    if (lockAspect && d.orig.w > 0 && d.orig.h > 0) {
+      const ratio = d.orig.w / d.orig.h
+      if (d.kind.length === 2) {
+        // Corner: follow the dominant scale change, anchor the opposite corner
+        const sc = Math.max(w / d.orig.w, h / d.orig.h)
+        w = Math.max(minSz, d.orig.w * sc)
+        h = Math.max(minSz, d.orig.h * sc)
+        x1 = d.kind.includes('w') ? d.orig.x + d.orig.w - w : d.orig.x
+        y1 = d.kind.includes('n') ? d.orig.y + d.orig.h - h : d.orig.y
+      } else if (d.kind === 'e' || d.kind === 'w') {
+        // Edge: scale the other axis around its center
+        h = Math.max(minSz, w / ratio)
+        y1 = d.orig.y + (d.orig.h - h) / 2
+      } else {
+        w = Math.max(minSz, h * ratio)
+        x1 = d.orig.x + (d.orig.w - w) / 2
+      }
+    }
+    setItemRectLocal(d.layerId, d.itemId, { x: x1, y: y1, w, h })
+    requestAnimationFrame(drawLayerSelOverlay)
+  }
+  const handleLayerPointerUp = () => {
+    const d = layerDragRef.current
+    layerDragRef.current = null
+    snapGuidesRef.current = { gx: null, gy: null }
+    if (d) {
+      const st = stackRef.current
+      const c = canvasRef.current
+      if (st && c) {
+        const cur = st.layers.find(l => l.id === d.layerId)?.items.find(i2 => i2.id === d.itemId)
+        const curR = cur ? { x: (cur.x ?? 0) * c.width, y: (cur.y ?? 0) * c.height, w: (cur.w ?? 1) * c.width, h: (cur.h ?? 1) * c.height, r: cur.r || 0 } : null
+        const moved = curR && (Math.abs(curR.x - d.orig.x) > 0.5 || Math.abs(curR.y - d.orig.y) > 0.5 || Math.abs(curR.w - d.orig.w) > 0.5 || Math.abs(curR.h - d.orig.h) > 0.5 || Math.abs(curR.r - d.origR) > 0.01)
+        if (moved) {
+          pushStackUndo({
+            ...st,
+            layers: st.layers.map(l => l.id !== d.layerId ? l : ({
+              ...l,
+              items: l.items.map(i2 => i2.id !== d.itemId ? i2 : { ...i2, x: d.orig.x / c.width, y: d.orig.y / c.height, w: d.orig.w / c.width, h: d.orig.h / c.height, r: d.origR }),
+            })),
+          })
+        }
+        onLayerStackChange?.(st)
+      } else if (st) {
+        onLayerStackChange?.(st)
+      }
+      requestAnimationFrame(drawLayerSelOverlay)
+    }
+  }
+
+  // ── Workspace gestures on the pane AROUND the artboard ───────────────────
+  // When an image covers the canvas, one-finger drags grab the image — so the
+  // empty area around the artboard doubles as a pan/zoom surface (Select tool,
+  // Fit mode; Full mode keeps native touch scrolling).
+  const panePtsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const panePanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
+  const panePinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
+  const onPanePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (tool !== 'select' || fitMode !== 'fit') return
+    if (e.target !== e.currentTarget) return // the canvas + layers column own their events
+    e.currentTarget.setPointerCapture(e.pointerId)
+    panePtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (panePtsRef.current.size === 2) {
+      const pts = [...panePtsRef.current.values()]
+      panePanRef.current = null
+      panePinchRef.current = {
+        dist0: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
+        startAngle: Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x),
+        mid0: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+        orig: canvasView,
+      }
+    } else {
+      panePanRef.current = { start: { x: e.clientX, y: e.clientY }, orig: canvasView }
+    }
+  }
+  const onPanePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panePtsRef.current.has(e.pointerId)) return
+    panePtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const pinch = panePinchRef.current
+    if (pinch && panePtsRef.current.size >= 2) {
+      const pts = [...panePtsRef.current.values()]
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1
+      const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+      {
+        const ang = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x)
+        let deg = pinch.orig.r + ((ang - pinch.startAngle) * 180) / Math.PI
+        const snap = Math.round(deg / 90) * 90
+        if (Math.abs(deg - snap) < 4) deg = snap
+        setCanvasView({
+          s: Math.min(6, Math.max(0.25, pinch.orig.s * (dist / pinch.dist0))),
+          r: ((deg % 360) + 360) % 360,
+          tx: pinch.orig.tx + (mid.x - pinch.mid0.x),
+          ty: pinch.orig.ty + (mid.y - pinch.mid0.y),
+        })
+      }
+      return
+    }
+    if (panePanRef.current) {
+      const pan = panePanRef.current
+      setCanvasView({ s: pan.orig.s, r: pan.orig.r, tx: pan.orig.tx + (e.clientX - pan.start.x), ty: pan.orig.ty + (e.clientY - pan.start.y) })
+    }
+  }
+  const onPanePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panePtsRef.current.has(e.pointerId)) return
+    panePtsRef.current.delete(e.pointerId)
+    if (panePinchRef.current && panePtsRef.current.size < 2) panePinchRef.current = null
+    if (panePtsRef.current.size === 0) panePanRef.current = null
+  }
 
   // Load image into canvas on mount.
   // HTTPS images (Vercel Blob, R2, etc.) taint the canvas when drawn directly, which causes
@@ -5981,11 +8255,31 @@ function RefImageEditorModal({ image, onApply, onClose }: {
         canvas.width = w; canvas.height = h
         overlayRef.current!.width = w; overlayRef.current!.height = h
         canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+        setDims({ w, h })
+        // Multi-layer refs keep the base in Layer 1 — the canvas is a transparent
+        // paint surface. Painting the flat image here would duplicate it under
+        // the layers (and Reset would resurrect it). Start cleared instead.
+        const st0 = stackRef.current
+        if (st0?.enabled && st0.baseInLayer) {
+          canvas.getContext('2d')!.clearRect(0, 0, w, h)
+          try {
+            historyRef.current = [canvas.toDataURL('image/png')]
+            undoKindsRef.current = []
+            stackUndoRef.current = []
+            setStackUndoLen(0)
+            setHistLen(1)
+          } catch { historyRef.current = []; setHistLen(0) }
+          setLoaded(true)
+          return
+        }
         try {
           const snap = document.createElement('canvas')
           snap.width = w; snap.height = h
           snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
           historyRef.current = [snap.toDataURL('image/jpeg', 0.97)]
+          undoKindsRef.current = []
+          stackUndoRef.current = []
+          setStackUndoLen(0)
           setHistLen(1)
         } catch {
           historyRef.current = []
@@ -6009,17 +8303,38 @@ function RefImageEditorModal({ image, onApply, onClose }: {
 
   const getPos = (e: React.PointerEvent) => {
     const canvas = canvasRef.current!
-    const r = canvas.getBoundingClientRect()
+    const rect = canvas.getBoundingClientRect()
+    const rot = ((canvasView.r || 0) * Math.PI) / 180
+    if (!rot) {
+      return {
+        x: (e.clientX - rect.left) * canvas.width  / rect.width,
+        y: (e.clientY - rect.top)  * canvas.height / rect.height,
+      }
+    }
+    // Rotated workspace: the bounding box no longer matches the canvas face —
+    // un-rotate/un-scale around the bbox center, then map layout px → canvas px
+    const sv = canvasView.s || 1
+    const dx = e.clientX - (rect.left + rect.width / 2)
+    const dy = e.clientY - (rect.top + rect.height / 2)
+    const cos = Math.cos(-rot), sin = Math.sin(-rot)
+    const lx = (dx * cos - dy * sin) / sv
+    const ly = (dx * sin + dy * cos) / sv
+    const w = canvas.offsetWidth || 1, h = canvas.offsetHeight || 1
     return {
-      x: (e.clientX - r.left) * canvas.width  / r.width,
-      y: (e.clientY - r.top)  * canvas.height / r.height,
+      x: (lx + w / 2) * canvas.width / w,
+      y: (ly + h / 2) * canvas.height / h,
     }
   }
 
   const pushHistory = () => {
     try {
-      const url = canvasRef.current!.toDataURL('image/jpeg', 0.97)
+      // Layer mode keeps the canvas transparent — PNG preserves alpha (a JPEG
+      // frame would restore opaque black over the backdrop/layers on undo)
+      const url = stackRef.current?.enabled
+        ? canvasRef.current!.toDataURL('image/png')
+        : canvasRef.current!.toDataURL('image/jpeg', 0.97)
       historyRef.current = [...historyRef.current, url]
+      undoKindsRef.current.push('canvas')
       setHistLen(historyRef.current.length)
     } catch { /* tainted canvas — skip snapshot */ }
   }
@@ -6035,13 +8350,26 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       const overlay = overlayRef.current
       if (overlay) { overlay.width = img.width; overlay.height = img.height }
       ctx.drawImage(img, 0, 0)
+      setDims({ w: img.width, h: img.height })
       if (tool === 'crop' && cropMode === 'frame') initCropFrame()
     }
     img.src = dataUrl
   }
 
   const undo = () => {
+    if (undoKindsRef.current[undoKindsRef.current.length - 1] === 'stack') {
+      undoKindsRef.current.pop()
+      const snap = stackUndoRef.current.pop()
+      setStackUndoLen(stackUndoRef.current.length)
+      if (snap) {
+        setStack(snap)
+        onLayerStackChange?.(snap)
+        requestAnimationFrame(drawLayerSelOverlay)
+      }
+      return
+    }
     if (historyRef.current.length <= 1) return
+    if (undoKindsRef.current[undoKindsRef.current.length - 1] === 'canvas') undoKindsRef.current.pop()
     historyRef.current = historyRef.current.slice(0, -1)
     setHistLen(historyRef.current.length)
     restoreFrame(historyRef.current[historyRef.current.length - 1])
@@ -6051,6 +8379,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     if (historyRef.current.length === 0) return
     const orig = historyRef.current[0]
     historyRef.current = [orig]
+    undoKindsRef.current = undoKindsRef.current.filter(k => k !== 'canvas')
     setHistLen(1)
     restoreFrame(orig)
     setHasCropSel(false)
@@ -6062,18 +8391,57 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     o.getContext('2d')!.clearRect(0, 0, o.width, o.height)
   }
 
+  // DOM crop frame (border + logo handles) — drawn as elements ABOVE the canvas
+  // so the handles are never clipped, and the frame can extend past the canvas
+  // when the user grows the crop. Positioned in canvas-percent coords, updated
+  // imperatively so frame drags don't re-render the modal at 60Hz.
+  const cropFrameRef = useRef<HTMLDivElement>(null)
+  const syncCropFrame = () => {
+    const el = cropFrameRef.current, c = canvasRef.current
+    if (!el || !c || !c.width || !c.height) return
+    const r = cropRectRef.current
+    if (tool !== 'crop' || cropMode !== 'frame' || !r) { el.style.display = 'none'; return }
+    el.style.display = 'block'
+    el.style.left = `${(r.x / c.width) * 100}%`
+    el.style.top = `${(r.y / c.height) * 100}%`
+    el.style.width = `${(r.w / c.width) * 100}%`
+    el.style.height = `${(r.h / c.height) * 100}%`
+  }
+
+  // Silver orbit ring placement: while a crop selection is active the ring hugs
+  // the selection (percent coords track the crop rect through display scaling);
+  // otherwise it frames the whole canvas. Imperative style writes so live
+  // drag-resizing doesn't re-render the modal at 60Hz.
+  const orbitRef = useRef<HTMLDivElement>(null)
+  const syncOrbit = () => {
+    const el = orbitRef.current, c = canvasRef.current
+    if (!el || !c || !c.width || !c.height) return
+    const r = tool === 'crop' ? cropRectRef.current : null
+    if (r && r.w > 2 && r.h > 2) {
+      el.style.left = `${(r.x / c.width) * 100}%`
+      el.style.top = `${(r.y / c.height) * 100}%`
+      el.style.width = `${(r.w / c.width) * 100}%`
+      el.style.height = `${(r.h / c.height) * 100}%`
+    } else {
+      el.style.left = '0%'; el.style.top = '0%'; el.style.width = '100%'; el.style.height = '100%'
+    }
+  }
+
   // Canvas px per CSS px — the canvas is native resolution but displayed scaled down,
   // so handle sizes / hit tolerances must be scaled to look consistent on screen
   const displayScale = () => {
     const c = canvasRef.current; if (!c) return 1
-    const r = c.getBoundingClientRect()
-    return r.width > 0 ? c.width / r.width : 1
+    // offsetWidth × view scale = true on-screen width of the canvas face (the
+    // bounding-box width lies once the workspace is rotated)
+    const w = (c.offsetWidth || 0) * (canvasView.s || 1)
+    return w > 0 ? c.width / w : 1
   }
 
   const drawFrameOverlay = () => {
     const overlay = overlayRef.current; if (!overlay) return
     const octx = overlay.getContext('2d')!
     octx.clearRect(0, 0, overlay.width, overlay.height)
+    syncOrbit()
     const r = cropRectRef.current; if (!r) return
     const s = displayScale()
     // Dim everything outside the crop frame
@@ -6089,21 +8457,8 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       octx.moveTo(r.x, r.y + (r.h * i) / 3); octx.lineTo(r.x + r.w, r.y + (r.h * i) / 3)
     }
     octx.stroke()
-    // Frame border
-    octx.strokeStyle = 'rgba(255,255,255,0.9)'
-    octx.lineWidth = 1.5 * s
-    octx.strokeRect(r.x, r.y, r.w, r.h)
-    // Corner + edge handles
-    const hs = 10 * s
-    const pts = frameHandlePoints(r)
-    octx.fillStyle = '#ffffff'
-    octx.strokeStyle = 'rgba(0,0,0,0.5)'
-    octx.lineWidth = 1 * s
-    for (const h of FRAME_HANDLES) {
-      const [hx, hy] = pts[h]
-      octx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
-      octx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs)
-    }
+    // Border + handles live in the DOM frame (never clipped, can leave the canvas)
+    syncCropFrame()
   }
 
   const initCropFrame = () => {
@@ -6136,8 +8491,19 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       setHasCropSel(false)
       clearOverlay()
     }
+    syncOrbit()
+    syncCropFrame()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, cropMode, loaded])
+
+  // Layer selection frame tracks selection / stack / view changes
+  useEffect(() => {
+    if (tool === 'select' && loaded) {
+      const id = requestAnimationFrame(() => drawLayerSelOverlay())
+      return () => cancelAnimationFrame(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, selLayerId, selItemId, stack, loaded, fitMode])
 
   // Fit/Full toggle changes the display scale — redraw handles at the new size after layout
   useEffect(() => {
@@ -6148,7 +8514,51 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitMode])
 
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (toolMenuOpen) setToolMenuOpen(false)
+    if (tool === 'mask' || tool === 'resize') return // no canvas gestures — driven by toolbar buttons
+    if (tool === 'select') {
+      e.currentTarget.setPointerCapture(e.pointerId)
+      const pos = getPos(e)
+      layerPointersRef.current.set(e.pointerId, pos)
+      layerClientPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (layerPointersRef.current.size === 2) {
+        viewPanRef.current = null
+        if (selLayerId && selItemId) {
+          // Second finger lands → pinch scales + twist rotates the selected image
+          const it = stackRef.current?.layers.find(l => l.id === selLayerId)?.items.find(i2 => i2.id === selItemId)
+          const r = it ? itemRectPx(it) : null
+          if (it && r) {
+            const pts = [...layerPointersRef.current.values()]
+            layerDragRef.current = null
+            layerPinchRef.current = {
+              startDist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
+              startAngle: Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x),
+              orig: r,
+              origR: it.r || 0,
+              layerId: selLayerId,
+              itemId: selItemId,
+            }
+          }
+          return
+        }
+        // No selection → two fingers pan/zoom the whole artboard
+        const cpts = [...layerClientPtsRef.current.values()]
+        layerDragRef.current = null
+        viewPinchRef.current = {
+          dist0: Math.hypot(cpts[0].x - cpts[1].x, cpts[0].y - cpts[1].y) || 1,
+          startAngle: Math.atan2(cpts[1].y - cpts[0].y, cpts[1].x - cpts[0].x),
+          mid0: { x: (cpts[0].x + cpts[1].x) / 2, y: (cpts[0].y + cpts[1].y) / 2 },
+          orig: canvasView,
+        }
+        return
+      }
+      // Single pointer: grab an item if hit, otherwise drag pans the artboard
+      if (!handleLayerPointerDown(pos)) {
+        viewPanRef.current = { start: { x: e.clientX, y: e.clientY }, orig: canvasView }
+      }
+      return
+    }
     e.currentTarget.setPointerCapture(e.pointerId)
     const pos = getPos(e)
     isDrawingRef.current = true
@@ -6157,10 +8567,20 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
 
-    if (tool === 'draw') {
-      ctx.beginPath(); ctx.moveTo(pos.x, pos.y)
-    } else if (tool === 'erase') {
-      ctx.beginPath(); ctx.moveTo(pos.x, pos.y)
+    if (tool === 'cut') {
+      // Start a fresh freehand cut path
+      cutPtsRef.current = [pos]
+      setCutReady(false)
+      clearOverlay()
+    } else if (tool === 'draw' || tool === 'erase') {
+      // Strokes preview on the overlay and composite onto the canvas at the
+      // chosen opacity on release — uniform alpha, no darker joints where
+      // stroke segments overlap
+      const overlay0 = overlayRef.current!
+      const octx0 = overlay0.getContext('2d')!
+      octx0.clearRect(0, 0, overlay0.width, overlay0.height)
+      octx0.beginPath(); octx0.moveTo(pos.x, pos.y)
+      overlay0.style.opacity = String(Math.max(0.05, paintOpacity / 100))
     } else if (tool === 'blur') {
       blurPtsRef.current = [pos]
       // Snapshot the canvas at stroke start — all blur is applied relative to this
@@ -6180,7 +8600,57 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     }
   }
 
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (tool === 'select') {
+      if (layerPointersRef.current.has(e.pointerId)) layerPointersRef.current.set(e.pointerId, getPos(e))
+      if (layerClientPtsRef.current.has(e.pointerId)) layerClientPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      const pinch = layerPinchRef.current
+      if (pinch && layerPointersRef.current.size >= 2) {
+        const pts = [...layerPointersRef.current.values()]
+        const sc = Math.max(0.05, (Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1) / pinch.startDist)
+        const ang = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x)
+        let deg = pinch.origR + ((ang - pinch.startAngle) * 180) / Math.PI
+        const snap = Math.round(deg / 90) * 90
+        if (Math.abs(deg - snap) < 4) deg = snap
+        deg = ((deg % 360) + 360) % 360
+        const minSz = 16 * displayScale()
+        const w = Math.max(minSz, pinch.orig.w * sc)
+        const h = Math.max(minSz, pinch.orig.h * sc)
+        setItemRectLocal(pinch.layerId, pinch.itemId, {
+          x: pinch.orig.x + pinch.orig.w / 2 - w / 2,
+          y: pinch.orig.y + pinch.orig.h / 2 - h / 2,
+          w, h,
+        }, deg)
+        requestAnimationFrame(drawLayerSelOverlay)
+        return
+      }
+      const vp = viewPinchRef.current
+      if (vp && layerClientPtsRef.current.size >= 2) {
+        const cpts = [...layerClientPtsRef.current.values()]
+        const dist = Math.hypot(cpts[0].x - cpts[1].x, cpts[0].y - cpts[1].y) || 1
+        const mid = { x: (cpts[0].x + cpts[1].x) / 2, y: (cpts[0].y + cpts[1].y) / 2 }
+        {
+          const ang = Math.atan2(cpts[1].y - cpts[0].y, cpts[1].x - cpts[0].x)
+          let deg = vp.orig.r + ((ang - vp.startAngle) * 180) / Math.PI
+          const snap = Math.round(deg / 90) * 90
+          if (Math.abs(deg - snap) < 4) deg = snap
+          setCanvasView({
+            s: Math.min(6, Math.max(0.25, vp.orig.s * (dist / vp.dist0))),
+            r: ((deg % 360) + 360) % 360,
+            tx: vp.orig.tx + (mid.x - vp.mid0.x),
+            ty: vp.orig.ty + (mid.y - vp.mid0.y),
+          })
+        }
+        return
+      }
+      if (viewPanRef.current) {
+        const pan = viewPanRef.current
+        setCanvasView({ s: pan.orig.s, r: pan.orig.r, tx: pan.orig.tx + (e.clientX - pan.start.x), ty: pan.orig.ty + (e.clientY - pan.start.y) })
+        return
+      }
+      if (layerDragRef.current) handleLayerPointerMove(getPos(e))
+      return
+    }
     if (!isDrawingRef.current) {
       // Hover feedback for crop frame handles
       if (tool === 'crop' && cropMode === 'frame' && loaded) {
@@ -6196,18 +8666,26 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     const overlay = overlayRef.current!
     const octx = overlay.getContext('2d')!
 
-    if (tool === 'draw') {
-      ctx.strokeStyle = drawColor
-      ctx.lineWidth = brushSize
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round'
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.lineTo(pos.x, pos.y); ctx.stroke()
-    } else if (tool === 'erase') {
-      ctx.strokeStyle = '#ffffff'
-      ctx.lineWidth = brushSize
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round'
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.lineTo(pos.x, pos.y); ctx.stroke()
+    if (tool === 'cut') {
+      // Freehand lasso: dashed live path on the overlay
+      cutPtsRef.current.push(pos)
+      const pts = cutPtsRef.current
+      const s = displayScale()
+      octx.clearRect(0, 0, overlay.width, overlay.height)
+      octx.strokeStyle = '#22d3ee'
+      octx.lineWidth = 1.5 * s
+      octx.setLineDash([6 * s, 4 * s])
+      octx.beginPath()
+      octx.moveTo(pts[0].x, pts[0].y)
+      for (let i = 1; i < pts.length; i++) octx.lineTo(pts[i].x, pts[i].y)
+      octx.stroke()
+      octx.setLineDash([])
+    } else if (tool === 'draw' || tool === 'erase') {
+      octx.strokeStyle = tool === 'draw' ? drawColor : '#ffffff'
+      octx.lineWidth = brushSize
+      octx.lineCap = 'round'; octx.lineJoin = 'round'
+      octx.globalCompositeOperation = 'source-over'
+      octx.lineTo(pos.x, pos.y); octx.stroke()
     } else if (tool === 'blur') {
       blurPtsRef.current.push(pos)
       // Real-time blur: restore snapshot, then apply scale-down→up blur clipped to stroke path.
@@ -6245,6 +8723,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       ctx.clip()
       ctx.imageSmoothingEnabled = true
       ctx.imageSmoothingQuality = 'high'
+      ctx.globalAlpha = Math.max(0.05, paintOpacity / 100)
       ctx.drawImage(tiny2, 0, 0, sw, sh, bx1, by1, bw, bh)
       ctx.restore()
     } else if (tool === 'crop' && cropMode === 'frame') {
@@ -6253,15 +8732,17 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       const minSz = Math.min(20 * displayScale(), canvas.width / 2, canvas.height / 2)
       let { x, y, w, h } = d.orig
       if (d.kind === 'move') {
-        x = clampNum(d.orig.x + dx, 0, canvas.width - d.orig.w)
-        y = clampNum(d.orig.y + dy, 0, canvas.height - d.orig.h)
+        x = clampNum(d.orig.x + dx, -canvas.width / 2, Math.max(-canvas.width / 2, canvas.width * 1.5 - d.orig.w))
+        y = clampNum(d.orig.y + dy, -canvas.height / 2, Math.max(-canvas.height / 2, canvas.height * 1.5 - d.orig.h))
       } else {
-        // Handle names encode which edges they move: 'nw' moves the north + west edges, etc.
+        // Handle names encode which edges they move: 'nw' moves the north + west
+        // edges, etc. Edges may extend up to HALF A CANVAS beyond each side —
+        // applying then adds the overflow as transparent canvas space.
         let x1 = d.orig.x, y1 = d.orig.y, x2 = d.orig.x + d.orig.w, y2 = d.orig.y + d.orig.h
-        if (d.kind.includes('w')) x1 = clampNum(d.orig.x + dx, 0, x2 - minSz)
-        if (d.kind.includes('e')) x2 = clampNum(d.orig.x + d.orig.w + dx, x1 + minSz, canvas.width)
-        if (d.kind.includes('n')) y1 = clampNum(d.orig.y + dy, 0, y2 - minSz)
-        if (d.kind.includes('s')) y2 = clampNum(d.orig.y + d.orig.h + dy, y1 + minSz, canvas.height)
+        if (d.kind.includes('w')) x1 = clampNum(d.orig.x + dx, -canvas.width / 2, x2 - minSz)
+        if (d.kind.includes('e')) x2 = clampNum(d.orig.x + d.orig.w + dx, x1 + minSz, canvas.width * 1.5)
+        if (d.kind.includes('n')) y1 = clampNum(d.orig.y + dy, -canvas.height / 2, y2 - minSz)
+        if (d.kind.includes('s')) y2 = clampNum(d.orig.y + d.orig.h + dy, y1 + minSz, canvas.height * 1.5)
         x = x1; y = y1; w = x2 - x1; h = y2 - y1
       }
       cropRectRef.current = { x, y, w, h }
@@ -6278,6 +8759,7 @@ function RefImageEditorModal({ image, onApply, onClose }: {
         octx.strokeStyle = 'rgba(255,255,255,0.85)'; octx.lineWidth = 1.5
         octx.strokeRect(x, y, w, h)
         cropRectRef.current = { x, y, w, h }
+        syncOrbit()
       } else {
         octx.fillStyle = shapeColor; octx.strokeStyle = shapeColor; octx.lineWidth = 2.5
         if (shapeKind === 'rect') {
@@ -6291,11 +8773,65 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     lastPtRef.current = pos
   }
 
-  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (tool === 'select') {
+      layerPointersRef.current.delete(e.pointerId)
+      layerClientPtsRef.current.delete(e.pointerId)
+      if (viewPinchRef.current && layerClientPtsRef.current.size < 2) {
+        viewPinchRef.current = null
+        return
+      }
+      if (viewPanRef.current) {
+        viewPanRef.current = null
+        return
+      }
+      if (layerPinchRef.current && layerPointersRef.current.size < 2) {
+        const pinch = layerPinchRef.current
+        layerPinchRef.current = null
+        const st = stackRef.current
+        const c = canvasRef.current
+        if (st && c) {
+          pushStackUndo({
+            ...st,
+            layers: st.layers.map(l => l.id !== pinch.layerId ? l : ({
+              ...l,
+              items: l.items.map(i2 => i2.id !== pinch.itemId ? i2 : { ...i2, x: pinch.orig.x / c.width, y: pinch.orig.y / c.height, w: pinch.orig.w / c.width, h: pinch.orig.h / c.height, r: pinch.origR }),
+            })),
+          })
+          onLayerStackChange?.(st)
+        } else if (st) {
+          onLayerStackChange?.(st)
+        }
+        requestAnimationFrame(drawLayerSelOverlay)
+        return
+      }
+      handleLayerPointerUp()
+      return
+    }
     if (!isDrawingRef.current) return
     isDrawingRef.current = false
 
-    if (tool === 'draw' || tool === 'erase') {
+    if (tool === 'cut') {
+      const pts = cutPtsRef.current
+      if (pts.length >= 3) {
+        // Close the lasso: show the region with the dashed outline + tint, await keep/remove
+        drawRegionOverlay(silhouetteFromPath(pts))
+        setCutReady(true)
+      } else {
+        cutPtsRef.current = []
+        clearOverlay()
+      }
+    } else if (tool === 'draw' || tool === 'erase') {
+      // Composite the previewed stroke onto the canvas at the chosen opacity
+      const overlay1 = overlayRef.current!
+      const canvas1 = canvasRef.current!
+      const ctx1 = canvas1.getContext('2d')!
+      ctx1.save()
+      ctx1.globalAlpha = Math.max(0.05, paintOpacity / 100)
+      ctx1.drawImage(overlay1, 0, 0)
+      ctx1.restore()
+      overlay1.style.opacity = ''
+      clearOverlay()
       pushHistory()
     } else if (tool === 'blur') {
       // Blur was already applied live in onPointerMove — just commit and clean up
@@ -6322,18 +8858,312 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     const r = cropRectRef.current; if (!r || r.w < 2 || r.h < 2) return
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
+    const oldW = canvas.width, oldH = canvas.height
+    // getImageData fills anything outside the current canvas with transparent
+    // pixels — an out-of-bounds crop therefore GROWS the canvas with clear space
     const data = ctx.getImageData(Math.round(r.x), Math.round(r.y), Math.round(r.w), Math.round(r.h))
     canvas.width = Math.round(r.w); canvas.height = Math.round(r.h)
     const overlay = overlayRef.current!
     overlay.width = canvas.width; overlay.height = canvas.height
     ctx.putImageData(data, 0, 0)
+    setDims({ w: canvas.width, h: canvas.height })
+    // Layer items live in canvas-fraction coords — remap into the new canvas
+    // space so nothing visually moves (expansion keeps everything in place)
+    const stC = stackRef.current
+    if (stC) {
+      updStack({
+        ...stC,
+        ...(stC.baseW ? { baseW: canvas.width } : {}),
+        ...(stC.baseH ? { baseH: canvas.height } : {}),
+        layers: stC.layers.map(l => ({
+          ...l,
+          items: l.items.map(it => (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number')
+            ? { ...it, x: (it.x * oldW - r.x) / r.w, y: (it.y * oldH - r.y) / r.h, w: (it.w * oldW) / r.w, h: (it.h * oldH) / r.h }
+            : it),
+        })),
+      })
+    }
     clearOverlay(); cropRectRef.current = null; setHasCropSel(false)
     pushHistory()
     // Frame mode: rebuild the frame around the newly cropped image so the user can keep refining
     if (cropMode === 'frame') initCropFrame()
+    syncOrbit()
+  }
+
+  // ── Mask + Cut ───────────────────────────────────────────────────────────
+  // Both tools produce a "silhouette" canvas (opaque where selected) and then apply
+  // it via applyRegion — keep (everything else → white) or remove (selection → white).
+
+  // Convert a black/white AI mask image into a silhouette sized to the canvas
+  const silhouetteFromMask = (img: HTMLImageElement, w: number, h: number) => {
+    const c = document.createElement('canvas'); c.width = w; c.height = h
+    const cctx = c.getContext('2d')!
+    cctx.drawImage(img, 0, 0, w, h)
+    const d = cctx.getImageData(0, 0, w, h)
+    let on = 0
+    for (let i = 0; i < d.data.length; i += 4) {
+      const hit = d.data[i + 3] > 10 && d.data[i] > 127 // white = masked
+      d.data[i] = 255; d.data[i + 1] = 255; d.data[i + 2] = 255
+      d.data[i + 3] = hit ? 255 : 0
+      if (hit) on++
+    }
+    if (on === 0) return null // nothing detected
+    cctx.putImageData(d, 0, 0)
+    return c
+  }
+
+  // Silhouette from the freehand cut path (filled polygon)
+  const silhouetteFromPath = (pts: { x: number; y: number }[]) => {
+    const canvas = canvasRef.current!
+    const c = document.createElement('canvas'); c.width = canvas.width; c.height = canvas.height
+    const cctx = c.getContext('2d')!
+    cctx.fillStyle = '#ffffff'
+    cctx.beginPath()
+    cctx.moveTo(pts[0].x, pts[0].y)
+    for (let i = 1; i < pts.length; i++) cctx.lineTo(pts[i].x, pts[i].y)
+    cctx.closePath()
+    cctx.fill()
+    return c
+  }
+
+  // Dashed outline + light tint around the silhouette (the "marching ants" preview)
+  const drawRegionOverlay = (sil: HTMLCanvasElement) => {
+    const overlay = overlayRef.current!; const octx = overlay.getContext('2d')!
+    octx.clearRect(0, 0, overlay.width, overlay.height)
+    const s = displayScale()
+    const r = Math.max(2, 2.5 * s)
+    // Ring: silhouette dilated in 8 directions, minus the silhouette itself
+    const ring = document.createElement('canvas'); ring.width = overlay.width; ring.height = overlay.height
+    const rctx = ring.getContext('2d')!
+    const o = r * 0.71
+    for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r], [o, o], [-o, o], [o, -o], [-o, -o]]) {
+      rctx.drawImage(sil, dx, dy)
+    }
+    rctx.globalCompositeOperation = 'destination-out'
+    rctx.drawImage(sil, 0, 0)
+    rctx.globalCompositeOperation = 'source-in'
+    rctx.fillStyle = '#22d3ee'
+    rctx.fillRect(0, 0, ring.width, ring.height)
+    // Dash the ring with a diagonal stripe pattern
+    const cell = Math.max(8, Math.round(10 * s))
+    const dash = document.createElement('canvas'); dash.width = cell; dash.height = cell
+    const dctx = dash.getContext('2d')!
+    dctx.strokeStyle = '#ffffff'; dctx.lineWidth = cell / 2
+    dctx.beginPath(); dctx.moveTo(-cell / 2, cell); dctx.lineTo(cell, -cell / 2)
+    dctx.moveTo(cell / 2, cell * 1.5); dctx.lineTo(cell * 1.5, cell / 2); dctx.stroke()
+    rctx.globalCompositeOperation = 'destination-in'
+    rctx.fillStyle = rctx.createPattern(dash, 'repeat')!
+    rctx.fillRect(0, 0, ring.width, ring.height)
+    // Tinted fill so the selected area itself reads clearly
+    const tint = document.createElement('canvas'); tint.width = overlay.width; tint.height = overlay.height
+    const tctx = tint.getContext('2d')!
+    tctx.drawImage(sil, 0, 0)
+    tctx.globalCompositeOperation = 'source-in'
+    tctx.fillStyle = '#22d3ee'
+    tctx.fillRect(0, 0, tint.width, tint.height)
+    octx.save(); octx.globalAlpha = 0.16; octx.drawImage(tint, 0, 0); octx.restore()
+    octx.drawImage(ring, 0, 0)
+  }
+
+  // Apply a silhouette: keep = everything outside → white; remove = selection → white.
+  // (White matches the editor's export, which flattens to a white-backed JPEG.)
+  const applyRegion = (sil: HTMLCanvasElement, mode: 'keep' | 'remove') => {
+    const canvas = canvasRef.current!; const ctx = canvas.getContext('2d')!
+    const snap = document.createElement('canvas'); snap.width = canvas.width; snap.height = canvas.height
+    const sctx = snap.getContext('2d')!
+    sctx.drawImage(canvas, 0, 0)
+    sctx.globalCompositeOperation = mode === 'keep' ? 'destination-in' : 'destination-out'
+    sctx.drawImage(sil, 0, 0)
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(snap, 0, 0)
+    clearOverlay()
+    pushHistory()
+  }
+
+  const discardRegionSel = () => {
+    maskSilRef.current = null
+    cutPtsRef.current = []
+    setMaskReady(false)
+    setCutReady(false)
+    clearOverlay()
+  }
+
+  // ── Downscale (Scale tool) ────────────────────────────────────────────────
+  // Free, fully client-side: redraws the canvas at a smaller resolution
+  // (undo-able via history). A 4K reference often leaves edit models like
+  // NanoBanana too little room to change things — a 1K/2K copy frees them up.
+  const applyDownscale = (targetLong: number) => {
+    const canvas = canvasRef.current; if (!canvas || !loaded) return
+    const long = Math.max(canvas.width, canvas.height)
+    if (long <= targetLong) return
+    const sc = targetLong / long
+    const w = Math.max(1, Math.round(canvas.width * sc))
+    const h = Math.max(1, Math.round(canvas.height * sc))
+    const tmp = document.createElement('canvas')
+    tmp.width = w; tmp.height = h
+    const tctx = tmp.getContext('2d')!
+    tctx.imageSmoothingEnabled = true
+    tctx.imageSmoothingQuality = 'high'
+    tctx.drawImage(canvas, 0, 0, w, h)
+    canvas.width = w; canvas.height = h
+    canvas.getContext('2d')!.drawImage(tmp, 0, 0)
+    const overlay = overlayRef.current
+    if (overlay) { overlay.width = w; overlay.height = h }
+    cropRectRef.current = null
+    setHasCropSel(false)
+    discardRegionSel()
+    pushHistory()
+    setDims({ w, h })
+    syncOrbit()
+  }
+
+  // ── Save to device (iPad long-press) ─────────────────────────────────────
+  // Crop a canvas down to the silhouette's bounding box (tight cutout export)
+  const trimToSilhouette = (src: HTMLCanvasElement, sil: HTMLCanvasElement) => {
+    const w = sil.width, h = sil.height
+    const d = sil.getContext('2d')!.getImageData(0, 0, w, h).data
+    let minX = w, minY = h, maxX = -1, maxY = -1
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4 + 3] > 10) {
+          if (x < minX) minX = x
+          if (x > maxX) maxX = x
+          if (y < minY) minY = y
+          if (y > maxY) maxY = y
+        }
+      }
+    }
+    if (maxX < 0) return null
+    const bw = maxX - minX + 1, bh = maxY - minY + 1
+    const out = document.createElement('canvas'); out.width = bw; out.height = bh
+    out.getContext('2d')!.drawImage(src, minX, minY, bw, bh, 0, 0, bw, bh)
+    return out
+  }
+
+  // Full-size image (JPEG — the base canvas is opaque)
+  const openSaveFull = () => {
+    if (!loaded) return
+    const canvas = canvasRef.current!
+    // Layered canvas: export the full COMPOSITION (layers under, paint on top)
+    // at native resolution — lossless PNG so nothing degrades on the way to
+    // the Photos app
+    if (stackRef.current?.enabled) {
+      void (async () => {
+        try {
+          const exp = document.createElement('canvas')
+          exp.width = canvas.width; exp.height = canvas.height
+          const ectx = exp.getContext('2d')!
+          ectx.fillStyle = '#000000'
+          ectx.fillRect(0, 0, exp.width, exp.height)
+          await paintItems(ectx, exp.width, exp.height, stackRef.current!)
+          ectx.drawImage(canvas, 0, 0)
+          setSaveOverlay({ url: exp.toDataURL('image/png'), label: `Full composition — ${exp.width}×${exp.height} PNG` })
+        } catch {
+          setLayerError('Could not export the composition — try again')
+        }
+      })()
+      return
+    }
+    try {
+      setSaveOverlay({ url: canvas.toDataURL('image/png'), label: `Full-size image — ${canvas.width}×${canvas.height} PNG` })
+    } catch {}
+  }
+
+  // Just the masked/cut region as a TRANSPARENT PNG, trimmed to its bounding box —
+  // no white background, so the cutout drops cleanly into other apps
+  const openSaveCutout = (sil: HTMLCanvasElement | null) => {
+    if (!sil) return
+    const canvas = canvasRef.current!
+    const masked = document.createElement('canvas'); masked.width = canvas.width; masked.height = canvas.height
+    const mctx = masked.getContext('2d')!
+    mctx.drawImage(canvas, 0, 0)
+    mctx.globalCompositeOperation = 'destination-in'
+    mctx.drawImage(sil, 0, 0)
+    const trimmed = trimToSilhouette(masked, sil) ?? masked
+    try {
+      setSaveOverlay({ url: trimmed.toDataURL('image/png'), label: 'Masked cutout — transparent PNG' })
+    } catch {}
+  }
+
+  const applyMaskSel = (mode: 'keep' | 'remove') => {
+    const sil = maskSilRef.current; if (!sil) return
+    applyRegion(sil, mode)
+    discardRegionSel()
+  }
+
+  const applyCutSel = (mode: 'keep' | 'remove') => {
+    const pts = cutPtsRef.current; if (pts.length < 3) return
+    applyRegion(silhouetteFromPath(pts), mode)
+    discardRegionSel()
+  }
+
+  const runAutoMask = async () => {
+    if (maskBusy || !loaded) return
+    setMaskBusy(true); setMaskError(null); setMaskReady(false); clearOverlay()
+    try {
+      const src = canvasRef.current!.toDataURL('image/jpeg', 0.92)
+      const res = await fetch('/api/user/ref-mask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: src, prompt: maskPrompt.trim() || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.mask) throw new Error(data.error || 'Auto-mask failed')
+      const img = document.createElement('img')
+      await new Promise<void>((ok, err) => {
+        img.onload = () => ok()
+        img.onerror = () => err(new Error('Could not load the mask'))
+        img.src = data.mask
+      })
+      const canvas = canvasRef.current!
+      const sil = silhouetteFromMask(img, canvas.width, canvas.height)
+      if (!sil) throw new Error(maskPrompt.trim() ? 'Nothing matching that description was found' : 'No subject detected')
+      maskSilRef.current = sil
+      drawRegionOverlay(sil)
+      setMaskReady(true)
+    } catch (e: any) {
+      setMaskError(e?.message || 'Auto-mask failed')
+    } finally {
+      setMaskBusy(false)
+    }
   }
 
   const applyEdit = () => {
+    // Multi-layer: Apply flattens paint + layers into the new reference image
+    // (the parent then resets the stack to a fresh base layer holding it)
+    if (stackRef.current?.enabled) {
+      // Commit any pending crop selection first — users adjust the frame and hit
+      // Apply directly, expecting the crop to be included (applyCrop also remaps
+      // the layer fractions and syncs stackRef, so the flatten below sees them)
+      const rc = cropRectRef.current
+      if (tool === 'crop' && rc && rc.w > 2 && rc.h > 2) {
+        const c0 = canvasRef.current!
+        const isFullFrame = rc.x < 0.5 && rc.y < 0.5 && rc.w > c0.width - 0.5 && rc.h > c0.height - 0.5
+        if (!isFullFrame) applyCrop()
+      }
+      const canvas = canvasRef.current!
+      void (async () => {
+        try {
+          const exp = document.createElement('canvas')
+          exp.width = canvas.width; exp.height = canvas.height
+          const ectx = exp.getContext('2d')!
+          ectx.fillStyle = '#000000'
+          ectx.fillRect(0, 0, exp.width, exp.height)
+          await paintItems(ectx, exp.width, exp.height, stackRef.current!)
+          // Canvas paint is the TOP coat — it renders above the layers in the editor
+          ectx.drawImage(canvas, 0, 0)
+          onApply(exp.toDataURL('image/jpeg', 0.95))
+          setTool('select')
+          setSelLayerId(null); setSelItemId(null)
+          clearOverlay()
+        } catch {
+          setLayerError('Could not flatten the layers — try again')
+        }
+      })()
+      return
+    }
     // Commit any pending crop selection first — users adjust the frame and hit Apply
     // directly, expecting the crop to be included (without clicking "Apply Crop")
     const r = cropRectRef.current
@@ -6350,6 +9180,8 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       ectx.fillStyle = '#ffffff'; ectx.fillRect(0, 0, exp.width, exp.height)
       ectx.drawImage(canvas, 0, 0)
       onApply(exp.toDataURL('image/jpeg', 0.92))
+      setTool('select')
+      clearOverlay()
     } catch {
       // Canvas tainted (cross-origin image loaded without CORS) — shouldn't happen
       // because we fetch HTTPS images as blobs, but guard just in case
@@ -6357,10 +9189,20 @@ function RefImageEditorModal({ image, onApply, onClose }: {
     }
   }
 
+  // Paint tools keep their settings in a dropdown (tap the active tool to
+  // toggle it) instead of a permanently visible second row
+  const CONFIG_TOOLS: EditorTool[] = ['draw', 'erase', 'blur', 'shape']
   const toolBtn = (t: EditorTool, icon: React.ReactNode, label: string) => (
     <button
       key={t}
-      onClick={() => { if (t === tool) return; setTool(t); clearOverlay(); setHasCropSel(false) }}
+      onClick={() => {
+        if (t === tool) {
+          if (CONFIG_TOOLS.includes(t)) setToolMenuOpen(v => !v)
+          return
+        }
+        setTool(t); clearOverlay(); setHasCropSel(false); maskSilRef.current = null; cutPtsRef.current = []; setMaskReady(false); setCutReady(false); setMaskError(null)
+        setToolMenuOpen(CONFIG_TOOLS.includes(t))
+      }}
       title={label}
       className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-[10px] font-medium transition-all ${
         tool === t
@@ -6369,18 +9211,48 @@ function RefImageEditorModal({ image, onApply, onClose }: {
       }`}
     >
       {icon}
-      {label}
+      <span className="flex items-center gap-0.5">
+        {label}
+        {CONFIG_TOOLS.includes(t) && (
+          <ChevronDown size={8} className={`transition-transform ${tool === t && toolMenuOpen ? 'rotate-180' : ''}`} />
+        )}
+      </span>
     </button>
   )
 
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-4xl bg-[#0a0d14] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[95vh]">
+      <div className="relative w-full max-w-[1600px] h-[95vh] bg-[#070b14]/95 border border-white/[0.08] rounded-2xl shadow-2xl flex flex-col">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.08] shrink-0">
-          <span className="text-sm font-semibold text-white">Edit Reference</span>
+          <div className="flex items-center gap-2.5">
+            <SiteLogoBox size={26} rounded={9} />
+            <div>
+              <p className="text-sm font-bold text-white leading-none">Edit Image</p>
+              <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mt-1">Image · Editor</p>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
+            {/* Live resolution readout */}
+            {dims && (
+              <span
+                className="px-2 py-1 rounded-lg border border-white/[0.08] bg-white/[0.03] text-[10px] font-mono text-slate-400 leading-none"
+                title="Current image resolution"
+              >
+                {dims.w}×{dims.h}
+              </span>
+            )}
+            {/* Save to device (long-press sheet) */}
+            <button
+              onClick={openSaveFull}
+              disabled={!loaded}
+              title="Save the full-size image to your device"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/[0.08] text-[10px] font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors disabled:opacity-40"
+            >
+              <Download size={11} />
+              Save
+            </button>
             {/* Fit / Full-size toggle */}
             <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
               <button
@@ -6400,68 +9272,139 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           </div>
         </div>
 
-        {/* Toolbar */}
-        <div className="flex items-center gap-1 px-4 py-2 border-b border-white/[0.06] shrink-0">
+        {/* Toolbar — Select first (navigate/arrange), then paint tools, then
+            transform tools; the Layers column toggle sits apart on the right */}
+        <div className="flex items-center gap-1 px-4 py-2 border-b border-white/[0.06] shrink-0 overflow-x-auto">
+          {toolBtn('select', <MousePointer2 size={15} />, 'Select')}
+          <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
           {toolBtn('draw',  <Pencil  size={15} />, 'Draw')}
           {toolBtn('erase', <Eraser  size={15} />, 'Erase')}
           {toolBtn('blur',  <Droplets size={15} />, 'Blur')}
           {toolBtn('shape', <Square  size={15} />, 'Shape')}
+          <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
           {toolBtn('crop',  <Crop    size={15} />, 'Crop')}
+          {toolBtn('mask',  <Wand2   size={15} />, 'Mask')}
+          {toolBtn('cut',   <Scissors size={15} />, 'Cut')}
+          {toolBtn('resize', <Minimize2 size={15} />, 'Scale')}
+          {tool === 'select' && (
+            <>
+              <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
+              <button
+                onClick={() => setLockAspect(v => !v)}
+                title={lockAspect ? 'Aspect ratio locked — resizing keeps proportions' : 'Aspect ratio unlocked — free resize'}
+                className={`flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border transition-colors shrink-0 ${
+                  lockAspect ? 'bg-white/10 border-white/25 text-white' : 'border-white/10 text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {lockAspect ? <Lock size={11} /> : <Unlock size={11} />} Ratio
+              </button>
+              {(canvasView.s !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0) && (
+                <button
+                  onClick={() => setCanvasView({ s: 1, tx: 0, ty: 0, r: 0 })}
+                  title="Reset the artboard position and zoom"
+                  className="text-[10px] px-2 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors shrink-0"
+                >
+                  Reset
+                </button>
+              )}
+              {selLayerId && selItemId && (
+                <button
+                  onClick={() => removeItem(selLayerId, selItemId)}
+                  title="Remove the selected image from its layer"
+                  className="p-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-red-400 hover:border-red-400/30 transition-colors shrink-0"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+              {layerError && <span className="text-[10px] text-red-400 shrink-0 max-w-[20%] truncate" title={layerError}>{layerError}</span>}
+            </>
+          )}
+          <button
+            onClick={() => setShowLayersPanel(v => !v)}
+            title="Layers"
+            className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
+              showLayersPanel ? 'bg-white/10 text-white border border-white/25' : 'text-slate-400 hover:text-white border border-white/[0.08] hover:bg-white/[0.06]'
+            }`}
+          >
+            <Layers size={13} />
+            Layers
+            {stack?.enabled && <span className="px-1 py-0.5 rounded bg-white/15 text-[9px] font-mono leading-none">{stack.layers.length}</span>}
+          </button>
         </div>
 
-        {/* Tool options */}
-        <div className="flex items-center gap-4 px-5 py-2 border-b border-white/[0.06] shrink-0 min-h-[44px]">
-          {(tool === 'draw' || tool === 'erase') && (
-            <>
-              {tool === 'draw' && (
-                <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                  Color
-                  <input type="color" value={drawColor} onChange={e => setDrawColor(e.target.value)}
-                    className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
-                </label>
+        {/* Paint-tool settings dropdown (replaces the old always-on second row) */}
+        {toolMenuOpen && CONFIG_TOOLS.includes(tool) && (
+          <div className="relative z-50">
+            <div className="absolute top-1 left-4 w-72 max-w-[85vw] rounded-xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl p-3 space-y-3">
+              {(tool === 'draw' || tool === 'erase') && (
+                <>
+                  {tool === 'draw' && (
+                    <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                      Color
+                      <input type="color" value={drawColor} onChange={e => setDrawColor(e.target.value)}
+                        className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
+                    </label>
+                  )}
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Size <span className="text-slate-300 w-7 text-center">{brushSize}</span>
+                    <input type="range" min={4} max={80} value={brushSize} onChange={e => setBrushSize(+e.target.value)}
+                      className="flex-1 accent-white" />
+                  </label>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Opacity <span className="text-slate-300 w-7 text-center">{paintOpacity}</span>
+                    <input type="range" min={5} max={100} value={paintOpacity} onChange={e => setPaintOpacity(+e.target.value)}
+                      className="flex-1 accent-white" />
+                  </label>
+                </>
               )}
-              <label className="flex items-center gap-2 text-[11px] text-slate-400 flex-1">
-                Size <span className="text-slate-300 w-7 text-center">{brushSize}</span>
-                <input type="range" min={4} max={80} value={brushSize} onChange={e => setBrushSize(+e.target.value)}
-                  className="flex-1 accent-cyan-400" />
-              </label>
-            </>
-          )}
-          {tool === 'blur' && (
-            <>
-              <label className="flex items-center gap-2 text-[11px] text-slate-400 flex-1">
-                Intensity <span className="text-slate-300 w-7 text-center">{blurRadius}</span>
-                <input type="range" min={2} max={30} value={blurRadius} onChange={e => setBlurRadius(+e.target.value)}
-                  className="flex-1 accent-cyan-400" />
-              </label>
-              <label className="flex items-center gap-2 text-[11px] text-slate-400 flex-1">
-                Brush <span className="text-slate-300 w-7 text-center">{brushSize}</span>
-                <input type="range" min={10} max={120} value={brushSize} onChange={e => setBrushSize(+e.target.value)}
-                  className="flex-1 accent-cyan-400" />
-              </label>
-            </>
-          )}
-          {tool === 'shape' && (
-            <>
-              <div className="flex gap-1">
-                {(['rect', 'circle'] as ShapeKind[]).map(k => (
-                  <button key={k} onClick={() => setShapeKind(k)}
-                    className={`p-1.5 rounded-lg transition-colors ${shapeKind === k ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                    {k === 'rect' ? <Square size={14} /> : <Circle size={14} />}
+              {tool === 'blur' && (
+                <>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Intensity <span className="text-slate-300 w-7 text-center">{blurRadius}</span>
+                    <input type="range" min={2} max={30} value={blurRadius} onChange={e => setBlurRadius(+e.target.value)}
+                      className="flex-1 accent-white" />
+                  </label>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Brush <span className="text-slate-300 w-7 text-center">{brushSize}</span>
+                    <input type="range" min={10} max={120} value={brushSize} onChange={e => setBrushSize(+e.target.value)}
+                      className="flex-1 accent-white" />
+                  </label>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Opacity <span className="text-slate-300 w-7 text-center">{paintOpacity}</span>
+                    <input type="range" min={5} max={100} value={paintOpacity} onChange={e => setPaintOpacity(+e.target.value)}
+                      className="flex-1 accent-white" />
+                  </label>
+                </>
+              )}
+              {tool === 'shape' && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex gap-1">
+                    {(['rect', 'circle'] as ShapeKind[]).map(k => (
+                      <button key={k} onClick={() => setShapeKind(k)}
+                        className={`p-1.5 rounded-lg transition-colors ${shapeKind === k ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                        {k === 'rect' ? <Square size={14} /> : <Circle size={14} />}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
+                    Color
+                    <input type="color" value={shapeColor} onChange={e => setShapeColor(e.target.value)}
+                      className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
+                  </label>
+                  <button onClick={() => setShapeFill(f => !f)}
+                    className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${shapeFill ? 'border-white/25 text-white bg-white/10' : 'border-white/10 text-slate-400 hover:text-slate-200'}`}>
+                    {shapeFill ? 'Filled' : 'Outline'}
                   </button>
-                ))}
-              </div>
-              <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                Color
-                <input type="color" value={shapeColor} onChange={e => setShapeColor(e.target.value)}
-                  className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
-              </label>
-              <button onClick={() => setShapeFill(f => !f)}
-                className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${shapeFill ? 'border-cyan-500/40 text-cyan-400 bg-cyan-500/10' : 'border-white/10 text-slate-400 hover:text-slate-200'}`}>
-                {shapeFill ? 'Filled' : 'Outline'}
-              </button>
-            </>
-          )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tool options row — only the transform tools need it now (paint tools
+            use the dropdown, Select lives in the toolbar) */}
+        {(tool === 'crop' || tool === 'mask' || tool === 'cut' || tool === 'resize') && (
+        <div className="flex items-center gap-4 gap-y-1.5 flex-wrap px-5 py-2 border-b border-white/[0.06] shrink-0 min-h-[44px]">
           {tool === 'crop' && (
             <>
               {/* shrink-0 keeps the toggle intact on narrow screens — without it the
@@ -6487,27 +9430,311 @@ function RefImageEditorModal({ image, onApply, onClose }: {
               </span>
             </>
           )}
+          {tool === 'mask' && (
+            <>
+              <input
+                value={maskPrompt}
+                onChange={e => { setMaskPrompt(e.target.value); setMaskError(null) }}
+                onKeyDown={e => { if (e.key === 'Enter') runAutoMask() }}
+                placeholder="Describe what to mask (empty = auto-detect subject)"
+                disabled={maskBusy}
+                className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-white placeholder:text-slate-600 focus:outline-none focus:border-white/30 disabled:opacity-50"
+              />
+              <button
+                onClick={runAutoMask}
+                disabled={maskBusy || !loaded}
+                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50 shrink-0"
+              >
+                {maskBusy ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                {maskBusy ? 'Masking…' : 'Auto-Mask'}
+              </button>
+              {maskError && <span className="text-[10px] text-red-400 shrink-0 max-w-[40%] truncate" title={maskError}>{maskError}</span>}
+            </>
+          )}
+          {tool === 'cut' && (
+            <span className="flex-1 min-w-0 text-[11px] text-slate-500 leading-snug">
+              Draw a line around an area — release to close the cut, then choose keep or remove
+            </span>
+          )}
+          {tool === 'resize' && (() => {
+            const long = dims ? Math.max(dims.w, dims.h) : 0
+            return (
+              <>
+                <span className="text-[11px] text-slate-400 shrink-0">
+                  Current <span className="text-white font-semibold">{dims ? `${dims.w}×${dims.h}` : '—'}</span>
+                </span>
+                <div className="flex rounded-lg overflow-hidden border border-white/[0.08] shrink-0">
+                  {([['512', 512], ['768', 768], ['1K', 1024], ['2K', 2048], ['3K', 3072]] as const).map(([label, px]) => (
+                    <button
+                      key={label}
+                      onClick={() => applyDownscale(px)}
+                      disabled={!loaded || long <= px}
+                      title={long <= px ? 'Already at or below this size' : `Downscale longest side to ${px}px`}
+                      className="px-3 py-1 text-[10px] font-medium text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <span className="flex-1 min-w-0 text-[11px] text-slate-500 leading-snug">
+                  Downscaling a high-res reference gives edit models more room to make changes
+                </span>
+              </>
+            )
+          })()}
         </div>
+        )}
 
         {/* Canvas area — canvas is always in the DOM so the load useEffect can find canvasRef */}
-        <div className={`flex-1 p-4 bg-black/20 relative ${fitMode === 'fit' ? 'flex items-center justify-center overflow-hidden' : 'overflow-auto'}`}>
+        <div
+          ref={editorPaneRef}
+          onPointerDown={onPanePointerDown}
+          onPointerMove={onPanePointerMove}
+          onPointerUp={onPanePointerUp}
+          onPointerCancel={onPanePointerUp}
+          className={`flex-1 min-h-0 p-4 bg-black relative isolate ${fitMode === 'fit' ? 'flex items-center justify-center overflow-hidden touch-none' : 'overflow-auto'}`}
+        >
+          {/* Branded logo wall fills the workspace AROUND the artboard */}
+          <BrandBackdrop />
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center gap-2 text-slate-600 text-sm z-10">
               <Loader2 size={16} className="animate-spin" /> Loading…
             </div>
           )}
-          <div className={`relative inline-block rounded-lg overflow-hidden shadow-xl transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}>
+          <div
+            ref={artboardRef}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            className={`relative isolate inline-block rounded-lg ${tool === 'crop' ? 'overflow-visible' : 'overflow-hidden'} shadow-xl transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}
+            style={{
+              touchAction: 'none',
+              ...(canvasView.s !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0
+                ? { transform: `translate(${canvasView.tx}px, ${canvasView.ty}px) rotate(${canvasView.r}deg) scale(${canvasView.s})`, transformOrigin: 'center center' }
+                : {}),
+            }}
+          >
+            {/* Solid black under the transparent canvas (multi-layer mode) — the
+                branded wall lives OUTSIDE the artboard, on the workspace pane */}
+            {stack?.enabled && <div className="absolute inset-0 -z-10 bg-black rounded-lg" />}
             <canvas ref={canvasRef}
               style={{
                 display: 'block',
+                // Paint is the TOP coat: above the layer previews (which cover
+                // the whole canvas in layered mode), below the tool overlay
+                position: 'relative',
+                zIndex: 5,
                 touchAction: 'none',
-                cursor: tool === 'shape' || (tool === 'crop' && cropMode === 'drag') ? 'crosshair' : tool === 'crop' ? 'default' : 'cell',
+                cursor: tool === 'shape' || tool === 'cut' || (tool === 'crop' && cropMode === 'drag') ? 'crosshair' : tool === 'crop' || tool === 'mask' || tool === 'resize' || tool === 'select' ? 'default' : 'cell',
                 // Fit mode: shrink to fit container while preserving aspect ratio
-                ...(fitMode === 'fit' ? { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)', objectFit: 'contain' } : {}),
+                ...(fitMode === 'fit'
+                  ? (fitCss
+                      ? { width: fitCss.w, height: fitCss.h }
+                      : { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)', objectFit: 'contain' })
+                  : {}),
               }}
-              onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
-            <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none block"
-              style={fitMode === 'fit' ? { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)' } : {}} />
+              />
+            {/* Multi-layer preview: visible layers composite over the base canvas
+                (contain-fit, per-layer opacity) — matches the generation-time flatten */}
+            {stack?.enabled && stack.layers.filter(l => l.visible).map(l => l.items.map(it => {
+              const hasRect = typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number'
+              return (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={`${l.id}-${it.id}`}
+                  src={it.url}
+                  alt=""
+                  onLoad={e => { layerImgSizes.current[it.url] = { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight } }}
+                  className={`absolute pointer-events-none ${hasRect ? '' : 'inset-0 w-full h-full object-contain'}`}
+                  style={{
+                    opacity: l.opacity,
+                    ...(it.r ? { transform: `rotate(${it.r}deg)` } : {}),
+                    ...(hasRect ? {
+                      left: `${(it.x as number) * 100}%`,
+                      top: `${(it.y as number) * 100}%`,
+                      width: `${(it.w as number) * 100}%`,
+                      height: `${(it.h as number) * 100}%`,
+                    } : {}),
+                  }}
+                />
+              )
+            }))}
+            <canvas ref={overlayRef} className="absolute inset-0 z-10 pointer-events-none block"
+              style={fitMode === 'fit'
+                ? (fitCss ? { width: fitCss.w, height: fitCss.h } : { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)' })
+                : {}} />
+            {/* Silver orbit ring hugging the canvas — same treatment as the
+                generation preview popups (solid silver ring + travelling break,
+                wall-clock phased so every ring on screen moves in sync) */}
+            {/* Crop frame — border + synced-logo handles as DOM, always on top,
+                free to extend past the canvas while expanding it */}
+            <div
+              ref={cropFrameRef}
+              className="absolute z-40 pointer-events-none"
+              style={{ display: 'none', border: '1.5px solid rgba(255,255,255,0.9)', boxShadow: '0 0 12px rgba(0,0,0,0.4)' }}
+            >
+              {([['0%', '0%'], ['50%', '0%'], ['100%', '0%'], ['0%', '50%'], ['100%', '50%'], ['0%', '100%'], ['50%', '100%'], ['100%', '100%']] as const).map(([lx, ty]) => (
+                <div key={`${lx}-${ty}`} className="absolute" style={{ left: lx, top: ty, transform: 'translate(-50%, -50%)' }}>
+                  <div className="w-[20px] h-[20px] rounded-[6px] overflow-hidden border-2 border-white bg-slate-900 shadow-lg flex items-center justify-center">
+                    {cropHandleLogo ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={cropHandleLogo} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <Sparkles size={10} className="text-slate-200" />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {loaded && tool === 'crop' && (
+              <div
+                ref={orbitRef}
+                className="absolute left-0 top-0 w-full h-full pointer-events-none rounded-lg z-20"
+                style={{
+                  // Glow lives on this unmasked outer layer — a mask would clip it.
+                  // The inset component keeps the halo visible over the image even
+                  // where the wrapper's overflow-hidden eats the outward part.
+                  boxShadow:
+                    '0 0 16px rgba(248,250,252,0.45), 0 0 5px rgba(255,255,255,0.35), inset 0 0 10px rgba(248,250,252,0.35)',
+                }}
+              >
+                <div
+                  className="absolute inset-0 rounded-lg overflow-hidden"
+                  style={{
+                    padding: '2px',
+                    WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                    WebkitMaskComposite: 'xor',
+                    mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                    maskComposite: 'exclude',
+                  } as React.CSSProperties}
+                >
+                  <span
+                    className="absolute -inset-[75%] animate-spin"
+                    style={{ background: SILVER_ORBIT_CONIC, animationDuration: '9s', animationDelay: `-${Date.now() % 9000}ms` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Silver orbit frame — the SAME component as the generation preview
+              popups (outer pane ring + inner ring hugging the artboard, synced
+              travelling break). Lives outside the transformed artboard so
+              Safari's compositing can't drop its animation. */}
+          <OrbitMediaFrame
+            containerRef={editorPaneRef}
+            mediaRef={artboardRef}
+            deps={[loaded, fitMode, canvasView, stack?.enabled, dims?.w, dims?.h]}
+            hidden={!loaded}
+            // The artboard-hugging ring paints above the wrapper's contents (it
+            // lives outside that stacking context) and would cover the crop
+            // handles — the crop tool brings its own glow ring, so drop this one
+            innerHidden={tool === 'crop'}
+            mediaRotateDeg={canvasView.r}
+            mediaScale={canvasView.s}
+          />
+
+          {/* Layers column — slides in from the right so the artboard keeps the
+              full pane by default (same pattern as the popup settings section) */}
+          <div className={`absolute top-0 right-0 bottom-0 w-64 max-w-[85%] z-30 bg-[#070b14]/95 backdrop-blur-md border-l border-white/[0.08] flex flex-col transition-transform duration-200 ${showLayersPanel ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}>
+            <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/[0.06] shrink-0">
+              <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-400">Layers</span>
+              <button onClick={() => setShowLayersPanel(false)} className="text-slate-500 hover:text-white transition-colors"><X size={13} /></button>
+            </div>
+            {canUseLayers ? (
+              <>
+                <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/[0.06] shrink-0">
+                  <input ref={layerInputRef} type="file" accept="image/*" className="hidden"
+                    onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ''; void addImageToLayer(f) } }} />
+                  <button
+                    onClick={addEmptyLayer}
+                    disabled={!stack?.enabled || (stack?.layers.length ?? 0) >= 20}
+                    className="flex-1 flex items-center justify-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50"
+                  >
+                    <Layers size={11} /> New Layer
+                  </button>
+                  <button
+                    onClick={() => layerInputRef.current?.click()}
+                    disabled={layerBusy || !stack?.enabled}
+                    title={selLayerId ? 'Add an image to the selected layer' : 'Add an image on a new layer'}
+                    className="flex-1 flex items-center justify-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50"
+                  >
+                    {layerBusy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+                    {layerBusy ? 'Adding…' : 'Add image'}
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
+                  {!stack?.enabled && (
+                    <p className="text-[10px] text-slate-600 text-center py-3 px-2 leading-relaxed">Preparing the layered canvas…</p>
+                  )}
+                  {stack?.enabled && stack.layers.length === 0 && (
+                    <p className="text-[10px] text-slate-600 text-center py-3 px-2 leading-relaxed">
+                      No layers yet — add an image, or run a generation with this reference active and the result lands here automatically.
+                    </p>
+                  )}
+                  {stack?.enabled && [...stack.layers].reverse().map((l) => (
+                    <div
+                      key={l.id}
+                      onClick={() => { setSelLayerId(l.id); setSelItemId(null) }}
+                      className={`px-2 py-1.5 rounded-lg border cursor-pointer transition-colors ${selLayerId === l.id ? 'bg-white/[0.07] border-white/30' : 'bg-white/[0.03] border-white/[0.06] hover:border-white/15'}`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-7 h-7 rounded-md overflow-hidden bg-black shrink-0 flex items-center justify-center">
+                          {l.items.length > 0 ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={refTileThumb(l.items[0].url, 128)} alt="" className="w-full h-full object-contain" />
+                          ) : (
+                            <Layers size={10} className="text-slate-600" />
+                          )}
+                        </div>
+                        <span className="flex-1 min-w-0 truncate text-[10px] text-slate-300">
+                          {l.name}
+                          <span className="ml-1 text-[8px] text-slate-600">({l.items.length})</span>
+                          {l.auto && <span className="ml-1 px-1 py-0.5 rounded border border-white/15 text-[7px] font-mono uppercase tracking-widest text-slate-500">gen</span>}
+                        </span>
+                        <button onClick={e => { e.stopPropagation(); patchLayer(l.id, { visible: !l.visible }) }} title={l.visible ? 'Hide layer' : 'Show layer'}
+                          className={`p-1 rounded transition-colors ${l.visible ? 'text-white hover:bg-white/10' : 'text-slate-600 hover:text-slate-400'}`}>
+                          {l.visible ? <Eye size={11} /> : <EyeOff size={11} />}
+                        </button>
+                        <button onClick={e => { e.stopPropagation(); removeLayer(l.id) }} title="Remove layer" className="p-1 rounded text-slate-600 hover:text-red-400 hover:bg-white/10 transition-colors">
+                          <Trash2 size={10} />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1 pl-1">
+                        <input
+                          type="range" min={0} max={100} value={Math.round(l.opacity * 100)}
+                          onClick={e => e.stopPropagation()}
+                          onChange={e => patchLayer(l.id, { opacity: (+e.target.value) / 100 })}
+                          className="flex-1 min-w-0 accent-white" title="Layer opacity"
+                        />
+                        <span className="w-7 text-right text-[8px] font-mono text-slate-500">{Math.round(l.opacity * 100)}%</span>
+                        <button onClick={e => { e.stopPropagation(); moveLayer(l.id, 1) }} title="Move layer up" className="px-1 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors text-[10px] leading-none">↑</button>
+                        <button onClick={e => { e.stopPropagation(); moveLayer(l.id, -1) }} title="Move layer down" className="px-1 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors text-[10px] leading-none">↓</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-3 py-2 border-t border-white/[0.06] shrink-0">
+                  <button
+                    onClick={() => void disableMultiLayer()}
+                    disabled={layerBusy || !stack?.enabled}
+                    title="Merge every layer down into the image"
+                    className="w-full text-[10px] px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors disabled:opacity-50"
+                  >
+                    Flatten layers
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
+                <Lock size={16} className="text-slate-600" />
+                <p className="text-[11px] text-slate-400 font-semibold">Multi-layer canvases</p>
+                <span className="px-1.5 py-0.5 rounded-md border border-white/20 text-[8px] font-mono uppercase tracking-widest text-slate-300">Dev Tier</span>
+                <p className="text-[10px] text-slate-600 leading-relaxed">
+                  Subscribe to the Dev Tier to stack images, move, resize and rotate them, and collect generations as layers.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -6522,10 +9749,56 @@ function RefImageEditorModal({ image, onApply, onClose }: {
           </div>
         )}
 
+        {/* Mask approve/reject banner */}
+        {maskReady && (
+          <div className="flex items-center justify-center gap-2 flex-wrap px-5 py-2 bg-white/[0.04] border-t border-white/10 shrink-0">
+            <span className="text-[11px] text-slate-200">Mask found — what should happen to the outlined area?</span>
+            <button onClick={() => applyMaskSel('keep')}
+              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
+              Keep Only This
+            </button>
+            <button onClick={() => applyMaskSel('remove')}
+              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
+              Remove It
+            </button>
+            <button onClick={() => openSaveCutout(maskSilRef.current)}
+              className="flex items-center gap-1 text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
+              <Download size={11} /> Save Cutout
+            </button>
+            <button onClick={discardRegionSel}
+              className="text-[11px] px-3 py-1 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors">
+              Reject
+            </button>
+          </div>
+        )}
+
+        {/* Cut keep/remove banner */}
+        {cutReady && (
+          <div className="flex items-center justify-center gap-2 flex-wrap px-5 py-2 bg-white/[0.04] border-t border-white/10 shrink-0">
+            <span className="text-[11px] text-slate-200">Cut path closed — keep or remove the outlined area?</span>
+            <button onClick={() => applyCutSel('keep')}
+              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
+              Keep Inside
+            </button>
+            <button onClick={() => applyCutSel('remove')}
+              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
+              Cut It Out
+            </button>
+            <button onClick={() => { if (cutPtsRef.current.length >= 3) openSaveCutout(silhouetteFromPath(cutPtsRef.current)) }}
+              className="flex items-center gap-1 text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
+              <Download size={11} /> Save Cutout
+            </button>
+            <button onClick={discardRegionSel}
+              className="text-[11px] px-3 py-1 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors">
+              Discard
+            </button>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-between px-5 py-3 border-t border-white/[0.08] shrink-0">
           <div className="flex items-center gap-2">
-            <button onClick={undo} disabled={histLen <= 1}
+            <button onClick={undo} disabled={histLen <= 1 && stackUndoLen === 0}
               className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
               <Undo2 size={13} /> Undo
             </button>
@@ -6540,11 +9813,54 @@ function RefImageEditorModal({ image, onApply, onClose }: {
               Cancel
             </button>
             <button onClick={applyEdit}
-              className="text-[11px] px-4 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 transition-all font-medium">
+              className="relative overflow-hidden text-[11px] px-4 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40 transition-all font-bold">
+              <span
+                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                style={{ animation: "sheen-sweep 2.6s infinite" }}
+              />
               Apply
             </button>
           </div>
         </div>
+
+        {/* Touch-and-hold save overlay — a real <img> so the native iPad Save Image
+            sheet appears on long-press (checkerboard backs transparent cutouts) */}
+        {saveOverlay && (
+          <div className="absolute inset-0 z-30 rounded-2xl bg-black/95 flex flex-col items-center justify-center gap-3 p-6">
+            <button
+              onClick={() => setSaveOverlay(null)}
+              className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-slate-300 hover:text-white transition-colors"
+            >
+              <X size={15} />
+            </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={saveOverlay.url}
+              alt="Touch and hold to save"
+              className="max-w-full max-h-[65vh] object-contain rounded-lg"
+              style={{
+                background:
+                  'repeating-conic-gradient(rgba(255,255,255,0.08) 0% 25%, transparent 0% 50%) 0 0 / 20px 20px',
+              }}
+            />
+            <p className="text-[12px] text-white font-medium">{saveOverlay.label}</p>
+            <p className="text-[11px] text-slate-400 text-center leading-relaxed">
+              Touch and hold the image, then choose <span className="text-white">“Save Image”</span> / <span className="text-white">“Add to Photos”</span>.
+              <span className="hidden sm:inline"> On desktop, right-click → Save Image As.</span>
+            </p>
+            <a
+              href={saveOverlay.url}
+              download={`ai-design-studio-${Date.now()}.png`}
+              className="relative overflow-hidden px-5 py-2 rounded-xl border border-white/25 bg-white/10 hover:bg-white/15 hover:border-white/40 text-[12px] text-white font-bold transition-all flex items-center justify-center gap-1.5"
+            >
+              <span
+                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                style={{ animation: "sheen-sweep 2.6s infinite" }}
+              />
+              <Download size={13} /> Download
+            </a>
+          </div>
+        )}
       </div>
     </div>,
     document.body
@@ -8860,6 +12176,8 @@ function PromptBox({
   refLibrary,
   onDeactivateRef,
   onEditRef,
+  canUseLayers = false,
+  onSaveLayers,
   onLoadPreset,
   onUploadRef,
   onStartPolling,
@@ -8874,6 +12192,13 @@ function PromptBox({
   isGenerationMaintenance = false,
   isAdminAccount = false,
   ticketBalance = 0,
+  siteLogoUrl = null,
+  onSiteLogoChange,
+  onGoHome,
+  onGoFeed,
+  onGoChat,
+  cardMedia,
+  promptScale = 1,
 }: {
   model: ImageModelConfig
   onModelChange: (m: ImageModelConfig) => void
@@ -8886,7 +12211,10 @@ function PromptBox({
   activeRefImages: RefImage[]
   refLibrary: RefImage[]
   onDeactivateRef: (id: string) => void
-  onEditRef: (id: string, newUrl: string) => void
+  onEditRef: (id: string, newUrl: string) => void | Promise<RefImage | null>
+  // Dev-Tier multi-layer canvases
+  canUseLayers?: boolean
+  onSaveLayers?: (id: string, stack: RefLayerStack | null) => void
   onLoadPreset: (urls: string[]) => void
   onUploadRef: (items: RefImage[]) => void
   onStartPolling: (slotId: string, queueId: number, prompt: string) => void
@@ -8901,9 +12229,29 @@ function PromptBox({
   isGenerationMaintenance?: boolean
   isAdminAccount?: boolean
   ticketBalance?: number
+  // Logo dropdown in the tab row — same nav as the taskbar logo (Home / feed / admin)
+  siteLogoUrl?: string | null
+  onSiteLogoChange?: (url: string | null) => void
+  onGoHome?: () => void
+  onGoFeed?: () => void
+  onGoChat?: () => void
+  // Home-page card media for the model picker's Cards view (shared w/ taskbar menus)
+  cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
+  // Feed -> Prompt Box Size: zoom applied to the inner container (the fixed
+  // full-width root must stay unzoomed or its coordinates would overflow)
+  promptScale?: number
 }) {
   const PROMPT_STORAGE_KEY = "pv2-prompt-state"
   const [editingRefImage, setEditingRefImage] = useState<RefImage | null>(null)
+  // Refresh persistence shares the RefDropdown's key (that instance restores);
+  // guarded so this mount's initial null can't wipe a stored id
+  const hadEditingRefImage = useRef(false)
+  useEffect(() => {
+    try {
+      if (editingRefImage) { hadEditingRefImage.current = true; sessionStorage.setItem('pv2-editing-ref-id', editingRefImage.id) }
+      else if (hadEditingRefImage.current) { hadEditingRefImage.current = false; sessionStorage.removeItem('pv2-editing-ref-id') }
+    } catch {}
+  }, [editingRefImage])
   const [prompt, setPrompt] = useState<string>("")
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(model.aspectRatios[0])
   const [quality, setQuality] = useState<Quality>("2k")
@@ -8912,6 +12260,9 @@ function PromptBox({
   const [seedreamSafetyChecker, setSeedreamSafetyChecker] = useState(false)
   const [wanSafetyChecker, setWanSafetyChecker] = useState(false)
   const [fluxDevSafetyChecker, setFluxDevSafetyChecker] = useState(false)
+  // SeeDream 5.0 Pro + Recraft v4.1: admins toggle (default off), non-admins forced ON (CCBill)
+  const [proSafetyChecker, setProSafetyChecker] = useState(false)
+  const [recraftSafetyChecker, setRecraftSafetyChecker] = useState(false)
   // --- Prompt tabs ---
   const [tabs, setTabs] = useState<PromptTab[]>([])            // empty until restore
   const [activeTabId, setActiveTabId] = useState<string>("")
@@ -9053,14 +12404,37 @@ function PromptBox({
     setSelectedLocalCheckpoint(filtered.length > 0 ? filtered[filtered.length - 1].path : '')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.id])
+  // Prompt tabs are PER-ACCOUNT state: stored under an account-scoped key so one
+  // account's tabs can never surface for another (or for a signed-out visitor).
+  // While signed out (userId null — also true during the brief session-resolve on
+  // cold load), the composer shows a plain default tab and never reads or writes
+  // storage; the parent remounts PromptBox (user-keyed `key`) once the session
+  // resolves, which re-runs this restore with the real userId.
+  const tabsLsKey = userId != null ? `${PROMPT_TABS_LS_KEY}-u${userId}` : null
+
   // Restore prompt tabs after mount (avoids SSR/client hydration mismatch).
   // Deliberately does NOT push the tab's model upward — the parent's pv2-settings
   // restore runs after this and is authoritative on cold load; on this device the
   // two were always saved together so they agree, and the sync effect self-heals
   // any divergence by writing the restored model into the active tab.
   useEffect(() => {
+    if (!tabsLsKey) {
+      // Signed out: fresh default tab, no storage reads/writes, no persistence
+      // (tabsRestoredRef stays false so the mirror/persist effects stay gated)
+      const seed = defaultPromptTab(model)
+      tabsPersistSkipRef.current = true
+      setTabs([seed])
+      setActiveTabId(seed.id)
+      setPinnedTabId(isPinnableModelId(seed.modelId) ? seed.id : null)
+      applyTabToLiveStates(seed, model)
+      return
+    }
+    // Discard the legacy device-wide key (pre account-scoping): it can't be
+    // attributed to an account, and tabs are server-synced per account anyway —
+    // the reconcile below restores the right ones.
+    try { localStorage.removeItem(PROMPT_TABS_LS_KEY) } catch {}
     let restored: PromptTabsState | null = null
-    try { restored = sanitizePromptTabsState(JSON.parse(localStorage.getItem(PROMPT_TABS_LS_KEY) || "null")) } catch {}
+    try { restored = sanitizePromptTabsState(JSON.parse(localStorage.getItem(tabsLsKey) || "null")) } catch {}
     if (restored) {
       adoptTabsState(restored)
       const at = restored.tabs.find(t => t.id === restored!.activeTabId)!
@@ -9123,6 +12497,9 @@ function PromptBox({
   const [refConsentGiven, setRefConsentGiven] = useState(false)
   useEffect(() => {
     setRefConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
+    const grant = () => setRefConsentGiven(true)
+    window.addEventListener("pv2-ref-consent", grant)
+    return () => window.removeEventListener("pv2-ref-consent", grant)
   }, [])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -9170,7 +12547,7 @@ function PromptBox({
     if (tabsPersistSkipRef.current) { tabsPersistSkipRef.current = false; return }
     const snapshot: PromptTabsState = { version: 1, tabs, activeTabId, pinnedTabId, updatedAt: Date.now() }
     tabsStateRef.current = snapshot
-    try { localStorage.setItem(PROMPT_TABS_LS_KEY, JSON.stringify(snapshot)) } catch {}
+    if (tabsLsKey) { try { localStorage.setItem(tabsLsKey, JSON.stringify(snapshot)) } catch {} }
     if (!userIdRef.current) return
     tabsDirtyRef.current = true
     if (tabsSaveTimer.current) clearTimeout(tabsSaveTimer.current)
@@ -9210,7 +12587,7 @@ function PromptBox({
   function adoptTabsState(s: PromptTabsState) {
     tabsPersistSkipRef.current = true
     tabsStateRef.current = s
-    try { localStorage.setItem(PROMPT_TABS_LS_KEY, JSON.stringify(s)) } catch {}
+    if (tabsLsKey) { try { localStorage.setItem(tabsLsKey, JSON.stringify(s)) } catch {} }
     setTabs(s.tabs)
     setActiveTabId(s.activeTabId)
     setPinnedTabId(s.pinnedTabId)
@@ -9480,8 +12857,12 @@ function PromptBox({
     const slotId = slotIds[0] // alias for single-image paths
 
     try {
-      // Build the reference list, capped to the model's max (the server slices
-      // to this anyway).
+      // Convert ref images to base64. Only encode as many as the model actually
+      // uses (the server slices to this anyway) and do it ONE AT A TIME —
+      // decoding many full-res images into <img>+canvas simultaneously blows
+      // iPad Safari's canvas/memory limits and throws a cryptic
+      // "The string did not match the expected pattern." before any job is
+      // created. Per-ref try/catch surfaces exactly which image failed.
       const maxRefs = model.maxReferenceImages || activeRefImages.length
       const refsToEncode = activeRefImages.slice(0, maxRefs)
       const referenceImages: string[] = []
@@ -9493,7 +12874,11 @@ function PromptBox({
           // base64 into <img>+canvas client-side (iPad Safari throws "The string
           // did not match the expected pattern." and the body balloons). Only
           // File-backed / data-URL refs (no permanent URL yet) need base64.
-          if (!ref.file && typeof ref.url === "string" && ref.url.startsWith("https://")) {
+          const lStack = ref.layers
+          if (lStack?.enabled && lStack.layers.some(l => l.visible && l.items.length > 0) && typeof ref.url === "string") {
+            // Dev-Tier multi-layer ref → flatten base + visible layers client-side
+            referenceImages.push(await compositeLayeredRef(ref.url, lStack))
+          } else if (!ref.file && typeof ref.url === "string" && ref.url.startsWith("https://")) {
             referenceImages.push(ref.url)
           } else {
             referenceImages.push(await refImageToBase64(ref))
@@ -9520,6 +12905,70 @@ function PromptBox({
                 quality,
                 aspectRatio,
                 referenceImageUrls: permanentRefUrls,
+              }),
+            })
+            const data = await res.json()
+            if (!res.ok || !data.success) {
+              onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" })
+              return
+            }
+            if (data.newBalance !== undefined) onBalanceChange(data.newBalance)
+            onUpdatePending(sid, { queueId: data.queueId })
+            onStartPolling(sid, data.queueId, currentPrompt)
+          } catch (err: any) {
+            onUpdatePending(sid, { status: "failed", error: err.message || "Network error" })
+          }
+        }))
+        return
+      }
+
+      // --- SeeDream 5.0 Pro: async FAL queue, same shape as Lite (10 tickets, 2K) ---
+      if (model.id === "seedream-5-pro") {
+        const images_base64 = referenceImages.map((b) => b.split(",")[1] || b)
+        const sizeParams = seedream5LiteImageSize(quality, aspectRatio)
+        await Promise.all(slotIds.map(async (sid) => {
+          try {
+            const res = await fetch("/api/admin/seedream-5-pro-submit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: currentPrompt,
+                images_base64,
+                ...sizeParams,
+                // Admins send their toggle; non-admins are forced ON (also enforced server-side).
+                enable_safety_checker: isAdminAccount ? proSafetyChecker : true,
+                quality,
+                aspectRatio,
+                referenceImageUrls: permanentRefUrls,
+              }),
+            })
+            const data = await res.json()
+            if (!res.ok || !data.success) {
+              onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" })
+              return
+            }
+            if (data.newBalance !== undefined) onBalanceChange(data.newBalance)
+            onUpdatePending(sid, { queueId: data.queueId })
+            onStartPolling(sid, data.queueId, currentPrompt)
+          } catch (err: any) {
+            onUpdatePending(sid, { status: "failed", error: err.message || "Network error" })
+          }
+        }))
+        return
+      }
+
+      // --- Recraft v4.1: async FAL queue, text-to-image only (15 tickets) ---
+      if (model.id === "recraft-v4.1") {
+        await Promise.all(slotIds.map(async (sid) => {
+          try {
+            const res = await fetch("/api/admin/recraft-submit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: currentPrompt,
+                aspectRatio,
+                // Admins send their toggle; non-admins are forced ON (also enforced server-side).
+                enable_safety_checker: isAdminAccount ? recraftSafetyChecker : true,
               }),
             })
             const data = await res.json()
@@ -10169,6 +13618,8 @@ function PromptBox({
 
   const [showModelPicker, setShowModelPicker] = useState(false)
   const modelPickerRef = useRef<HTMLDivElement>(null)
+  const [showFormatPicker, setShowFormatPicker] = useState(false)
+  const formatPickerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!showModelPicker) return
@@ -10180,6 +13631,17 @@ function PromptBox({
     document.addEventListener("mousedown", handleClick)
     return () => document.removeEventListener("mousedown", handleClick)
   }, [showModelPicker])
+
+  useEffect(() => {
+    if (!showFormatPicker) return
+    function handleClick(e: MouseEvent) {
+      if (formatPickerRef.current && !formatPickerRef.current.contains(e.target as Node)) {
+        setShowFormatPicker(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [showFormatPicker])
 
   useEffect(() => {
     if (!showCheckpointPicker) return
@@ -10194,28 +13656,36 @@ function PromptBox({
 
   return (
     <div className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
-      <div className="max-w-3xl mx-auto pointer-events-auto space-y-2">
+      <div className="max-w-3xl mx-auto pointer-events-auto space-y-2" style={{ zoom: promptScale }}>
 
         {/* Active reference image previews — click to edit */}
         {activeRefImages.length > 0 && (
           <div className="flex items-center gap-2 px-1 flex-wrap">
             {activeRefImages.map((img) => (
-              <div key={img.id} className="relative shrink-0 w-14 h-14 rounded-lg overflow-hidden border border-cyan-500/30 group cursor-pointer"
+              // Silver-rim wrapper; inner tile letterboxes on black so the WHOLE
+              // image is visible regardless of aspect ratio (object-contain)
+              <div key={img.id} className="relative isolate shrink-0 rounded-lg overflow-hidden p-[1.5px] group cursor-pointer"
                 onClick={() => setEditingRefImage(img)}
                 title="Click to edit">
-                <img src={refTileThumb(img.url, 128)} alt="reference" className="w-full h-full object-cover" />
-                {/* Edit hint overlay */}
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                  <Pencil size={14} className="text-white" />
+                <span
+                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                  style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+                />
+                <div className="relative w-14 h-14 rounded-[7px] overflow-hidden bg-black">
+                  <img src={refTileThumb(img.url, 128)} alt="reference" className="w-full h-full object-contain" />
+                  {/* Edit hint overlay */}
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <Pencil size={14} className="text-white" />
+                  </div>
+                  {/* Deactivate button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDeactivateRef(img.id) }}
+                    title="Remove"
+                    className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                  >
+                    <X size={9} className="text-white" />
+                  </button>
                 </div>
-                {/* Deactivate button */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDeactivateRef(img.id) }}
-                  title="Remove"
-                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                >
-                  <X size={9} className="text-white" />
-                </button>
               </div>
             ))}
           </div>
@@ -10225,9 +13695,15 @@ function PromptBox({
         {editingRefImage && (
           <RefImageEditorModal
             image={editingRefImage}
+            canUseLayers={canUseLayers}
+            layerStack={editingRefImage.layers ?? null}
+            onLayerStackChange={(st) => onSaveLayers?.(editingRefImage.id, st)}
             onApply={(newUrl) => {
-              onEditRef(editingRefImage.id, newUrl)
-              setEditingRefImage(null)
+              // Stay open: swap to the re-created reference once the save lands
+              void Promise.resolve(onEditRef(editingRefImage.id, newUrl)).then((next) => {
+                if (next) setEditingRefImage(cur => cur ? next : cur)
+                else setEditingRefImage(null)
+              })
             }}
             onClose={() => setEditingRefImage(null)}
           />
@@ -10247,13 +13723,25 @@ function PromptBox({
         />
 
         {/* Prompt card */}
-        <div className="rounded-2xl border border-white/10 bg-slate-900/80 backdrop-blur-md shadow-2xl">
+        <div className="rounded-2xl border border-white/[0.08] bg-[#070b14]/90 backdrop-blur-md shadow-2xl">
 
           {/* Prompt tabs — first row INSIDE the card so popups (model picker etc.)
               naturally stack above them. Chips share the row width (flex-1 + truncate)
               so all 6 always fit; controls stay visible for touch devices. */}
           {tabs.length > 0 && (
-            <div className="flex items-center gap-1 px-2 pt-2">
+            <div className="flex items-center gap-1.5 px-2 pt-2">
+              {/* Synced site logo — same Home/Feed dropdown as the taskbar logo,
+                  opening upward since the prompt box sits at the bottom */}
+              <LogoDropdown
+                logoUrl={siteLogoUrl}
+                isAdmin={isAdminAccount}
+                onLogoChange={onSiteLogoChange}
+                onGoHome={onGoHome}
+                onGoFeed={onGoFeed}
+                onGoChat={onGoChat}
+                size={20}
+                openUp
+              />
               {tabs.map(t => {
                 const active = t.id === activeTabId
                 const pinned = t.id === pinnedTabId
@@ -10265,7 +13753,7 @@ function PromptBox({
                     key={t.id}
                     className={`flex items-center gap-0.5 min-w-0 flex-1 max-w-[150px] pl-2 pr-1 py-1 rounded-md border text-[11px] cursor-pointer transition-colors ${
                       active
-                        ? "border-cyan-500/40 bg-cyan-500/10 text-white"
+                        ? "border-white/40 bg-white/10 text-white"
                         : "border-white/10 bg-white/[0.05] text-slate-400 hover:text-white hover:bg-white/10"
                     }`}
                     onClick={() => handleTabSwitch(t.id)}
@@ -10328,7 +13816,7 @@ function PromptBox({
           {model.isUpscaler && (
             <div className="px-4 pt-4 pb-3 space-y-2.5 border-b border-white/5">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-cyan-400/60 uppercase tracking-widest">Source Image</span>
+                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-[0.2em]">Source Image</span>
                 {upscaleSourceUrl && (
                   <button
                     onClick={() => { setUpscaleSourceUrl(""); setSelectedRefId(null) }}
@@ -10349,7 +13837,7 @@ function PromptBox({
                         disabled={upscaleUploading}
                         title="Use as upscale source"
                         className={`relative w-12 h-12 rounded-lg overflow-hidden border shrink-0 transition-all disabled:opacity-50 ${
-                          isSelected ? "border-cyan-400 ring-1 ring-cyan-400/40" : "border-white/10 hover:border-cyan-400/50"
+                          isSelected ? "border-white ring-1 ring-white/40" : "border-white/10 hover:border-white/50"
                         }`}
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -10476,15 +13964,15 @@ function PromptBox({
 
           {/* AuraSR config — checkpoint + overlapping tiles */}
           {model.id === "aura-sr" && (
-            <div className="px-4 py-3 border-t border-cyan-500/10 space-y-2.5">
-              <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider">AuraSR</span>
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-2.5">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">AuraSR</span>
               {/* Checkpoint */}
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Checkpoint</span>
                 <div className="flex rounded-md overflow-hidden border border-white/10 w-fit">
                   {(["v1", "v2"] as const).map(v => (
                     <button key={v} onClick={() => setAuraSrCheckpoint(v)}
-                      className={`px-3 py-1 text-[11px] font-mono transition-colors ${auraSrCheckpoint === v ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-slate-300"}`}>
+                      className={`px-3 py-1 text-[11px] font-mono transition-colors ${auraSrCheckpoint === v ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
                       {v}
                     </button>
                   ))}
@@ -10497,7 +13985,7 @@ function PromptBox({
                   onClick={() => setAuraSrOverlappingTiles(v => !v)}
                   className={`flex items-center gap-1.5 w-fit px-3 py-1 rounded-md border text-[11px] font-mono transition-all ${
                     auraSrOverlappingTiles
-                      ? "bg-cyan-500/20 border-cyan-500/30 text-cyan-300"
+                      ? "bg-white/15 border-white/30 text-white"
                       : "border-white/10 text-slate-500 hover:text-slate-300"
                   }`}
                 >
@@ -10509,16 +13997,16 @@ function PromptBox({
 
           {/* DRCT info — no config params, just pricing note */}
           {model.id === "drct" && (
-            <div className="px-4 py-3 border-t border-cyan-500/10 flex items-start gap-2">
-              <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider shrink-0 mt-0.5">DRCT</span>
+            <div className="px-4 py-3 border-t border-white/[0.06] flex items-start gap-2">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0 mt-0.5">DRCT</span>
               <p className="text-[11px] text-slate-500 leading-relaxed">Transformer upscaler — no extra settings. Tickets scale with output size: 1 ticket per 2 MP (1 ticket at 1024², up to 9 at 4096²).</p>
             </div>
           )}
 
           {/* ESRGAN config — model picker, face toggle, output format */}
           {model.id === "esrgan" && (
-            <div className="px-4 py-3 border-t border-cyan-500/10 space-y-2.5">
-              <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider">ESRGAN</span>
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-2.5">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">ESRGAN</span>
               {/* Model picker */}
               <div className="space-y-1.5">
                 <span className="text-[10px] font-mono text-slate-500">Model</span>
@@ -10530,7 +14018,7 @@ function PromptBox({
                       title={m.desc}
                       className={`px-2.5 py-1 rounded-md border text-[11px] font-mono transition-all ${
                         esrganModel === m.id
-                          ? "bg-cyan-500/20 border-cyan-500/30 text-cyan-300"
+                          ? "bg-white/15 border-white/30 text-white"
                           : "border-white/10 text-slate-500 hover:text-slate-300 hover:border-white/20"
                       }`}
                     >
@@ -10547,7 +14035,7 @@ function PromptBox({
                     onClick={() => setEsrganFace(v => !v)}
                     className={`flex items-center gap-1.5 w-fit px-3 py-1 rounded-md border text-[11px] font-mono transition-all ${
                       esrganFace
-                        ? "bg-cyan-500/20 border-cyan-500/30 text-cyan-300"
+                        ? "bg-white/15 border-white/30 text-white"
                         : "border-white/10 text-slate-500 hover:text-slate-300"
                     }`}
                   >
@@ -10559,7 +14047,7 @@ function PromptBox({
                   <div className="flex rounded-md overflow-hidden border border-white/10 w-fit">
                     {(["png", "jpeg"] as const).map(f => (
                       <button key={f} onClick={() => setEsrganOutputFormat(f)}
-                        className={`px-3 py-1 text-[11px] font-mono transition-colors ${esrganOutputFormat === f ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-slate-300"}`}>
+                        className={`px-3 py-1 text-[11px] font-mono transition-colors ${esrganOutputFormat === f ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
                         {f}
                       </button>
                     ))}
@@ -10571,10 +14059,10 @@ function PromptBox({
 
           {/* SUPIR config — collapsible settings */}
           {model.id === "supir" && (
-            <div className="border-t border-cyan-500/10">
+            <div className="border-t border-white/[0.06]">
               {/* Always-visible row: label + config toggle */}
               <div className="px-4 py-2.5 flex items-center justify-between">
-                <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider">SUPIR</span>
+                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">SUPIR</span>
                 <button onClick={() => setSupirConfigOpen(v => !v)}
                   className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-slate-500 hover:text-white hover:border-white/20 transition-all">
                   <SlidersHorizontal size={9} />
@@ -10587,7 +14075,7 @@ function PromptBox({
               {supirConfigOpen && (
                 <div className="px-4 pb-3 space-y-2.5 border-t border-white/[0.04]">
                   <div className="flex items-center justify-between pt-2">
-                    <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider">Config</span>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Config</span>
                     <button onClick={() => { setSupirModelName("SUPIR-v0F"); setSupirSteps(20); setSupirUseLlava(false); setSupirCfg(4.0); setSupirColorFix("Wavelet"); setSupirNegPrompt("blurry, noisy, low quality, oversmoothed, jpeg artifacts, deformed") }}
                       className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
                   </div>
@@ -10602,10 +14090,10 @@ function PromptBox({
                         <button key={v.id} onClick={() => setSupirModelName(v.id)}
                           className={`flex-1 flex flex-col items-center px-2 py-1.5 rounded-md border text-center transition-all ${
                             supirModelName === v.id
-                              ? "bg-cyan-500/15 border-cyan-500/30"
+                              ? "bg-white/15 border-white/30"
                               : "border-white/[0.06] hover:border-white/20"
                           }`}>
-                          <span className={`text-[11px] font-mono font-bold ${supirModelName === v.id ? "text-cyan-300" : "text-slate-400"}`}>{v.label}</span>
+                          <span className={`text-[11px] font-mono font-bold ${supirModelName === v.id ? "text-white" : "text-slate-400"}`}>{v.label}</span>
                           <span className="text-[9px] text-slate-600">{v.desc}</span>
                         </button>
                       ))}
@@ -10616,16 +14104,16 @@ function PromptBox({
                     <span className="text-[10px] font-mono text-slate-500">Steps</span>
                     <input type="range" min={10} max={50} step={5} value={supirSteps}
                       onChange={e => setSupirSteps(parseInt(e.target.value))}
-                      className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                    <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{supirSteps}</span>
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-white tabular-nums text-right">{supirSteps}</span>
                   </div>
                   {/* Guidance */}
                   <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
                     <span className="text-[10px] font-mono text-slate-500">Guidance</span>
                     <input type="range" min={1} max={12} step={0.5} value={supirCfg}
                       onChange={e => setSupirCfg(parseFloat(e.target.value))}
-                      className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                    <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{supirCfg.toFixed(1)}</span>
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-white tabular-nums text-right">{supirCfg.toFixed(1)}</span>
                   </div>
                   {/* Color fix */}
                   <div className="grid grid-cols-[5rem_1fr] items-center gap-3">
@@ -10635,7 +14123,7 @@ function PromptBox({
                         <button key={opt} onClick={() => setSupirColorFix(opt)}
                           className={`flex-1 px-2 py-1 rounded-md border text-[10px] font-mono transition-all ${
                             supirColorFix === opt
-                              ? "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
+                              ? "bg-white/15 border-white/30 text-white"
                               : "border-white/[0.06] text-slate-500 hover:text-white hover:border-white/20"
                           }`}>
                           {opt}
@@ -10648,9 +14136,9 @@ function PromptBox({
                     <span className="text-[10px] font-mono text-slate-500">Caption</span>
                     <button onClick={() => setSupirUseLlava(v => !v)}
                       className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-left transition-all ${
-                        supirUseLlava ? "bg-cyan-500/15 border-cyan-500/30" : "border-white/[0.06] hover:border-white/20"
+                        supirUseLlava ? "bg-white/15 border-white/30" : "border-white/[0.06] hover:border-white/20"
                       }`}>
-                      <span className={`text-[11px] font-mono font-bold ${supirUseLlava ? "text-cyan-300" : "text-slate-500"}`}>
+                      <span className={`text-[11px] font-mono font-bold ${supirUseLlava ? "text-white" : "text-slate-500"}`}>
                         {supirUseLlava ? "LLaVA ON" : "LLaVA OFF"}
                       </span>
                       {supirUseLlava && <span className="text-[9px] text-amber-400/70">may OOM on 4x</span>}
@@ -10661,7 +14149,7 @@ function PromptBox({
                     <span className="text-[10px] font-mono text-slate-500 mt-1.5">Negative</span>
                     <textarea value={supirNegPrompt} onChange={e => setSupirNegPrompt(e.target.value)} rows={2}
                       placeholder="What to suppress…"
-                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-md px-2 py-1.5 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/30 resize-none leading-relaxed" />
+                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-md px-2 py-1.5 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-white/30 resize-none leading-relaxed" />
                   </div>
                   <p className="text-[10px] text-slate-600">
                     {upscaleFactor === 4 ? "4x: keep steps ≤ 20, caption OFF." : "2x: any step count works."} 8 tickets flat.
@@ -10673,9 +14161,9 @@ function PromptBox({
 
           {/* Clarity Upscaler config — collapsible */}
           {model.id === "clarity-upscaler" && (
-            <div className="border-t border-cyan-500/10">
+            <div className="border-t border-white/[0.06]">
               <div className="px-4 py-2 flex items-center justify-between">
-                <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider">Enhance</span>
+                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Enhance</span>
                 <button onClick={() => setClarityConfigOpen(v => !v)}
                   className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-slate-500 hover:text-white hover:border-white/20 transition-all">
                   <SlidersHorizontal size={9} />
@@ -10686,7 +14174,7 @@ function PromptBox({
               {clarityConfigOpen && (
                 <div className="px-4 pb-3 space-y-2 border-t border-white/[0.04]">
                   <div className="flex items-center justify-between pt-2">
-                    <span className="text-[10px] font-mono text-cyan-400/50 uppercase tracking-wider">Config</span>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Config</span>
                     <button onClick={() => { setUpscaleCreativity(0.35); setUpscaleResemblance(0.6); setUpscaleGuidance(4); setUpscaleSteps(18) }}
                       className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
                   </div>
@@ -10694,29 +14182,29 @@ function PromptBox({
                     <span className="text-[10px] font-mono text-slate-500">Creativity</span>
                     <input type="range" min="0" max="1" step="0.05" value={upscaleCreativity}
                       onChange={e => setUpscaleCreativity(parseFloat(e.target.value))}
-                      className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                    <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{upscaleCreativity.toFixed(2)}</span>
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-white tabular-nums text-right">{upscaleCreativity.toFixed(2)}</span>
                   </div>
                   <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
                     <span className="text-[10px] font-mono text-slate-500">Resemblance</span>
                     <input type="range" min="0" max="1" step="0.05" value={upscaleResemblance}
                       onChange={e => setUpscaleResemblance(parseFloat(e.target.value))}
-                      className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                    <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{upscaleResemblance.toFixed(2)}</span>
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-white tabular-nums text-right">{upscaleResemblance.toFixed(2)}</span>
                   </div>
                   <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
                     <span className="text-[10px] font-mono text-slate-500">CFG</span>
                     <input type="range" min="1" max="10" step="0.5" value={upscaleGuidance}
                       onChange={e => setUpscaleGuidance(parseFloat(e.target.value))}
-                      className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                    <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{upscaleGuidance.toFixed(1)}</span>
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-white tabular-nums text-right">{upscaleGuidance.toFixed(1)}</span>
                   </div>
                   <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
                     <span className="text-[10px] font-mono text-slate-500">Steps</span>
                     <input type="range" min="10" max="30" step="1" value={upscaleSteps}
                       onChange={e => setUpscaleSteps(parseInt(e.target.value))}
-                      className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                    <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{upscaleSteps}</span>
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-white tabular-nums text-right">{upscaleSteps}</span>
                   </div>
                 </div>
               )}
@@ -10725,7 +14213,8 @@ function PromptBox({
 
           {/* Controls strip */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 pb-3 pt-1 border-t border-white/5">
-            {/* Model picker badge */}
+            {/* Model picker badge — NanoBanana Pro 2 abbreviates to "NB2" so the
+                controls strip stays on one line (full name still shows in the menu) */}
             <div className="relative shrink-0" ref={modelPickerRef}>
               <button
                 onClick={() => setShowModelPicker((v) => !v)}
@@ -10735,113 +14224,28 @@ function PromptBox({
                     : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
                 }`}
               >
-                {model.name}
+                {model.id === "nano-banana-pro-2" ? "NB2" : model.name}
                 <ChevronDown size={10} className={`transition-transform ${showModelPicker ? "rotate-180" : ""}`} />
               </button>
 
               {showModelPicker && (
-                <div className="absolute bottom-full left-0 mb-2 w-[428px] rounded-xl border border-white/10 bg-[#080c18] backdrop-blur-md shadow-2xl overflow-hidden z-50">
-                  {/* Header */}
-                  <div className="px-4 pt-3 pb-2.5 border-b border-white/5">
-                    <p className="text-[12px] font-semibold text-white/85 leading-none">Image Generation Model</p>
-                    <p className="text-[10px] text-slate-500 mt-1 leading-snug">
-                      Models are grouped by company.{" "}
-                      <span className="text-slate-600">Active: <span className="text-slate-400">{model.name}</span></span>
-                    </p>
-                  </div>
-
-                  {/* 2-col grid of company sections */}
-                  <div className="p-2.5 grid grid-cols-2 gap-x-2 gap-y-2 overflow-y-auto max-h-[360px]">
-                    {IMAGE_MODEL_GROUPS.map((group) => (
-                      <div key={group.label}>
-                        <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                          <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
-                          <span className={`text-[9px] font-bold tracking-widest uppercase leading-none ${group.accent}`}>{group.label}</span>
-                          <span className="text-[8px] text-slate-600 leading-none truncate">· {group.type}</span>
-                        </div>
-                        <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
-                          {group.items.map((item) => {
-                            const cfg = IMAGE_MODEL_CONFIGS.find((m) => m.name === item)
-                            const isActive = model.name === item
-                            return (
-                              <button
-                                key={item}
-                                onClick={() => { if (cfg) { onModelChange(cfg); setShowModelPicker(false) } }}
-                                className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
-                                  isActive
-                                    ? "bg-white/8 text-white font-medium"
-                                    : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
-                                }`}
-                              >
-                                <span className="truncate leading-tight">{item}</span>
-                                <span className="shrink-0 flex items-center gap-1">
-                                  {isActive && <span className="w-1 h-1 rounded-full bg-cyan-400" />}
-                                  {IMAGE_MODEL_COST_BY_NAME[item] && <CostBadge tier={IMAGE_MODEL_COST_BY_NAME[item]} />}
-                                </span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Admin Models — full-width block with RunPod + Upscalers subsections */}
-                    {isAdminAccount && (
-                      <div className="col-span-2 mt-0.5 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.03] overflow-hidden">
-                        <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-cyan-500/10">
-                          <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 shrink-0" />
-                          <span className="text-[9px] font-bold tracking-widest uppercase text-cyan-400">Admin Models</span>
-                          <span className="text-[8px] text-slate-600">· admin only</span>
-                        </div>
-                        <div className="p-2 grid grid-cols-2 gap-x-2">
-                          {ADMIN_IMAGE_MODEL_GROUPS.map((sub) => (
-                            <div key={sub.label}>
-                              <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
-                                <span className={`text-[9px] font-bold tracking-widest uppercase leading-none ${sub.accent}`}>{sub.label}</span>
-                                <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
-                              </div>
-                              <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
-                                {sub.items.map((item) => {
-                                  const cfg = IMAGE_MODEL_CONFIGS.find((m) => m.name === item)
-                                  const isActive = model.name === item
-                                  return (
-                                    <button
-                                      key={item}
-                                      onClick={() => { if (cfg) { onModelChange(cfg); setShowModelPicker(false) } }}
-                                      className={`w-full text-left px-2.5 py-1.5 text-[11px] transition-colors flex items-center justify-between gap-1 border-b border-white/[0.04] last:border-0 ${
-                                        isActive
-                                          ? "bg-white/8 text-white font-medium"
-                                          : "text-slate-400 hover:text-white hover:bg-white/[0.05]"
-                                      }`}
-                                    >
-                                      <span className="truncate leading-tight">{item}</span>
-                                      <span className="shrink-0 flex items-center gap-1">
-                                        {isActive && <span className="w-1 h-1 rounded-full bg-cyan-400" />}
-                                        {IMAGE_MODEL_COST_BY_NAME[item] && <CostBadge tier={IMAGE_MODEL_COST_BY_NAME[item]} />}
-                                      </span>
-                                    </button>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Footer */}
-                  <div className="px-4 py-2 border-t border-white/5 flex items-center gap-2 flex-wrap">
-                    <span className="text-[9px] text-slate-600">Ticket cost:</span>
-                    <span className="text-[9px] text-slate-500"><span className="text-green-400 font-bold font-mono">$</span> budget</span>
-                    <span className="text-[9px] text-slate-600">·</span>
-                    <span className="text-[9px] text-slate-500"><span className="text-amber-400 font-bold font-mono">$$</span> standard</span>
-                    <span className="text-[9px] text-slate-600">·</span>
-                    <span className="text-[9px] text-slate-500"><span className="text-rose-400 font-bold font-mono">$$$</span> premium</span>
-                    <span className="text-[9px] text-slate-600">·</span>
-                    <span className="text-[9px] text-slate-500"><span className="text-rose-300 font-bold font-mono">$$$+</span> expensive</span>
-                  </div>
+                <div className="absolute bottom-full left-0 mb-2 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-50" style={{ width: Math.min(428, window.innerWidth / promptScale - 16) }}>
+                  <ModelMenuPanel
+                    label="Image"
+                    groups={IMAGE_MODEL_GROUPS}
+                    adminGroups={isAdminAccount ? ADMIN_IMAGE_MODEL_GROUPS : undefined}
+                    onSelect={(item) => {
+                      const cfg = IMAGE_MODEL_CONFIGS.find((m) => m.name === item)
+                      if (cfg) { onModelChange(cfg); setShowModelPicker(false) }
+                    }}
+                    activeItem={model.name}
+                    itemCosts={IMAGE_MODEL_COST_BY_NAME}
+                    menuTitle="Image Generation Model"
+                    menuDescription="Models are grouped by company."
+                    cardMedia={cardMedia}
+                    cardPrefix="image"
+                    bodyMaxHeight="min(360px, 50vh)"
+                  />
                 </div>
               )}
             </div>
@@ -11126,22 +14530,40 @@ function PromptBox({
               </>
             )}
 
-            {/* Output format picker — models with supportsOutputFormat */}
+            {/* Output format picker — compact dropdown (upward, like the aspect
+                picker) so the controls strip keeps room for the generate buttons */}
             {model.supportsOutputFormat && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
-                <div className="flex items-center rounded-md overflow-hidden border border-white/10 shrink-0">
-                  {(["png", "jpeg", "webp"] as const).map((fmt) => (
-                    <button
-                      key={fmt}
-                      onClick={() => setOutputFormat(fmt)}
-                      className={`px-2.5 py-1 text-[11px] font-mono transition-colors ${
-                        outputFormat === fmt ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
-                      }`}
-                    >
-                      {fmt}
-                    </button>
-                  ))}
+                <div className="relative shrink-0" ref={formatPickerRef}>
+                  <button
+                    onClick={() => setShowFormatPicker((v) => !v)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono transition-all ${
+                      showFormatPicker
+                        ? "border-white/20 bg-white/10 text-white"
+                        : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
+                    }`}
+                  >
+                    {outputFormat}
+                    <ChevronDown size={10} className={`transition-transform ${showFormatPicker ? "rotate-180" : ""}`} />
+                  </button>
+                  {showFormatPicker && (
+                    <div className="absolute bottom-full left-0 mb-2 w-28 rounded-xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-50">
+                      {(["png", "jpeg", "webp"] as const).map((fmt) => (
+                        <button
+                          key={fmt}
+                          onClick={() => { setOutputFormat(fmt); setShowFormatPicker(false) }}
+                          className={`w-full text-left px-3 py-2 text-[12px] font-mono transition-colors ${
+                            outputFormat === fmt
+                              ? "text-white bg-white/8"
+                              : "text-slate-400 hover:text-white hover:bg-white/5"
+                          }`}
+                        >
+                          {fmt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -11182,17 +14604,17 @@ function PromptBox({
             {(model.maxImages ?? 1) > 1 && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center shrink-0">
                   <button
                     onClick={() => setImageCount(c => Math.max(1, c - 1))}
                     disabled={imageCount <= 1}
-                    className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:cursor-not-allowed transition-all text-sm leading-none font-bold"
+                    className="w-4 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:cursor-not-allowed transition-all text-sm leading-none font-bold"
                   >−</button>
-                  <span className="text-[11px] font-mono text-slate-300 w-3.5 text-center tabular-nums select-none">{imageCount}</span>
+                  <span className="text-[11px] font-mono text-slate-300 w-3 text-center tabular-nums select-none">{imageCount}</span>
                   <button
                     onClick={() => setImageCount(c => Math.min(model.maxImages ?? 1, c + 1))}
                     disabled={imageCount >= (model.maxImages ?? 1)}
-                    className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:cursor-not-allowed transition-all text-sm leading-none font-bold"
+                    className="w-4 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:cursor-not-allowed transition-all text-sm leading-none font-bold"
                   >+</button>
                 </div>
               </>
@@ -11204,6 +14626,42 @@ function PromptBox({
                 ? (model.id === "seedream-4.5" ? seedreamSafetyChecker : model.id === "wan-2.7-pro" ? wanSafetyChecker : fluxDevSafetyChecker)
                 : true
               const setSafety = model.id === "seedream-4.5" ? setSeedreamSafetyChecker : model.id === "wan-2.7-pro" ? setWanSafetyChecker : setFluxDevSafetyChecker
+              return (
+                <>
+                  <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
+                  <button
+                    disabled={!isAdminAccount}
+                    onClick={() => {
+                      if (!isAdminAccount) return
+                      if (safetyOn) {
+                        setSafetyAgeConfirmed(false)
+                        setSafetyConfirmCallback(() => () => setSafety(false))
+                        setShowSafetyModal(true)
+                      } else {
+                        setSafety(true)
+                      }
+                    }}
+                    title={isAdminAccount ? undefined : "Content safety filtering is required for all generations. This helps ensure the platform remains safe and compliant."}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                      safetyOn
+                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                        : "border-red-500/20 bg-red-500/[0.06] text-red-400 hover:bg-red-500/10"
+                    } ${!isAdminAccount ? "cursor-default opacity-70" : ""}`}
+                  >
+                    <Eye size={11} />
+                    Safety {safetyOn ? "ON" : "OFF"}
+                    {!isAdminAccount && <span className="text-[9px] text-emerald-400/50 font-mono">· required</span>}
+                  </button>
+                </>
+              )
+            })()}
+
+            {/* Safety Checker toggle — SeeDream 5.0 Pro, Recraft v4.1 (admins toggle; non-admins forced ON for CCBill) */}
+            {model.supportsSafetyChecker && (() => {
+              const safetyOn = isAdminAccount
+                ? (model.id === "seedream-5-pro" ? proSafetyChecker : recraftSafetyChecker)
+                : true
+              const setSafety = model.id === "seedream-5-pro" ? setProSafetyChecker : setRecraftSafetyChecker
               return (
                 <>
                   <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
@@ -11264,14 +14722,20 @@ function PromptBox({
                 onClick={handleGenerate}
                 disabled={!canGenerate}
                 data-keep-refs-open
-                className={`flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg text-[12px] font-semibold transition-all flex-1 sm:flex-none ${
+                className={`relative overflow-hidden flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg text-[12px] font-bold transition-all flex-1 sm:flex-none ${
                   canGenerate
-                    ? "bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black hover:opacity-90"
+                    ? "bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40"
                     : "bg-white/5 text-slate-600 cursor-not-allowed border border-white/10"
                 }`}
               >
+                {canGenerate && (
+                  <span
+                    className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                    style={{ animation: "sheen-sweep 2.6s infinite" }}
+                  />
+                )}
                 {generating ? (
-                  <div className="w-3 h-3 rounded-full border-2 border-black/30 border-t-black animate-spin" />
+                  <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                 ) : (
                   <Ticket size={12} />
                 )}
@@ -11374,6 +14838,9 @@ function useRefConsent() {
   const [consented, setConsented] = useState(false)
   useEffect(() => {
     setConsented(sessionStorage.getItem("ref-rights-consent") === "true")
+    const grant = () => setConsented(true)
+    window.addEventListener("pv2-ref-consent", grant)
+    return () => window.removeEventListener("pv2-ref-consent", grant)
   }, [])
   const request = (action: () => void) => {
     if (consented) { action() }
@@ -11449,6 +14916,15 @@ function SD20RefPanel({
   videoRefImagePreviews, onAddRefImage, onRemoveRefImage,
   videoRefVideoFilenames, videoRefVideoUrls, onAddRefVideo, onRemoveRefVideo,
   videoRefAudioFilenames, onAddRefAudio, onRemoveRefAudio,
+  videoRefVideoDuration = 0,
+  maxVideos = 3,
+  maxAudios = 3,
+  refTagHint = "prompt with @Image1…",
+  allowFrameTags = false,
+  startIdx = null,
+  endIdx = null,
+  onTagStart,
+  onTagEnd,
 }: {
   videoRefImagePreviews: string[]
   onAddRefImage: (f: File) => void
@@ -11460,6 +14936,17 @@ function SD20RefPanel({
   videoRefAudioFilenames: string[]
   onAddRefAudio: (f: File) => void
   onRemoveRefAudio: (i: number) => void
+  videoRefVideoDuration?: number
+  // Gemini Omni Flash r2v reuses this panel with images only (maxVideos/maxAudios 0)
+  maxVideos?: number
+  maxAudios?: number
+  refTagHint?: string
+  // SeeDance 2.0: pick the start/end frame out of the references (S/E tags per tile)
+  allowFrameTags?: boolean
+  startIdx?: number | null
+  endIdx?: number | null
+  onTagStart?: (i: number | null) => void
+  onTagEnd?: (i: number | null) => void
 }) {
   const imgInputRef  = useRef<HTMLInputElement>(null)
   const vidInputRef  = useRef<HTMLInputElement>(null)
@@ -11467,18 +14954,40 @@ function SD20RefPanel({
   const { request: requestConsent, modal: consentModal } = useRefConsent()
   // Store per-video duration so we can subtract it on remove
   const videoDurations = useRef<number[]>([])
+  const [refError, setRefError] = useState<string | null>(null)
+
+  // FAL Seedance 2.0 r2v limits: 9 images + 3 videos + 3 audio (12 files
+  // total); input videos max 15s combined. Omni r2v: images only.
+  const SD20_MAX_VIDEO_SEC = 15
+  const totalFiles = videoRefImagePreviews.length + videoRefVideoFilenames.length + videoRefAudioFilenames.length
+  const filesLeft = (9 + maxVideos + maxAudios) - totalFiles
 
   function handleVideoFile(file: File) {
     const objUrl = URL.createObjectURL(file)
     const vid = document.createElement("video")
     vid.preload = "metadata"
+    const shortName = file.name.length > 28 ? file.name.slice(0, 26) + "…" : file.name
     vid.onloadedmetadata = () => {
       URL.revokeObjectURL(objUrl)
       const dur = vid.duration
+      const w = vid.videoWidth, h = vid.videoHeight
+      // fal SeeDance r2v rejects reference clips shaped beyond 2.5:1 either way
+      if (w > 0 && h > 0 && Math.max(w, h) / Math.min(w, h) > 2.5) {
+        setRefError(`"${shortName}" can't be used as a reference — its shape (${w}×${h}, ${(w / h).toFixed(2)}:1) is outside SeeDance's supported range. Clips must be no wider than 2.5:1 and no taller than 1:2.5; crop it closer to a standard shape and re-upload.`)
+        return
+      }
+      if (videoRefVideoDuration + dur > SD20_MAX_VIDEO_SEC + 0.25) {
+        setRefError(`Reference videos are capped at ${SD20_MAX_VIDEO_SEC}s combined — this clip (${dur.toFixed(1)}s) would make ${(videoRefVideoDuration + dur).toFixed(1)}s. Trim it or remove another video.`)
+        return
+      }
+      setRefError(null)
       videoDurations.current.push(dur)
       onAddRefVideo(file, dur)
     }
-    vid.onerror = () => { URL.revokeObjectURL(objUrl); videoDurations.current.push(0); onAddRefVideo(file, 0) }
+    vid.onerror = () => {
+      URL.revokeObjectURL(objUrl)
+      setRefError(`"${shortName}" can't be read as a video — the format may be unsupported here. Convert it to MP4 (H.264) and try again.`)
+    }
     vid.src = objUrl
   }
 
@@ -11488,15 +14997,20 @@ function SD20RefPanel({
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-            Reference Images <span className="text-slate-600 normal-case font-normal">(optional)</span>
+            Reference Image(s) <span className="text-slate-600 normal-case font-normal">(optional · up to 9 · {videoRefImagePreviews.length}/9)</span>
           </p>
-          {videoRefImagePreviews.length < 5 && (
+          {videoRefImagePreviews.length < 9 && filesLeft > 0 && (
             <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
               className="text-[10px] text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
             </button>
           )}
         </div>
+        <p className="text-[10px] text-slate-600 leading-snug">
+          {allowFrameTags
+            ? <>Guide the video with up to 9 images ({refTagHint}). Tap <span className="text-orange-400 font-semibold">S</span> / <span className="text-orange-400 font-semibold">E</span> on an image to make it the exact start / end frame.</>
+            : <>Guide the video with up to 9 images ({refTagHint}).</>}
+        </p>
         <input ref={imgInputRef} type="file" accept="image/*" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onAddRefImage(f) } }} />
         {videoRefImagePreviews.length > 0 ? (
@@ -11508,24 +15022,47 @@ function SD20RefPanel({
                   className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <X size={8} className="text-white" />
                 </button>
+                {allowFrameTags && (
+                  <div className="absolute bottom-0.5 inset-x-0.5 flex items-center justify-between">
+                    <button
+                      onClick={() => onTagStart?.(startIdx === i ? null : i)}
+                      title="Use as the start frame"
+                      className={`w-5 h-4 rounded text-[8px] font-bold leading-none flex items-center justify-center transition-all ${
+                        startIdx === i ? "bg-orange-500 text-black" : "bg-black/70 text-white/60 hover:text-white"
+                      }`}
+                    >
+                      S
+                    </button>
+                    <button
+                      onClick={() => onTagEnd?.(endIdx === i ? null : i)}
+                      title="Use as the end frame"
+                      className={`w-5 h-4 rounded text-[8px] font-bold leading-none flex items-center justify-center transition-all ${
+                        endIdx === i ? "bg-orange-500 text-black" : "bg-black/70 text-white/60 hover:text-white"
+                      }`}
+                    >
+                      E
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         ) : (
           <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
             className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
-            <ImagePlus size={12} />Upload reference images
+            <ImagePlus size={12} />Upload reference image(s)
           </button>
         )}
       </div>
 
       {/* Reference Videos */}
+      {maxVideos > 0 && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-            Reference Videos <span className="text-slate-600 normal-case font-normal">(optional)</span>
+            Reference Videos <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length}/3 · {videoRefVideoDuration.toFixed(0)}s · 2–15s total)</span>
           </p>
-          {videoRefVideoFilenames.length < 3 && (
+          {videoRefVideoFilenames.length < 3 && filesLeft > 0 && videoRefVideoDuration < SD20_MAX_VIDEO_SEC && (
             <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
               className="text-[10px] text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
@@ -11554,14 +15091,16 @@ function SD20RefPanel({
           </button>
         )}
       </div>
+      )}
 
       {/* Reference Audio */}
+      {maxAudios > 0 && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-            Reference Audio <span className="text-slate-600 normal-case font-normal">(optional)</span>
+            Reference Audio <span className="text-slate-600 normal-case font-normal">({videoRefAudioFilenames.length}/3 · 15s max, needs an image/video too)</span>
           </p>
-          {videoRefAudioFilenames.length < 2 && (
+          {videoRefAudioFilenames.length < 3 && filesLeft > 0 && (
             <button onClick={() => requestConsent(() => audInputRef.current?.click())}
               className="text-[10px] text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
@@ -11587,6 +15126,10 @@ function SD20RefPanel({
           </button>
         )}
       </div>
+      )}
+      {refError && (
+        <div className="text-[10px] text-amber-400 leading-relaxed">{refError}</div>
+      )}
       {consentModal}
     </div>
   )
@@ -11610,8 +15153,14 @@ function VideoCustomizationPanel({
   videoRefVideoFilenames = [], videoRefVideoUrls = [], onAddRefVideo, onRemoveRefVideo,
   videoRefAudioFilenames = [], onAddRefAudio, onRemoveRefAudio,
   videoRefVideoDuration = 0,
-  sd20Mode = "t2v" as "t2v" | "i2v" | "r2v",
+  refStartIdx = null, refEndIdx = null, onTagRefStart, onTagRefEnd,
+  sd20Mode = "t2v" as "t2v" | "i2v" | "r2v" | "edit",
   onSD20ModeChange,
+  editSourceFilename = null,
+  editSourceUploading = false,
+  editSourceDuration = 0,
+  onEditSourceSelect,
+  onClearEditSource,
   lipsyncVideoFilename,
   lipsyncVideoUploading,
   lipsyncVideoDuration,
@@ -11652,9 +15201,20 @@ function VideoCustomizationPanel({
   onAddRefAudio?: (f: File) => void
   onRemoveRefAudio?: (i: number) => void
   videoRefVideoDuration?: number
-  // SeeDance 2.0 mode switcher
-  sd20Mode?: "t2v" | "i2v" | "r2v"
-  onSD20ModeChange?: (m: "t2v" | "i2v" | "r2v") => void
+  // SeeDance 2.0: start/end frame picked from the reference images (S/E tags)
+  refStartIdx?: number | null
+  refEndIdx?: number | null
+  onTagRefStart?: (i: number | null) => void
+  onTagRefEnd?: (i: number | null) => void
+  // Mode switcher (SeeDance 2.0 modes + Gemini Omni Flash's 4 modes)
+  sd20Mode?: "t2v" | "i2v" | "r2v" | "edit"
+  onSD20ModeChange?: (m: "t2v" | "i2v" | "r2v" | "edit") => void
+  // Gemini Omni Flash edit (video-to-video) source
+  editSourceFilename?: string | null
+  editSourceUploading?: boolean
+  editSourceDuration?: number
+  onEditSourceSelect?: (f: File, duration: number) => void
+  onClearEditSource?: () => void
   // Lipsync v3
   lipsyncVideoFilename?: string | null
   lipsyncVideoUploading?: boolean
@@ -11678,6 +15238,7 @@ function VideoCustomizationPanel({
   const audioRef      = useRef<HTMLInputElement>(null)
   const lipsyncVidRef = useRef<HTMLInputElement>(null)
   const lipsyncAudRef = useRef<HTMLInputElement>(null)
+  const editSrcRef    = useRef<HTMLInputElement>(null)
   const [motionVideoError, setMotionVideoError] = useState<string | null>(null)
   const [lipsyncVideoError, setLipsyncVideoError] = useState<string | null>(null)
   const { request: requestConsent, modal: consentModal } = useRefConsent()
@@ -11741,12 +15302,27 @@ function VideoCustomizationPanel({
     vid.src = objectUrl
   }
 
+  function handleEditSourceFile(file: File) {
+    const objectUrl = URL.createObjectURL(file)
+    const vid = document.createElement("video")
+    vid.preload = "metadata"
+    vid.onloadedmetadata = () => { URL.revokeObjectURL(objectUrl); onEditSourceSelect?.(file, vid.duration) }
+    vid.onerror = () => { URL.revokeObjectURL(objectUrl); onEditSourceSelect?.(file, 0) }
+    vid.src = objectUrl
+  }
+
   const motionMaxSec = characterOrientation === "video" ? 30 : 10
   const sd20ResMultiplier = resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0
   const isSD20Family = model.id === "seedance-2.0" || model.id === "seedance-2.0-fast"
   const isLipsync = !!model.supportsLipsync
+  const isOmni = !!model.videoModes
+  const omniMode = isOmni ? sd20Mode : "t2v"
   const ticketCost = isLipsync
     ? Math.max(10, Math.ceil((lipsyncVideoDuration ?? 0) * 6))
+    : isOmni
+    ? (omniMode === "edit"
+        ? Math.max(3, Math.ceil(editSourceDuration || 8)) * 15
+        : (parseInt(duration) || 8) * 15)
     : model.id === "kling-v3-motion"
     ? Math.ceil(motionVideoDuration ?? motionMaxSec) * 6
     : model.id === "kling-v3"
@@ -11771,9 +15347,30 @@ function VideoCustomizationPanel({
         <Video size={13} className="text-orange-400 shrink-0" />
         <span className="text-sm font-semibold text-white">{model.name}</span>
         <span className="ml-auto text-[10px] font-mono text-orange-400/70 flex items-center gap-0.5">
-          <Ticket size={9} />{ticketCost}{(isSD20Family && duration === "auto") || (isLipsync && !lipsyncVideoDuration) ? "~" : ""}
+          <Ticket size={9} />{ticketCost}{(isSD20Family && duration === "auto") || (isLipsync && !lipsyncVideoDuration) || (isOmni && omniMode === "edit" && !editSourceDuration) ? "~" : ""}
         </span>
       </div>
+
+      {/* ── Gemini Omni Flash mode switcher (t2v / i2v / refs / edit) ── */}
+      {isOmni && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Generation Mode</p>
+          <div className="grid grid-cols-4 gap-1">
+            {(model.videoModes ?? []).map(m => (
+              <button key={m} onClick={() => onSD20ModeChange?.(m)}
+                className={`${btnBase} ${sd20Mode === m ? btnActive : btnIdle}`}>
+                {m === "t2v" ? "Text" : m === "i2v" ? "Image" : m === "r2v" ? "Refs" : "Edit"}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-slate-600 leading-snug">
+            {sd20Mode === "t2v" ? "Generate from the prompt alone — native audio included."
+              : sd20Mode === "i2v" ? "Animate a start frame following the prompt."
+              : sd20Mode === "r2v" ? "Blend up to 9 reference images — bind them in the prompt as <IMAGE_REF_0>, <IMAGE_REF_1>… (0-indexed)."
+              : "Edit/restyle an existing video with the prompt — duration follows the source."}
+          </p>
+        </div>
+      )}
 
       {/* ── Lipsync v3 panel ── */}
       {isLipsync && (
@@ -11882,8 +15479,9 @@ function VideoCustomizationPanel({
         </>
       )}
 
-      {/* Reference Image / Start Frame — hidden for r2v models, hidden for lipsync */}
-      {!isLipsync && !model.supportsReferenceVideo && (
+      {/* Reference Image / Start Frame — hidden for r2v models, hidden for lipsync;
+          for mode-switched models (Omni) only shown in Image mode */}
+      {!isLipsync && !model.supportsReferenceVideo && (!isOmni || sd20Mode === "i2v") && (
         <div className="space-y-1.5">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
             {model.supportsMotionControl ? "Character Image" : model.textToVideo ? "Reference Image" : "Start Frame"}
@@ -11990,24 +15588,90 @@ function VideoCustomizationPanel({
             </button>
           </div>
         </>
-      ) : model.supportsReferenceVideo ? (
-        /* ── SeeDance 2.0 Reference-to-Video ── */
-        <SD20RefPanel
-          videoRefImagePreviews={videoRefImagePreviews}
-          onAddRefImage={onAddRefImage!}
-          onRemoveRefImage={onRemoveRefImage!}
-          videoRefVideoFilenames={videoRefVideoFilenames}
-          videoRefVideoUrls={videoRefVideoUrls}
-          onAddRefVideo={onAddRefVideo!}
-          onRemoveRefVideo={onRemoveRefVideo!}
-          videoRefAudioFilenames={videoRefAudioFilenames}
-          onAddRefAudio={onAddRefAudio!}
-          onRemoveRefAudio={onRemoveRefAudio!}
-        />
       ) : (
         <>
-          {/* End frame */}
-          {model.supportsEndFrame && (
+          {/* ── SeeDance 2.0 unified references: up to 9 images (S/E frame tags) + videos + audio.
+              Rendered ALONGSIDE the Duration / Aspect Ratio / Resolution / Generate Audio
+              sections below — it replaces only the single-ref + end-frame uploads. ── */}
+          {model.supportsReferenceVideo && (
+            <SD20RefPanel
+              videoRefImagePreviews={videoRefImagePreviews}
+              onAddRefImage={onAddRefImage!}
+              onRemoveRefImage={onRemoveRefImage!}
+              videoRefVideoFilenames={videoRefVideoFilenames}
+              videoRefVideoUrls={videoRefVideoUrls}
+              onAddRefVideo={onAddRefVideo!}
+              onRemoveRefVideo={onRemoveRefVideo!}
+              videoRefAudioFilenames={videoRefAudioFilenames}
+              onAddRefAudio={onAddRefAudio!}
+              onRemoveRefAudio={onRemoveRefAudio!}
+              videoRefVideoDuration={videoRefVideoDuration}
+              allowFrameTags
+              startIdx={refStartIdx}
+              endIdx={refEndIdx}
+              onTagStart={onTagRefStart}
+              onTagEnd={onTagRefEnd}
+            />
+          )}
+          {/* ── Omni r2v: reference images (images only, <IMAGE_REF_n> tags) ── */}
+          {isOmni && sd20Mode === "r2v" && (
+            <SD20RefPanel
+              videoRefImagePreviews={videoRefImagePreviews}
+              onAddRefImage={onAddRefImage!}
+              onRemoveRefImage={onRemoveRefImage!}
+              videoRefVideoFilenames={[]}
+              videoRefVideoUrls={[]}
+              onAddRefVideo={() => {}}
+              onRemoveRefVideo={() => {}}
+              videoRefAudioFilenames={[]}
+              onAddRefAudio={() => {}}
+              onRemoveRefAudio={() => {}}
+              maxVideos={0}
+              maxAudios={0}
+              refTagHint="prompt with <IMAGE_REF_0>… (0-indexed)"
+            />
+          )}
+
+          {/* ── Omni edit: source video to restyle ── */}
+          {isOmni && sd20Mode === "edit" && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                Source Video <span className="text-orange-400/70">*</span>
+              </p>
+              <p className="text-[10px] text-slate-600 leading-snug">The video to edit/restyle — output duration follows the source</p>
+              <input ref={editSrcRef} type="file" accept="video/*" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; handleEditSourceFile(f) } }} />
+              {editSourceFilename ? (
+                <div className={`relative rounded-lg overflow-hidden flex items-center gap-3 px-3 py-3 border ${editSourceUploading ? "bg-slate-900/80 border-white/10" : "bg-white/5 border-white/10"}`}>
+                  <div className="w-8 h-8 rounded bg-orange-500/10 border border-orange-500/20 flex items-center justify-center shrink-0">
+                    {editSourceUploading
+                      ? <div className="w-3.5 h-3.5 rounded-full border-2 border-orange-400/30 border-t-orange-400 animate-spin" />
+                      : <Check size={13} className="text-green-400" />
+                    }
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] text-slate-200 truncate font-medium">{editSourceFilename}</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      {editSourceUploading ? "Uploading…" : editSourceDuration ? `${editSourceDuration.toFixed(1)}s · Ready` : "Ready"}
+                    </p>
+                  </div>
+                  <button onClick={() => onClearEditSource?.()}
+                    className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-white/5 transition-all">
+                    <X size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => requestConsent(() => editSrcRef.current?.click())}
+                  className="w-full rounded-lg border border-dashed border-orange-500/30 hover:border-orange-500/50 flex flex-col items-center justify-center gap-1.5 transition-all py-6">
+                  <Video size={16} className="text-orange-400/60" />
+                  <span className="text-[10px] text-slate-500">Click to upload the video to edit</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* End frame — hidden for SD20 unified refs (the end frame is picked via the E tag) */}
+          {model.supportsEndFrame && !model.supportsReferenceVideo && (
             <div className="space-y-1.5">
               <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
                 End Frame <span className="text-slate-600 normal-case font-normal">(optional)</span>
@@ -12024,8 +15688,8 @@ function VideoCustomizationPanel({
             </div>
           )}
 
-          {/* Duration */}
-          {model.durations.length > 0 && (
+          {/* Duration — hidden in Omni edit mode (duration follows the source) */}
+          {model.durations.length > 0 && (!isOmni || sd20Mode !== "edit") && (
             <div className="space-y-1.5">
               <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Duration</p>
               {model.durations.length > 4 ? (
@@ -12046,8 +15710,8 @@ function VideoCustomizationPanel({
             </div>
           )}
 
-          {/* Aspect ratio — Kling 3.0 / SeeDance */}
-          {model.aspectRatios && (
+          {/* Aspect ratio — Kling 3.0 / SeeDance / Omni (not in edit mode) */}
+          {model.aspectRatios && (!isOmni || sd20Mode !== "edit") && (
             <div className="space-y-1.5">
               <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Aspect Ratio</p>
               {model.startFrameLocksAspect && startFramePreview ? (
@@ -12144,7 +15808,7 @@ function VideoCustomizationPanel({
           )}
 
           {/* Content Safety — WAN 2.5 and SeeDance 1.5 */}
-          {(model.id === "wan-2.5" || model.id === "seedance-1.5") && setSafetyChecker !== undefined && (() => {
+          {(model.id === "wan-2.5" || model.id === "seedance-1.5" || model.id === "wan-2.7") && setSafetyChecker !== undefined && (() => {
             const safetyOn = isAdminAccount ? (safetyChecker ?? true) : true
             return (
               <div className="flex items-start justify-between gap-3 pt-4 border-t border-white/5">
@@ -12244,6 +15908,79 @@ function VideoCustomizationPanel({
   )
 }
 
+// Video tile that corrects its aspect ratio to the REAL video dimensions once
+// metadata loads. Stored aspectRatio is unreliable (the save path hardcoded 16:9
+// for every video, and i2v "auto" is unknowable before generation), so Full Size
+// tiles measure the actual file instead of trusting the DB.
+function VideoTile({ natural, initialAspect, className, onClick, videoSrc, videoClassName, preload, autoplay = false, silverRim = false, children }: {
+  natural: boolean
+  initialAspect: string
+  className: string
+  onClick: () => void
+  videoSrc: string
+  videoClassName: string
+  preload: "auto" | "metadata"
+  autoplay?: boolean
+  // Feed "Borders" setting — "slim" hugs the tile, "fill" thick frame; "smart"
+  // backgrounds the whole feed instead (no per-tile wrapper here)
+  silverRim?: false | "slim" | "fill" | "smart"
+  children?: ReactNode
+}) {
+  const [measured, setMeasured] = useState<string | null>(null)
+  const vidRef = useRef<HTMLVideoElement>(null)
+
+  // Autoplay is viewport-gated: only tiles actually on screen play (muted, looping),
+  // and they pause the moment they scroll away — dozens of simultaneously decoding
+  // videos would blank out iPad Safari. muted is set via the DOM property because
+  // the React attribute alone is unreliable and blocks autoplay.
+  useEffect(() => {
+    const v = vidRef.current
+    if (!v) return
+    if (!autoplay) { v.pause(); return }
+    v.muted = true
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) v.play().catch(() => {})
+      else v.pause()
+    }, { rootMargin: "100px" })
+    obs.observe(v)
+    return () => { obs.disconnect(); v.pause() }
+  }, [autoplay])
+
+  const tile = (
+    <div className={className} style={{ aspectRatio: natural && measured ? measured : initialAspect }} onClick={onClick}>
+      <video
+        ref={vidRef}
+        src={videoSrc}
+        className={videoClassName}
+        playsInline
+        preload={preload}
+        muted
+        loop={autoplay}
+        onLoadedMetadata={natural ? (e) => {
+          const v = e.currentTarget
+          if (v.videoWidth > 0 && v.videoHeight > 0) setMeasured(`${v.videoWidth}/${v.videoHeight}`)
+        } : undefined}
+      />
+      {children}
+    </div>
+  )
+  if (!silverRim || silverRim === "smart") return tile
+  // Feed "Borders" ON — "slim" clings; "fill" thick frame ("smart" = container-level)
+  const thick = silverRim === "fill"
+  return (
+    <div
+      className={`relative isolate rounded-lg overflow-hidden ${thick ? "p-2" : "p-[1.5px]"}`}
+      style={thick ? { boxShadow: "0 0 16px rgba(248,250,252,0.45), 0 0 5px rgba(255,255,255,0.35)" } : undefined}
+    >
+      <span
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        style={{ background: thick ? SILVER_RIM_CONIC_BRIGHT : SILVER_RIM_CONIC, animationDuration: "5s" }}
+      />
+      <div className={`relative overflow-hidden ${thick ? "rounded-md" : "rounded-[7px]"}`}>{tile}</div>
+    </div>
+  )
+}
+
 function VideoFeed({
   pendingSlots,
   items,
@@ -12256,6 +15993,13 @@ function VideoFeed({
   onNavListChange,
   cols = null,
   showHidden = false,
+  fullSize = false,
+  fullSizeLayout = "grid",
+  masonryMode = "rows",
+  tileRes = "thumb",
+  autoplay = false,
+  onDismissFail,
+  tileBorders = false,
 }: {
   pendingSlots: VideoPendingSlot[]
   items: VideoItem[]
@@ -12268,6 +16012,13 @@ function VideoFeed({
   onNavListChange?: (list: VideoDetailData[]) => void
   cols?: number | null
   showHidden?: boolean
+  fullSize?: boolean
+  fullSizeLayout?: "grid" | "masonry"
+  masonryMode?: "flow" | "rows"
+  tileRes?: "thumb" | "full"
+  autoplay?: boolean
+  onDismissFail?: (item: VideoItem) => void
+  tileBorders?: false | "slim" | "fill" | "smart"
 }) {
   // Pull the same historical feed as the image scanner — with infinite scroll
   const [dbImages, setDbImages] = useState<ImageItem[]>([])
@@ -12281,6 +16032,17 @@ function VideoFeed({
   const videoPagLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
   // Discard in-flight responses when the hidden toggle flips mid-request
   const videoEpochRef = useRef(0)
+  // Responsive column count for JS "Rows" masonry (auto = 2 on mobile, 3 on desktop —
+  // matches the video grid's responsive default)
+  const [autoCols, setAutoCols] = useState(3)
+  useEffect(() => {
+    const compute = () => setAutoCols(window.innerWidth < 640 ? 2 : 3)
+    compute()
+    window.addEventListener("resize", compute)
+    return () => window.removeEventListener("resize", compute)
+  }, [])
+  // Sticky column assignment for pending/session tiles woven into the masonry tops
+  const headColMapRef = useRef(new Map<string, number>())
 
   const loadNextVideos = useCallback(async () => {
     if (videoLoadingRef.current || !videoHasMoreRef.current) return
@@ -12360,6 +16122,9 @@ function VideoFeed({
       createdAt: item.createdAt,
       failed: item.failed,
       failError: item.failError,
+      failId: item.failed ? item.id : undefined,
+      queueRowId: item.queueRowId,
+      failKey: item.failKey,
     }))
     const dbList: VideoDetailData[] = dbImages
       .filter(img => !sDbIds.has(img.id))
@@ -12382,8 +16147,11 @@ function VideoFeed({
           createdAt: img.createdAt,
         }
       })
+    const navFailFrontier = videoHasMoreRef.current && dbImages.length > 0
+      ? Math.min(...dbImages.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
+      : videoHasMoreRef.current ? Infinity : -Infinity
     const failsList: VideoDetailData[] = savedFails
-      .filter(f => !liveFailIds.has(f.id))
+      .filter(f => !liveFailIds.has(f.id) && (f.createdAt ? new Date(f.createdAt).getTime() : 0) >= navFailFrontier)
       .map(f => ({
         videoUrl: '',
         prompt: f.prompt,
@@ -12392,6 +16160,9 @@ function VideoFeed({
         createdAt: f.createdAt,
         failed: true,
         failError: f.failError,
+        failId: f.id,
+        queueRowId: f.queueRowId,
+        failKey: f.failKey,
       }))
     // Hidden view: only the API results — session items are never hidden
     onNavListChange(showHidden ? dbList : [...sessionList, ...dbList, ...failsList])
@@ -12429,59 +16200,179 @@ function VideoFeed({
     )
   }
 
-  return (
-    <div className={`p-3 grid gap-2 auto-rows-max ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3"}`}>
-      {/* Loading / queued slots (hidden view shows only DB results) */}
-      {!showHidden && pendingSlots.map(slot => (
-        <button
-          key={slot.slotId}
-          onClick={onPendingClick ? () => onPendingClick(slot) : undefined}
-          className={`rounded-lg border flex flex-col items-center justify-center gap-2 p-4 w-full transition-colors ${slot.queueJobId && !slot.requestId ? "bg-slate-900 border-amber-500/20 hover:border-amber-500/40" : "bg-slate-900 border-white/5 hover:border-white/10"}`}
-          style={{ aspectRatio: "16/9" }}
-        >
-          <div className={`w-5 h-5 rounded-full border-2 animate-spin ${slot.queueJobId && !slot.requestId ? "border-amber-500/30 border-t-amber-400" : "border-orange-400/30 border-t-orange-400"}`} />
-          {slot.queueJobId && !slot.requestId && <p className="text-[9px] text-amber-400/60 font-mono tracking-wide">QUEUED</p>}
-          <p className="text-[10px] text-slate-500 text-center line-clamp-2 italic">"{slot.prompt}"</p>
-          <p className="text-[9px] text-orange-400/50 font-mono">{slot.model}</p>
-        </button>
-      ))}
+  // Feed-settings-driven tile helpers:
+  //  - Quality "full" preloads whole videos (heavier); "thumb" stays metadata-only
+  //  - Full Size shows tiles at their natural aspect; otherwise uniform 16:9 crops
+  const tilePreload: "auto" | "metadata" = tileRes === "full" ? "auto" : "metadata"
+  // Full Size + Grid = letterbox: uniform square cells, whole video contained
+  // (popup-style black bars) instead of ragged natural-height rows
+  const letterbox = fullSize && fullSizeLayout === "grid"
+  const tileAspect = (ar?: string) => (letterbox ? "1/1" : fullSize ? toAspectRatioCss(ar) : "16/9")
+  const tileFit = (ar?: string) => (letterbox ? "object-contain" : fullSize || ar === "16:9" ? "object-cover" : "object-contain")
+  const W169 = 9 / 16 // weight of a fixed 16:9 tile in masonry packing
+  const tileWeight = (ar?: string) => (fullSize ? arHeightWeight(!ar || ar === "auto" ? "16:9" : ar) : W169)
 
-      {/* Session items (new this session) */}
-      {!showHidden && items.map(item =>
-        item.failed ? (
-          <div
-            key={item.id}
-            className="rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors"
-            style={{ aspectRatio: "16/9" }}
-            onClick={() => onVideoClick({ videoUrl: "", prompt: item.prompt, model: item.model, duration: item.duration, createdAt: item.createdAt, failed: true, failError: item.failError })}
+  // Build the ordered feed nodes once; all three layouts render from these lists.
+  // Pending + session tiles form a HEAD list woven into the masonry column tops with
+  // sticky assignments (same stability trick as the image feed — new generations
+  // never reshuffle the already-loaded body).
+  const headNodes: { weight: number; node: ReactNode; key: string }[] = []
+  const nodes: { weight: number; node: ReactNode }[] = []
+
+  if (!showHidden) {
+    // Loading / queued slots (hidden view shows only DB results)
+    pendingSlots.forEach(slot => headNodes.push({ weight: W169, key: slot.slotId, node: (
+      <button
+        key={slot.slotId}
+        onClick={onPendingClick ? () => onPendingClick(slot) : undefined}
+        className={`rounded-lg border flex flex-col items-center justify-center gap-2 p-4 w-full transition-colors ${slot.queueJobId && !slot.requestId ? "bg-slate-900 border-amber-500/20 hover:border-amber-500/40" : "bg-slate-900 border-white/5 hover:border-white/10"}`}
+        style={{ aspectRatio: "16/9" }}
+      >
+        <div className={`w-5 h-5 rounded-full border-2 animate-spin ${slot.queueJobId && !slot.requestId ? "border-amber-500/30 border-t-amber-400" : "border-orange-400/30 border-t-orange-400"}`} />
+        {slot.queueJobId && !slot.requestId && <p className="text-[9px] text-amber-400/60 font-mono tracking-wide">QUEUED</p>}
+        <p className="text-[10px] text-slate-500 text-center line-clamp-2 italic">"{slot.prompt}"</p>
+        <p className="text-[9px] text-orange-400/50 font-mono">{slot.model}</p>
+      </button>
+    )}))
+
+    // Session items (new this session)
+    items.forEach(item => headNodes.push(item.failed ? { weight: W169, key: item.id, node: (
+      <div
+        key={item.id}
+        className="relative rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
+        style={{ aspectRatio: "16/9" }}
+        onClick={() => onVideoClick({ videoUrl: "", prompt: item.prompt, model: item.model, duration: item.duration, createdAt: item.createdAt, failed: true, failError: item.failError, failId: item.id, queueRowId: item.queueRowId, failKey: item.failKey })}
+      >
+        {onDismissFail && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDismissFail(item) }}
+            title="Dismiss this error"
+            className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/50 border border-white/10 flex items-center justify-center text-slate-500 hover:text-white hover:border-red-400/50 transition-all opacity-70 sm:opacity-0 sm:group-hover/vfail:opacity-100 z-10"
           >
-            <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
-              <X size={10} className="text-red-400" />
-            </div>
-            <p className="text-[10px] text-red-400/80 text-center line-clamp-2">{item.failError}</p>
-            <p className="text-[9px] text-slate-600 italic line-clamp-1">"{item.prompt}"</p>
+            <X size={10} />
+          </button>
+        )}
+        <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
+          <X size={10} className="text-red-400" />
+        </div>
+        <p className="text-[10px] text-red-400/80 text-center line-clamp-2">{item.failError}</p>
+        <p className="text-[9px] text-slate-600 italic line-clamp-1">"{item.prompt}"</p>
+      </div>
+    )} : { weight: tileWeight(item.aspectRatio), key: item.id, node: (
+      <VideoTile
+        key={item.id}
+        natural={fullSize && !letterbox}
+        initialAspect={tileAspect(item.aspectRatio)}
+        className={`rounded-lg bg-black overflow-hidden relative group cursor-pointer transition-colors ${
+          selectMode && selectedIds?.has(parseInt(item.id))
+            ? "border-2 border-cyan-400 ring-2 ring-cyan-400 ring-inset"
+            : "border border-white/5 hover:border-orange-500/30"
+        }`}
+        onClick={() => selectMode ? onSelectToggle?.(parseInt(item.id)) : onVideoClick({ id: item.dbId, videoUrl: item.videoUrl, prompt: item.prompt, model: item.model, duration: item.duration, resolution: item.resolution, aspectRatio: item.aspectRatio, audioEnabled: item.audioEnabled, startFrameUrl: item.startFrameUrl, endFrameUrl: item.endFrameUrl, motionVideoUrl: item.motionVideoUrl, keepOriginalSound: item.keepOriginalSound, characterOrientation: item.characterOrientation, createdAt: item.createdAt })}
+        videoSrc={iosSrc(item.videoUrl)}
+        videoClassName={`w-full h-full pointer-events-none ${tileFit(item.aspectRatio)}`}
+        preload={tilePreload}
+        autoplay={autoplay}
+        silverRim={tileBorders}
+      >
+        {/* Select mode checkmark */}
+        {selectMode && (
+          <div className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-full border-2 flex items-center justify-center z-10 transition-all ${
+            selectedIds?.has(parseInt(item.id)) ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"
+          }`}>
+            {selectedIds?.has(parseInt(item.id)) && <Check size={9} className="text-black" />}
           </div>
-        ) : (
-          <div
-            key={item.id}
+        )}
+        {/* Play overlay (hidden in select mode) */}
+        {!selectMode && (
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
+            <div className="w-10 h-10 rounded-full bg-black/60 flex items-center justify-center border border-white/20">
+              <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+            </div>
+          </div>
+        )}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+          <p className="text-[10px] text-white/80 line-clamp-1">"{item.prompt}"</p>
+          <p className="text-[9px] text-orange-400/70 font-mono mt-0.5">{item.model} · {item.duration}s</p>
+        </div>
+      </VideoTile>
+    )}))
+  }
+
+  // Historical feed from DB merged with persisted failed tiles, time-sorted so
+  // fails sit at their true position in the feed (same as the image scanner)
+  const bodyLiveFailIds = new Set(items.filter(i => i.failed).map(i => i.id))
+  // Fails paginate with the loaded videos (see ImageGrid's failFrontier note)
+  const videoFailFrontier = videoHasMoreRef.current && dbImages.length > 0
+    ? Math.min(...dbImages.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
+    : videoHasMoreRef.current ? Infinity : -Infinity
+  const bodyFails = showHidden ? [] : savedFails.filter(f =>
+    !bodyLiveFailIds.has(f.id) && (f.createdAt ? new Date(f.createdAt).getTime() : 0) >= videoFailFrontier)
+  const bodyEntries: ({ t: number; kind: "db"; img: ImageItem } | { t: number; kind: "fail"; fail: VideoItem })[] = [
+    ...dbImages.filter(img => !sessionDbIds.has(img.id)).map(img => ({ t: img.createdAt ? new Date(img.createdAt).getTime() : 0, kind: "db" as const, img })),
+    ...bodyFails.map(f => ({ t: f.createdAt ? new Date(f.createdAt).getTime() : 0, kind: "fail" as const, fail: f })),
+  ].sort((a, b) => b.t - a.t)
+
+  bodyEntries.forEach(entry => {
+    if (entry.kind === "fail") {
+      const item = entry.fail
+      nodes.push({ weight: W169, node: (
+        <div
+          key={`sf-${item.id}`}
+          className="relative rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
+          style={{ aspectRatio: "16/9" }}
+          onClick={() => onVideoClick({ videoUrl: "", prompt: item.prompt, model: item.model, duration: item.duration, createdAt: item.createdAt, failed: true, failError: item.failError, failId: item.id, queueRowId: item.queueRowId, failKey: item.failKey })}
+        >
+          {onDismissFail && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDismissFail(item) }}
+              title="Dismiss this error"
+              className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/50 border border-white/10 flex items-center justify-center text-slate-500 hover:text-white hover:border-red-400/50 transition-all opacity-70 sm:opacity-0 sm:group-hover/vfail:opacity-100 z-10"
+            >
+              <X size={10} />
+            </button>
+          )}
+          <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
+            <X size={10} className="text-red-400" />
+          </div>
+          <p className="text-[10px] text-red-400/80 text-center line-clamp-2">{item.failError}</p>
+          <p className="text-[9px] text-slate-600 italic line-clamp-1">"{item.prompt}"</p>
+        </div>
+      )})
+      return
+    }
+    const img = entry.img
+    {
+      const dbAr = img.videoMetadata?.aspectRatio || img.aspectRatio
+      nodes.push({ weight: tileWeight(dbAr), node: (
+        isVideoUrl(img.imageUrl) ? (
+          <VideoTile
+            key={img.id}
+            natural={fullSize && !letterbox}
+            initialAspect={tileAspect(dbAr)}
             className={`rounded-lg bg-black overflow-hidden relative group cursor-pointer transition-colors ${
-              selectMode && selectedIds?.has(parseInt(item.id))
+              selectMode && selectedIds?.has(img.id)
                 ? "border-2 border-cyan-400 ring-2 ring-cyan-400 ring-inset"
                 : "border border-white/5 hover:border-orange-500/30"
             }`}
-            style={{ aspectRatio: "16/9" }}
-            onClick={() => selectMode ? onSelectToggle?.(parseInt(item.id)) : onVideoClick({ id: item.dbId, videoUrl: item.videoUrl, prompt: item.prompt, model: item.model, duration: item.duration, resolution: item.resolution, aspectRatio: item.aspectRatio, audioEnabled: item.audioEnabled, startFrameUrl: item.startFrameUrl, endFrameUrl: item.endFrameUrl, motionVideoUrl: item.motionVideoUrl, keepOriginalSound: item.keepOriginalSound, characterOrientation: item.characterOrientation, createdAt: item.createdAt })}
+            onClick={() => {
+              if (selectMode) { onSelectToggle?.(img.id); return }
+              const vm = img.videoMetadata || {}
+              onVideoClick({ id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt })
+            }}
+            videoSrc={iosSrc(img.imageUrl)}
+            videoClassName={`w-full h-full pointer-events-none ${tileFit(dbAr)}`}
+            preload={tilePreload}
+            autoplay={autoplay}
+            silverRim={tileBorders}
           >
-            <video src={iosSrc(item.videoUrl)} className={`w-full h-full pointer-events-none ${item.aspectRatio === "16:9" ? "object-cover" : "object-contain"}`} playsInline preload="metadata" muted />
-            {/* Select mode checkmark */}
             {selectMode && (
               <div className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-full border-2 flex items-center justify-center z-10 transition-all ${
-                selectedIds?.has(parseInt(item.id)) ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"
+                selectedIds?.has(img.id) ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"
               }`}>
-                {selectedIds?.has(parseInt(item.id)) && <Check size={9} className="text-black" />}
+                {selectedIds?.has(img.id) && <Check size={9} className="text-black" />}
               </div>
             )}
-            {/* Play overlay (hidden in select mode) */}
             {!selectMode && (
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
                 <div className="w-10 h-10 rounded-full bg-black/60 flex items-center justify-center border border-white/20">
@@ -12490,94 +16381,104 @@ function VideoFeed({
               </div>
             )}
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-              <p className="text-[10px] text-white/80 line-clamp-1">"{item.prompt}"</p>
-              <p className="text-[9px] text-orange-400/70 font-mono mt-0.5">{item.model} · {item.duration}s</p>
+              <p className="text-[10px] text-white/80 line-clamp-1">"{img.prompt}"</p>
+              <p className="text-[9px] text-orange-400/70 font-mono mt-0.5">{img.model}</p>
+            </div>
+          </VideoTile>
+        ) : (
+          <div
+            key={img.id}
+            className="rounded-lg bg-black border border-white/5 overflow-hidden relative group cursor-pointer hover:border-white/15 transition-colors"
+            style={{ aspectRatio: tileAspect(dbAr) }}
+            onClick={() => { const vm = img.videoMetadata || {}; onVideoClick({ videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }) }}
+          >
+            <img src={img.imageUrl} alt={img.prompt} className="w-full h-full object-cover" />
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              <p className="text-[10px] text-white/80 line-clamp-1">"{img.prompt}"</p>
+              <p className="text-[9px] text-slate-400/70 font-mono mt-0.5">{img.model}</p>
             </div>
           </div>
         )
-      )}
+      )})
+    }
+  })
 
-      {/* Historical feed from DB — same as image scanner */}
-      {dbImages
-        .filter(img => !sessionDbIds.has(img.id))
-        .map(img => (
-          isVideoUrl(img.imageUrl) ? (
-            <div
-              key={img.id}
-              className={`rounded-lg bg-black overflow-hidden relative group cursor-pointer transition-colors ${
-                selectMode && selectedIds?.has(img.id)
-                  ? "border-2 border-cyan-400 ring-2 ring-cyan-400 ring-inset"
-                  : "border border-white/5 hover:border-orange-500/30"
-              }`}
-              style={{ aspectRatio: "16/9" }}
-              onClick={() => {
-                if (selectMode) { onSelectToggle?.(img.id); return }
-                const vm = img.videoMetadata || {}
-                onVideoClick({ id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt })
-              }}
-            >
-              <video src={iosSrc(img.imageUrl)} className={`w-full h-full pointer-events-none ${(img.videoMetadata?.aspectRatio || img.aspectRatio) === "16:9" ? "object-cover" : "object-contain"}`} playsInline preload="metadata" muted />
-              {selectMode && (
-                <div className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-full border-2 flex items-center justify-center z-10 transition-all ${
-                  selectedIds?.has(img.id) ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"
-                }`}>
-                  {selectedIds?.has(img.id) && <Check size={9} className="text-black" />}
-                </div>
-              )}
-              {!selectMode && (
-                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
-                  <div className="w-10 h-10 rounded-full bg-black/60 flex items-center justify-center border border-white/20">
-                    <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                  </div>
-                </div>
-              )}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                <p className="text-[10px] text-white/80 line-clamp-1">"{img.prompt}"</p>
-                <p className="text-[9px] text-orange-400/70 font-mono mt-0.5">{img.model}</p>
-              </div>
-            </div>
-          ) : (
-            <div
-              key={img.id}
-              className="rounded-lg bg-black border border-white/5 overflow-hidden relative group cursor-pointer hover:border-white/15 transition-colors"
-              style={{ aspectRatio: "16/9" }}
-              onClick={() => { const vm = img.videoMetadata || {}; onVideoClick({ videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }) }}
-            >
-              <img src={img.imageUrl} alt={img.prompt} className="w-full h-full object-cover" />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                <p className="text-[10px] text-white/80 line-clamp-1">"{img.prompt}"</p>
-                <p className="text-[9px] text-slate-400/70 font-mono mt-0.5">{img.model}</p>
-              </div>
-            </div>
-          )
-        ))
+  // Pick the layout from the Feed settings (same three modes as the image feed)
+  let layoutEl: ReactNode
+  if (fullSize && fullSizeLayout === "masonry" && masonryMode === "rows") {
+    // Masonry "Rows": JS shortest-column packing; head tiles woven into the column
+    // tops with sticky per-tile assignments so prepends don't rebuild the feed
+    const n = cols ?? autoCols
+    const columns = distributeMasonry(nodes, n)
+    const colMap = headColMapRef.current
+    const liveKeys = new Set(headNodes.map(h => h.key))
+    for (const k of Array.from(colMap.keys())) if (!liveKeys.has(k)) colMap.delete(k)
+    const counts = new Array(n).fill(0)
+    colMap.forEach(c => { if (c < n) counts[c]++ })
+    headNodes.forEach(h => {
+      let c = colMap.get(h.key)
+      if (c === undefined || c >= n) {
+        c = 0
+        for (let i = 1; i < n; i++) if (counts[i] < counts[c]) c = i
+        colMap.set(h.key, c)
+        counts[c]++
       }
+    })
+    for (let i = headNodes.length - 1; i >= 0; i--) {
+      const c = colMap.get(headNodes[i].key)!
+      columns[c] = [headNodes[i], ...columns[c]]
+    }
+    layoutEl = (
+      <div className="flex gap-2 items-start">
+        {columns.map((colItems, i) => (
+          <div key={i} className="flex-1 min-w-0 flex flex-col gap-2">
+            {colItems.map(it => it.node)}
+          </div>
+        ))}
+      </div>
+    )
+  } else if (fullSize && fullSizeLayout === "masonry") {
+    // Masonry "Flow": CSS multi-column — packs top-to-bottom down each column
+    layoutEl = (
+      <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? "columns-2 sm:columns-3" : "columns-2 sm:columns-3"} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
+        {[...headNodes, ...nodes].map(it => it.node)}
+      </div>
+    )
+  } else {
+    // Grid — uniform rows (natural aspect when Full Size, 16:9 crops otherwise)
+    layoutEl = (
+      <div className={`grid gap-2 ${fullSize ? "items-start" : "auto-rows-max"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3"}`}>
+        {[...headNodes, ...nodes].map(it => it.node)}
+      </div>
+    )
+  }
 
-      {/* Persisted failed tiles from previous sessions — deduped against live session items */}
-      {!showHidden && (() => {
-        const liveFailIds = new Set(items.filter(i => i.failed).map(i => i.id))
-        return savedFails
-          .filter(f => !liveFailIds.has(f.id))
-          .map(item => (
-            <div
-              key={`sf-${item.id}`}
-              className="rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors"
-              style={{ aspectRatio: "16/9" }}
-              onClick={() => onVideoClick({ videoUrl: "", prompt: item.prompt, model: item.model, duration: item.duration, createdAt: item.createdAt, failed: true, failError: item.failError })}
-            >
-              <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
-                <X size={10} className="text-red-400" />
-              </div>
-              <p className="text-[10px] text-red-400/80 text-center line-clamp-2">{item.failError}</p>
-              <p className="text-[9px] text-slate-600 italic line-clamp-1">"{item.prompt}"</p>
-            </div>
-          ))
-      })()}
-
+  return (
+    <div className={`p-3 ${tileBorders === "smart" ? "relative isolate" : ""}`}>
+      {/* Borders "Smart" mode: flowing silver behind the whole feed — every gap
+          between tiles and around the edges shows silver instead of black */}
+      {tileBorders === "smart" && (
+        <>
+          {/* pure-white breathing glow — bleeds past the edges and through the gaps */}
+          <div className="absolute -inset-3 -z-10 pointer-events-none blur-2xl bg-white opacity-50 animate-pulse" />
+          {/* crisp high-contrast silver sweep: bright white bands against deep slate
+              so the motion actually reads */}
+          <div
+            className="absolute inset-0 -z-10 pointer-events-none"
+            style={{
+              backgroundImage: "linear-gradient(100deg,#475569 0%,#ffffff 12%,#64748b 25%,#f8fafc 38%,#475569 50%,#ffffff 62%,#64748b 75%,#f8fafc 88%,#475569 100%)",
+              backgroundSize: "200% 100%",
+              animation: "silver-shimmer 6s linear infinite",
+              boxShadow: "inset 0 0 24px rgba(255,255,255,0.35)",
+            }}
+          />
+        </>
+      )}
+      {layoutEl}
       {/* Infinite scroll sentinel — triggers next page load when scrolled into view */}
-      <div ref={videoSentinelRef} className="col-span-full h-1" />
+      <div ref={videoSentinelRef} className="h-1" />
       {dbLoading && (
-        <div className="col-span-full flex justify-center py-4">
+        <div className="flex justify-center py-4">
           <div className="w-5 h-5 rounded-full border-2 border-orange-400/30 border-t-orange-400 animate-spin" />
         </div>
       )}
@@ -12591,6 +16492,9 @@ function VideoPromptBar({
   startFramePreview, startFrameUploading, onStartFrameSelect,
   motionVideoFilename, motionVideoUploading, onMotionVideoSelect, onMotionVideoDurationChange,
   motionPromptText, lipsyncVideoDuration, isGenerationMaintenance = false,
+  isAdminAccount = false,
+  cardMedia,
+  promptScale = 1,
 }: {
   model: VideoModelConfig
   onGenerate: (prompt: string) => void
@@ -12617,6 +16521,11 @@ function VideoPromptBar({
   motionPromptText: string
   lipsyncVideoDuration?: number
   isGenerationMaintenance?: boolean
+  isAdminAccount?: boolean
+  // Home-page card media for the model picker's Cards view (shared w/ taskbar menus)
+  cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
+  // Feed -> Prompt Box Size (zoom on the inner layout containers)
+  promptScale?: number
 }) {
   const [prompt, setPrompt] = useState("")
   const [modelOpen, setModelOpen] = useState(false)
@@ -12645,6 +16554,8 @@ function VideoPromptBar({
   const isLipsyncModel = !!model.supportsLipsync
   const ticketCost = isLipsyncModel
     ? Math.max(10, Math.ceil((lipsyncVideoDuration ?? 0) * 6))
+    : model.id === "gemini-omni-flash"
+    ? (parseInt(duration) || 8) * 15
     : model.id === "kling-v3-motion"
     ? Math.ceil(motionVideoDuration ?? motionMaxSec) * 6
     : model.id === "kling-v3"
@@ -12659,6 +16570,8 @@ function VideoPromptBar({
 
   const metaLine = isLipsyncModel
     ? lipsyncVideoDuration ? `${lipsyncVideoDuration.toFixed(1)}s · 6/sec` : "upload video + audio"
+    : model.id === "gemini-omni-flash"
+    ? `${duration}s · ${aspectRatio} · native audio`
     : model.id === "kling-v3-motion"
     ? motionVideoDuration ? `${motionVideoDuration.toFixed(1)}s · 6/sec` : `≤${motionMaxSec}s · 6/sec`
     : model.id === "kling-v3"
@@ -12669,11 +16582,16 @@ function VideoPromptBar({
     ? `${resolution} · ${duration === "auto" ? "auto" : duration + "s"}${audioEnabled ? " · audio" : ""}`
     : `${resolution} · ${duration}s`
 
-  const ready = !isGenerationMaintenance && ((model.id === "kling-v3-motion" || isLipsyncModel) ? canGenerate : canGenerate && !!prompt.trim())
+  // Wan 2.7's i2v endpoint takes an OPTIONAL prompt — with a start image present,
+  // an empty prompt is a valid run (t2v without an image still needs one)
+  const promptOptional = model.id === "wan-2.7" && !!startFramePreview
+  const ready = !isGenerationMaintenance && ((model.id === "kling-v3-motion" || isLipsyncModel) ? canGenerate : canGenerate && (!!prompt.trim() || promptOptional))
   const promptPlaceholder = model.id === "kling-v3-motion"
     ? "Describe additional details (optional)..."
     : isLipsyncModel
     ? "No prompt needed — just upload video and audio above"
+    : model.id === "wan-2.7"
+    ? "Describe the video..."
     : model.textToVideo
     ? "Describe the scene (required)..."
     : "Describe the motion..."
@@ -12682,7 +16600,7 @@ function VideoPromptBar({
     <div className="fixed bottom-0 left-0 sm:left-72 right-0 z-30 border-t border-white/5 bg-[#050810]/95 backdrop-blur-md">
 
       {/* ── Mobile layout (< sm) ───────────────────────────────────────────── */}
-      <div className="flex flex-col gap-2 px-3 py-2.5 sm:hidden">
+      <div className="flex flex-col gap-2 px-3 py-2.5 sm:hidden" style={{ zoom: promptScale }}>
 
         {model.id === "kling-v3-motion" ? (
           /* ── Motion Control: upload slots replace the prompt row ── */
@@ -12837,7 +16755,7 @@ function VideoPromptBar({
       </div>
 
       {/* ── Desktop layout (≥ sm) ─────────────────────────────────────────── */}
-      <div className="hidden sm:flex gap-2 items-end px-4 py-3">
+      <div className="hidden sm:flex gap-2 items-end px-4 py-3" style={{ zoom: promptScale }}>
 
         {/* Model switcher */}
         <div className="relative shrink-0" ref={modelRef}>
@@ -12850,22 +16768,25 @@ function VideoPromptBar({
             <ChevronDown size={10} className={`text-slate-500 transition-transform ${modelOpen ? "rotate-180" : ""}`} />
           </button>
           {modelOpen && (
-            <div className="absolute bottom-full mb-1.5 left-0 bg-slate-900 border border-white/10 rounded-xl shadow-xl overflow-hidden min-w-[180px]">
-              {VIDEO_MODEL_CONFIGS.map(m => (
-                <button
-                  key={m.id}
-                  onClick={() => { onModelChange(m); setModelOpen(false) }}
-                  className={`w-full text-left px-3 py-2 text-[12px] flex items-center gap-2 transition-colors ${
-                    m.id === model.id
-                      ? "bg-orange-500/15 text-orange-400"
-                      : "text-slate-300 hover:bg-white/5"
-                  }`}
-                >
-                  {m.id === model.id && <span className="w-1 h-1 rounded-full bg-orange-400 shrink-0" />}
-                  <span className="flex-1">{m.name}</span>
-                  {VIDEO_MODEL_COST[m.id] && <CostBadge tier={VIDEO_MODEL_COST[m.id]} />}
-                </button>
-              ))}
+            <div className="absolute bottom-full mb-1.5 left-0 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-50" style={{ width: Math.min(428, window.innerWidth / promptScale - 16) }}>
+              {/* Same shared menu as the taskbar Video dropdown — List/Cards modes,
+                  home-page media, admin section; preference stays in sync */}
+              <ModelMenuPanel
+                label="Video"
+                groups={VIDEO_MODEL_GROUPS}
+                adminGroups={isAdminAccount ? ADMIN_VIDEO_MODEL_GROUPS : undefined}
+                onSelect={(item) => {
+                  const cfg = VIDEO_MODEL_CONFIGS.find(m => m.name === item)
+                  if (cfg) { onModelChange(cfg); setModelOpen(false) }
+                }}
+                activeItem={model.name}
+                itemCosts={VIDEO_MODEL_COST_BY_NAME}
+                menuTitle="Video Generation Model"
+                menuDescription="Models are grouped by company."
+                cardMedia={cardMedia}
+                cardPrefix="video"
+                bodyMaxHeight="min(360px, 50vh)"
+              />
             </div>
           )}
         </div>
@@ -13221,7 +17142,7 @@ function NewsDropdown({
         <Bell size={15} />
         News
         {unreadCount > 0 && (
-          <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-fuchsia-500 text-black text-[9px] font-bold flex items-center justify-center ring-1 ring-black leading-none">
+          <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-white text-slate-900 text-[9px] font-bold flex items-center justify-center ring-1 ring-black leading-none">
             {unreadCount > 9 ? "9+" : unreadCount}
           </span>
         )}
@@ -13608,7 +17529,7 @@ function ShopDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
   const [loginPrompt, setLoginPrompt] = useState(false)
 
   useEffect(() => {
@@ -13623,8 +17544,9 @@ function ShopDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      const panelW = Math.min(340, window.innerWidth - 16)
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
+      const z = cssZoomOf(buttonRef.current!)
+      const panelW = Math.min(340 * z, window.innerWidth - 16)
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
   }, [open])
 
@@ -13639,22 +17561,21 @@ function ShopDropdown({
       <button
         ref={buttonRef}
         onClick={onToggle}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+          open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
-        <ShoppingBag size={15} />
+        <ShoppingBag size={15} className="text-slate-300" />
         Shop
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
-        <div className="fixed w-[min(340px,calc(100vw-16px))] rounded-2xl border border-white/10 bg-[#0a0f1e] backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(340, (window.innerWidth - 16) / menuPos.z) }}>
           {effectsEnabled && (
             <style>{`
               @keyframes pv2ShopPulse {
-                0%, 100% { box-shadow: 0 0 10px rgba(0,255,255,0.08), inset 0 0 12px rgba(0,0,0,0.6) }
-                50%      { box-shadow: 0 0 18px rgba(0,255,255,0.28), inset 0 0 12px rgba(0,0,0,0.6) }
+                0%, 100% { box-shadow: 0 0 10px rgba(255,255,255,0.07), inset 0 0 12px rgba(0,0,0,0.6) }
+                50%      { box-shadow: 0 0 18px rgba(255,255,255,0.22), inset 0 0 12px rgba(0,0,0,0.6) }
               }
               @keyframes pv2ShopSheen {
                 0%, 55%   { transform: translateX(-160%) skewX(-18deg) }
@@ -13671,35 +17592,33 @@ function ShopDropdown({
             `}</style>
           )}
 
-          {/* ── Header: title + live balance ── */}
-          <div className="relative px-4 py-3 flex items-center justify-between border-b border-white/[0.07] overflow-hidden">
+          {/* ── Header: synced logo + title + live balance ── */}
+          <div className="relative px-4 py-3 flex items-center justify-between border-b border-white/[0.06] overflow-hidden">
             {/* ambient glow wash */}
-            <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/[0.07] via-transparent to-violet-500/[0.07] pointer-events-none" />
+            <div className="absolute inset-0 bg-gradient-to-r from-white/[0.05] via-transparent to-white/[0.05] pointer-events-none" />
             <div className="relative flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-white/15 flex items-center justify-center">
-                <ShoppingBag size={13} className="text-white" />
-              </div>
+              <SiteLogoBox size={22} rounded={7} />
               <span className="text-sm font-bold text-white tracking-wide">Shop</span>
             </div>
             {user && (
               <div
-                className="relative flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-cyan-500/25 bg-black font-mono text-xs"
+                className="relative flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/15 bg-black font-mono text-xs"
                 style={effectsEnabled
                   ? { animation: "pv2ShopPulse 3.2s ease-in-out infinite" }
-                  : { boxShadow: "0 0 10px rgba(0,255,255,0.08), inset 0 0 12px rgba(0,0,0,0.6)" }}
+                  : { boxShadow: "0 0 10px rgba(255,255,255,0.07), inset 0 0 12px rgba(0,0,0,0.6)" }}
                 title="Your ticket balance"
               >
-                <Ticket size={10} className="text-cyan-500/80" />
-                <span className="text-cyan-400 font-bold">{user.ticketBalance.toLocaleString()}</span>
+                <Ticket size={10} className="text-slate-400" />
+                <span className="text-white font-bold">{user.ticketBalance.toLocaleString()}</span>
               </div>
             )}
           </div>
 
-          {/* ── Tickets card — cyan energy ── */}
+          {/* ── Tickets card — clean silver ── */}
           <div className="p-3 pb-1.5">
             <button
               onClick={() => handleNav("/buy-tickets")}
-              className="relative w-full rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/[0.10] via-slate-900/50 to-transparent hover:border-cyan-400/50 hover:shadow-[0_0_24px_rgba(34,211,238,0.12)] transition-all duration-200 group overflow-hidden"
+              className="relative w-full rounded-xl border border-white/15 bg-gradient-to-br from-white/[0.07] via-slate-900/50 to-transparent hover:border-white/35 hover:shadow-[0_0_24px_rgba(248,250,252,0.10)] transition-all duration-200 group overflow-hidden"
             >
               {/* periodic light sweep */}
               {effectsEnabled && (
@@ -13708,92 +17627,98 @@ function ShopDropdown({
               <div className="px-4 py-3.5 text-left">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center shrink-0 group-hover:bg-cyan-500/25 transition-colors">
-                      <Ticket size={15} className="text-cyan-300" />
+                    <div className="w-8 h-8 rounded-lg bg-white/10 border border-white/20 flex items-center justify-center shrink-0 group-hover:bg-white/15 transition-colors">
+                      <Ticket size={15} className="text-slate-200" />
                     </div>
                     <span className="text-[13px] font-bold text-white">Ticket Dispenser</span>
                   </div>
-                  <span className="text-[10px] font-bold text-cyan-400/80 group-hover:text-cyan-300 transition-colors">
+                  <span className="text-[10px] font-bold text-slate-300 group-hover:text-white transition-colors">
                     Buy <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Tickets power every generation. Packs are <span className="text-cyan-300/90">one-time purchases</span> and <span className="text-cyan-300/90">never expire</span> — grab a pack and create whenever inspiration hits.
+                  Tickets power every generation. Packs are <span className="text-white">one-time purchases</span> and <span className="text-white">never expire</span> — grab a pack and create whenever inspiration hits.
                 </p>
               </div>
-              <div className="px-4 py-2 border-t border-cyan-500/15 bg-black/40 flex items-center justify-between">
+              <div className="px-4 py-2 border-t border-white/10 bg-black/40 flex items-center justify-between">
                 <span className="text-[10px] text-slate-500 font-medium">Packs from <span className="text-slate-300 font-bold">25</span> → <span className="text-slate-300 font-bold">1,000</span> tickets</span>
-                <span className="text-[10px] font-bold text-cyan-400 group-hover:text-cyan-300 transition-colors">
+                <span className="text-[10px] font-bold text-slate-300 group-hover:text-white transition-colors">
                   Shop now <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
                 </span>
               </div>
             </button>
           </div>
 
-          {/* ── Dev Tier card — premium violet ── */}
+          {/* ── Dev Tier card — the premium slot: wrapped in the animated silver rim ── */}
           <div className="p-3 pt-1.5">
-            <button
-              onClick={() => handleNav("/prompting-studio/subscribe")}
-              className="relative w-full rounded-xl border border-violet-500/30 bg-gradient-to-br from-violet-500/[0.12] via-slate-900/50 to-transparent hover:border-violet-400/55 hover:shadow-[0_0_24px_rgba(167,139,250,0.14)] transition-all duration-200 group overflow-hidden"
-            >
-              {/* periodic light sweep — staggered behind the ticket card's */}
-              {effectsEnabled && (
-                <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent pointer-events-none" style={{ animation: "pv2ShopSheen 7s ease-in-out 3.5s infinite" }} />
-              )}
-              <div className="px-4 py-3.5 text-left">
-                <div className="flex items-center justify-between mb-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/35 flex items-center justify-center shrink-0 group-hover:bg-violet-500/25 transition-colors">
-                      <Sparkles size={14} className="text-violet-300" style={effectsEnabled ? { animation: "pv2ShopTwinkle 4s ease-in-out infinite" } : undefined} />
+            <div className="relative isolate rounded-xl overflow-hidden p-[1.5px]">
+              <span
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+              />
+              <button
+                onClick={() => handleNav("/prompting-studio/subscribe")}
+                className="relative w-full rounded-[10px] bg-[#0a0f1a] hover:bg-[#0d1322] transition-all duration-200 group overflow-hidden"
+              >
+                {/* periodic light sweep — staggered behind the ticket card's */}
+                {effectsEnabled && (
+                  <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent pointer-events-none" style={{ animation: "pv2ShopSheen 7s ease-in-out 3.5s infinite" }} />
+                )}
+                <div className="px-4 py-3.5 text-left">
+                  <div className="flex items-center justify-between mb-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-white/10 border border-white/25 flex items-center justify-center shrink-0 group-hover:bg-white/15 transition-colors">
+                        <Sparkles size={14} className="text-slate-100" style={effectsEnabled ? { animation: "pv2ShopTwinkle 4s ease-in-out infinite" } : undefined} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] font-bold text-white">Dev Tier</span>
+                        <span className="relative overflow-hidden text-[8.5px] font-black uppercase tracking-wider text-slate-900 bg-white border border-white px-1.5 py-0.5 rounded-full">
+                          Best value
+                          {/* shimmer sweep across the badge */}
+                          {effectsEnabled && (
+                            <span className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-400/40 to-transparent pointer-events-none" style={{ animation: "pv2ShopBadge 3.5s ease-in-out infinite" }} />
+                          )}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-bold text-white">Dev Tier</span>
-                      <span className="relative overflow-hidden text-[8.5px] font-black uppercase tracking-wider text-fuchsia-200 bg-gradient-to-r from-violet-500/30 to-fuchsia-500/30 border border-fuchsia-400/30 px-1.5 py-0.5 rounded-full">
-                        Best value
-                        {/* shimmer sweep across the badge */}
-                        {effectsEnabled && (
-                          <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent pointer-events-none" style={{ animation: "pv2ShopBadge 3.5s ease-in-out infinite" }} />
-                        )}
-                      </span>
-                    </div>
+                    <span className="text-[10px] font-bold text-slate-300 group-hover:text-white transition-colors">
+                      View <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+                    </span>
                   </div>
-                  <span className="text-[10px] font-bold text-violet-400/80 group-hover:text-violet-300 transition-colors">
-                    View <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+                  <p className="text-[11px] text-slate-400 leading-relaxed mb-3">
+                    Unlock the full studio — tickets auto-delivered every cycle, <span className="text-white">10% off everything</span>, and more of every limit.
+                  </p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    {[
+                      { label: "10% off all ticket purchases", bright: true },
+                      { label: "250–500 tickets per cycle", bright: true },
+                      { label: "8 concurrent generations", bright: true },
+                      { label: "250 Refs slots (5× free tier)", bright: true },
+                      { label: "AI prompt generation", bright: false },
+                      { label: "Early feature access", bright: false },
+                    ].map(({ label, bright }) => (
+                      <div key={label} className="flex items-start gap-1.5">
+                        <Check size={9} className={`shrink-0 mt-0.5 ${bright ? "text-white" : "text-slate-600"}`} />
+                        <span className={`text-[10px] leading-snug ${bright ? "text-slate-200" : "text-slate-500"}`}>{label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="px-4 py-2 border-t border-white/10 bg-black/40 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500 font-medium">Biweekly · Monthly · Yearly</span>
+                  <span className="text-[10px] font-bold text-slate-200 group-hover:text-white transition-colors">
+                    See plans <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed mb-3">
-                  Unlock the full studio — tickets auto-delivered every cycle, <span className="text-violet-300/90">30% off everything</span>, and more of every limit.
-                </p>
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                  {[
-                    { label: "30% off all ticket purchases", bright: true },
-                    { label: "250–500 tickets per cycle", bright: true },
-                    { label: "8 concurrent generations", bright: true },
-                    { label: "250 Refs slots (5× free tier)", bright: true },
-                    { label: "AI prompt generation", bright: false },
-                    { label: "Early feature access", bright: false },
-                  ].map(({ label, bright }) => (
-                    <div key={label} className="flex items-start gap-1.5">
-                      <Check size={9} className={`shrink-0 mt-0.5 ${bright ? "text-violet-300" : "text-slate-600"}`} />
-                      <span className={`text-[10px] leading-snug ${bright ? "text-slate-200" : "text-slate-500"}`}>{label}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="px-4 py-2 border-t border-violet-500/15 bg-black/40 flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 font-medium">Biweekly · Monthly · Yearly</span>
-                <span className="text-[10px] font-bold text-violet-300 group-hover:text-violet-200 transition-colors">
-                  See plans <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
-                </span>
-              </div>
-            </button>
+              </button>
+            </div>
           </div>
 
           {loginPrompt && (
             <div className="mx-3 mb-3 px-3.5 py-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] space-y-1">
               <p className="text-[11px] text-amber-300 font-semibold">Sign in required</p>
               <p className="text-[10px] text-slate-500">You need to be logged in to visit the shop.</p>
-              <a href="/dashboard" className="text-[11px] text-cyan-400 hover:text-cyan-300 hover:underline transition-colors">
+              <a href="/dashboard" className="text-[11px] text-white hover:underline transition-colors">
                 Go to login →
               </a>
             </div>
@@ -13827,6 +17752,8 @@ function ShopDropdown({
 // --- MAIN PAGE ---
 export default function PortalV2Page() {
   const [user, setUser] = useState<UserData | null>(null)
+  // CCBill compliance: account has no 18+ attestation on record → blocking modal
+  const [needsAgeAttest, setNeedsAgeAttest] = useState(false)
   const [openDropdown, setOpenDropdown] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState<ImageModelConfig>(
     () => IMAGE_MODEL_CONFIGS.find(m => m.id === "nano-banana-pro-2")!
@@ -13847,6 +17774,13 @@ export default function PortalV2Page() {
   useEffect(() => { refLibraryRef.current = refLibrary }, [refLibrary])
   const [hasPromptStudioDev, setHasPromptStudioDev] = useState(false)
   const [isAdminAccount, setIsAdminAccount] = useState(false)
+  const [adminChecked, setAdminChecked] = useState(false) // admin verify has resolved (either way)
+  // Ref limit reported by the chat hub (armed create model / LLM vision cap) —
+  // drives the Refs dropdown cap while in chat mode
+  const [chatRefCap, setChatRefCap] = useState<number | null>(null)
+  // Chat-hub media viewer: reuses the session feed's ImageDetailModal
+  const [chatMediaItem, setChatMediaItem] = useState<ImageItem | null>(null)
+  const [chatActionRequest, setChatActionRequest] = useState<{ kind: "edit" | "useprompt"; text: string; url?: string; nonce: number } | null>(null)
   const [isAuditAccount, setIsAuditAccount] = useState(false)
   const [isGenerationMaintenance, setIsGenerationMaintenance] = useState(false)
   const [promptOverride, setPromptOverride] = useState<{ text: string; version: number }>({ text: "", version: 0 })
@@ -13983,8 +17917,10 @@ export default function PortalV2Page() {
 
   const [imageGridKey, setImageGridKey] = useState(0)
 
-  // --- Feed width (columns) — null = auto (responsive default) ---
+  // --- Feed width (columns) — null = auto (responsive default); image & video
+  // feeds each keep their own setting ---
   const [feedCols, setFeedCols] = useState<number | null>(null)
+  const [feedVideoCols, setFeedVideoCols] = useState<number | null>(null)
   // Full Size mode — show entire images at natural aspect instead of square thumbnails.
   // Defaults ON: the feed's default view is Full Size → Masonry → Rows.
   const [feedFullSize, setFeedFullSize] = useState(true)
@@ -13995,11 +17931,23 @@ export default function PortalV2Page() {
   // Full Size tile resolution: "thumb" (light, memory-safe) or "full" (full-res originals —
   // heavier, may reload the tab on very long scrolls)
   const [feedTileRes, setFeedTileRes] = useState<"thumb" | "full">("thumb")
+  // Video feed: autoplay tiles while visible (muted + looping)
+  const [feedVideoAutoplay, setFeedVideoAutoplay] = useState(false)
+  // Taskbar size — CSS zoom on the whole top taskbar (1x default)
+  const [feedTaskbarScale, setFeedTaskbarScale] = useState<1 | 1.5>(1)
+  // Prompt box size — CSS zoom on the composer bars (image + video)
+  const [feedPromptScale, setFeedPromptScale] = useState<1 | 1.5>(1)
+  // Borders: animated silver rim around every feed thumbnail (image + video).
+  // Two styles: "slim" clings to the thumbnail, "fill" is a thick full frame.
+  const [feedTileBorders, setFeedTileBorders] = useState(false)
+  const [feedBorderMode, setFeedBorderMode] = useState<"slim" | "fill" | "smart">("slim")
 
   useEffect(() => {
     try {
       const v = parseInt(localStorage.getItem("pv2-feed-cols") || "")
       if (v >= 1 && v <= 6) setFeedCols(v)
+      const vv = parseInt(localStorage.getItem("pv2-feed-video-cols") || "")
+      if (vv >= 1 && vv <= 6) setFeedVideoCols(vv)
       // Only override the default when the user has an explicit stored choice
       const fs = localStorage.getItem("pv2-feed-fullsize")
       if (fs !== null) setFeedFullSize(fs === "true")
@@ -14009,6 +17957,14 @@ export default function PortalV2Page() {
       if (mm === "flow" || mm === "rows") setFeedMasonryMode(mm)
       const tr = localStorage.getItem("pv2-feed-tile-res")
       if (tr === "thumb" || tr === "full") setFeedTileRes(tr)
+      if (localStorage.getItem("pv2-feed-video-autoplay") === "true") setFeedVideoAutoplay(true)
+      if (localStorage.getItem("pv2-feed-borders") === "true") setFeedTileBorders(true)
+      const ts = parseFloat(localStorage.getItem("pv2-taskbar-scale") || "")
+      if (ts === 1.5) setFeedTaskbarScale(ts)
+      const ps = parseFloat(localStorage.getItem("pv2-promptbox-scale") || "")
+      if (ps === 1.5) setFeedPromptScale(ps)
+      const bm = localStorage.getItem("pv2-feed-border-mode")
+      if (bm === "slim" || bm === "fill" || bm === "smart") setFeedBorderMode(bm)
     } catch {}
   }, [])
 
@@ -14017,6 +17973,14 @@ export default function PortalV2Page() {
     try {
       if (n) localStorage.setItem("pv2-feed-cols", String(n))
       else localStorage.removeItem("pv2-feed-cols")
+    } catch {}
+  }
+
+  const handleFeedVideoColsChange = (n: number | null) => {
+    setFeedVideoCols(n)
+    try {
+      if (n) localStorage.setItem("pv2-feed-video-cols", String(n))
+      else localStorage.removeItem("pv2-feed-video-cols")
     } catch {}
   }
 
@@ -14040,6 +18004,31 @@ export default function PortalV2Page() {
   const handleFeedTileResChange = (res: "thumb" | "full") => {
     setFeedTileRes(res)
     try { localStorage.setItem("pv2-feed-tile-res", res) } catch {}
+  }
+
+  const handleFeedVideoAutoplayChange = (on: boolean) => {
+    setFeedVideoAutoplay(on)
+    try { localStorage.setItem("pv2-feed-video-autoplay", on ? "true" : "false") } catch {}
+  }
+
+  const handleFeedTileBordersChange = (on: boolean) => {
+    setFeedTileBorders(on)
+    try { localStorage.setItem("pv2-feed-borders", on ? "true" : "false") } catch {}
+  }
+
+  const handleFeedTaskbarScaleChange = (scale: 1 | 1.5) => {
+    setFeedTaskbarScale(scale)
+    try { localStorage.setItem("pv2-taskbar-scale", String(scale)) } catch {}
+  }
+
+  const handleFeedPromptScaleChange = (scale: 1 | 1.5) => {
+    setFeedPromptScale(scale)
+    try { localStorage.setItem("pv2-promptbox-scale", String(scale)) } catch {}
+  }
+
+  const handleFeedBorderModeChange = (mode: "slim" | "fill" | "smart") => {
+    setFeedBorderMode(mode)
+    try { localStorage.setItem("pv2-feed-border-mode", mode) } catch {}
   }
 
   // --- Hidden generations view — session-only (always back to normal feed on refresh) ---
@@ -14173,7 +18162,57 @@ export default function PortalV2Page() {
   }
 
   // --- Video scanner state ---
-  const [scannerMode, setScannerMode] = useState<"image" | "video">("image")
+  // Home is the default landing view for a fresh visit (new tab). Within a tab the
+  // current view persists across refreshes via sessionStorage, and every view switch
+  // pushes a history entry so the browser Back button walks view history (Home →
+  // Image → Back lands on Home, not on whatever page preceded the portal).
+  const [scannerMode, setScannerMode] = useState<"image" | "video" | "chat" | "home">("home")
+  const VALID_MODES = ["image", "video", "chat", "home"] as const
+  type ScannerMode = (typeof VALID_MODES)[number]
+  // Set when a mode change came from restore/popstate — those must not push a new entry.
+  const modeFromHistoryRef = useRef(false)
+  const lastPushedModeRef = useRef<string>("home")
+
+  // Restore on mount (effect, not initializer — avoids hydration mismatch), then
+  // listen for Back/Forward. Each entry we create carries { pv2Mode } in its state.
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("pv2-view-mode")
+      if (saved && (VALID_MODES as readonly string[]).includes(saved) && saved !== "home") {
+        modeFromHistoryRef.current = true
+        lastPushedModeRef.current = saved
+        setScannerMode(saved as ScannerMode)
+      }
+      // Stamp the current entry so Back can return to it with the right view.
+      window.history.replaceState({ ...window.history.state, pv2Mode: saved ?? "home" }, "")
+    } catch {}
+    const onPop = (e: PopStateEvent) => {
+      const m = e.state?.pv2Mode
+      if (typeof m === "string" && (VALID_MODES as readonly string[]).includes(m)) {
+        modeFromHistoryRef.current = true
+        lastPushedModeRef.current = m
+        setScannerMode(m as ScannerMode)
+      }
+    }
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Persist the view per-tab + push a history entry on user-initiated switches.
+  useEffect(() => {
+    try { sessionStorage.setItem("pv2-view-mode", scannerMode) } catch {}
+    if (modeFromHistoryRef.current) { modeFromHistoryRef.current = false; return }
+    if (scannerMode === lastPushedModeRef.current) return
+    try { window.history.pushState({ ...window.history.state, pv2Mode: scannerMode }, "") } catch {}
+    lastPushedModeRef.current = scannerMode
+  }, [scannerMode])
+
+  // Chat hub is admin-only (in development) — kick non-admins back to the feed,
+  // but only once the admin check has actually resolved (it's async on load)
+  useEffect(() => {
+    if (scannerMode === "chat" && adminChecked && !isAdminAccount) setScannerMode("image")
+  }, [scannerMode, adminChecked, isAdminAccount])
   const [selectedVideoModel, setSelectedVideoModel] = useState<VideoModelConfig>(() => VIDEO_MODEL_CONFIGS[0])
   const [videoDuration, setVideoDuration] = useState("5")
   const [videoAspectRatio, setVideoAspectRatio] = useState("16:9")
@@ -14198,7 +18237,11 @@ export default function PortalV2Page() {
   const [videoMotionVideoDuration, setVideoMotionVideoDuration] = useState<number | null>(null)
   const [videoCharacterOrientation, setVideoCharacterOrientation] = useState<"image" | "video">("image")
   const [videoKeepOriginalSound, setVideoKeepOriginalSound] = useState(true)
-  const [videoSD20Mode, setVideoSD20Mode] = useState<"t2v" | "i2v" | "r2v">("t2v")
+  const [videoSD20Mode, setVideoSD20Mode] = useState<"t2v" | "i2v" | "r2v" | "edit">("t2v")
+  // Gemini Omni Flash edit (video-to-video) source
+  const [videoEditSourceFilename, setVideoEditSourceFilename] = useState<string | null>(null)
+  const [videoEditSourceUrl, setVideoEditSourceUrl] = useState<string | null>(null)
+  const [videoEditSourceDuration, setVideoEditSourceDuration] = useState<number>(0)
   // SeeDance 2.0 reference-to-video state
   const [videoRefImagePreviews, setVideoRefImagePreviews] = useState<string[]>([])
   const [videoRefImageUrls, setVideoRefImageUrls] = useState<(string | null)[]>([])
@@ -14207,6 +18250,9 @@ export default function PortalV2Page() {
   const [videoRefAudioFilenames, setVideoRefAudioFilenames] = useState<string[]>([])
   const [videoRefAudioUrls, setVideoRefAudioUrls] = useState<(string | null)[]>([])
   const [videoRefVideoDuration, setVideoRefVideoDuration] = useState<number>(0)
+  // SeeDance 2.0: which reference image (by index) is the start / end frame
+  const [videoRefStartIdx, setVideoRefStartIdx] = useState<number | null>(null)
+  const [videoRefEndIdx, setVideoRefEndIdx] = useState<number | null>(null)
   // Lipsync v3 state
   const [videoLipsyncVideoFilename, setVideoLipsyncVideoFilename] = useState<string | null>(null)
   const [videoLipsyncVideoUrl, setVideoLipsyncVideoUrl] = useState<string | null>(null)
@@ -14217,6 +18263,7 @@ export default function PortalV2Page() {
   const [videoLipsyncSyncMode, setVideoLipsyncSyncMode] = useState<string>("cut_off")
   const [wan25VideoSafetyChecker, setWan25VideoSafetyChecker] = useState(false)
   const [seedance15VideoSafetyChecker, setSeedance15VideoSafetyChecker] = useState(false)
+  const [wan27VideoSafetyChecker, setWan27VideoSafetyChecker] = useState(false)
 
   const handleAddPending    = useCallback((slot: PendingSlot) => setPendingSlots(p => [slot, ...p]), [])
   const handleUpdatePending = useCallback((slotId: string, update: Partial<PendingSlot>) => {
@@ -14228,6 +18275,10 @@ export default function PortalV2Page() {
       setPendingSlots(prev => {
         const slot = prev.find(s => s.slotId === slotId)
         if (slot) {
+          // Identity linking the optimistic tile to its server GenerationQueue row —
+          // fails persist per-account until dismissed (see /api/user/failed-generations)
+          const rowId = slot.queueId ?? slot.queueJobId
+          const failKey = rowId != null ? `qf-${rowId}` : slot.nb2RequestId ? `rf-${slot.nb2RequestId}` : undefined
           const failedItem: ImageItem = {
             id: failId,
             imageUrl: '',
@@ -14235,15 +18286,29 @@ export default function PortalV2Page() {
             model: slot.modelId || '',
             failed: true,
             failError: update.error,
+            queueRowId: rowId ?? undefined,
+            failKey,
             createdAt: failedAt,
             aspectRatio: slot.nb2AspectRatio || slot.aspectRatio,
             quality: slot.nb2Quality || slot.quality,
             referenceImageUrls: slot.referenceImageUrls || [],
           }
-          // Defer to avoid calling a setter inside another setter's updater
+          // No server row (e.g. the submit request itself died) — create one so the
+          // tile survives reloads like every other failure
+          if (!failKey) {
+            fetch('/api/user/failed-generations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt: slot.prompt, modelId: slot.modelId || 'unknown', modelType: 'image', error: update.error }),
+            }).then(r => r.json()).then(d => {
+              if (d.id) setSavedFails(sf => sf.map(f => f.id === failId ? { ...f, queueRowId: d.id, failKey: `qf-${d.id}` } : f))
+            }).catch(() => {})
+          }
+          // Defer to avoid calling a setter inside another setter's updater.
+          // savedFails only (NOT freshImages) — fails render from the merged,
+          // time-sorted savedFails list, so adding to both duplicated the tile.
           setTimeout(() => {
-            setFreshImages(fi => fi.some(i => i.id === failedItem.id) ? fi : [failedItem, ...fi])
-            setSavedFails(sf => sf.some(i => i.id === failedItem.id) ? sf : [failedItem, ...sf])
+            setSavedFails(sf => sf.some(i => i.id === failedItem.id || (failKey && i.failKey === failKey)) ? sf : [failedItem, ...sf])
           }, 0)
         }
         return prev.filter(s => s.slotId !== slotId)
@@ -14256,8 +18321,35 @@ export default function PortalV2Page() {
     setPendingSlots(p => p.filter(s => s.slotId !== slotId)), [])
   // Deduplicate by ID and imageUrl — prevents same image appearing twice when
   // multiple polling intervals complete and each fetches /api/my-images
-  const handlePrependImage = useCallback((img: ImageItem) =>
-    setFreshImages(p => p.some(i => i.id === img.id || i.imageUrl === img.imageUrl) ? p : [img, ...p]), [])
+  const handlePrependImage = useCallback((img: ImageItem) => {
+    setFreshImages(p => {
+      if (p.some(i => i.id === img.id || i.imageUrl === img.imageUrl)) return p
+      // Dev-Tier multi-layer refs: the finished generation lands as a new layer
+      // on every multi-layer ref that guided it (matched by base URL). Deferred
+      // out of the updater — state updaters must stay pure.
+      if (img.referenceImageUrls?.length && typeof img.imageUrl === "string" && img.imageUrl.startsWith("https://")) {
+        const used = new Set(img.referenceImageUrls)
+        for (const r of refLibraryRef.current) {
+          if (!r.layers?.enabled || !used.has(r.url) || !/^\d+$/.test(r.id)) continue
+          if (r.layers.layers.some(l => l.items?.some(it => it.url === img.imageUrl) ?? false)) continue
+          const stack: RefLayerStack = {
+            enabled: true,
+            layers: [...r.layers.layers, { id: `gen-${img.id}`, name: `Generation ${img.id}`, visible: true, opacity: 1, auto: true, items: [{ id: `gen-${img.id}-0`, url: img.imageUrl }] }].slice(-20),
+          }
+          const refId = r.id
+          setTimeout(() => {
+            setRefLibrary(prev => prev.map(x => x.id === refId ? { ...x, layers: stack } : x))
+            fetch("/api/user/ref-layers", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ refId: Number(refId), stack }),
+            }).catch(() => {})
+          }, 0)
+        }
+      }
+      return [img, ...p]
+    })
+  }, [])
   const handleBalanceChange = useCallback((balance: number) =>
     setUser(u => u ? { ...u, ticketBalance: balance } : u), [])
 
@@ -14267,42 +18359,29 @@ export default function PortalV2Page() {
   }, [])
 
   // --- Video handlers ---
+  // Uploads go THROUGH THE SERVER (multipart → R2). The old presigned direct
+  // browser→R2 PUT is blocked by the bucket's CORS policy — uploads hung forever
+  // with Safari's "Load failed" (same root cause as the home-cards upload bug).
   const uploadVideoFrame = useCallback(async (file: File): Promise<string | null> => {
     try {
-      let uploadFile: File | Blob = file
-      let mimeType = file.type || 'application/octet-stream'
-      // Compress images before upload
+      let uploadFile: File = file
+      // Compress images before upload (video/audio upload as-is)
       if (file.type.startsWith("image/")) {
         const dataUrl = await compressFileToDataUrl(file, 1920, 0.85)
         const res2 = await fetch(dataUrl)
         const blob = await res2.blob()
         uploadFile = new File([blob], file.name, { type: 'image/jpeg' })
-        mimeType = 'image/jpeg'
       }
 
-      // Get a presigned R2 URL — client uploads directly, bypassing Vercel's 4.5MB limit
-      const presignRes = await fetch("/api/admin/upload-frame-presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, mimeType }),
-      })
-      if (!presignRes.ok) {
-        console.error('Presign failed:', await presignRes.text().catch(() => ''))
+      const fd = new FormData()
+      fd.append("file", uploadFile)
+      const res = await fetch("/api/upload-video-media", { method: "POST", body: fd })
+      if (!res.ok) {
+        console.error('Video media upload failed:', res.status, await res.text().catch(() => ''))
         return null
       }
-      const { uploadUrl, publicUrl } = await presignRes.json()
-
-      // PUT directly to R2 — no Vercel body limit
-      const putRes = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": mimeType },
-        body: uploadFile,
-      })
-      if (!putRes.ok) {
-        console.error('R2 PUT failed:', putRes.status)
-        return null
-      }
-      return publicUrl
+      const data = await res.json()
+      return (data?.url as string) || null
     } catch (err) {
       console.error('uploadVideoFrame error:', err)
       return null
@@ -14350,6 +18429,19 @@ export default function PortalV2Page() {
   const handleRemoveRefImage = useCallback((i: number) => {
     setVideoRefImagePreviews(p => p.filter((_, j) => j !== i))
     setVideoRefImageUrls(u => u.filter((_, j) => j !== i))
+    // Keep the S/E frame tags pointing at the same images after the list shifts
+    setVideoRefStartIdx(s => s === null ? null : s === i ? null : s > i ? s - 1 : s)
+    setVideoRefEndIdx(e => e === null ? null : e === i ? null : e > i ? e - 1 : e)
+  }, [])
+
+  // S/E frame tags — an image can hold only one role, and each role only one image
+  const handleTagRefStart = useCallback((i: number | null) => {
+    setVideoRefStartIdx(i)
+    if (i !== null) setVideoRefEndIdx(e => (e === i ? null : e))
+  }, [])
+  const handleTagRefEnd = useCallback((i: number | null) => {
+    setVideoRefEndIdx(i)
+    if (i !== null) setVideoRefStartIdx(s => (s === i ? null : s))
   }, [])
 
   const handleAddRefVideo = useCallback(async (file: File, duration: number) => {
@@ -14400,6 +18492,19 @@ export default function PortalV2Page() {
     setVideoLipsyncAudioUrl(url)
   }, [uploadVideoFrame])
 
+  // Gemini Omni Flash edit-mode source video (same upload pipeline as lipsync)
+  const handleEditSourceSelect = useCallback(async (file: File, duration: number) => {
+    setVideoEditSourceFilename(file.name)
+    setVideoEditSourceUrl(null)
+    setVideoEditSourceDuration(duration)
+    const url = await uploadVideoFrame(file)
+    if (!url) {
+      setVideoEditSourceFilename(null)
+      setVideoEditSourceDuration(0)
+    }
+    setVideoEditSourceUrl(url)
+  }, [uploadVideoFrame])
+
   const startVideoPolling = useCallback((slot: VideoPendingSlot) => {
     // Skip slots that haven't been promoted from queue yet (no FAL requestId)
     if (!slot.requestId) return
@@ -14418,6 +18523,7 @@ export default function PortalV2Page() {
         duration: slot.duration,
         failed: true,
         failError: "Generation timed out",
+        failKey: `rf-${slot.requestId}`,
         createdAt: new Date().toISOString(),
       }
       // Dedup guard — prevents duplicate tiles if this path is triggered more than once
@@ -14452,6 +18558,7 @@ export default function PortalV2Page() {
           duration: slot.duration,
           failed: true,
           failError: "Generation timed out",
+          failKey: `rf-${slot.requestId}`,
           createdAt: new Date().toISOString(),
         }
         // Dedup guard — prevents duplicate tiles if two ticks slipped the pollInFlight guard
@@ -14530,6 +18637,7 @@ export default function PortalV2Page() {
             duration: slot.duration,
             failed: true,
             failError: data.error || "Generation failed",
+            failKey: `rf-${slot.requestId}`,
             createdAt: new Date().toISOString(),
           }
           setVideoItems(prev => [failedItem, ...prev])
@@ -14547,16 +18655,67 @@ export default function PortalV2Page() {
   const handleVideoGenerate = useCallback(async (promptText: string) => {
     const isMotion = selectedVideoModel.id === "kling-v3-motion"
     const isLipsync = !!selectedVideoModel.supportsLipsync
+    const isOmni = !!selectedVideoModel.videoModes
     const isSD20 = !!selectedVideoModel.supportsSD20Modes
-    const sd20NeedsImage = isSD20 && videoSD20Mode === "i2v"
+    const sd20NeedsImage = (isSD20 || isOmni) && videoSD20Mode === "i2v"
     const isTextToVideo = !!selectedVideoModel.textToVideo && !sd20NeedsImage
     if (!videoStartFrameUrl && !isTextToVideo && !isLipsync) return
     if (isMotion && !videoMotionVideoUrl) return
     if (isLipsync && (!videoLipsyncVideoUrl || !videoLipsyncAudioUrl)) return
-    if (!isMotion && !isLipsync && !promptText.trim()) return
+    // Wan 2.7 i2v: prompt is optional when a start image is present (fal schema)
+    if (!isMotion && !isLipsync && !promptText.trim() && !(selectedVideoModel.id === "wan-2.7" && videoStartFrameUrl)) return
+    if (isOmni && videoSD20Mode === "edit" && !videoEditSourceUrl) { alert("Upload the video to edit first"); return }
+    if (isOmni && videoSD20Mode === "r2v" && videoRefImageUrls.filter(Boolean).length === 0) { alert("Add at least one reference image"); return }
     if (isMotion && videoCharacterOrientation === "image" && videoMotionVideoDuration !== null && videoMotionVideoDuration > 10) {
       alert(`Reference video is ${Math.round(videoMotionVideoDuration)}s. For "Image" character orientation, FAL requires the video to be 10 seconds or shorter. Please upload a shorter clip or switch orientation to "Video".`)
       return
+    }
+
+    // ── SeeDance 2.0 unified references: derive t2v / i2v / r2v from the uploads + S/E tags.
+    // 1 image (or a tagged start+end pair, images only) fits fal's i2v endpoint
+    // (image_url / end_image_url); anything more goes to r2v, where frame roles are
+    // bound in the prompt via @ImageN tags (the r2v schema has no frame params).
+    const isSD20Ref = !!selectedVideoModel.supportsReferenceVideo && !isOmni
+    let sdMode: "t2v" | "i2v" | "r2v" | "edit" | undefined = (isSD20 || isOmni) ? videoSD20Mode : undefined
+    let sdImageUrl: string | null = videoStartFrameUrl
+    let sdEndImageUrl: string | undefined = videoEndFrameUrl || undefined
+    let sdPrompt = promptText
+    let sdRefImageUrls: string[] = videoRefImageUrls.filter(Boolean) as string[]
+    if (isSD20Ref) {
+      const imgs = videoRefImageUrls
+        .map((u, i) => ({ u, i }))
+        .filter((e): e is { u: string; i: number } => !!e.u)
+      const vids = videoRefVideoUrls.filter(Boolean) as string[]
+      const auds = videoRefAudioUrls.filter(Boolean) as string[]
+      if (imgs.length === 0 && vids.length === 0 && auds.length > 0) {
+        alert("Audio references need at least one image or video reference too")
+        return
+      }
+      const startPos = videoRefStartIdx === null ? -1 : imgs.findIndex(e => e.i === videoRefStartIdx)
+      const endPos = videoRefEndIdx === null ? -1 : imgs.findIndex(e => e.i === videoRefEndIdx)
+      const imagesOnly = vids.length === 0 && auds.length === 0
+      if (imagesOnly && imgs.length === 0) {
+        sdMode = "t2v"; sdImageUrl = null; sdEndImageUrl = undefined
+      } else if (imagesOnly && imgs.length === 1 && endPos === -1) {
+        // A single image is the start frame → classic i2v
+        sdMode = "i2v"; sdImageUrl = imgs[0].u; sdEndImageUrl = undefined
+      } else if (imagesOnly && imgs.length === 2 && startPos !== -1 && endPos !== -1) {
+        // Exactly a start + end pair → i2v with end_image_url
+        sdMode = "i2v"; sdImageUrl = imgs[startPos].u; sdEndImageUrl = imgs[endPos].u
+      } else {
+        // Everything else → r2v; order tagged start first / end last and bind them in the prompt
+        sdMode = "r2v"; sdImageUrl = null; sdEndImageUrl = undefined
+        const middle = imgs.filter((_, p) => p !== startPos && p !== endPos).map(e => e.u)
+        sdRefImageUrls = [
+          ...(startPos !== -1 ? [imgs[startPos].u] : []),
+          ...middle,
+          ...(endPos !== -1 ? [imgs[endPos].u] : []),
+        ]
+        const hints: string[] = []
+        if (startPos !== -1) hints.push("Use @Image1 as the first frame of the video.")
+        if (endPos !== -1) hints.push(`Use @Image${sdRefImageUrls.length} as the last frame of the video.`)
+        if (hints.length > 0) sdPrompt = `${promptText.trim()} ${hints.join(" ")}`
+      }
     }
     setVideoGenerating(true)
     try {
@@ -14564,14 +18723,14 @@ export default function PortalV2Page() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt:               promptText,
-          imageUrl:             videoStartFrameUrl,
-          endImageUrl:          videoEndFrameUrl || undefined,
+          prompt:               sdPrompt,
+          imageUrl:             sdImageUrl,
+          endImageUrl:          sdEndImageUrl,
           duration:             videoDuration,
           resolution:           videoResolution,
           klingAspectRatio:     videoAspectRatio,
           model:                selectedVideoModel.id,
-          sd20Mode:             isSD20 ? videoSD20Mode : undefined,
+          sd20Mode:             sdMode,
           generateAudio:        videoAudioEnabled,
           audioUrl:             videoAudioUrl || undefined,
           adminMode:            userRef.current !== null && ADMIN_EMAILS.includes(userRef.current.email),
@@ -14581,12 +18740,17 @@ export default function PortalV2Page() {
           motionVideoDurationSec:  videoMotionVideoDuration ?? undefined,
           characterOrientation:    videoCharacterOrientation,
           keepOriginalSound:       videoKeepOriginalSound,
-          // SeeDance 2.0 reference-to-video
-          ...(isSD20 && videoSD20Mode === "r2v" && {
-            referenceImageUrls:    videoRefImageUrls.filter(Boolean) as string[],
+          // SeeDance 2.0 / Omni reference-to-video
+          ...(sdMode === "r2v" && {
+            referenceImageUrls:    sdRefImageUrls,
             referenceVideoUrls:    videoRefVideoUrls.filter(Boolean) as string[],
             referenceAudioUrls:    videoRefAudioUrls.filter(Boolean) as string[],
             referenceVideoDurationSec: videoRefVideoDuration,
+          }),
+          // Gemini Omni Flash edit (video-to-video)
+          ...(isOmni && videoSD20Mode === "edit" && {
+            editVideoUrl:          videoEditSourceUrl,
+            editVideoDurationSec:  videoEditSourceDuration,
           }),
           // Lipsync v3
           ...(isLipsync && {
@@ -14597,6 +18761,7 @@ export default function PortalV2Page() {
           }),
           ...(selectedVideoModel.id === "wan-2.5" ? { wan25SafetyChecker: wan25VideoSafetyChecker } : {}),
           ...(selectedVideoModel.id === "seedance-1.5" ? { seedance15SafetyChecker: seedance15VideoSafetyChecker } : {}),
+          ...(selectedVideoModel.id === "wan-2.7" ? { wan27SafetyChecker: wan27VideoSafetyChecker } : {}),
         }),
       })
       const data = await res.json()
@@ -14655,26 +18820,39 @@ export default function PortalV2Page() {
     } finally {
       setVideoGenerating(false)
     }
-  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker])
+  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, videoEditSourceUrl, videoEditSourceDuration])
 
   const applyVideoModel = useCallback((model: VideoModelConfig) => {
     setSelectedVideoModel(model)
     setScannerMode("video")
-    setVideoDuration(model.durations[0] ?? "5")
+    // Omni Flash defaults to 8s, Wan 2.7 to 5s (their API defaults) — durations[0] would seed the minimum
+    setVideoDuration(model.id === "gemini-omni-flash" ? "8" : model.id === "wan-2.7" ? "5" : model.durations[0] ?? "5")
     setVideoAspectRatio(model.aspectRatios?.[0] ?? "16:9")
     setVideoResolution(model.resolutions?.[1] ?? "1080p")
     setVideoAudioEnabled(false)
     setVideoAudioFile(null)
     setVideoAudioUrl(null)
-    setVideoStartFramePreview(null)
-    setVideoStartFrameUrl(null)
-    setVideoEndFramePreview(null)
-    setVideoEndFrameUrl(null)
+    // Keep loaded start/end frames across model switches whenever the target model
+    // has a start-frame slot — lipsync takes no image and SD 2.0-style ref models
+    // use the refs panel instead (same visibility rule as the config panel). The
+    // end frame additionally requires the target to support end frames.
+    const keepStartFrame = !model.supportsLipsync && !model.supportsReferenceVideo
+    const keepEndFrame = keepStartFrame && model.supportsEndFrame
+    if (!keepStartFrame) {
+      setVideoStartFramePreview(null)
+      setVideoStartFrameUrl(null)
+    }
+    if (!keepEndFrame) {
+      setVideoEndFramePreview(null)
+      setVideoEndFrameUrl(null)
+    }
     setVideoMotionVideoPreview(null)
     setVideoMotionVideoUrl(null)
     setVideoCharacterOrientation("image")
     setVideoKeepOriginalSound(true)
-    setVideoSD20Mode("t2v")
+    // Mode-switched models (Omni) only show the frame slot in Image mode — land
+    // there when carrying a frame over so it stays visible
+    setVideoSD20Mode(keepStartFrame && model.videoModes?.includes("i2v") && videoStartFramePreview ? "i2v" : "t2v")
     setVideoRefImagePreviews([])
     setVideoRefImageUrls([])
     setVideoRefVideoFilenames([])
@@ -14682,13 +18860,18 @@ export default function PortalV2Page() {
     setVideoRefAudioFilenames([])
     setVideoRefAudioUrls([])
     setVideoRefVideoDuration(0)
+    setVideoRefStartIdx(null)
+    setVideoRefEndIdx(null)
     setVideoLipsyncVideoFilename(null)
     setVideoLipsyncVideoUrl(null)
     setVideoLipsyncVideoDuration(0)
     setVideoLipsyncAudioFilename(null)
     setVideoLipsyncAudioUrl(null)
     setVideoLipsyncSyncMode("cut_off")
-  }, [])
+    setVideoEditSourceFilename(null)
+    setVideoEditSourceUrl(null)
+    setVideoEditSourceDuration(0)
+  }, [videoStartFramePreview])
 
   const handleSelectVideoModel = useCallback((name: string) => {
     const model = VIDEO_MODEL_CONFIGS.find(m => m.name === name)
@@ -14971,6 +19154,8 @@ export default function PortalV2Page() {
           duration: slot.duration,
           failed: true,
           failError: 'Queued job timed out waiting for promotion',
+          queueRowId: queueJobId,
+          failKey: `qf-${queueJobId}`,
           createdAt: new Date().toISOString(),
         }
         setVideoItems(prev => [timedOutItem, ...prev])
@@ -15008,6 +19193,8 @@ export default function PortalV2Page() {
             duration: slot.duration,
             failed: true,
             failError: data.errorMessage || 'Queued job failed',
+            queueRowId: queueJobId,
+            failKey: `qf-${queueJobId}`,
             createdAt: new Date().toISOString(),
           }
           setVideoItems(prev => [failedItem, ...prev])
@@ -15164,6 +19351,61 @@ export default function PortalV2Page() {
         const jobsRes = await fetch("/api/prompting-studio/jobs?source=main-scanner")
         if (!jobsRes.ok) return
         const { jobs } = await jobsRes.json()
+
+        // RECONCILE: if the DB says a tracked job settled but its tile is still
+        // spinning (its poller died — VPN drop, network blip, suspended tab, dev
+        // reload), resolve the tile NOW. This is exactly what a page refresh
+        // does, applied live every 10s, so spinners can never spin forever.
+        const settled: any[] = (jobs || []).filter((j: any) => j.status === "completed" || j.status === "failed")
+        const doneIds = new Set(JSON.parse(localStorage.getItem("pv2-nb2-done") || "[]") as string[])
+        for (const j of settled) {
+          const matching = pendingSlotsRef.current.filter(s =>
+            (j.falRequestId && s.nb2RequestId === j.falRequestId) || s.queueJobId === j.id || s.queueId === j.id)
+          if (matching.length === 0) continue
+          // Kill any zombie pollers still attached to this job
+          if (j.falRequestId && nb2PollingIntervals.current[j.falRequestId]) {
+            clearInterval(nb2PollingIntervals.current[j.falRequestId])
+            delete nb2PollingIntervals.current[j.falRequestId]
+          }
+          if (pollingIntervals.current[j.id]) { clearInterval(pollingIntervals.current[j.id]); delete pollingIntervals.current[j.id] }
+          if (queuePollingIntervals.current[j.id]) { clearInterval(queuePollingIntervals.current[j.id]); delete queuePollingIntervals.current[j.id] }
+          if (j.status === "failed") {
+            matching.forEach(s => handleUpdatePending(s.slotId, { status: "failed", error: j.errorMessage || "Generation failed" }))
+            continue
+          }
+          // Completed — pull the finished image(s) and swap them in
+          if (j.falRequestId) {
+            if (doneIds.has(j.falRequestId)) { matching.forEach(s => handleRemovePending(s.slotId)); continue }
+            doneIds.add(j.falRequestId)
+            try { localStorage.setItem("pv2-nb2-done", JSON.stringify(Array.from(doneIds).slice(-40))) } catch {}
+            try {
+              const imgRes = await fetch(`/api/my-images?falRequestIds=${encodeURIComponent(j.falRequestId)}`)
+              const imgData = await imgRes.json()
+              if (imgData.success) (imgData.images || []).forEach((img: any) => handlePrependImage({
+                id: img.id,
+                imageUrl: img.imageUrl,
+                prompt: img.prompt,
+                model: img.model,
+                createdAt: img.createdAt,
+                referenceImageUrls: img.referenceImageUrls ?? [],
+                aspectRatio: img.aspectRatio ?? undefined,
+                quality: img.quality ?? undefined,
+              }))
+            } catch {}
+            matching.forEach(s => handleRemovePending(s.slotId))
+          } else {
+            // Queue-row-only job (no FAL request id) — grab the newest image, same as startPolling
+            if (completedQueueIds.current.has(j.id)) { matching.forEach(s => handleRemovePending(s.slotId)); continue }
+            completedQueueIds.current.add(j.id)
+            try {
+              const imgRes = await fetch("/api/my-images?page=1&limit=1&type=image")
+              const imgData = await imgRes.json()
+              if (imgData.success && imgData.images?.[0]) handlePrependImage(imgData.images[0])
+            } catch {}
+            matching.forEach(s => handleRemovePending(s.slotId))
+          }
+        }
+
         const inFlight: any[] = (jobs || []).filter((j: any) => j.status === "processing" || j.status === "queued")
         const nb2DbJobs = inFlight.filter((j: any) => j.falRequestId)
         if (nb2DbJobs.length === 0) return
@@ -15216,7 +19458,7 @@ export default function PortalV2Page() {
   const addRefsToAccount = useCallback(async (
     inputs: (File | { url: string })[],
     folderId: number | null,
-    opts?: { autoActivate?: boolean }
+    opts?: { autoActivate?: boolean; activateAll?: boolean }
   ): Promise<{ added: number; failed: number; limitHit: boolean }> => {
     const slots = Math.max(0, refLibraryLimit - refLibraryRef.current.length)
     const toProcess = inputs.slice(0, slots)
@@ -15228,7 +19470,7 @@ export default function PortalV2Page() {
     const settled = await runWithConcurrency(toProcess, 4, async (input) => {
       let url: string
       if (input instanceof File) {
-        const blob = await compressFileToBlob(input)
+        const blob = await prepareRefUpload(input) // full-quality pass-through when possible
         url = await uploadRefBlob(blob)
       } else if (input.url.startsWith("data:")) {
         const blob = await (await fetch(input.url)).blob()
@@ -15271,7 +19513,11 @@ export default function PortalV2Page() {
       setRefLibrary(prev => [...prev, ...createdItems])
       if (opts?.autoActivate) {
         setActiveRefIds(prev => {
-          const slotsLeft = Math.max(0, selectedModel.maxReferenceImages - prev.length)
+          // activateAll: chat-hub uploads activate everything (chat enforces
+          // its own per-model caps); scanner path keeps the model's ref cap
+          const slotsLeft = opts.activateAll
+            ? createdItems.length
+            : Math.max(0, selectedModel.maxReferenceImages - prev.length)
           return [...prev, ...createdItems.slice(0, slotsLeft).map(i => i.id)]
         })
       }
@@ -15314,13 +19560,38 @@ export default function PortalV2Page() {
   const handleActivateRef   = useCallback((id: string) => setActiveRefIds((prev) => [...prev, id]), [])
   const handleDeactivateRef = useCallback((id: string) => setActiveRefIds((prev) => prev.filter((rid) => rid !== id)), [])
 
+  // ── Refs dropdown ↔ SeeDance 2.0: in video mode on a supportsReferenceVideo model,
+  // activating a library ref loads it DIRECTLY into the model's reference images
+  // (library refs are permanent R2 URLs — no re-upload needed). Active state is
+  // derived from the video ref list, so panel removals un-check the dropdown too.
+  const videoRefsEnabled = scannerMode === "video" && !!selectedVideoModel.supportsReferenceVideo
+  const videoActiveRefIds = useMemo(
+    () => refLibrary.filter(r => videoRefImageUrls.includes(r.url)).map(r => r.id),
+    [refLibrary, videoRefImageUrls]
+  )
+  const handleActivateRefVideo = useCallback((id: string) => {
+    const img = refLibrary.find(r => r.id === id)
+    if (!img) return
+    if (videoRefImageUrls.includes(img.url)) return
+    if (videoRefImageUrls.filter(Boolean).length >= 9) return
+    setVideoRefImagePreviews(p => [...p, img.url])
+    setVideoRefImageUrls(u => [...u, img.url])
+  }, [refLibrary, videoRefImageUrls])
+  const handleDeactivateRefVideo = useCallback((id: string) => {
+    const img = refLibrary.find(r => r.id === id)
+    if (!img) return
+    const idx = videoRefImageUrls.findIndex(u => u === img.url)
+    if (idx === -1) return
+    handleRemoveRefImage(idx) // reuses index-shift logic (keeps S/E frame tags aligned)
+  }, [refLibrary, videoRefImageUrls, handleRemoveRefImage])
+
   // Edited image: free the old slot first (soft clear — admin keeps the original),
   // then upload the edited version and swap it into the same position.
-  const handleEditRef = useCallback(async (id: string, newUrl: string) => {
+  const handleEditRef = useCallback(async (id: string, newUrl: string): Promise<RefImage | null> => {
     const old = refLibraryRef.current.find(r => r.id === id)
     // Optimistic: show the edited image immediately
     setRefLibrary(prev => prev.map(r => r.id === id ? { ...r, url: newUrl } : r))
-    if (!old) return
+    if (!old) return null
     try {
       if (/^\d+$/.test(id)) await fetch(`/api/user/references?ids=${id}`, { method: "DELETE" })
       const blob = await (await fetch(newUrl)).blob()
@@ -15334,11 +19605,50 @@ export default function PortalV2Page() {
       const row = (await res.json()).references?.[0]
       if (!row) throw new Error("no row returned")
       const newId = String(row.id)
-      setRefLibrary(prev => prev.map(r => r.id === id ? { id: newId, url: row.url, folderId: row.folderId ?? null } : r))
+      // Multi-layer stacks ride along to the re-created row. If the base lived
+      // in Layer 1, Apply just flattened everything into the new image — reset
+      // to a fresh base layer holding it, so nothing double-composites.
+      const carriedStack: RefLayerStack | null = old.layers
+        ? (old.layers.baseInLayer
+            ? {
+                enabled: true, baseInLayer: true,
+                layers: [{ id: `l-base-${Date.now()}`, name: "Layer 1 (base)", visible: true, opacity: 1, items: [{ id: `it-base-${Date.now()}`, url: row.url, x: 0, y: 0, w: 1, h: 1 }] }],
+              }
+            : old.layers)
+        : null
+      setRefLibrary(prev => prev.map(r => r.id === id ? { id: newId, url: row.url, folderId: row.folderId ?? null, layers: carriedStack } : r))
       setActiveRefIds(prev => prev.map(a => a === id ? newId : a))
+      if (carriedStack && /^\d+$/.test(newId)) {
+        fetch("/api/user/ref-layers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refId: Number(newId), stack: carriedStack }),
+        }).catch(() => {})
+      }
+      return { id: newId, url: row.url, folderId: row.folderId ?? null, layers: carriedStack }
     } catch (err) {
       console.error("Edited ref sync failed (kept locally):", err)
+      // Row sync failed — editing continues locally against the data URL
+      return { id, url: newUrl, folderId: old.folderId ?? null, layers: old.layers ?? null }
     }
+  }, [])
+
+  // Dev-Tier multi-layer stacks: optimistic state update + debounced persist
+  // (opacity sliders fire continuously — one POST per ref after the drag settles)
+  const layersSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const handleSaveRefLayers = useCallback((id: string, stack: RefLayerStack | null) => {
+    setRefLibrary(prev => prev.map(r => r.id === id ? { ...r, layers: stack } : r))
+    if (!/^\d+$/.test(id)) return
+    const timers = layersSaveTimers.current
+    if (timers[id]) clearTimeout(timers[id])
+    timers[id] = setTimeout(() => {
+      delete timers[id]
+      fetch("/api/user/ref-layers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refId: Number(id), stack }),
+      }).catch(() => {})
+    }, 600)
   }, [])
 
   // Presets already store permanent R2 URLs — register rows without re-uploading
@@ -15416,6 +19726,18 @@ export default function PortalV2Page() {
         const valid = new Set(refs.map(r => r.id))
         setActiveRefIds(prev => prev.filter(id => valid.has(id) || !/^\d+$/.test(id)))
 
+        // Dev-Tier multi-layer stacks ride in via a separate raw-SQL endpoint
+        // (the prisma client predates the layers column)
+        try {
+          const lr = await fetch("/api/user/ref-layers")
+          if (lr.ok) {
+            const { stacks } = await lr.json()
+            if (stacks && Object.keys(stacks).length > 0) {
+              setRefLibrary(prev => prev.map(r => stacks[r.id] ? { ...r, layers: normalizeStack(stacks[r.id]) } : r))
+            }
+          }
+        } catch { /* layers are an enhancement — the library works without them */ }
+
         // One-time migration of the legacy localStorage library
         try {
           const legacyRaw = localStorage.getItem("pv2-ref-library")
@@ -15451,6 +19773,34 @@ export default function PortalV2Page() {
     })()
   }, [user?.id, addRefsToAccount])
 
+  // Admin accounts never need the refs consent gate — grant it the moment the
+  // admin check resolves and notify every mounted consent reader
+  useEffect(() => {
+    if (!isAdminAccount) return
+    try { sessionStorage.setItem("ref-rights-consent", "true") } catch {}
+    window.dispatchEvent(new Event("pv2-ref-consent"))
+  }, [isAdminAccount])
+
+  // Sign-out: everything in the prompt box + refs section is per-account state —
+  // clear it all so the next visitor (or next account on this device) starts clean.
+  // The prompt bars themselves are remounted via their user-keyed `key` props.
+  const handleSignOut = useCallback(() => {
+    try {
+      sessionStorage.removeItem("ref-rights-consent")
+      localStorage.removeItem("pv2-active-ref-ids")
+      localStorage.removeItem("pv2-prompt-state")
+      localStorage.removeItem("pv2-prompt-tabs")
+      if (user?.id != null) localStorage.removeItem(`pv2-prompt-tabs-u${user.id}`)
+      localStorage.removeItem("pv2-saved-prompts")
+      localStorage.removeItem("pv2-text-state")
+    } catch {}
+    setRefLibrary([])
+    setRefFolders([])
+    setActiveRefIds([])
+    refsFetchedForUserRef.current = null
+    setUser(null)
+  }, [user?.id])
+
   // Storage keys
   // NOTE: the library itself now lives on the account (see /api/user/references).
   // Only the per-device ACTIVE selection is kept locally — a tiny id array, so the
@@ -15472,10 +19822,12 @@ export default function PortalV2Page() {
         const stored = localStorage.getItem("pv2-pending-slots")
         if (stored) setPendingSlots(JSON.parse(stored) as PendingSlot[])
       } catch {}
-      // savedFails
+      // Failed tiles now come from the server per-account (see the
+      // /api/user/failed-generations fetch effect) — the old sessionStorage keys
+      // leaked one account's errors into another on the same device. Clean up.
       try {
-        const stored = sessionStorage.getItem("pv2-failed-images")
-        if (stored) setSavedFails(JSON.parse(stored) as ImageItem[])
+        sessionStorage.removeItem("pv2-failed-images")
+        sessionStorage.removeItem("pv2-video-failed-items")
       } catch {}
       // videoPendingSlots (drop slots > 90 min old)
       try {
@@ -15485,11 +19837,6 @@ export default function PortalV2Page() {
           const cutoff = Date.now() - 90 * 60 * 1000
           setVideoPendingSlots(slots.filter(s => !s.startedAt || s.startedAt > cutoff))
         }
-      } catch {}
-      // savedVideoFails
-      try {
-        const stored = sessionStorage.getItem("pv2-video-failed-items")
-        if (stored) setSavedVideoFails(JSON.parse(stored) as VideoItem[])
       } catch {}
       // Active ref ids (library itself comes from the account — see fetch effect)
       try {
@@ -15501,13 +19848,94 @@ export default function PortalV2Page() {
       } catch {}
       return // Don't save on the restore run
     }
-    // Persist all storage-backed state
+    // Persist all storage-backed state (fails live on the server, not here)
     try { localStorage.setItem("pv2-pending-slots", JSON.stringify(pendingSlots.filter(s => s.status !== "failed"))) } catch {}
-    try { sessionStorage.setItem("pv2-failed-images", JSON.stringify(savedFails)) } catch {}
     try { localStorage.setItem("pv2-video-pending-slots", JSON.stringify(videoPendingSlots)) } catch {}
-    try { sessionStorage.setItem("pv2-video-failed-items", JSON.stringify(savedVideoFails)) } catch {}
     try { localStorage.setItem(ACTIVE_REFS_KEY, JSON.stringify(activeRefIds)) } catch {}
-  }, [pendingSlots, savedFails, videoPendingSlots, savedVideoFails, activeRefIds])
+  }, [pendingSlots, videoPendingSlots, activeRefIds])
+
+  // --- Persistent per-account failed generations ---
+  // Source of truth = the account's failed GenerationQueue rows. Tiles stay in the
+  // feed (interleaved by time) until the user dismisses them. Optimistic local
+  // fails are deduped against server rows via failKey (qf-<rowId> / rf-<falRequestId>).
+  const failsFetchedForUserRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!user?.id) {
+      if (failsFetchedForUserRef.current !== null) { setSavedFails([]); setSavedVideoFails([]) }
+      failsFetchedForUserRef.current = null
+      return
+    }
+    if (failsFetchedForUserRef.current === user.id) return
+    const switchingAccounts = failsFetchedForUserRef.current !== null
+    failsFetchedForUserRef.current = user.id
+    if (switchingAccounts) { setSavedFails([]); setSavedVideoFails([]) }
+    ;(async () => {
+      try {
+        const res = await fetch('/api/user/failed-generations')
+        if (!res.ok) { failsFetchedForUserRef.current = null; return }
+        const data = await res.json()
+        if (!data.success) return
+        const rows: any[] = data.fails || []
+        const serverKeys = new Set<string>(rows.flatMap(r => [`qf-${r.id}`, ...(r.falRequestId ? [`rf-${r.falRequestId}`] : [])]))
+        const toIso = (v: any) => (typeof v === 'string' ? v : new Date(v).toISOString())
+        const imgFails: ImageItem[] = rows.filter(r => r.modelType === 'image').map(r => ({
+          id: -r.id,
+          imageUrl: '',
+          prompt: r.prompt,
+          model: r.modelId,
+          failed: true,
+          failError: r.error,
+          queueRowId: r.id,
+          failKey: `qf-${r.id}`,
+          createdAt: toIso(r.createdAt),
+          aspectRatio: r.aspectRatio || undefined,
+        }))
+        const vidFails: VideoItem[] = rows.filter(r => r.modelType === 'video').map(r => ({
+          id: `qf-${r.id}`,
+          videoUrl: '',
+          prompt: r.prompt,
+          model: r.modelId,
+          duration: '',
+          failed: true,
+          failError: r.error,
+          queueRowId: r.id,
+          failKey: `qf-${r.id}`,
+          createdAt: toIso(r.createdAt),
+        }))
+        // Server list wins; keep only optimistic locals the server doesn't know yet
+        setSavedFails(prev => [...imgFails, ...prev.filter(f => (!f.failKey || !serverKeys.has(f.failKey)) && !imgFails.some(s => s.id === f.id))])
+        setSavedVideoFails(prev => [...vidFails, ...prev.filter(f => (!f.failKey || !serverKeys.has(f.failKey)) && !vidFails.some(s => s.id === f.id))])
+      } catch { failsFetchedForUserRef.current = null }
+    })()
+  }, [user?.id])
+
+  // Dismiss a failed tile — removes it from the feed permanently (per-account)
+  const handleDismissFail = useCallback((item: ImageItem) => {
+    setSavedFails(prev => prev.filter(f => f.id !== item.id))
+    const ids = item.queueRowId ? [item.queueRowId] : []
+    const falRequestIds = !item.queueRowId && item.failKey?.startsWith('rf-') ? [item.failKey.slice(3)] : []
+    if (ids.length || falRequestIds.length) {
+      fetch('/api/user/failed-generations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, falRequestIds }),
+      }).catch(() => {})
+    }
+  }, [])
+
+  const handleDismissVideoFail = useCallback((item: VideoItem) => {
+    setSavedVideoFails(prev => prev.filter(f => f.id !== item.id))
+    setVideoItems(prev => prev.filter(v => !(v.failed && v.id === item.id)))
+    const ids = item.queueRowId ? [item.queueRowId] : []
+    const falRequestIds = !item.queueRowId && item.failKey?.startsWith('rf-') ? [item.failKey.slice(3)] : []
+    if (ids.length || falRequestIds.length) {
+      fetch('/api/user/failed-generations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, falRequestIds }),
+      }).catch(() => {})
+    }
+  }, [])
 
   // Single effect: first run = restore from localStorage, subsequent runs = save.
   // This prevents the "save default over stored value" race that separate restore/save effects cause.
@@ -15518,14 +19946,13 @@ export default function PortalV2Page() {
       try {
         const stored = localStorage.getItem(SETTINGS_STORAGE_KEY)
         if (stored) {
-          const { modelId, scannerMode: savedMode, videoModelId } = JSON.parse(stored)
+          // Restore the last-selected models, but NOT the view — the portal always
+          // lands on Home (the default). Users navigate out via the logo menu / cards.
+          const { modelId, videoModelId } = JSON.parse(stored)
           const found = IMAGE_MODEL_CONFIGS.find((m) => m.id === modelId)
           if (found) setSelectedModel(found)
-          if (savedMode === "video") {
-            setScannerMode("video")
-            const vFound = VIDEO_MODEL_CONFIGS.find(m => m.id === videoModelId)
-            if (vFound) setSelectedVideoModel(vFound)
-          }
+          const vFound = VIDEO_MODEL_CONFIGS.find(m => m.id === videoModelId)
+          if (vFound) setSelectedVideoModel(vFound)
         }
       } catch {}
       return // Do not save on the restore run
@@ -15550,9 +19977,10 @@ export default function PortalV2Page() {
       localStorage.removeItem("pv2-pending-slots")
       localStorage.removeItem("pv2-nb2-done")
       // Remove the query param so it doesn't keep clearing on every navigation
+      // (preserve history.state — it carries the pv2Mode view marker)
       const url = new URL(window.location.href)
       url.searchParams.delete("clearNB2")
-      window.history.replaceState({}, "", url.toString())
+      window.history.replaceState(window.history.state, "", url.toString())
     }
   }, [])
 
@@ -15561,8 +19989,28 @@ export default function PortalV2Page() {
       if (data) {
         setIsGenerationMaintenance(!!data.aiGenerationMaintenance)
         setShopEffects(data.shopEffectsEnabled !== false) // default on
+        setSiteLogoUrl(data.logoUrl ?? null)
       }
     }).catch(() => {})
+  }, [])
+
+  // Site logo — global, admin-uploaded, shown to everyone in the header
+  const [siteLogoUrl, setSiteLogoUrl] = useState<string | null>(null)
+
+  // Home-page card media (key → { mediaUrl, mediaType }), admin-uploaded, public read
+  const [homeCards, setHomeCards] = useState<Record<string, { mediaUrl: string; mediaType: string }>>({})
+  useEffect(() => {
+    fetch("/api/admin/home-cards").then(r => r.ok ? r.json() : null).then(data => {
+      if (data?.cards) setHomeCards(data.cards)
+    }).catch(() => {})
+  }, [])
+  const handleCardMediaChange = useCallback((key: string, media: { mediaUrl: string; mediaType: string } | null) => {
+    setHomeCards(prev => {
+      const next = { ...prev }
+      if (media) next[key] = media
+      else delete next[key]
+      return next
+    })
   }, [])
 
   // Shop dropdown animations — global flag, admin-toggled from inside the dropdown
@@ -15626,7 +20074,11 @@ export default function PortalV2Page() {
           ])
           const ticketData = await ticketRes.json()
           const subData = await subRes.json()
-          setUser({ id: data.user.id, email: data.user.email, ticketBalance: ticketData.success ? ticketData.balance : 0 })
+          setUser({ id: data.user.id, email: data.user.email, ticketBalance: ticketData.success ? ticketData.balance : 0, avatarUrl: data.user.avatarUrl ?? null })
+          // Logged-in session satisfies the visitor age splash — prevents the
+          // splash and the account attestation modal from stacking back-to-back
+          window.dispatchEvent(new Event("age-gate-satisfied"))
+          if (data.needsAgeAttestation) setNeedsAgeAttest(true)
           if (subData.hasPromptStudioDev) setHasPromptStudioDev(true)
 
           const verifyRes = await fetch("/api/admin/verify")
@@ -15818,6 +20270,7 @@ export default function PortalV2Page() {
           }
         }
       } catch { /* silent */ }
+      finally { setAdminChecked(true) }
     }
     fetchUser()
   }, [])
@@ -15868,29 +20321,32 @@ export default function PortalV2Page() {
 
   return (
     <div className="bg-[#050810] text-white min-h-screen">
-      {/* Taskbar */}
-      <div className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5">
+      {needsAgeAttest && <AgeAttestModal onDone={() => setNeedsAgeAttest(false)} />}
+      {/* Taskbar — user-scalable via Feed → Taskbar Size (CSS zoom reflows layout) */}
+      <div className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: feedTaskbarScale }}>
 
         {/* Mobile-only top row: branding + queue + tickets + profile + dashboard */}
         <div className="flex sm:hidden items-center justify-between px-3 h-9 border-b border-white/5">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-              <Sparkles size={11} className="text-white/50" />
-            </div>
+            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} onGoChat={() => setScannerMode("chat")} size={24} />
             <div className="w-px h-3 bg-white/10" />
             <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
             <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="flex items-center gap-1 px-2 py-1 rounded-md border border-cyan-500/20 bg-black font-mono text-[10px]" style={{ boxShadow: "0 0 8px rgba(0,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
-              <Ticket size={10} className="text-cyan-500/70" />
-              <span className="text-cyan-400 tabular-nums">{user ? user.ticketBalance.toLocaleString() : "---"}</span>
+            <div className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 bg-black font-mono text-[10px]" style={{ boxShadow: "0 0 8px rgba(255,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
+              <Ticket size={10} className="text-slate-400" />
+              <span className="text-white tabular-nums">{user ? user.ticketBalance.toLocaleString() : "---"}</span>
             </div>
-            <ProfileBubble user={user} onSignOut={() => { sessionStorage.removeItem("ref-rights-consent"); setUser(null) }} />
+            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} />
             <Link
               href="/dashboard"
-              className="flex items-center px-2 py-1 rounded-md border border-white/10 bg-white/5 text-[10px] text-slate-400 hover:border-white/20 hover:text-white transition-all"
+              className="relative overflow-hidden flex items-center px-2 py-1 rounded-md border border-white/25 bg-white/10 text-[10px] font-bold text-white hover:bg-white/15 hover:border-white/40 transition-all"
             >
+              <span
+                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                style={{ animation: "sheen-sweep 2.6s infinite" }}
+              />
               Dashboard
             </Link>
           </div>
@@ -15898,26 +20354,29 @@ export default function PortalV2Page() {
 
         {/* Dropdown row + desktop-only right group */}
         <div className="flex items-center justify-between px-4 h-12">
-          {/* Wordmark — desktop only */}
-          <div className="hidden sm:flex items-center gap-2 shrink-0 mr-3">
-            <div className="flex items-center gap-1.5">
-              <div className="w-6 h-6 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
-                <Sparkles size={12} className="text-white/50" />
-              </div>
-              <div className="flex flex-col leading-none gap-0.5">
-                <span className="text-[11px] font-black tracking-tight text-white/90">AI Design Studio</span>
-                <div className="flex items-center gap-1.5">
-                  <a href="/terms" target="_blank" className="text-[8px] text-white/25 hover:text-white/50 transition-colors">Terms</a>
-                  <span className="text-[7px] text-white/10">·</span>
-                  <a href="/privacy" target="_blank" className="text-[8px] text-white/25 hover:text-white/50 transition-colors">Privacy</a>
-                  <span className="text-[7px] text-white/10">·</span>
-                  <a href="/refund" target="_blank" className="text-[8px] text-white/25 hover:text-white/50 transition-colors">Refund</a>
-                </div>
+          {/* Wordmark — desktop only. Logo (admin-uploadable dropdown) + title centered over the links. */}
+          <div className="hidden sm:flex items-center gap-3 shrink-0 mr-3">
+            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} onGoChat={() => setScannerMode("chat")} size={40} />
+            <div className="flex flex-col items-center leading-none gap-1">
+              <span className="text-[13px] font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60">AI Design Studio</span>
+              <div className="flex items-center gap-1.5">
+                <a href="/policies" target="_blank" className="text-[8px] text-white/25 hover:text-white/50 transition-colors">Policies</a>
+                <span className="text-[7px] text-white/10">|</span>
+                <a href="/contact" target="_blank" className="text-[8px] text-white/25 hover:text-white/50 transition-colors">Contact Us</a>
               </div>
             </div>
-            <div className="w-px h-4 bg-white/8" />
+            <div className="w-px h-6 bg-white/8 ml-1" />
           </div>
-          <div className="flex items-center flex-1 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden mr-1">
+          {/* Scrollable dropdown strip — STATIC silver gradient border. This one
+              must not animate: the dropdowns mount position:fixed panels inside
+              this subtree, and iPad Safari re-flattens the layer tree when they
+              open, letting a huge composited spinner escape the overflow clip
+              and flash across the whole screen. A static border can't escape. */}
+          <div
+            className="flex-1 min-w-0 rounded-xl p-[1.5px] mr-1"
+            style={{ background: "linear-gradient(100deg,#64748b,#e2e8f0,#94a3b8,#f8fafc,#94a3b8,#e2e8f0,#64748b)" }}
+          >
+            <div className="rounded-[10px] bg-[#0a0f1a] flex items-center min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden divide-x divide-white/[0.07]">
             <GroupedTaskbarDropdown
               label="Image"
               icon={Image}
@@ -15930,11 +20389,14 @@ export default function PortalV2Page() {
               itemCosts={IMAGE_MODEL_COST_BY_NAME}
               menuTitle="Image Generation Model"
               menuDescription="Select which AI model generates your image. Models are grouped by company."
+              cardMedia={homeCards}
+              cardPrefix="image"
             />
             <GroupedTaskbarDropdown
               label="Video"
               icon={Video}
               groups={VIDEO_MODEL_GROUPS}
+              adminGroups={isAdminAccount ? ADMIN_VIDEO_MODEL_GROUPS : undefined}
               open={openDropdown === "video"}
               onToggle={() => toggle("video")}
               onSelect={handleSelectVideoModel}
@@ -15942,6 +20404,8 @@ export default function PortalV2Page() {
               itemCosts={VIDEO_MODEL_COST_BY_NAME}
               menuTitle="Video Generation Model"
               menuDescription="Select which AI model generates your video. Models are grouped by company."
+              cardMedia={homeCards}
+              cardPrefix="video"
             />
             <TextDropdown
               open={openDropdown === "text"}
@@ -15955,22 +20419,24 @@ export default function PortalV2Page() {
               open={openDropdown === "refs"}
               onToggle={() => toggle("refs")}
               library={refLibrary}
-              activeIds={activeRefIds}
-              modelMaxRefs={selectedModel.maxReferenceImages}
+              activeIds={videoRefsEnabled ? videoActiveRefIds : activeRefIds}
+              modelMaxRefs={scannerMode === "chat" ? (chatRefCap ?? 20) : videoRefsEnabled ? 9 : selectedModel.maxReferenceImages}
               onUploadFiles={handleLibraryUploadFiles}
               onDelete={handleLibraryDelete}
               onDeleteMultiple={handleLibraryDeleteMultiple}
               onClearAll={handleLibraryClearAll}
-              onActivate={handleActivateRef}
-              onDeactivate={handleDeactivateRef}
+              onActivate={videoRefsEnabled ? handleActivateRefVideo : handleActivateRef}
+              onDeactivate={videoRefsEnabled ? handleDeactivateRefVideo : handleDeactivateRef}
               onEditSave={handleEditRef}
+              canUseLayers={hasEffectiveDevAccess}
+              onSaveLayers={handleSaveRefLayers}
               folders={refFolders}
               uploadProgress={refUploadProgress}
               onMove={handleMoveRefs}
               onCreateFolder={handleCreateRefFolder}
               onRenameFolder={handleRenameRefFolder}
               onDeleteFolder={handleDeleteRefFolder}
-              disabled={scannerMode === "video"}
+              disabled={scannerMode === "video" && !videoRefsEnabled}
               libraryLimit={refLibraryLimit}
             />
             <ShopDropdown
@@ -15986,17 +20452,15 @@ export default function PortalV2Page() {
               onToggleSelectMode={handleToggleSelectMode}
               selectedCount={selectedImageIds.size}
             />
-            <NewsDropdown
-              open={openDropdown === "news"}
-              onToggle={() => toggle("news")}
-              isAdmin={isAdminAccount}
-              onManage={(t) => setNewsManagerTarget(t ?? { section: "articles" })}
-            />
+            {/* News moved to the Home page (NewsStreamCard) — the taskbar section was
+                removed; admins manage articles via /admin/news */}
             <FeedDropdown
               open={openDropdown === "feed"}
               onToggle={() => toggle("feed")}
               cols={feedCols}
               onColsChange={handleFeedColsChange}
+              videoCols={feedVideoCols}
+              onVideoColsChange={handleFeedVideoColsChange}
               fullSize={feedFullSize}
               onFullSizeChange={handleFeedFullSizeChange}
               fullSizeLayout={feedFullSizeLayout}
@@ -16005,6 +20469,16 @@ export default function PortalV2Page() {
               onMasonryModeChange={handleFeedMasonryModeChange}
               tileRes={feedTileRes}
               onTileResChange={handleFeedTileResChange}
+              videoAutoplay={feedVideoAutoplay}
+              onVideoAutoplayChange={handleFeedVideoAutoplayChange}
+              tileBorders={feedTileBorders}
+              onTileBordersChange={handleFeedTileBordersChange}
+              borderMode={feedBorderMode}
+              onBorderModeChange={handleFeedBorderModeChange}
+              taskbarScale={feedTaskbarScale}
+              onTaskbarScaleChange={handleFeedTaskbarScaleChange}
+              promptScale={feedPromptScale}
+              onPromptScaleChange={handleFeedPromptScaleChange}
               showHidden={feedShowHidden}
               onShowHiddenChange={setFeedShowHidden}
               isAdmin={isAdminAccount}
@@ -16012,22 +20486,28 @@ export default function PortalV2Page() {
               adminFilters={adminFeedFilters}
               onApplyAdminFilters={applyAdminFeedFilters}
             />
+            {/* AI Chat Hub moved to the logo dropdown's admin-only section */}
+            </div>
           </div>
           {/* Desktop-only right group */}
           <div className="hidden sm:flex items-center gap-2 shrink-0">
             <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
             <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-cyan-500/20 bg-black font-mono text-xs" style={{ boxShadow: "0 0 8px rgba(0,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
-              <Ticket size={11} className="text-cyan-500/70" />
-              <span className="text-cyan-400 tabular-nums tracking-wider">
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" style={{ boxShadow: "0 0 8px rgba(255,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
+              <Ticket size={11} className="text-slate-400" />
+              <span className="text-white tabular-nums tracking-wider">
                 {user ? user.ticketBalance.toLocaleString() : "---"}
               </span>
             </div>
-            <ProfileBubble user={user} onSignOut={() => { sessionStorage.removeItem("ref-rights-consent"); setUser(null) }} />
+            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} />
             <Link
               href="/dashboard"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-[11px] text-slate-400 hover:border-white/20 hover:text-white transition-all"
+              className="relative overflow-hidden flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/25 bg-white/10 text-[11px] font-bold text-white hover:bg-white/15 hover:border-white/40 transition-all"
             >
+              <span
+                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                style={{ animation: "sheen-sweep 2.6s infinite" }}
+              />
               Dashboard
             </Link>
           </div>
@@ -16063,6 +20543,20 @@ export default function PortalV2Page() {
         />
       )}
 
+      {/* Chat hub media viewer — the same modal as the session feed, with
+          chat actions (Edit → back into the chat; Ref → reference library) */}
+      {chatMediaItem && (
+        <ImageDetailModal
+          image={chatMediaItem}
+          onClose={() => setChatMediaItem(null)}
+          chatMode
+          onChatEdit={(prompt) => setChatActionRequest({ kind: "edit", text: prompt, url: chatMediaItem.imageUrl, nonce: Date.now() })}
+          onRescan={() => {}}
+          onUsePrompt={(text) => setChatActionRequest({ kind: "useprompt", text, nonce: Date.now() })}
+          onAddRef={(url) => { addRefsToAccount([{ url }], null, {}) }}
+        />
+      )}
+
       {/* Admin only: shared Add to Bucket modal (same one as /admin/dataset) */}
       {addToBucketOpen && isAdminAccount && (
         <AddToBucketModal
@@ -16078,7 +20572,48 @@ export default function PortalV2Page() {
         />
       )}
 
-      {scannerMode === "image" ? (
+      {scannerMode === "home" ? (
+        <HomeView
+          isAdmin={isAdminAccount}
+          signedIn={user !== null}
+          imageGroups={IMAGE_MODEL_GROUPS}
+          adminImageGroups={ADMIN_IMAGE_MODEL_GROUPS}
+          videoGroups={VIDEO_MODEL_GROUPS}
+          adminVideoGroups={ADMIN_VIDEO_MODEL_GROUPS}
+          imageCostByName={IMAGE_MODEL_COST_BY_NAME}
+          videoCostByName={VIDEO_MODEL_COST_BY_NAME}
+          cards={homeCards}
+          onSelectImageModel={handleSelectImageModel}
+          onSelectVideoModel={handleSelectVideoModel}
+          onGoChat={() => setScannerMode("chat")}
+          onCardMediaChange={handleCardMediaChange}
+        />
+      ) : scannerMode === "chat" && isAdminAccount ? (
+        <ChatHub
+          activeRefs={refLibrary
+            .filter((img) => activeRefIds.includes(img.id))
+            .map((r) => ({ id: r.id, url: r.url }))}
+          onRemoveRef={handleDeactivateRef}
+          onUploadRefs={(files) => addRefsToAccount(files, null, { autoActivate: true, activateAll: true })}
+          onAddRefUrl={(url) => addRefsToAccount([{ url }], null, {})}
+          onRefCapChange={setChatRefCap}
+          onOpenMedia={(info) => setChatMediaItem({
+            id: 0,
+            imageUrl: info.url,
+            prompt: info.prompt ?? "",
+            // chat create id → portal apiId where they differ
+            model: info.modelId === "kling-image-v3" ? "kling-v3-image" : (info.modelId ?? ""),
+            aspectRatio: info.settings?.aspect,
+            quality: info.settings?.quality ?? info.settings?.resolution,
+          })}
+          actionRequest={chatActionRequest}
+        />
+      ) : scannerMode === "chat" ? (
+        /* Restored chat mode, admin check still in flight — avoid flashing the feed */
+        <div style={{ height: "calc(100vh - 48px)" }} className="flex items-center justify-center">
+          <Loader2 size={20} className="text-cyan-500/60 animate-spin" />
+        </div>
+      ) : scannerMode === "image" ? (
         <>
           {/* Image grid */}
           <div className="pb-36">
@@ -16088,6 +20623,8 @@ export default function PortalV2Page() {
               pendingSlots={pendingSlots}
               freshImages={freshImages}
               savedFails={savedFails}
+              onDismissFail={handleDismissFail}
+              tileBorders={feedTileBorders ? feedBorderMode : false}
               onImageClick={setSelectedImage}
               onPendingClick={setPendingDetail}
               selectMode={selectMode}
@@ -16116,8 +20653,16 @@ export default function PortalV2Page() {
             />
           ) : (
           <PromptBox
+            key={`pb-${user?.id ?? "anon"}`}
             model={selectedModel}
             onModelChange={setSelectedModel}
+            siteLogoUrl={siteLogoUrl}
+            onSiteLogoChange={setSiteLogoUrl}
+            onGoHome={() => setScannerMode("home")}
+            onGoFeed={() => setScannerMode("image")}
+            onGoChat={() => setScannerMode("chat")}
+            cardMedia={homeCards}
+            promptScale={feedPromptScale}
             userId={user?.id ?? null}
             onAddPending={handleAddPending}
             onUpdatePending={handleUpdatePending}
@@ -16128,6 +20673,8 @@ export default function PortalV2Page() {
             refLibrary={refLibrary}
             onDeactivateRef={handleDeactivateRef}
             onEditRef={handleEditRef}
+            canUseLayers={hasEffectiveDevAccess}
+            onSaveLayers={handleSaveRefLayers}
             onLoadPreset={handleLoadPreset}
             onUploadRef={handleUploadRef}
             onStartPolling={startPolling}
@@ -16149,27 +20696,7 @@ export default function PortalV2Page() {
         </>
       ) : !user ? (
         /* Video — not signed in */
-        <div className="flex flex-col items-center justify-center py-24 px-4">
-          <div className="w-full max-w-sm text-center">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-fuchsia-500/20 border border-white/10 flex items-center justify-center mx-auto mb-5">
-              <User size={28} className="text-slate-400" />
-            </div>
-            <h2 className="text-lg font-bold text-white mb-1">Sign in to get started</h2>
-            <p className="text-sm text-slate-500 mb-6">Your generations and saved work will appear here.</p>
-            <div className="flex flex-col gap-2">
-              <Link href="/login" className="block">
-                <button className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black text-sm font-bold hover:opacity-90 transition-opacity">
-                  Sign In
-                </button>
-              </Link>
-              <Link href="/signup" className="block">
-                <button className="w-full py-2.5 rounded-xl border border-white/10 bg-white/5 text-slate-300 text-sm font-medium hover:bg-white/10 hover:text-white transition-all">
-                  Create Account
-                </button>
-              </Link>
-            </div>
-          </div>
-        </div>
+        <FeedSignInPrompt />
       ) : (
         /* Video scanner — sidebar on desktop, drawer on mobile */
         <div style={{ height: "calc(100vh - 48px)" }} className="flex overflow-hidden relative">
@@ -16177,8 +20704,8 @@ export default function PortalV2Page() {
           <div className="hidden sm:block w-72 shrink-0 border-r border-white/5 overflow-y-auto pb-24">
             <VideoCustomizationPanel
               model={selectedVideoModel}
-              safetyChecker={selectedVideoModel.id === "wan-2.5" ? wan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? seedance15VideoSafetyChecker : undefined}
-              setSafetyChecker={selectedVideoModel.id === "wan-2.5" ? setWan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? setSeedance15VideoSafetyChecker : undefined}
+              safetyChecker={selectedVideoModel.id === "wan-2.5" ? wan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? seedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? wan27VideoSafetyChecker : undefined}
+              setSafetyChecker={selectedVideoModel.id === "wan-2.5" ? setWan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? setSeedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? setWan27VideoSafetyChecker : undefined}
               isAdminAccount={isAdminAccount}
               duration={videoDuration}
               onDurationChange={setVideoDuration}
@@ -16220,8 +20747,17 @@ export default function PortalV2Page() {
               onAddRefAudio={handleAddRefAudio}
               onRemoveRefAudio={handleRemoveRefAudio}
               videoRefVideoDuration={videoRefVideoDuration}
+              refStartIdx={videoRefStartIdx}
+              refEndIdx={videoRefEndIdx}
+              onTagRefStart={handleTagRefStart}
+              onTagRefEnd={handleTagRefEnd}
               sd20Mode={videoSD20Mode}
               onSD20ModeChange={setVideoSD20Mode}
+              editSourceFilename={videoEditSourceFilename}
+              editSourceUploading={videoEditSourceFilename !== null && videoEditSourceUrl === null}
+              editSourceDuration={videoEditSourceDuration}
+              onEditSourceSelect={handleEditSourceSelect}
+              onClearEditSource={() => { setVideoEditSourceFilename(null); setVideoEditSourceUrl(null); setVideoEditSourceDuration(0) }}
               lipsyncVideoFilename={videoLipsyncVideoFilename}
               lipsyncVideoUploading={videoLipsyncVideoFilename !== null && videoLipsyncVideoUrl === null}
               lipsyncVideoDuration={videoLipsyncVideoDuration}
@@ -16242,6 +20778,7 @@ export default function PortalV2Page() {
               pendingSlots={videoPendingSlots}
               items={videoItems}
               savedFails={savedVideoFails}
+              onDismissFail={handleDismissVideoFail}
               onVideoClick={setSelectedVideo}
               onPendingClick={setVideoPendingDetail}
               key={`vf-${imageGridKey}`}
@@ -16249,19 +20786,29 @@ export default function PortalV2Page() {
               selectedIds={selectedImageIds}
               onSelectToggle={handleSelectToggle}
               onNavListChange={setVideoNavList}
-              cols={feedCols}
+              cols={feedVideoCols}
               showHidden={feedShowHidden}
+              fullSize={feedFullSize}
+              fullSizeLayout={feedFullSizeLayout}
+              masonryMode={feedMasonryMode}
+              tileRes={feedTileRes}
+              autoplay={feedVideoAutoplay}
+              tileBorders={feedTileBorders ? feedBorderMode : false}
             />
           </div>
 
           {/* Video prompt bar — fixed at bottom */}
           <VideoPromptBar
+            key={`vpb-${user?.id ?? "anon"}`}
+            cardMedia={homeCards}
+            promptScale={feedPromptScale}
             model={selectedVideoModel}
             onGenerate={handleVideoGenerate}
             generating={videoGenerating}
             canGenerate={!videoGenerating && (selectedVideoModel.supportsLipsync ? (!!videoLipsyncVideoUrl && !!videoLipsyncAudioUrl) : (selectedVideoModel.textToVideo || !!videoStartFrameUrl)) && (selectedVideoModel.id !== "kling-v3-motion" || !!videoMotionVideoUrl) && videoActiveJobCount < videoMaxConcurrent}
             queueFull={videoActiveJobCount >= videoMaxConcurrent && videoMaxConcurrent !== Infinity}
             isGenerationMaintenance={isGenerationMaintenance && !isAdminAccount && !isAuditAccount}
+            isAdminAccount={isAdminAccount}
             duration={videoDuration}
             resolution={videoResolution}
             aspectRatio={videoAspectRatio}
@@ -16320,8 +20867,8 @@ export default function PortalV2Page() {
                 {/* Config panel */}
                 <VideoCustomizationPanel
                   model={selectedVideoModel}
-                  safetyChecker={selectedVideoModel.id === "wan-2.5" ? wan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? seedance15VideoSafetyChecker : undefined}
-                  setSafetyChecker={selectedVideoModel.id === "wan-2.5" ? setWan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? setSeedance15VideoSafetyChecker : undefined}
+                  safetyChecker={selectedVideoModel.id === "wan-2.5" ? wan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? seedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? wan27VideoSafetyChecker : undefined}
+                  setSafetyChecker={selectedVideoModel.id === "wan-2.5" ? setWan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? setSeedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? setWan27VideoSafetyChecker : undefined}
                   isAdminAccount={isAdminAccount}
                   duration={videoDuration}
                   onDurationChange={setVideoDuration}
@@ -16363,8 +20910,17 @@ export default function PortalV2Page() {
                   onAddRefAudio={handleAddRefAudio}
                   onRemoveRefAudio={handleRemoveRefAudio}
                   videoRefVideoDuration={videoRefVideoDuration}
+                  refStartIdx={videoRefStartIdx}
+                  refEndIdx={videoRefEndIdx}
+                  onTagRefStart={handleTagRefStart}
+                  onTagRefEnd={handleTagRefEnd}
                   sd20Mode={videoSD20Mode}
                   onSD20ModeChange={setVideoSD20Mode}
+                  editSourceFilename={videoEditSourceFilename}
+                  editSourceUploading={videoEditSourceFilename !== null && videoEditSourceUrl === null}
+                  editSourceDuration={videoEditSourceDuration}
+                  onEditSourceSelect={handleEditSourceSelect}
+                  onClearEditSource={() => { setVideoEditSourceFilename(null); setVideoEditSourceUrl(null); setVideoEditSourceDuration(0) }}
                   lipsyncVideoFilename={videoLipsyncVideoFilename}
                   lipsyncVideoUploading={videoLipsyncVideoFilename !== null && videoLipsyncVideoUrl === null}
                   lipsyncVideoDuration={videoLipsyncVideoDuration}
@@ -16392,6 +20948,7 @@ export default function PortalV2Page() {
           onClose={() => setSelectedImage(null)}
           onRescan={handleRescan}
           onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null) }}
+          onDismissFail={handleDismissFail}
           navList={imageNavList}
           navIndex={imageNavList.findIndex(img => img.id === selectedImage.id)}
           onNavigate={setSelectedImage}
@@ -16418,6 +20975,17 @@ export default function PortalV2Page() {
         <VideoDetailModal
           video={selectedVideo}
           onClose={() => setSelectedVideo(null)}
+          onDismissFail={(vid) => handleDismissVideoFail({
+            id: vid.failId || "",
+            videoUrl: "",
+            prompt: vid.prompt,
+            model: vid.model,
+            duration: vid.duration || "",
+            createdAt: vid.createdAt || "",
+            failed: true,
+            queueRowId: vid.queueRowId,
+            failKey: vid.failKey,
+          })}
           navList={videoNavList}
           navIndex={videoNavList.findIndex(v => v.videoUrl === selectedVideo.videoUrl && v.prompt === selectedVideo.prompt && v.createdAt === selectedVideo.createdAt)}
           onNavigate={setSelectedVideo}
@@ -16480,7 +21048,8 @@ export default function PortalV2Page() {
           } : undefined}
         />
       )}
-      <ChatWidget sideTabOnly={scannerMode === "video"} />
+      {/* Guide widget hidden in chat mode — its launcher overlapped the composer on phones */}
+      {scannerMode !== "chat" && <ChatWidget sideTabOnly={scannerMode !== "image"} />}
     </div>
   )
 }

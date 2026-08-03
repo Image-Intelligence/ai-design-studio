@@ -4,14 +4,8 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { MessageSquare, Send, ArrowLeft, CheckCircle, Bug, Lightbulb, Clock, Inbox } from 'lucide-react';
+import { MessageSquare, Send, CheckCircle, Bug, Lightbulb, Clock, Inbox } from 'lucide-react';
+import { SitePageHeader, SiteBrandHero } from '@/components/SitePageHeader';
 
 interface MyFeedback {
   id: number
@@ -25,9 +19,9 @@ interface MyFeedback {
 
 function TypeBadge({ type }: { type: string }) {
   const styles: Record<string, string> = {
-    bug: 'bg-red-500/15 text-red-400 border-red-500/30',
-    request: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
-    feedback: 'bg-fuchsia-500/15 text-fuchsia-400 border-fuchsia-500/30',
+    bug: 'bg-red-500/10 text-red-300 border-red-500/25',
+    request: 'bg-white/[0.06] text-slate-200 border-white/15',
+    feedback: 'bg-white/[0.06] text-slate-200 border-white/15',
   }
   const icons: Record<string, React.ReactNode> = {
     bug: <Bug size={11} />,
@@ -44,9 +38,9 @@ function TypeBadge({ type }: { type: string }) {
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
-    pending: 'bg-slate-500/20 text-slate-400',
-    reviewed: 'bg-amber-500/20 text-amber-400',
-    resolved: 'bg-green-500/20 text-green-400',
+    pending: 'bg-white/[0.06] text-slate-400 border border-white/10',
+    reviewed: 'bg-amber-500/10 text-amber-300 border border-amber-500/25',
+    resolved: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/25',
   }
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${styles[status] ?? styles.pending}`}>
@@ -167,42 +161,37 @@ export default function FeedbackPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#050810] flex items-center justify-center">
-        <div className="text-cyan-400 text-xl">Loading...</div>
+        <div className="w-5 h-5 rounded-full border-2 border-slate-700 border-t-white animate-spin" />
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-[#050810] relative overflow-hidden">
-      <div className="fixed inset-0 bg-[linear-gradient(rgba(0,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
-      <div className="fixed top-20 left-20 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl" />
-      <div className="fixed bottom-20 right-20 w-96 h-96 bg-fuchsia-500/5 rounded-full blur-3xl" />
+  const typeCards = [
+    { value: 'feedback', label: 'Feedback', icon: MessageSquare },
+    { value: 'request', label: 'Feature Request', icon: Lightbulb },
+    { value: 'bug', label: 'Bug Report', icon: Bug },
+  ]
 
-      <div className="relative z-10 p-6 max-w-2xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-400 to-cyan-500 flex items-center gap-3">
-              <MessageSquare size={32} /> FEEDBACK & REQUESTS
-            </h1>
-            <p className="text-slate-500 text-sm mt-1">Share your thoughts, report bugs, or request features</p>
-          </div>
-          <Button
-            onClick={() => router.push('/dashboard')}
-            className="bg-slate-700 hover:bg-slate-600 text-white"
-          >
-            <ArrowLeft size={16} className="mr-2" /> Dashboard
-          </Button>
+  return (
+    <div className="min-h-screen bg-[#050810] text-slate-100 flex flex-col">
+      <SitePageHeader />
+
+      <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-10 flex flex-col gap-8">
+        <SiteBrandHero />
+
+        <div>
+          <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">Feedback &amp; Requests</h1>
+          <p className="text-center text-sm text-slate-500">Share your thoughts, report bugs, or request features.</p>
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 mb-6 p-1 rounded-xl bg-slate-900/60 border border-slate-800 w-fit">
+        <div className="flex gap-1 p-1 rounded-xl bg-white/[0.03] border border-white/10 w-fit mx-auto">
           <button
             onClick={() => handleTabChange('submit')}
             className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${
               activeTab === 'submit'
-                ? 'bg-fuchsia-600/80 text-white shadow-md'
-                : 'text-slate-400 hover:text-slate-300'
+                ? 'bg-white text-black shadow-md'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <Send size={13} className="inline mr-1.5 -mt-0.5" />
@@ -212,8 +201,8 @@ export default function FeedbackPage() {
             onClick={() => handleTabChange('my')}
             className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${
               activeTab === 'my'
-                ? 'bg-cyan-600/80 text-white shadow-md'
-                : 'text-slate-400 hover:text-slate-300'
+                ? 'bg-white text-black shadow-md'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <Inbox size={13} className="inline mr-1.5 -mt-0.5" />
@@ -225,114 +214,89 @@ export default function FeedbackPage() {
         {activeTab === 'submit' && (
           <>
             {submitted ? (
-              <div className="p-8 rounded-2xl border-2 border-green-500/30 bg-slate-900/80 backdrop-blur-sm text-center">
-                <CheckCircle size={64} className="mx-auto text-green-400 mb-4" />
-                <h2 className="text-2xl font-bold text-green-400 mb-2">Thank You!</h2>
-                <p className="text-slate-400 mb-6">
-                  Your feedback has been submitted successfully. We appreciate you taking the time to help us improve!
+              <div className="p-8 rounded-xl border border-emerald-500/25 bg-white/[0.03] text-center">
+                <CheckCircle size={48} className="mx-auto text-emerald-300 mb-4" />
+                <h2 className="text-lg font-bold text-white uppercase tracking-wider mb-2">Thank You</h2>
+                <p className="text-sm text-slate-400 mb-6">
+                  Your feedback has been submitted successfully. We appreciate you taking the time to help us improve.
                 </p>
-                <div className="flex gap-4 justify-center">
+                <div className="flex flex-wrap gap-3 justify-center">
                   <Button
                     onClick={() => setSubmitted(false)}
-                    className="bg-fuchsia-600 hover:bg-fuchsia-500 text-white"
+                    className="bg-white text-black font-bold hover:bg-slate-200"
                   >
                     Submit Another
                   </Button>
                   <Button
                     onClick={() => handleTabChange('my')}
-                    className="bg-cyan-700 hover:bg-cyan-600 text-white"
+                    className="bg-white/[0.06] border border-white/15 text-slate-200 hover:bg-white/10 hover:text-white"
                   >
                     View My Submissions
                   </Button>
                   <Button
                     onClick={() => router.push('/dashboard')}
-                    className="bg-slate-700 hover:bg-slate-600 text-white"
+                    className="bg-white/[0.06] border border-white/15 text-slate-200 hover:bg-white/10 hover:text-white"
                   >
                     Back to Dashboard
                   </Button>
                 </div>
               </div>
             ) : (
-              <div className="p-6 rounded-2xl border-2 border-fuchsia-500/30 bg-slate-900/80 backdrop-blur-sm">
+              <div className="p-5 sm:p-6 rounded-xl border border-white/10 bg-white/[0.03]">
                 <form onSubmit={handleSubmit} className="space-y-6">
                   {/* Type Selection */}
                   <div>
-                    <label className="block text-sm font-bold text-fuchsia-400 mb-3">TYPE</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Type</label>
                     <div className="grid grid-cols-3 gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setFormData({ ...formData, type: 'feedback' })}
-                        className={`p-4 rounded-xl border-2 transition-all ${
-                          formData.type === 'feedback'
-                            ? 'border-fuchsia-500 bg-fuchsia-500/20'
-                            : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
-                        }`}
-                      >
-                        <MessageSquare size={24} className={`mx-auto mb-2 ${formData.type === 'feedback' ? 'text-fuchsia-400' : 'text-slate-500'}`} />
-                        <span className={`text-sm font-bold ${formData.type === 'feedback' ? 'text-fuchsia-400' : 'text-slate-400'}`}>
-                          Feedback
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData({ ...formData, type: 'request' })}
-                        className={`p-4 rounded-xl border-2 transition-all ${
-                          formData.type === 'request'
-                            ? 'border-cyan-500 bg-cyan-500/20'
-                            : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
-                        }`}
-                      >
-                        <Lightbulb size={24} className={`mx-auto mb-2 ${formData.type === 'request' ? 'text-cyan-400' : 'text-slate-500'}`} />
-                        <span className={`text-sm font-bold ${formData.type === 'request' ? 'text-cyan-400' : 'text-slate-400'}`}>
-                          Feature Request
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData({ ...formData, type: 'bug' })}
-                        className={`p-4 rounded-xl border-2 transition-all ${
-                          formData.type === 'bug'
-                            ? 'border-red-500 bg-red-500/20'
-                            : 'border-slate-700 bg-slate-800/50 hover:border-slate-600'
-                        }`}
-                      >
-                        <Bug size={24} className={`mx-auto mb-2 ${formData.type === 'bug' ? 'text-red-400' : 'text-slate-500'}`} />
-                        <span className={`text-sm font-bold ${formData.type === 'bug' ? 'text-red-400' : 'text-slate-400'}`}>
-                          Bug Report
-                        </span>
-                      </button>
+                      {typeCards.map(({ value, label, icon: Icon }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setFormData({ ...formData, type: value })}
+                          className={`p-4 rounded-xl border transition-all ${
+                            formData.type === value
+                              ? 'border-white/40 bg-white/[0.08]'
+                              : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                          }`}
+                        >
+                          <Icon size={22} className={`mx-auto mb-2 ${formData.type === value ? 'text-white' : 'text-slate-500'}`} />
+                          <span className={`text-xs font-bold ${formData.type === value ? 'text-white' : 'text-slate-400'}`}>
+                            {label}
+                          </span>
+                        </button>
+                      ))}
                     </div>
                   </div>
 
                   {/* Subject */}
                   <div>
-                    <label className="block text-sm font-bold text-fuchsia-400 mb-2">SUBJECT</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Subject</label>
                     <Input
                       value={formData.subject}
                       onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
                       placeholder="Brief summary of your feedback..."
                       required
-                      className="bg-slate-950 border-slate-700 text-white"
+                      className="bg-slate-950 border-white/10 text-white focus-visible:ring-white/20"
                     />
                   </div>
 
                   {/* Message */}
                   <div>
-                    <label className="block text-sm font-bold text-fuchsia-400 mb-2">MESSAGE</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Message</label>
                     <textarea
                       value={formData.message}
                       onChange={(e) => setFormData({ ...formData, message: e.target.value })}
                       placeholder="Describe your feedback, request, or bug in detail..."
                       required
                       rows={6}
-                      className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:border-fuchsia-500 focus:outline-none resize-none"
+                      className="w-full px-4 py-3 bg-slate-950 border border-white/10 rounded-lg text-white placeholder-slate-600 focus:border-white/25 focus:outline-none resize-none text-sm"
                     />
                   </div>
 
                   {/* User Info */}
-                  <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-700">
+                  <div className="p-3 rounded-lg bg-white/[0.03] border border-white/10">
                     <p className="text-xs text-slate-500">
-                      Submitting as: <span className="text-cyan-400 font-medium">{user?.email}</span>
+                      Submitting as: <span className="text-slate-200 font-medium">{user?.email}</span>
                     </p>
                   </div>
 
@@ -340,11 +304,11 @@ export default function FeedbackPage() {
                   <Button
                     type="submit"
                     disabled={submitting}
-                    className="w-full bg-gradient-to-r from-fuchsia-600 to-cyan-600 hover:from-fuchsia-500 hover:to-cyan-500 text-white font-bold h-12"
+                    className="w-full bg-white text-black font-bold hover:bg-slate-200 h-12"
                   >
                     {submitting ? (
                       <>
-                        <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent mr-2" />
+                        <div className="animate-spin rounded-full h-5 w-5 border-2 border-black border-t-transparent mr-2" />
                         Submitting...
                       </>
                     ) : (
@@ -359,13 +323,13 @@ export default function FeedbackPage() {
             )}
 
             {/* Info Card */}
-            <div className="mt-6 p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-              <h3 className="text-sm font-bold text-cyan-400 mb-2">What happens next?</h3>
+            <div className="p-4 rounded-xl bg-white/[0.03] border border-white/10">
+              <h3 className="text-xs font-bold text-white uppercase tracking-wider mb-2">What happens next?</h3>
               <ul className="text-xs text-slate-400 space-y-1">
                 <li>Your feedback will be reviewed by our team</li>
                 <li>Bug reports are prioritized for quick fixes</li>
                 <li>Feature requests help shape our roadmap</li>
-                <li>We read every submission - thank you for your input!</li>
+                <li>We read every submission — thank you for your input!</li>
               </ul>
             </div>
           </>
@@ -376,17 +340,17 @@ export default function FeedbackPage() {
           <div>
             {myLoading ? (
               <div className="flex flex-col items-center justify-center py-16 gap-3">
-                <div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+                <div className="w-8 h-8 border-2 border-white/40 border-t-transparent rounded-full animate-spin" />
                 <p className="text-slate-500 text-sm">Loading your submissions…</p>
               </div>
             ) : myFeedbacks.length === 0 ? (
-              <div className="p-12 rounded-2xl border border-slate-800 bg-slate-900/50 text-center">
+              <div className="p-12 rounded-xl border border-white/10 bg-white/[0.03] text-center">
                 <Inbox size={48} className="mx-auto text-slate-700 mb-3" />
-                <p className="text-slate-400 font-medium mb-1">No submissions yet</p>
+                <p className="text-slate-300 font-medium mb-1">No submissions yet</p>
                 <p className="text-sm text-slate-500">Your submitted feedback and requests will appear here.</p>
                 <Button
                   onClick={() => setActiveTab('submit')}
-                  className="mt-5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-sm"
+                  className="mt-5 bg-white text-black font-bold hover:bg-slate-200 text-sm"
                 >
                   Submit your first feedback
                 </Button>
@@ -396,7 +360,7 @@ export default function FeedbackPage() {
                 {myFeedbacks.map(fb => (
                   <div
                     key={fb.id}
-                    className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-slate-700 transition-colors"
+                    className="p-4 rounded-xl border border-white/10 bg-white/[0.03] hover:border-white/20 transition-colors"
                   >
                     <div className="flex flex-wrap items-center gap-2 mb-2">
                       <TypeBadge type={fb.type} />
@@ -412,9 +376,9 @@ export default function FeedbackPage() {
                     <p className="text-sm text-slate-400 leading-relaxed line-clamp-2">{fb.message}</p>
 
                     {fb.adminNotes && (
-                      <div className="mt-3 px-3 py-2.5 rounded-lg bg-fuchsia-900/20 border border-fuchsia-500/25">
-                        <p className="text-xs font-semibold text-fuchsia-400 mb-1">Response from the team:</p>
-                        <p className="text-sm text-fuchsia-200/80 leading-relaxed">{fb.adminNotes}</p>
+                      <div className="mt-3 px-3 py-2.5 rounded-lg bg-white/[0.04] border border-white/15">
+                        <p className="text-xs font-semibold text-white mb-1">Response from the team:</p>
+                        <p className="text-sm text-slate-300 leading-relaxed">{fb.adminNotes}</p>
                       </div>
                     )}
                   </div>
@@ -423,7 +387,11 @@ export default function FeedbackPage() {
             )}
           </div>
         )}
-      </div>
+
+        <p className="text-center text-xs text-slate-600">
+          © {new Date().getFullYear()} Prompt &amp; Protocol LLC · Orlando, Florida, USA
+        </p>
+      </main>
     </div>
   );
 }

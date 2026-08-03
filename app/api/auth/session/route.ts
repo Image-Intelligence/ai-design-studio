@@ -37,10 +37,14 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       authenticated: true,
+      // Accounts created before the signup 18+ certification existed have no
+      // attestation on record — the portal shows a one-time blocking modal
+      needsAgeAttestation: !user.ageAttestedAt,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
+        avatarUrl: user.avatarUrl ?? null,
         ticketBalance: user.tickets?.balance ?? 10, // Default to 10 if just created (use ?? not || so 0 balance shows as 0)
       },
     }, { headers: { 'Cache-Control': 'no-store' } })

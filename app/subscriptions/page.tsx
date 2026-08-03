@@ -1,10 +1,14 @@
 'use client';
 
+// Manage Subscriptions — monochrome brand design (SitePageHeader + SiteBrandHero,
+// frosted cards, sheen CTA). Status colors stay semantic: green active, amber
+// cancelling, orange cancelled, red destructive actions.
+
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { CreditCard, Calendar, RefreshCw, XCircle, CheckCircle, ArrowLeft, AlertTriangle } from 'lucide-react';
+import { CreditCard, Calendar, RefreshCw, XCircle, CheckCircle, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
+import { SitePageHeader, SiteBrandHero } from '@/components/SitePageHeader';
 
 interface Subscription {
   id: number;
@@ -19,11 +23,10 @@ interface Subscription {
   cancelledAt: string | null;
 }
 
-const TIER_DISPLAY: Record<string, { name: string; description: string; color: string }> = {
+const TIER_DISPLAY: Record<string, { name: string; description: string }> = {
   'prompt-studio-dev': {
-    name: 'Prompt Studio Dev Tier',
-    description: 'Full access to Canvas Scanner, multiple layers, and advanced features',
-    color: 'purple'
+    name: 'Development Tier',
+    description: 'Discounted tickets on autopilot, 8 concurrent generations, and an expanded reference library',
   }
 };
 
@@ -102,29 +105,29 @@ export default function SubscriptionsPage() {
   const getStatusBadge = (sub: Subscription) => {
     if (sub.status === 'active' && !sub.cancelledAt) {
       return (
-        <span className="flex items-center gap-1 text-xs font-bold bg-green-500/20 text-green-400 px-2 py-1 rounded-full">
-          <CheckCircle size={12} />
+        <span className="flex items-center gap-1 text-xs font-bold bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 px-2 py-0.5 rounded-full">
+          <CheckCircle size={11} />
           Active
         </span>
       );
     } else if (sub.status === 'active' && sub.cancelledAt) {
       return (
-        <span className="flex items-center gap-1 text-xs font-bold bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-full">
-          <AlertTriangle size={12} />
+        <span className="flex items-center gap-1 text-xs font-bold bg-amber-500/15 border border-amber-500/30 text-amber-400 px-2 py-0.5 rounded-full">
+          <AlertTriangle size={11} />
           Cancelling
         </span>
       );
     } else if (sub.status === 'cancelled') {
       return (
-        <span className="flex items-center gap-1 text-xs font-bold bg-orange-500/20 text-orange-400 px-2 py-1 rounded-full">
-          <XCircle size={12} />
+        <span className="flex items-center gap-1 text-xs font-bold bg-orange-500/15 border border-orange-500/30 text-orange-400 px-2 py-0.5 rounded-full">
+          <XCircle size={11} />
           Cancelled
         </span>
       );
     } else if (sub.status === 'expired') {
       return (
-        <span className="flex items-center gap-1 text-xs font-bold bg-slate-500/20 text-slate-400 px-2 py-1 rounded-full">
-          <XCircle size={12} />
+        <span className="flex items-center gap-1 text-xs font-bold bg-white/10 border border-white/15 text-slate-400 px-2 py-0.5 rounded-full">
+          <XCircle size={11} />
           Expired
         </span>
       );
@@ -135,86 +138,79 @@ export default function SubscriptionsPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#050810] flex items-center justify-center">
-        <div className="text-cyan-400 text-xl font-mono">Loading...</div>
+        <div className="w-6 h-6 rounded-full border-2 border-slate-700 border-t-slate-300 animate-spin" />
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-[#050810] text-white">
-      {/* Background */}
-      <div className="fixed inset-0 bg-[linear-gradient(rgba(0,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
+      <SitePageHeader />
+      <div className="max-w-3xl mx-auto px-4 py-10">
+        <SiteBrandHero />
 
-      <div className="relative z-10 max-w-3xl mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
-          <Link href="/dashboard">
-            <Button className="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 h-9 px-3">
-              <ArrowLeft size={16} className="mr-1" />
-              Back
-            </Button>
-          </Link>
-          <div>
-            <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">
-              Manage Subscriptions
-            </h1>
-            <p className="text-sm text-slate-400">View and manage your active subscriptions</p>
-          </div>
+        <div className="text-center mt-6 mb-8">
+          <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Manage Subscriptions</h1>
+          <p className="text-sm text-slate-500 mt-1">View and manage your active subscriptions</p>
         </div>
 
         {/* Subscriptions List */}
         {subscriptions.length === 0 ? (
-          <div className="p-8 rounded-xl border-2 border-slate-700 bg-slate-900/80 text-center">
-            <CreditCard className="mx-auto text-slate-600 mb-3" size={48} />
-            <h2 className="text-lg font-bold text-slate-400 mb-2">No Active Subscriptions</h2>
-            <p className="text-sm text-slate-500 mb-4">You don't have any active subscriptions yet.</p>
-            <Link href="/prompting-studio/upgrade">
-              <Button className="bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 font-bold">
+          <div className="p-8 rounded-2xl border border-white/[0.08] bg-white/[0.03] text-center">
+            <CreditCard className="mx-auto text-slate-600 mb-3" size={40} />
+            <h2 className="text-base font-bold text-slate-300 mb-1.5">No Active Subscriptions</h2>
+            <p className="text-sm text-slate-500 mb-5">You don&apos;t have any active subscriptions yet.</p>
+            <Link href="/prompting-studio/subscribe" className="inline-block">
+              <span className="relative overflow-hidden inline-flex items-center px-5 py-2.5 rounded-xl bg-white/10 border border-white/25 text-white text-sm font-bold hover:bg-white/15 hover:border-white/40 transition-all">
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                  style={{ animation: 'sheen-sweep 2.6s infinite' }}
+                />
                 Upgrade to Dev Tier
-              </Button>
+              </span>
             </Link>
           </div>
         ) : (
           <div className="space-y-4">
             {subscriptions.map((sub) => {
-              const tierInfo = TIER_DISPLAY[sub.tier] || { name: sub.tier, description: '', color: 'slate' };
+              const tierInfo = TIER_DISPLAY[sub.tier] || { name: sub.tier, description: '' };
               const isActive = sub.status === 'active';
               const isCancelled = !!sub.cancelledAt;
 
               return (
                 <div
                   key={sub.id}
-                  className={`p-6 rounded-xl border-2 ${
+                  className={`p-5 sm:p-6 rounded-2xl border ${
                     isActive && !isCancelled
-                      ? 'border-purple-500/30 bg-slate-900/80'
-                      : 'border-slate-700 bg-slate-900/50'
+                      ? 'border-white/[0.15] bg-white/[0.04]'
+                      : 'border-white/[0.08] bg-white/[0.02]'
                   }`}
                 >
                   {/* Header */}
                   <div className="flex items-start justify-between mb-4">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
-                        <h3 className="text-lg font-bold text-white">{tierInfo.name}</h3>
+                        <h3 className="text-base font-bold text-white tracking-tight">{tierInfo.name}</h3>
                         {getStatusBadge(sub)}
                       </div>
-                      <p className="text-sm text-slate-400">{tierInfo.description}</p>
+                      <p className="text-[13px] text-slate-500">{tierInfo.description}</p>
                     </div>
                   </div>
 
                   {/* Details Grid */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                    <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
-                      <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                        <Calendar size={12} />
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                    <div className="p-3 rounded-xl bg-black/30 border border-white/[0.06]">
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-slate-600 mb-1">
+                        <Calendar size={11} />
                         Started
                       </div>
                       <p className="text-sm text-white font-medium">{formatDate(sub.startDate)}</p>
                     </div>
 
                     {sub.billingAmount && sub.billingCycle && (
-                      <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
-                        <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                          <CreditCard size={12} />
+                      <div className="p-3 rounded-xl bg-black/30 border border-white/[0.06]">
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-slate-600 mb-1">
+                          <CreditCard size={11} />
                           Billing
                         </div>
                         <p className="text-sm text-white font-medium">
@@ -224,31 +220,31 @@ export default function SubscriptionsPage() {
                     )}
 
                     {sub.nextBillingDate && !isCancelled && (
-                      <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
-                        <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                          <RefreshCw size={12} />
+                      <div className="p-3 rounded-xl bg-black/30 border border-white/[0.06]">
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-slate-600 mb-1">
+                          <RefreshCw size={11} />
                           Next Billing
                         </div>
                         <p className="text-sm text-white font-medium">{formatDate(sub.nextBillingDate)}</p>
                       </div>
                     )}
 
-                    <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
-                      <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                        <Calendar size={12} />
+                    <div className="p-3 rounded-xl bg-black/30 border border-white/[0.06]">
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-slate-600 mb-1">
+                        <Calendar size={11} />
                         {isCancelled ? 'Access Until' : 'Subscription Ends'}
                       </div>
-                      <p className={`text-sm font-medium ${isCancelled ? 'text-yellow-400' : sub.endDate ? 'text-white' : 'text-green-400'}`}>
+                      <p className={`text-sm font-medium ${isCancelled ? 'text-amber-400' : 'text-white'}`}>
                         {sub.endDate ? formatDate(sub.endDate) : 'Unlimited'}
                       </p>
                     </div>
 
-                    <div className="p-3 rounded-lg bg-slate-950/50 border border-slate-800">
-                      <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                        <RefreshCw size={12} />
+                    <div className="p-3 rounded-xl bg-black/30 border border-white/[0.06]">
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-slate-600 mb-1">
+                        <RefreshCw size={11} />
                         Auto-Renew
                       </div>
-                      <p className={`text-sm font-medium ${sub.autoRenew ? 'text-green-400' : 'text-slate-400'}`}>
+                      <p className={`text-sm font-medium ${sub.autoRenew ? 'text-white' : 'text-slate-500'}`}>
                         {sub.autoRenew ? 'Enabled' : 'Disabled'}
                       </p>
                     </div>
@@ -256,9 +252,9 @@ export default function SubscriptionsPage() {
 
                   {/* Cancellation Notice */}
                   {isCancelled && sub.endDate && (
-                    <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30 mb-4">
-                      <p className="text-sm text-yellow-400">
-                        <AlertTriangle size={14} className="inline mr-2" />
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 mb-4">
+                      <p className="text-[13px] text-amber-300 leading-relaxed">
+                        <AlertTriangle size={13} className="inline mr-2 -mt-0.5" />
                         Your subscription has been cancelled. You will continue to have access until{' '}
                         <strong>{formatDate(sub.endDate)}</strong>.
                       </p>
@@ -267,34 +263,34 @@ export default function SubscriptionsPage() {
 
                   {/* Actions */}
                   {isActive && !isCancelled && (
-                    <div className="pt-4 border-t border-slate-800">
+                    <div className="pt-4 border-t border-white/[0.06]">
                       {showCancelConfirm === sub.id ? (
-                        <div className="flex items-center gap-3">
-                          <p className="text-sm text-slate-400 flex-1">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <p className="text-[13px] text-slate-400 flex-1 min-w-[200px]">
                             Are you sure? Your access will continue until the end of your billing period.
                           </p>
-                          <Button
+                          <button
                             onClick={() => setShowCancelConfirm(null)}
-                            className="bg-slate-700 hover:bg-slate-600 text-sm h-8"
+                            className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.06] hover:bg-white/10 text-slate-200 hover:text-white text-[13px] font-semibold transition-all"
                           >
                             Keep Subscription
-                          </Button>
-                          <Button
+                          </button>
+                          <button
                             onClick={() => handleCancelSubscription(sub.id)}
                             disabled={cancelling === sub.id}
-                            className="bg-red-600 hover:bg-red-500 text-sm h-8"
+                            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-[13px] font-semibold transition-colors disabled:opacity-50"
                           >
-                            {cancelling === sub.id ? 'Cancelling...' : 'Confirm Cancel'}
-                          </Button>
+                            {cancelling === sub.id ? 'Cancelling…' : 'Confirm Cancel'}
+                          </button>
                         </div>
                       ) : (
-                        <Button
+                        <button
                           onClick={() => setShowCancelConfirm(sub.id)}
-                          className="bg-slate-800 hover:bg-red-500/20 text-red-400 border border-red-500/30 hover:border-red-500 text-sm h-9"
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 hover:border-red-500/50 text-red-400 hover:text-red-300 text-[13px] font-semibold transition-all"
                         >
-                          <XCircle size={14} className="mr-2" />
+                          <XCircle size={14} />
                           Cancel Subscription
-                        </Button>
+                        </button>
                       )}
                     </div>
                   )}
@@ -303,30 +299,7 @@ export default function SubscriptionsPage() {
             })}
           </div>
         )}
-        {/* Store Link */}
-        <div className="mt-8 p-5 rounded-xl border border-slate-700 bg-slate-900/50 flex items-start gap-4">
-          <AlertTriangle className="text-yellow-400 flex-shrink-0 mt-0.5" size={18} />
-          <div>
-            <p className="text-sm text-slate-300 font-medium mb-1">
-              Please double-check your subscription status on the store page.
-            </p>
-            <p className="text-xs text-slate-500 mb-3">
-              If something looks off — or if you need to update your payment method, view invoices, or manage billing — you can do it directly on our store page.
-            </p>
-            <a
-              href="https://aidesignstudio.lemonsqueezy.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 hover:border-slate-500 text-slate-300 hover:text-white text-sm font-medium transition-colors"
-            >
-              <CreditCard size={14} />
-              Open Store Page
-              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <line x1="7" y1="17" x2="17" y2="7" /><polyline points="7 7 17 7 17 17" />
-              </svg>
-            </a>
-          </div>
-        </div>
+
       </div>
     </div>
   );

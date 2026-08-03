@@ -99,6 +99,14 @@ export async function POST(req: Request) {
       for (let i = 0; i < referenceImages.slice(0, 8).length; i++) {
         const img = referenceImages[i] as string
         try {
+          // Library refs arrive as permanent https URLs — pass them straight to
+          // fal (it fetches URLs natively). Base64-decoding a URL string would
+          // upload garbage bytes the model can't read.
+          if (img.startsWith('http')) {
+            falUrls.push(img)
+            if (!permanentReferenceUrls.includes(img)) permanentReferenceUrls.push(img)
+            continue
+          }
           const base64 = img.startsWith('data:') ? img.split(',')[1] : img
           const mimeType = img.startsWith('data:') ? img.split(';')[0].replace('data:', '') : 'image/jpeg'
           const buffer = Buffer.from(base64, 'base64')

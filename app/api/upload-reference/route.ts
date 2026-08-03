@@ -1,7 +1,7 @@
 // app/api/upload-reference/route.ts
-// Accepts a single compressed JPEG as FormData and stores it in Vercel Blob.
-// The client compresses to ≤1920px before sending, keeping the body well
-// under Vercel's 4.5MB serverless limit without any client-SDK complexity.
+// Accepts a single reference image as FormData and stores it in R2.
+// Full-quality originals (jpeg/png/webp ≤10MB) arrive untouched; larger or
+// exotic formats are re-encoded to a 4096px JPEG client-side first.
 
 import { uploadToR2 } from '@/lib/r2';
 import { NextRequest, NextResponse } from 'next/server';
@@ -30,9 +30,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const filename = `reference-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.jpg`;
+    // Preserve the original format — the client now uploads full-quality originals
+    // (jpeg/png/webp) untouched; anything else was re-encoded to JPEG client-side.
+    const type = file.type === 'image/png' ? 'image/png' : file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+    const ext = type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : 'jpg';
+    const filename = `reference-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${ext}`;
 
-    const url = await uploadToR2(filename, buffer, 'image/jpeg');
+    const url = await uploadToR2(filename, buffer, type);
 
     return NextResponse.json({ url });
   } catch (error) {

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react"
 import { X, Send, ImagePlus, Trash2, Bot, ChevronRight } from "lucide-react"
+import { SiteLogoBox } from "@/components/SitePageHeader"
 
 interface Part {
   type: 'text' | 'image'
@@ -21,11 +22,11 @@ interface Message {
 function renderMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="bg-white/10 px-1 py-0.5 rounded text-cyan-300 text-[11px]">$1</code>')
+    .replace(/`([^`]+)`/g, '<code class="bg-white/10 px-1 py-0.5 rounded text-slate-200 text-[11px]">$1</code>')
     .replace(/^### (.+)$/gm, '<div class="font-bold text-white text-[11px] mt-2 mb-0.5">$1</div>')
     .replace(/^## (.+)$/gm, '<div class="font-bold text-white text-xs mt-2 mb-1">$1</div>')
-    .replace(/^- (.+)$/gm, '<div class="flex gap-1.5 items-start"><span class="text-cyan-500 mt-0.5 shrink-0">•</span><span>$1</span></div>')
-    .replace(/^\d+\. (.+)$/gm, '<div class="flex gap-1.5 items-start"><span class="text-cyan-500 mt-0.5 shrink-0">›</span><span>$1</span></div>')
+    .replace(/^- (.+)$/gm, '<div class="flex gap-1.5 items-start"><span class="text-slate-500 mt-0.5 shrink-0">•</span><span>$1</span></div>')
+    .replace(/^\d+\. (.+)$/gm, '<div class="flex gap-1.5 items-start"><span class="text-slate-500 mt-0.5 shrink-0">›</span><span>$1</span></div>')
     .replace(/^---$/gm, '<hr class="border-white/10 my-2" />')
     .replace(/\n/g, '<br/>')
 }
@@ -36,7 +37,12 @@ const WELCOME: Message = {
   content: "Hi! I'm your AI Design Studio guide. Ask me anything — how to use a model, recommend a workflow, what tickets cost, or how to navigate the site. You can also paste a screenshot and I'll help explain what you're seeing.",
 }
 
+// The Guide is a right-edge tab that opens a slide-in drawer — the SAME pattern
+// on every screen size (the old desktop bottom-right pill overlapped the prompt
+// box's Generate button). `sideTabOnly` is kept for call-site compatibility but
+// no longer changes behavior.
 export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: boolean }) {
+  void sideTabOnly
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([WELCOME])
   const [input, setInput] = useState('')
@@ -161,22 +167,20 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
   // ── Shared panel content ──────────────────────────────────────────────────
   const panelContent = (
     <>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 bg-white/2 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-500/30 to-fuchsia-500/30 border border-cyan-500/30 flex items-center justify-center">
-            <Bot size={14} className="text-cyan-400" />
-          </div>
+      {/* Header — synced site logo in the silver rim, like the site's menus */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-white/[0.02] shrink-0">
+        <div className="flex items-center gap-2.5">
+          <SiteLogoBox size={24} rounded={8} />
           <div>
             <p className="text-[12px] font-bold text-white leading-none">Studio Guide</p>
-            <p className="text-[10px] text-slate-500 leading-none mt-0.5">AI Assistant</p>
+            <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mt-1">AI Assistant</p>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={clearHistory} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-slate-400 transition-colors" title="Clear history">
+          <button onClick={clearHistory} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-slate-300 transition-colors" title="Clear history">
             <Trash2 size={13} />
           </button>
-          <button onClick={() => setOpen(false)} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-slate-400 transition-colors" aria-label="Close">
+          <button onClick={() => setOpen(false)} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-white transition-colors" aria-label="Close">
             <X size={14} />
           </button>
         </div>
@@ -187,17 +191,17 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
         {messages.map((msg) => (
           <div key={msg.id} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {msg.role === 'model' && (
-              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-cyan-500/20 to-fuchsia-500/20 border border-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                <Bot size={12} className="text-cyan-400" />
+              <div className="w-6 h-6 rounded-lg bg-white/10 border border-white/15 flex items-center justify-center shrink-0 mt-0.5">
+                <Bot size={12} className="text-slate-200" />
               </div>
             )}
             <div className={`max-w-[82%] rounded-2xl px-3 py-2 text-[12px] leading-relaxed ${
               msg.role === 'user'
-                ? 'bg-cyan-500/15 border border-cyan-500/25 text-slate-200 rounded-tr-sm'
+                ? 'bg-white/10 border border-white/20 text-slate-100 rounded-tr-sm'
                 : 'bg-white/4 border border-white/8 text-slate-300 rounded-tl-sm'
             }`}>
               {msg.role === 'user' && (msg.imageCount ?? 0) > 0 && (
-                <div className="mb-1.5 text-[10px] text-cyan-400/70 flex items-center gap-1">
+                <div className="mb-1.5 text-[10px] text-slate-400 flex items-center gap-1">
                   <ImagePlus size={10} />
                   {msg.imageCount} image{msg.imageCount! > 1 ? 's' : ''} attached
                 </div>
@@ -211,9 +215,9 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
                 if (!text && msg.role === 'model' && streaming) {
                   return (
                     <span className="inline-flex gap-1 items-center">
-                      <span className="w-1 h-1 rounded-full bg-cyan-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-cyan-500 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-cyan-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '300ms' }} />
                     </span>
                   )
                 }
@@ -232,7 +236,7 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
       {pendingImages.length > 0 && (
         <div className="px-4 pb-1 flex gap-2 shrink-0">
           {pendingImages.map((img, i) => (
-            <div key={i} className="relative w-12 h-12 rounded-lg overflow-hidden border border-cyan-500/30">
+            <div key={i} className="relative w-12 h-12 rounded-lg overflow-hidden border border-white/25">
               <img src={img.previewUrl} alt="attachment" className="w-full h-full object-cover" />
               <button onClick={() => setPendingImages(prev => prev.filter((_, idx) => idx !== i))} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 flex items-center justify-center">
                 <X size={8} className="text-white" />
@@ -244,7 +248,7 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
 
       {/* Input */}
       <div className="px-3 pb-3 pt-2 border-t border-white/6 shrink-0">
-        <div className="flex items-end gap-2 bg-white/4 border border-white/10 rounded-xl px-3 py-2 focus-within:border-cyan-500/30 transition-colors">
+        <div className="flex items-end gap-2 bg-white/4 border border-white/10 rounded-xl px-3 py-2 focus-within:border-white/25 transition-colors">
           <button onClick={() => fileInputRef.current?.click()} className="text-slate-600 hover:text-slate-400 transition-colors shrink-0 pb-0.5" disabled={pendingImages.length >= 2} title="Attach image">
             <ImagePlus size={15} />
           </button>
@@ -260,7 +264,7 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
             className="flex-1 bg-transparent text-[12px] text-white placeholder-slate-600 outline-none resize-none max-h-24 leading-relaxed disabled:opacity-50"
             style={{ fieldSizing: 'content' } as any}
           />
-          <button onClick={send} disabled={streaming || (!input.trim() && pendingImages.length === 0)} className="shrink-0 pb-0.5 text-cyan-500 hover:text-cyan-400 disabled:text-slate-700 disabled:cursor-not-allowed transition-colors">
+          <button onClick={send} disabled={streaming || (!input.trim() && pendingImages.length === 0)} className="shrink-0 pb-0.5 text-slate-200 hover:text-white disabled:text-slate-700 disabled:cursor-not-allowed transition-colors">
             <Send size={15} />
           </button>
         </div>
@@ -272,89 +276,62 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
   return (
     <>
       {/* ══════════════════════════════════════════════════════════
-          MOBILE: slide-in drawer + backdrop (all modes)
-          DESKTOP image mode: floating pill → bottom-right box
-          DESKTOP video mode: side tab → right-side floating panel (no backdrop)
+          ALL DEVICES: right-edge tab → slide-in drawer + backdrop.
+          (One pattern everywhere — the old desktop bottom-right pill
+          sat on top of the prompt box's Generate button.)
       ══════════════════════════════════════════════════════════ */}
 
-      {/* ── MOBILE: backdrop ── */}
+      {/* Backdrop */}
       <div
-        className={`sm:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
         onClick={() => setOpen(false)}
       />
 
-      {/* ── MOBILE: side tab (visible when closed) ── */}
+      {/* Side tab (visible when closed) — synced logo + animated silver rim.
+          isolate + -z-10 keeps the spinner under the content (Safari). */}
       <div
-        className={`sm:hidden fixed right-0 top-1/2 -translate-y-1/2 z-50 transition-opacity duration-200 ${open ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+        className={`fixed right-0 top-1/2 -translate-y-1/2 z-50 transition-opacity duration-200 ${open ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
       >
-        <button
-          onClick={() => setOpen(true)}
-          className="flex flex-col items-center gap-2 px-1.5 py-4 rounded-l-2xl bg-[#080d1a]/95 border border-r-0 border-cyan-500/30 backdrop-blur-sm shadow-lg shadow-black/40 text-cyan-400 hover:text-cyan-300 transition-colors"
-          aria-label="Open Studio Guide"
-        >
-          <Bot size={15} />
+        <div className="relative isolate rounded-l-2xl overflow-hidden p-[1.5px] pr-0 shadow-lg shadow-black/40">
           <span
-            className="text-[9px] font-black tracking-widest uppercase text-cyan-400/70"
-            style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+            style={{
+              background:
+                "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",
+              animationDuration: "5s",
+            }}
+          />
+          <button
+            onClick={() => setOpen(true)}
+            className="relative flex flex-col items-center gap-2 px-1.5 py-3.5 rounded-l-[14px] bg-[#070b14]/95 backdrop-blur-sm text-slate-300 hover:text-white transition-colors"
+            aria-label="Open AI Guide"
           >
-            Guide
-          </span>
-          <ChevronRight size={11} className="text-cyan-500/50" />
-        </button>
+            <SiteLogoBox size={22} rounded={7} />
+            {/* Silver-shimmer title — same treatment as the taskbar Image/Video buttons */}
+            <span
+              className="text-[10px] font-extrabold tracking-widest uppercase bg-clip-text text-transparent whitespace-nowrap shrink-0 leading-none"
+              style={{
+                writingMode: 'vertical-lr',
+                transform: 'rotate(180deg)',
+                backgroundImage: 'linear-gradient(90deg,#94a3b8,#f8fafc,#e2e8f0,#64748b,#f8fafc,#94a3b8)',
+                backgroundSize: '200% 100%',
+                animation: 'silver-shimmer 3.5s linear infinite',
+                filter: 'drop-shadow(0 0 5px rgba(248,250,252,0.28))',
+              }}
+            >
+              AI Guide
+            </span>
+            <ChevronRight size={11} className="text-slate-600" />
+          </button>
+        </div>
       </div>
 
-      {/* ── MOBILE: slide-in drawer ── */}
+      {/* Slide-in drawer */}
       <div
-        className={`sm:hidden fixed top-0 bottom-0 right-0 z-50 w-[85vw] max-w-[320px] flex flex-col bg-[#080d1a]/98 border-l border-white/10 shadow-2xl shadow-black/60 transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`fixed top-0 bottom-0 right-0 z-50 w-[85vw] max-w-[360px] flex flex-col bg-[#070b14]/95 backdrop-blur-xl border-l border-white/[0.08] shadow-2xl shadow-black/60 transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}
       >
         {panelContent}
       </div>
-
-      {/* ── DESKTOP image mode: floating pill → bottom-right box ── */}
-
-      {!sideTabOnly && !open && (
-        <button
-          onClick={() => setOpen(true)}
-          className="hidden sm:flex fixed bottom-5 right-5 z-50 items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-fuchsia-500/20 border border-cyan-500/40 hover:border-cyan-400/60 hover:from-cyan-500/30 hover:to-fuchsia-500/30 text-cyan-300 text-sm font-semibold shadow-lg shadow-cyan-500/10 transition-all backdrop-blur-sm"
-          aria-label="Open chat guide"
-        >
-          <Bot size={16} />
-          <span>Guide</span>
-        </button>
-      )}
-
-      {!sideTabOnly && open && (
-        <div className="hidden sm:flex fixed bottom-5 right-5 z-50 flex-col w-[360px] h-[520px] max-h-[calc(100vh-3rem)] rounded-2xl border border-white/10 bg-[#080d1a]/95 backdrop-blur-xl shadow-2xl shadow-black/50 overflow-hidden">
-          {panelContent}
-        </div>
-      )}
-
-      {/* ── DESKTOP video mode: side tab → right-side floating panel (no backdrop, no interaction block) ── */}
-
-      {sideTabOnly && !open && (
-        <div className="hidden sm:block fixed right-0 top-1/2 -translate-y-1/2 z-50">
-          <button
-            onClick={() => setOpen(true)}
-            className="flex flex-col items-center gap-2 px-1.5 py-4 rounded-l-2xl bg-[#080d1a]/95 border border-r-0 border-cyan-500/30 backdrop-blur-sm shadow-lg shadow-black/40 text-cyan-400 hover:text-cyan-300 transition-colors"
-            aria-label="Open Studio Guide"
-          >
-            <Bot size={15} />
-            <span
-              className="text-[9px] font-black tracking-widest uppercase text-cyan-400/70"
-              style={{ writingMode: 'vertical-lr', transform: 'rotate(180deg)' }}
-            >
-              Guide
-            </span>
-            <ChevronRight size={11} className="text-cyan-500/50" />
-          </button>
-        </div>
-      )}
-
-      {sideTabOnly && open && (
-        <div className="hidden sm:flex fixed right-4 top-16 z-50 flex-col w-[340px] h-[500px] max-h-[calc(100vh-8rem)] rounded-2xl border border-white/10 bg-[#080d1a]/95 backdrop-blur-xl shadow-2xl shadow-black/50 overflow-hidden">
-          {panelContent}
-        </div>
-      )}
 
       <input
         ref={fileInputRef}

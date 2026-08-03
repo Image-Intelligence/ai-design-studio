@@ -1,21 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { cookies } from 'next/headers';
-import { getUserFromSession } from '@/lib/auth';
+import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth';
 
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   try {
-    // Derive the user from the session cookie — never from a client-supplied
-    // ?userId. Previously any caller could read any user's balance by id (IDOR).
-    const token = (await cookies()).get('session')?.value;
-    const sessionUser = token ? await getUserFromSession(token) : null;
-    if (!sessionUser) {
-      return NextResponse.json({ success: false, error: 'Not authenticated' }, { status: 401 });
+    // Derive the user from the bearer API key or session cookie — never from a
+    // client-supplied ?userId (IDOR).
+    const resolved = await resolveRequestUser(req);
+    if ('error' in resolved) return resolved.error;
+    const { user, apiAuth } = resolved;
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'tickets:read');
+      if (denied) return denied;
     }
-    const userIdNum = sessionUser.id;
+    const userIdNum = user.id;
 
     const ticket = await prisma.ticket.findUnique({
       where: { userId: userIdNum }

@@ -11,13 +11,15 @@ interface UserData {
   ticketBalance: number
 }
 
+// Dev Tier discount is 10% (cut from 20/30% on 2026-07-29 — keep in sync with
+// the subscribe page, shop dropdown, and dashboard copy)
 const TICKET_PACKAGES = [
-  { tickets: 25,   freeTierPrice: 5.00,   devTierPrice30: 3.50,  devTierPrice20: 4.00  },
-  { tickets: 50,   freeTierPrice: 9.00,   devTierPrice30: 6.30,  devTierPrice20: 7.20,  popular: true  },
-  { tickets: 100,  freeTierPrice: 16.00,  devTierPrice30: 11.20, devTierPrice20: 12.80 },
-  { tickets: 250,  freeTierPrice: 35.00,  devTierPrice30: 24.50, devTierPrice20: 28.00 },
-  { tickets: 500,  freeTierPrice: 65.00,  devTierPrice30: 45.50, devTierPrice20: 52.00, bestValue: true },
-  { tickets: 1000, freeTierPrice: 120.00, devTierPrice30: 84.00, devTierPrice20: 96.00 },
+  { tickets: 25,   freeTierPrice: 5.00,   devTierPrice: 4.50  },
+  { tickets: 50,   freeTierPrice: 9.00,   devTierPrice: 8.10,  popular: true  },
+  { tickets: 100,  freeTierPrice: 16.00,  devTierPrice: 14.40 },
+  { tickets: 250,  freeTierPrice: 35.00,  devTierPrice: 31.50 },
+  { tickets: 500,  freeTierPrice: 65.00,  devTierPrice: 58.50, bestValue: true },
+  { tickets: 1000, freeTierPrice: 120.00, devTierPrice: 108.00 },
 ]
 
 const BENEFITS = [
@@ -54,8 +56,6 @@ export default function BuyTicketsPage() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(TICKET_PACKAGES[1]) // default: 50
   const [hasPromptStudioDev, setHasPromptStudioDev] = useState(false)
-  const [isGrandfathered, setIsGrandfathered] = useState(false)
-  const [periodEnd, setPeriodEnd] = useState<string | null>(null)
   const [acceptedTOS, setAcceptedTOS] = useState(false)
   const [purchasing, setPurchasing] = useState(false)
   const [purchaseError, setPurchaseError] = useState<string | null>(null)
@@ -82,12 +82,6 @@ export default function BuyTicketsPage() {
         const subRes = await fetch('/api/user/subscription')
         const subData = await subRes.json()
         if (subData.success && subData.hasPromptStudioDev) setHasPromptStudioDev(true)
-        if (subData.isGrandfathered) {
-          setIsGrandfathered(true)
-          if (subData.subscription?.lsCurrentPeriodEnd) {
-            setPeriodEnd(new Date(subData.subscription.lsCurrentPeriodEnd).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }))
-          }
-        }
       } catch {
         router.push('/login')
       } finally {
@@ -117,7 +111,7 @@ export default function BuyTicketsPage() {
   }
   if (!user) return null
 
-  const devPrice   = hasPromptStudioDev ? (isGrandfathered ? selected.devTierPrice30 : selected.devTierPrice20) : null
+  const devPrice   = hasPromptStudioDev ? selected.devTierPrice : null
   const price      = devPrice ?? selected.freeTierPrice
   const savings    = selected.freeTierPrice - (devPrice ?? selected.freeTierPrice)
   const ppt        = price / selected.tickets
@@ -190,7 +184,7 @@ export default function BuyTicketsPage() {
           <div className="mb-6 px-4 py-3 rounded-xl border border-purple-500/40 bg-purple-500/10 flex items-center gap-3">
             <Sparkles size={15} className="text-purple-400 flex-shrink-0" />
             <p className="text-sm text-slate-300">
-              <span className="font-bold text-purple-400">Dev Tier pricing active</span> — you're saving {isGrandfathered ? '30%' : '20%'} on every package.
+              <span className="font-bold text-purple-400">Dev Tier pricing active</span> — you're saving 10% on every package.
             </p>
           </div>
         )}
@@ -238,9 +232,9 @@ export default function BuyTicketsPage() {
             {/* Dev Tier upsell for non-subscribers */}
             {!hasPromptStudioDev && (
               <div className="mt-2 p-3 rounded-xl border border-purple-500/25 bg-purple-500/5">
-                <p className="text-xs font-bold text-purple-400 mb-1">Save {isGrandfathered ? '30%' : '20%'} on every package</p>
+                <p className="text-xs font-bold text-purple-400 mb-1">Save 10% on every package</p>
                 <p className="text-xs text-slate-500 mb-2.5 leading-relaxed">
-                  Dev Tier subscribers get {isGrandfathered ? '30%' : '20%'} off every ticket package.
+                  Dev Tier subscribers get 10% off every ticket package.
                 </p>
                 <Link href="/prompting-studio/subscribe" className="text-xs font-bold text-purple-400 hover:text-purple-300 transition-colors underline underline-offset-2">
                   Upgrade to Dev Tier →
@@ -305,19 +299,11 @@ export default function BuyTicketsPage() {
                     </span>
                   ) : (
                     <span className="text-[10px] text-slate-700">
-                      Dev Tier price: <span className="text-slate-500">${selected.devTierPrice20.toFixed(2)}</span>
+                      Dev Tier price: <span className="text-slate-500">${selected.devTierPrice.toFixed(2)}</span>
                     </span>
                   )}
                 </div>
               </div>
-
-              {/* ── Grandfathered discount notice ── */}
-              {isGrandfathered && (
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-[11px] text-amber-300 leading-relaxed">
-                  <span className="font-bold">Your 30% discount is locked in</span> until your current billing cycle ends
-                  {periodEnd ? ` on ${periodEnd}` : ''}. After that, the Dev Tier discount moves to 20% for all members.
-                </div>
-              )}
 
               {/* ── Package selector ── */}
               <div>
@@ -325,7 +311,7 @@ export default function BuyTicketsPage() {
                 <div className="grid grid-cols-3 gap-2">
                   {TICKET_PACKAGES.map(pkg => {
                     const isActive = selected.tickets === pkg.tickets
-                    const displayPrice = hasPromptStudioDev ? (isGrandfathered ? pkg.devTierPrice30 : pkg.devTierPrice20) : pkg.freeTierPrice
+                    const displayPrice = hasPromptStudioDev ? pkg.devTierPrice : pkg.freeTierPrice
                     return (
                       <button
                         key={pkg.tickets}

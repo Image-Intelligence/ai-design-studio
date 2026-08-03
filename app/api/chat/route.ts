@@ -17,7 +17,7 @@ AI Design Studio (prompt-protocol.vercel.app) is an AI creative platform that le
 - **AI Design Studio / Portal V2** (/) — The main generation hub. Image + video models in one place. This is the recommended tool.
 - **Legacy Scanner** (/scanner) — Older image scanner. Classic interface. Can be in maintenance mode.
 - **Video Scanner** (/video-scanner) — Dedicated video generation page.
-- **My Images** (/my-images) — Full gallery of all your generated images and videos.
+- **My Generations** (/my-generations) — Full gallery of all your generated images and videos.
 - **Buy Tickets** (/buy-tickets) — Purchase ticket packs.
 - **Subscriptions** (/prompting-studio/subscribe) — Subscribe for recurring tickets + 30% discount (Dev Tier).
 - **Purchase History** (/purchase-history) — See all past purchases.
@@ -204,7 +204,7 @@ Have a reference video showing the motion/camera angle you want? Use **Kling Mot
 - **Reference images**: The more relevant your reference, the better style/character consistency you'll get.
 - **Resolution**: Higher resolution (1080p/4K) costs more tickets but produces sharper results.
 - **Queue**: When the platform is busy, your job may be queued. It'll start automatically when a slot opens — don't close the page.
-- **Generation history**: All your generations are saved in /my-images and visible in the Dashboard's Recent Generations.
+- **Generation history**: All your generations are saved in /my-generations and visible in the Dashboard's Recent Generations.
 - **Tickets run out?**: Buy more at /buy-tickets or subscribe for recurring tickets.
 
 ---
@@ -214,7 +214,7 @@ Have a reference video showing the motion/camera angle you want? Use **Kling Mot
 - **"Insufficient tickets"**: You don't have enough tickets. Buy more at /buy-tickets.
 - **Job stuck in queue**: The system is at capacity. Wait — it will process automatically.
 - **Generation failed/timed out**: Try again. If it keeps failing, try a different model or simplify your prompt.
-- **Images not showing after refresh**: Rare issue. Check /my-images — they should be saved there.
+- **Images not showing after refresh**: Rare issue. Check /my-generations — they should be saved there.
 - **Content policy violation**: Your prompt or reference image was flagged. Rephrase or use a different image.
 
 ---

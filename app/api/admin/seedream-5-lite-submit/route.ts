@@ -85,7 +85,8 @@ export async function POST(req: Request) {
       const dataUris: string[] = (images_base64 as string[])
         .slice(0, 10)
         .filter((uri: string) => typeof uri === 'string' && uri.length > 0)
-        .map((uri: string) => uri.startsWith('data:') ? uri : `data:image/jpeg;base64,${uri}`)
+        // Library refs arrive as https URLs — fal fetches those natively; only bare base64 needs the data-URI wrapper
+        .map((uri: string) => (uri.startsWith('data:') || uri.startsWith('http')) ? uri : `data:image/jpeg;base64,${uri}`)
 
       if (dataUris.length > 0) {
         input.image_urls = dataUris

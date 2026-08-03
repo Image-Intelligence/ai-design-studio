@@ -11,6 +11,25 @@ import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '
 
 fal.config({ credentials: process.env.FAL_KEY })
 
+// fal rejects reference files over 10MB ("File size exceeds the maximum allowed
+// size of 10485760 bytes"). Library refs are stored full-quality, so originals can
+// exceed that — compress just the copy sent to the model, never the stored ref.
+const FAL_REF_MAX_BYTES = 10 * 1024 * 1024
+
+async function compressForFal(buffer: Buffer): Promise<{ buffer: Buffer; mimeType: string }> {
+  const sharp = (await import('sharp')).default
+  // Try progressively harder: cap the long edge, then step down JPEG quality
+  for (const [maxDim, quality] of [[4096, 92], [4096, 85], [3072, 82], [2048, 78]] as const) {
+    const out = await sharp(buffer)
+      .rotate() // bake EXIF orientation before stripping metadata
+      .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer()
+    if (out.length <= FAL_REF_MAX_BYTES) return { buffer: out, mimeType: 'image/jpeg' }
+  }
+  throw new Error('Reference image could not be compressed under the 10MB model limit')
+}
+
 // Maps our aspect ratio strings to Wan 2.7 Pro image_size enum values
 function aspectRatioToImageSize(aspectRatio: string): string {
   switch (aspectRatio) {
@@ -63,17 +82,37 @@ export async function POST(req: Request) {
         const imgUrl = image_urls[i]
         if (imgUrl.startsWith('data:')) {
           const [meta, b64] = imgUrl.split(',')
-          const mimeType = meta.split(':')[1]?.split(';')[0] || 'image/jpeg'
-          const buffer = Buffer.from(b64, 'base64')
-          const falBlob = new Blob([buffer], { type: mimeType })
-          const falUrl = await fal.storage.upload(falBlob)
+          let mimeType = meta.split(':')[1]?.split(';')[0] || 'image/jpeg'
+          let buffer: Buffer = Buffer.from(b64, 'base64')
           const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg'
+          // Store the ORIGINAL full-quality upload; compress only fal's copy
           const vUrl = await uploadToR2(`reference-wan27-${Date.now()}-${i}.${ext}`, buffer, mimeType)
+          if (buffer.length > FAL_REF_MAX_BYTES) {
+            ({ buffer, mimeType } = await compressForFal(buffer))
+          }
+          const falUrl = await fal.storage.upload(new Blob([new Uint8Array(buffer)], { type: mimeType }))
           hostedUrls.push(falUrl)
           permanentReferenceUrls.push(vUrl)
         } else {
-          hostedUrls.push(imgUrl)
+          // Hosted URL (library ref) — originals are stored full-quality, so check
+          // the real size and swap in a compressed fal-storage copy when over cap
           permanentReferenceUrls.push(imgUrl)
+          let pushed = false
+          try {
+            const head = await fetch(imgUrl, { method: 'HEAD' })
+            const len = parseInt(head.headers.get('content-length') || '0')
+            if (len > FAL_REF_MAX_BYTES) {
+              const res = await fetch(imgUrl)
+              if (res.ok) {
+                const { buffer, mimeType } = await compressForFal(Buffer.from(await res.arrayBuffer()))
+                hostedUrls.push(await fal.storage.upload(new Blob([new Uint8Array(buffer)], { type: mimeType })))
+                pushed = true
+              }
+            }
+          } catch (e) {
+            console.warn('Wan 2.7 Pro ref size check failed — passing URL through:', e)
+          }
+          if (!pushed) hostedUrls.push(imgUrl)
         }
       }
       input.image_urls = hostedUrls

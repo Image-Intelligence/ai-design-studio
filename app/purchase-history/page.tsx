@@ -1,10 +1,9 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Button } from "@/components/ui/button"
-import { ArrowLeft, Receipt } from "lucide-react"
+import { Receipt } from "lucide-react"
 import { useRouter } from "next/navigation"
-import Link from "next/link"
+import { SitePageHeader, SiteBrandHero } from "@/components/SitePageHeader"
 
 interface Purchase {
   id: number
@@ -64,72 +63,60 @@ export default function PurchaseHistoryPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#050810] flex items-center justify-center">
-        <div className="text-cyan-400 text-xl">Loading...</div>
+        <div className="w-5 h-5 rounded-full border-2 border-slate-700 border-t-white animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-[#050810] text-white">
-      {/* Background grid */}
-      <div className="fixed inset-0 bg-[linear-gradient(rgba(0,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
+    <div className="min-h-screen bg-[#050810] text-slate-100 flex flex-col">
+      <SitePageHeader />
 
-      <div className="relative z-10 max-w-4xl mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
-          <Link href="/dashboard">
-            <Button variant="ghost" className="text-slate-400 hover:text-white">
-              <ArrowLeft className="mr-2" size={20} />
-              Back to Dashboard
-            </Button>
-          </Link>
-        </div>
+      <main className="flex-1 flex flex-col justify-center max-w-4xl mx-auto w-full px-4 py-10 gap-8">
+        <SiteBrandHero />
 
-        {/* Title */}
-        <div className="flex items-center gap-3 mb-8">
-          <Receipt className="text-cyan-400" size={32} />
-          <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-fuchsia-500">
-            PURCHASE HISTORY
-          </h1>
+        <div>
+          <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">Purchase History</h1>
+          <p className="text-center text-sm text-slate-500">Every ticket and subscription transaction on your account.</p>
         </div>
 
         {/* Purchase List */}
-        <div className="space-y-4">
+        <div className="space-y-3">
           {purchases.length === 0 ? (
-            <div className="text-center py-16 border border-slate-800 rounded-xl bg-slate-900/50">
-              <Receipt className="mx-auto text-slate-700 mb-4" size={64} />
-              <p className="text-xl font-bold text-slate-400 mb-2">No purchases yet</p>
+            <div className="text-center py-14 border border-white/10 rounded-xl bg-white/[0.03]">
+              <Receipt className="mx-auto text-slate-700 mb-4" size={48} />
+              <p className="text-base font-bold text-slate-300 mb-1">No purchases yet</p>
               <p className="text-sm text-slate-600">Your ticket purchase history will appear here</p>
             </div>
           ) : (
             purchases.map((purchase) => (
               <div
                 key={purchase.id}
-                className="p-6 rounded-xl border border-slate-800 bg-slate-900/40 hover:border-cyan-500/30 transition-colors"
+                className="p-5 rounded-xl border border-white/10 bg-white/[0.03] hover:border-white/20 transition-colors"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="text-lg font-bold text-white">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
+                      <span className="text-base font-bold text-white">
                         {purchase.description}
                       </span>
-                      <span className={`text-xs px-2 py-1 rounded font-bold ${
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
                         purchase.status === 'completed'
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-yellow-500/20 text-yellow-400'
+                          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/25'
+                          : 'bg-amber-500/15 text-amber-300 border border-amber-500/25'
                       }`}>
-                        {purchase.status.toUpperCase()}
+                        {purchase.status}
                       </span>
                     </div>
                     <p className="text-sm text-slate-400 mb-1">
                       {formatDate(purchase.date)}
                     </p>
-                    <p className="text-xs text-slate-600 font-mono">
+                    <p className="text-xs text-slate-600 font-mono truncate">
                       Order ID: {purchase.paypalOrderId}
                     </p>
                   </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-black text-cyan-400">
+                  <div className="text-right shrink-0">
+                    <p className="text-xl font-black text-white">
                       ${purchase.amount.toFixed(2)}
                     </p>
                     <p className="text-xs text-slate-500">{purchase.type}</p>
@@ -142,10 +129,10 @@ export default function PurchaseHistoryPage() {
 
         {/* Summary */}
         {purchases.length > 0 && (
-          <div className="mt-8 p-6 rounded-xl border border-cyan-500/30 bg-slate-900/80">
+          <div className="p-5 rounded-xl border border-white/15 bg-white/[0.04]">
             <div className="flex items-center justify-between">
-              <span className="text-lg font-bold text-slate-400">Total Purchases</span>
-              <span className="text-2xl font-black text-cyan-400">
+              <span className="text-sm font-bold text-slate-400 uppercase tracking-wider">Total Purchases</span>
+              <span className="text-xl font-black text-white">
                 ${purchases.reduce((sum, p) => sum + p.amount, 0).toFixed(2)}
               </span>
             </div>
@@ -154,7 +141,11 @@ export default function PurchaseHistoryPage() {
             </p>
           </div>
         )}
-      </div>
+
+        <p className="text-center text-xs text-slate-600">
+          © {new Date().getFullYear()} Prompt &amp; Protocol LLC · Orlando, Florida, USA
+        </p>
+      </main>
     </div>
   )
 }

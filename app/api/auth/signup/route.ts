@@ -6,7 +6,7 @@ import { hashPassword, createSession, isValidEmail, isValidPassword } from '@/li
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    const { email, password, name } = body
+    const { email, password, name, ageConfirmed } = body
 
     // Validation
     if (!email || !password) {
@@ -31,6 +31,15 @@ export async function POST(request: Request) {
       )
     }
 
+    // CCBill compliance: the 18+ certification must be an explicit, server-checked
+    // attestation — not just a client-side required checkbox
+    if (ageConfirmed !== true) {
+      return NextResponse.json(
+        { error: 'You must confirm that you are 18 years of age or older' },
+        { status: 400 }
+      )
+    }
+
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
@@ -50,6 +59,7 @@ export async function POST(request: Request) {
         email: email.toLowerCase(),
         password: hashedPassword,
         name: name || null,
+        ageAttestedAt: new Date(),
       },
     })
 

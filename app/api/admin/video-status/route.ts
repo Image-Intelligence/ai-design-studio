@@ -133,9 +133,11 @@ export async function POST(req: Request) {
     // 422 ValidationError = FAL rejected the job (bad input, unsupported format, content policy)
     // Treat these as permanent failures so the UI stops polling and shows the error.
     if (error.status === 422 || error.constructor?.name === 'ValidationError') {
-      const detail = Array.isArray(error.body?.detail)
+      const rawDetail = Array.isArray(error.body?.detail)
         ? error.body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ')
         : error.body?.message || error.message || 'Unprocessable content'
+      const { friendlyFalVideoError } = await import('@/lib/fal-friendly-errors')
+      const detail = friendlyFalVideoError(rawDetail)
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
       return NextResponse.json({ status: 'failed', error: `Generation failed: ${detail}` })
     }

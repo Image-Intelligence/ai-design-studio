@@ -116,6 +116,14 @@ export async function POST(req: Request) {
           for (let i = 0; i < referenceImages.slice(0, 8).length; i++) {
             const img = referenceImages[i] as string
             try {
+              // Library refs arrive as permanent https URLs — pass them straight
+              // to fal (it fetches URLs natively). Base64-decoding a URL string
+              // would upload garbage bytes the model can't read.
+              if (img.startsWith('http')) {
+                falUrls.push(img)
+                if (!permanentReferenceUrls.includes(img)) permanentReferenceUrls.push(img)
+                continue
+              }
               const base64 = img.startsWith('data:') ? img.split(',')[1] : img
               const mimeType = img.startsWith('data:') ? img.split(';')[0].replace('data:', '') : 'image/jpeg'
               const buffer = Buffer.from(base64, 'base64')
@@ -130,6 +138,13 @@ export async function POST(req: Request) {
             } catch (e) {
               console.error(`gpt-image-2-stream: failed to upload ref image ${i}:`, e)
             }
+          }
+          // If every ref failed to upload, the edit endpoint would 422 on an empty
+          // image_urls — fail fast with an actionable message (and refund) instead.
+          if (falUrls.length === 0) {
+            await refundGenerationTickets(userId, sessionUser.email, ticketCost)
+            send({ type: 'error', error: 'Your reference image(s) couldn\'t be uploaded to the model. Remove and re-add them, then try again.' })
+            return
           }
           endpoint = EDIT_ENDPOINT
           input = {
@@ -301,8 +316,9 @@ export async function POST(req: Request) {
           permanentReferenceUrls,
         })
       } catch (err: any) {
-        console.error('gpt-image-2-stream error:', err)
-        send({ type: 'error', error: err.message || 'Generation failed' })
+        console.error('gpt-image-2-stream error:', err, 'body:', JSON.stringify(err?.body))
+        const { friendlyFalError, extractFalErrorDetail } = await import('@/lib/fal-friendly-errors')
+        send({ type: 'error', error: friendlyFalError(extractFalErrorDetail(err)) })
         // Only refund server-side if FAL submit never happened — post-submit failures
         // are refunded by the client's existing use-tickets refund call.
         if (!submittedEventSent) {

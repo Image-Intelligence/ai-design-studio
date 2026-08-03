@@ -18,9 +18,13 @@ model User {
   email     String   @unique
   password  String?  // Made optional to allow migration of existing users
   name      String?
+  avatarUrl String?  // Profile picture (cropped square on public R2)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+  // CCBill compliance: timestamp of the user's 18+ certification (set at signup,
+  // or via the one-time attestation modal for accounts that predate it)
+  ageAttestedAt DateTime?
+
   // Relations
   sessions          Session[]
   tickets           Ticket?
@@ -64,6 +68,18 @@ model User {
   // Account-scoped reference image library (portal-v2 Refs dropdown)
   userRefFolders      UserRefFolder[]
   userReferences      UserReference[]
+
+  // Per-user organization folders for generated images (my-generations page)
+  generationFolders   UserGenerationFolder[]
+
+  // AI Chat Hub (admin-only, portal-v2)
+  chatProjects        ChatProject[]
+  chats               Chat[]
+  chatProviderKeys    ChatProviderKey[]
+  chatMemories        ChatMemory[]
+
+  // Desktop-app link: personal bearer API keys
+  apiKeys             ApiKey[]
 }
 
 model Session {
@@ -76,6 +92,25 @@ model Session {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   @@index([token])
+  @@index([userId])
+}
+
+// Personal API keys for the desktop app ("pp_live_..." bearer tokens).
+// Server stores only the SHA-256 hash of the full key; keyPrefix is display-only.
+model ApiKey {
+  id          String    @id @default(cuid())
+  userId      Int
+  name        String
+  keyHash     String    @unique
+  keyPrefix   String
+  permissions Json      @default("{}")
+  disabled    Boolean   @default(false)
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([userId])
 }
 
@@ -190,6 +225,11 @@ model GeneratedImage {
   adminCaption       String?  @db.Text
 
   bucketImages       DatasetBucketImage[]
+  contentReports     ContentReport[]
+
+  // Per-user organization folder (null = unfiled). Deleting a folder re-parents its images.
+  folderId           Int?
+  folder             UserGenerationFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -204,16 +244,58 @@ model GeneratedImage {
   @@index([falRequestId]) // Idempotency lookups
   @@index([markedForTraining]) // Dataset export queries
   @@index([adminTags])         // Tag filter queries
+  @@index([folderId])          // Folder-scoped feed queries
   // Hot feed query: where { userId, isDeleted, isHidden } orderBy createdAt desc
   @@index([userId, isDeleted, isHidden, createdAt])
+  // Folder-scoped feed query: where { userId, folderId, isDeleted, isHidden } orderBy createdAt desc
+  @@index([userId, folderId, isDeleted, isHidden, createdAt])
+}
+
+// CCBill compliance: public complaint / takedown / depicted-person-appeal intake.
+// Reports must outlive the reported image (30-day purge), hence onDelete: SetNull —
+// the monthly processor report aggregates these rows.
+model ContentReport {
+  id               Int       @id @default(autoincrement())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  type             String    // illegal-content | non-consensual | underage-concern | copyright | depicted-person-appeal | other
+  contentUrl       String
+  description      String    @db.Text
+  reporterEmail    String?
+  reporterName     String?
+  isDepictedPerson Boolean   @default(false)
+  status           String    @default("open") // open | under-review | resolved-removed | resolved-no-violation | escalated
+  resolutionNote   String?   @db.Text
+  actionTaken      String?
+  resolvedAt       DateTime?
+  reviewedBy       String?
+  relatedImageId   Int?
+  relatedImage     GeneratedImage? @relation(fields: [relatedImageId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
 }
 
 // ============================================
 // EXISTING TABLES (UPDATED)
 // ============================================
 
+// Admin-uploaded background media (image or video) for the home-page section cards.
+// Keyed by a stable card id: "image:{name}", "video:{name}", "shop:tickets",
+// "shop:subscriptions", "gen:all", "admin:chat". Served as direct public R2 URLs.
+model HomeCard {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  mediaUrl  String
+  mediaType String   // 'image' | 'video'
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model SystemState {
   id                       Int      @id @default(autoincrement())
+  logoUrl                  String?  // Site logo (admin-uploaded, shown to everyone in the portal-v2 header)
   isShopOpen               Boolean  @default(true)
   isMaintenanceMode        Boolean  @default(false)
   runesMaintenance         Boolean  @default(false)
@@ -752,6 +834,8 @@ model Subscription {
   lsSubscriptionId     String?   @unique // LemonSqueezy subscription ID
   lsVariantId          Int?      // LemonSqueezy variant ID
   lsCurrentPeriodEnd   DateTime? // Current billing period end (renews_at from LS)
+  ccbillSubscriptionId    String? @unique // CCBill subscription ID (NewSaleSuccess)
+  ccbillLastTransactionId String? // Last processed CCBill transaction — renewal idempotency
   metadata             Json?     // Plan info (plan name, ticketsPerCycle, etc.)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
@@ -843,6 +927,7 @@ model UserReference {
   isCleared Boolean   @default(false) // soft delete — hidden from user, kept for admin
   clearedAt DateTime?
   source    String    @default("library") // 'library' | 'generation' (backfilled from GeneratedImage.referenceImageUrls history)
+  layers    String?   // Dev-Tier multi-layer canvas JSON: { enabled, layers: [{id,url,name,visible,opacity,auto?}] } — applied via out-of-band DDL (add-ref-layers.js); routes use raw SQL, no client regen needed
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
@@ -852,6 +937,26 @@ model UserReference {
   @@index([userId, isCleared])
   @@index([folderId])
   @@index([userId, createdAt])
+}
+
+// Per-user nested folders for organizing generated images (my-generations page).
+// Mirrors UserRefFolder. Deleting a folder re-parents its images + child folders
+// to the deleted folder's parent — nothing inside is ever lost.
+model UserGenerationFolder {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  name      String
+  parentId  Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent   UserGenerationFolder?  @relation("UserGenerationFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children UserGenerationFolder[] @relation("UserGenerationFolderTree")
+  images   GeneratedImage[]
+
+  @@index([userId])
+  @@index([parentId])
 }
 
 // ============================================
@@ -972,6 +1077,7 @@ model GenerationQueue {
   resultUrl        String?  // Generated image/video URL
   resultImageId    Int?     // GeneratedImage DB id (set by webhook on completion)
   errorMessage     String?  @db.Text
+  dismissedAt      DateTime? // User dismissed the failed tile from their feed (applied out-of-band via add-dismissed-at.js; /api/user/failed-generations uses raw SQL so no client regen needed)
 
   // FAL.ai async tracking
   falRequestId     String?  // FAL.ai request_id returned by fal.queue.submit()
@@ -1054,4 +1160,90 @@ model AutoFillJob {
 
   @@index([status])
   @@index([createdAt])
+}
+
+// ============================================
+// AI CHAT HUB (admin-only, portal-v2)
+// ============================================
+
+model ChatProject {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  name      String
+  memory    String?  @db.Text // agent project memory — notes persisted across chats
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chats Chat[]
+
+  @@index([userId, updatedAt])
+}
+
+model Chat {
+  id           Int     @id @default(autoincrement())
+  userId       Int
+  projectId    Int?    // null = standalone chat outside any project
+  title        String  @default("New chat")
+  model        String  // last-used gateway model id — preselects the header dropdown
+  source       String  @default("manual") // 'manual' | future: 'delegator' | 'comparison'
+  systemPrompt String? @db.Text // per-chat instructions ("you are a fashion designer…")
+  agentMode    String  @default("accept") // 'plan' | 'accept' (ask before tools) | 'approved' (auto)
+  memorySummary String? @db.Text // auto-compaction: summary of messages older than the history window
+  summaryUpToId Int?    // newest message id covered by memorySummary
+  skills        Json?   // agent skill ids enabled for this chat (null = all skills / legacy)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project  ChatProject?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, updatedAt])
+  @@index([projectId, updatedAt])
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  chatId    Int
+  role      String   // 'user' | 'assistant' | 'system'
+  content   String   @db.Text
+  model     String?  // gateway model that produced this row (assistant messages)
+  metadata  Json?    // { usage, finishReason, aborted?, error? }
+  imageUrls String[] @default([]) // user msgs: attached reference images; assistant msgs: generated images
+  createdAt DateTime @default(now())
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, id])
+}
+
+model ChatProviderKey {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  provider  String   // 'gateway' | 'Anthropic' | 'OpenAI' | 'Google' | 'xAI' | 'instagram' (JSON creds blob)
+  encrypted String   @db.Text // AES-256-GCM (iv:tag:ciphertext, base64) — see lib/chat-key-crypto
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+}
+
+// Account-global agent memory — short durable facts shared by EVERY chat
+// (Higgsfield-style "supercomputer memory"). Distinct from ChatProject.memory
+// (per-project blob) and Chat.memorySummary (compaction).
+model ChatMemory {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  content   String   @db.VarChar(500)
+  category  String?  // short free-form label: 'brand' | 'preference' | 'fact' | ...
+  source    String   @default("user") // 'user' (Memory panel) | 'agent' (remember tool)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }

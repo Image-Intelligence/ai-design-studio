@@ -177,6 +177,16 @@ export async function POST(req: NextRequest) {
 
     // Map UI model IDs to actual API model IDs
     let actualModel = model;
+    // Gemini scanner models are ADMIN ONLY (retired from public 2026-07-29)
+    {
+      const geminiScanners = new Set(['pro-scanner-v3', 'flash-scanner-v2.5', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image', 'gemini-3-pro-image'])
+      if (geminiScanners.has(model)) {
+        const { checkIsAdmin } = await import('@/lib/admin-check')
+        if (!(await checkIsAdmin(sessionUser.email))) {
+          return NextResponse.json({ success: false, error: 'This model is not available' }, { status: 403 })
+        }
+      }
+    }
     if (model === 'pro-scanner-v3') {
       actualModel = 'gemini-3-pro-image-preview';
       console.log('🔄 Mapped pro-scanner-v3 → gemini-3-pro-image-preview');

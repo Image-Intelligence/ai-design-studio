@@ -866,20 +866,10 @@ export default function DevTierAnalytics() {
                       {(() => {
                         const disc = getDiscountInfo(sub)
                         if (!disc) return null
-                        if (disc.isGrandfathered) {
-                          return (
-                            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-bold border border-amber-500/40">
-                              🔒 30% OFF
-                              {disc.periodEnd
-                                ? <span className="font-normal text-amber-500">· drops to 20% {disc.periodEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                                : <span className="font-normal text-amber-500">· indefinite (no period end)</span>
-                              }
-                            </span>
-                          )
-                        }
+                        // Dev Tier discount unified at 10% for all members (2026-07-29)
                         return (
                           <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-300 text-xs font-bold border border-purple-500/40">
-                            20% OFF
+                            10% OFF
                           </span>
                         )
                       })()}

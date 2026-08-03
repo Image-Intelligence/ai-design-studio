@@ -135,9 +135,8 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('gpt-image-2-status error:', error)
     if (error.status === 422 || error.constructor?.name === 'ValidationError') {
-      const detail = Array.isArray(error.body?.detail)
-        ? error.body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ')
-        : error.body?.message || error.message || 'Unprocessable content'
+      const { friendlyFalError, extractFalErrorDetail } = await import('@/lib/fal-friendly-errors')
+      const detail = friendlyFalError(extractFalErrorDetail(error))
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
       return NextResponse.json({ status: 'failed', error: `Generation failed: ${detail}` })
     }

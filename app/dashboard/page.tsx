@@ -1,15 +1,17 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle } from "lucide-react"
+import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
+import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
 
 interface UserData {
   id: number
   email: string
   ticketBalance: number
+  avatarUrl?: string | null
 }
 
 interface GeneratedImage {
@@ -47,11 +49,6 @@ export default function DashboardPage() {
   const [isGrandfathered, setIsGrandfathered] = useState(false)
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false)
   const [isGenerationMaintenance, setIsGenerationMaintenance] = useState(false)
-
-  // Echo Chamber state
-  const [echoMessage, setEchoMessage] = useState("")
-  const [isTransmitting, setIsTransmitting] = useState(false)
-  const [submitSuccess, setSubmitSuccess] = useState(false)
 
   // Change password state
   const [showPasswordModal, setShowPasswordModal] = useState(false)
@@ -144,24 +141,6 @@ export default function DashboardPage() {
     } catch {}
   }
 
-  const handleEchoSubmit = async () => {
-    if (!echoMessage.trim()) return
-    setIsTransmitting(true)
-    setSubmitSuccess(false)
-    try {
-      const response = await fetch('/api/echo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: echoMessage })
-      })
-      if (!response.ok) throw new Error('Failed')
-      setEchoMessage("")
-      setSubmitSuccess(true)
-      setTimeout(() => setSubmitSuccess(false), 2000)
-    } catch {}
-    finally { setIsTransmitting(false) }
-  }
-
   const handleChangePassword = async () => {
     setPwError("")
     setPwSubmitting(true)
@@ -199,7 +178,7 @@ export default function DashboardPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#050810] flex items-center justify-center">
-        <div className="w-5 h-5 rounded-full border-2 border-slate-700 border-t-cyan-400 animate-spin" />
+        <div className="w-5 h-5 rounded-full border-2 border-slate-700 border-t-white animate-spin" />
       </div>
     )
   }
@@ -212,121 +191,123 @@ export default function DashboardPage() {
 
   return (
     <>
-    <div className="min-h-screen bg-[#050810] text-white">
+    <div className="min-h-[100dvh] bg-[#050810] text-white flex flex-col">
       {/* Subtle grid */}
       <div className="fixed inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
       {/* Ambient glows */}
-      <div className="fixed top-0 left-1/4 w-[500px] h-[300px] bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
-      <div className="fixed bottom-0 right-1/4 w-[400px] h-[300px] bg-fuchsia-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="fixed top-0 left-1/4 w-[500px] h-[300px] bg-white/[0.03] rounded-full blur-3xl pointer-events-none" />
+      <div className="fixed bottom-0 right-1/4 w-[400px] h-[300px] bg-white/[0.03] rounded-full blur-3xl pointer-events-none" />
 
-      <div className="relative z-10 max-w-4xl mx-auto px-4 py-10">
+      <div className="relative z-10 flex-1 w-full max-w-5xl mx-auto px-3 sm:px-5 py-3 sm:py-5 flex flex-col justify-center gap-2.5 sm:gap-3">
 
         {/* Generation maintenance banner — admin emails bypass this */}
         {isGenerationMaintenance && user !== null && !['dirtysecretai@gmail.com', 'promptandprotocol@gmail.com'].includes(user.email) && (
-          <div className="mb-6 flex items-start gap-3 px-4 py-4 rounded-xl border border-red-500/40 bg-red-500/10">
-            <AlertTriangle size={18} className="text-red-400 mt-0.5 shrink-0" />
+          <div className="shrink-0 flex items-start gap-2.5 px-3 py-2.5 rounded-xl border border-red-500/40 bg-red-500/10">
+            <AlertTriangle size={15} className="text-red-400 mt-0.5 shrink-0" />
             <div>
-              <p className="text-sm font-bold text-red-300">Generation Temporarily Unavailable</p>
-              <p className="text-xs text-slate-400 mt-0.5">AI generation is currently disabled for maintenance. Your tickets are safe — please check back soon.</p>
+              <p className="text-xs font-bold text-red-300">Generation Temporarily Unavailable</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">AI generation is currently disabled for maintenance. Your tickets are safe — please check back soon.</p>
             </div>
           </div>
         )}
 
-        {/* Brand header */}
-        <div className="mb-8">
-          {/* Logo + wordmark */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-500/25 to-fuchsia-500/25 border border-cyan-500/20 flex items-center justify-center shadow-lg shadow-cyan-500/10">
-                <Sparkles size={18} className="text-cyan-400" />
-              </div>
-              <div>
-                <h1 className="text-xl font-black tracking-tight bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 bg-clip-text text-transparent leading-none">
-                  AI Design Studio
-                </h1>
-                <p className="text-[10px] font-mono text-slate-600 tracking-widest uppercase mt-0.5">Prompt Protocol</p>
-              </div>
+        {/* Header row: brand + user actions */}
+        <div className="shrink-0 flex items-center justify-between gap-2">
+          <SiteBrandMark size={38} />
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-black/40 font-mono text-xs">
+              <Ticket size={11} className="text-slate-500" />
+              <span className="text-white tabular-nums">{user.ticketBalance.toLocaleString()}</span>
             </div>
-            {/* User actions */}
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/20 bg-black/40 font-mono text-xs">
-                <Ticket size={11} className="text-cyan-500/70" />
-                <span className="text-cyan-400 tabular-nums">{user.ticketBalance.toLocaleString()}</span>
-              </div>
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/8 bg-white/3">
-                <div className="w-5 h-5 rounded-full bg-gradient-to-br from-cyan-500 to-fuchsia-500 flex items-center justify-center text-[10px] font-black text-black">
-                  {user.email[0].toUpperCase()}
-                </div>
-                <span className="text-xs text-slate-400 max-w-[130px] truncate hidden sm:block">{user.email}</span>
-                {hasPromptStudioDev && (
-                  <span className="text-[9px] font-black bg-gradient-to-r from-purple-500 to-cyan-500 text-white px-1.5 py-0.5 rounded-full leading-none">
-                    DEV
-                  </span>
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg border border-white/8 bg-white/3">
+              {/* Profile picture — synced account-wide (same avatarUrl as the portal-v2 bubble) */}
+              <div className="w-6 h-6 rounded-full overflow-hidden bg-gradient-to-br from-slate-200 to-slate-500 flex items-center justify-center text-[10px] font-black text-black shrink-0">
+                {user.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={user.avatarUrl} alt="Profile" className="w-full h-full object-cover" />
+                ) : (
+                  user.email[0].toUpperCase()
                 )}
               </div>
-              {isAdmin && (
-                <Link href="/admin">
-                  <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 hover:border-cyan-400/50 hover:bg-cyan-500/15 text-xs text-cyan-400 transition-all">
-                    <ShieldCheck size={12} />
-                    <span className="hidden sm:inline">Admin</span>
-                  </button>
-                </Link>
+              <span className="text-xs text-slate-400 max-w-[130px] truncate hidden md:block">{user.email}</span>
+              {hasPromptStudioDev && (
+                <span className="text-[9px] font-black bg-white/10 border border-white/20 text-white px-1.5 py-0.5 rounded-full leading-none">
+                  DEV
+                </span>
               )}
-              <button
-                onClick={handleLogout}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/8 bg-white/3 hover:border-red-500/30 hover:bg-red-500/5 hover:text-red-400 text-xs text-slate-400 transition-all"
-              >
-                <LogOut size={12} />
-                <span className="hidden sm:inline">Logout</span>
-              </button>
             </div>
-          </div>
-
-          {/* Welcome bar */}
-          <div className="flex items-center justify-between px-4 py-3 rounded-xl border border-white/6 bg-white/2">
-            <div>
-              <p className="text-sm font-semibold text-white">Welcome back, <span className="bg-gradient-to-r from-cyan-400 to-fuchsia-400 bg-clip-text text-transparent">{user.email.split('@')[0]}</span></p>
-              <p className="text-[11px] text-slate-600 mt-0.5">Your creative workspace is ready.</p>
-            </div>
-            <div className="hidden sm:flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse" />
-              <span className="text-[10px] font-mono text-slate-600">All systems online</span>
-            </div>
+            {isAdmin && (
+              <Link href="/admin">
+                <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/15 bg-white/[0.06] hover:border-white/30 hover:bg-white/10 text-xs text-slate-200 transition-all">
+                  <ShieldCheck size={12} />
+                  <span className="hidden sm:inline">Admin</span>
+                </button>
+              </Link>
+            )}
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/8 bg-white/3 hover:border-red-500/30 hover:bg-red-500/5 hover:text-red-400 text-xs text-slate-400 transition-all"
+            >
+              <LogOut size={12} />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
           </div>
         </div>
 
-        {/* Recent Generations */}
-        <div className="rounded-2xl border border-white/6 bg-white/2 backdrop-blur-sm p-5 mb-4">
-          <div className="flex items-center justify-between mb-4">
+        {/* Welcome bar — hidden on very short screens (landscape phones) */}
+        <div className="shrink-0 flex items-center justify-between px-3 py-2 rounded-xl border border-white/6 bg-white/2 [@media(max-height:460px)]:hidden">
+          <p className="text-xs sm:text-sm font-semibold text-white">Welcome back, <span className="bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">{user.email.split('@')[0]}</span></p>
+          <div className="hidden sm:flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-[10px] font-mono text-slate-600">All systems online</span>
+          </div>
+        </div>
+
+        {/* Recent Generations — slim strip, hidden on very short screens */}
+        <div className="shrink-0 rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 [@media(max-height:460px)]:hidden">
+          <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <ImageIcon size={14} className="text-fuchsia-400" />
-              <span className="text-sm font-semibold text-white">Recent Generations</span>
+              <ImageIcon size={13} className="text-slate-300" />
+              <span className="text-xs font-semibold text-white">Recent Generations</span>
               {totalImageCount > 0 && (
-                <span className="text-[10px] font-mono text-slate-500 bg-white/5 px-2 py-0.5 rounded-full">{totalImageCount.toLocaleString()} total</span>
+                <span className="text-[9px] font-mono text-slate-500 bg-white/5 px-1.5 py-0.5 rounded-full">{totalImageCount.toLocaleString()}</span>
               )}
             </div>
-            <Link href="/my-images">
-              <button className="flex items-center gap-1 text-xs text-fuchsia-400 hover:text-fuchsia-300 transition-colors">
-                View All <ArrowRight size={11} />
+            <Link href="/my-generations">
+              <button className="flex items-center gap-1 text-[11px] text-slate-300 hover:text-white transition-colors">
+                View All <ArrowRight size={10} />
               </button>
             </Link>
           </div>
 
           {generatedImages.length === 0 ? (
-            <div className="flex items-center justify-center h-24 rounded-xl border border-dashed border-white/8 text-slate-600 text-sm">
+            <div className="flex items-center justify-center h-24 rounded-lg border border-dashed border-white/8 text-slate-600 text-sm">
               No generations yet
             </div>
           ) : (
             <div className="grid grid-cols-5 gap-2">
               {generatedImages.slice(0, 5).map((img, idx) => (
-                <Link href="/my-images" key={img.id || idx}>
-                  <div className="aspect-square rounded-lg overflow-hidden border border-white/6 hover:border-fuchsia-500/40 transition-all group relative">
+                <Link href="/my-generations" key={img.id || idx}>
+                  <div className="aspect-square rounded-lg overflow-hidden border border-white/6 hover:border-white/30 transition-all group relative">
                     {img.videoMetadata?.isVideo ? (() => {
                       const thumb = img.videoMetadata?.thumbnailUrl
                       const videoUrl = img.imageUrl
                       const needsVideoThumb = !thumb || thumb === videoUrl || /\.(mp4|webm|mov)(\?|$)/i.test(thumb)
                       return needsVideoThumb ? (
-                        <video src={videoUrl} className="w-full h-full object-cover group-hover:scale-105 transition-transform" muted playsInline preload="metadata" />
+                        // Autoplaying muted loop (like the home cards); #t=0.001 guarantees a
+                        // first frame renders even before playback starts. The callback ref
+                        // sets the muted PROPERTY — React's JSX attribute alone is unreliable
+                        // and unmuted autoplay gets blocked (which showed as blank tiles).
+                        <video
+                          src={`${videoUrl}#t=0.001`}
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                          preload="metadata"
+                          ref={el => { if (el) { el.muted = true; el.play().catch(() => {}) } }}
+                          className="w-full h-full object-cover"
+                        />
                       ) : (
                         <img src={thumb} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                       )
@@ -334,8 +315,8 @@ export default function DashboardPage() {
                       <img src={`/api/images/${img.id}?thumb=1`} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                     )}
                     {img.videoMetadata?.isVideo && (
-                      <div className="absolute bottom-1 left-1 flex items-center gap-0.5 bg-black/70 rounded px-1 py-0.5">
-                        <svg className="w-2.5 h-2.5 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
+                      <div className="absolute bottom-0.5 left-0.5 flex items-center bg-black/70 rounded px-0.5 py-0.5 pointer-events-none">
+                        <svg className="w-2 h-2 text-white/80" fill="currentColor" viewBox="0 0 24 24">
                           <polygon points="5 3 19 12 5 21 5 3" />
                         </svg>
                       </div>
@@ -352,111 +333,126 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* AI Design Studio */}
-        <div className="mb-4">
-          <Link href="/">
-            <div className="group rounded-2xl border border-cyan-500/20 hover:border-cyan-400/50 bg-cyan-500/5 backdrop-blur-sm p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 transition-all duration-200 hover:shadow-xl cursor-pointer">
-              <div className="w-12 h-12 rounded-2xl bg-cyan-500/15 flex items-center justify-center shrink-0">
-                <Sparkles size={22} className="text-cyan-400" />
-              </div>
+        {/* AI Design Studio — launcher with the animated silver rim (natural height) */}
+        <Link href="/" className="shrink-0 block group">
+          <div className="relative rounded-2xl overflow-hidden p-[2px] transition-transform duration-200 group-hover:scale-[1.004]">
+            {/* Rotating silver rim (oversized square so the sweep covers the wide card) */}
+            <span
+              className="absolute left-1/2 top-1/2 w-[250%] aspect-square -translate-x-1/2 -translate-y-1/2 animate-spin pointer-events-none"
+              style={{
+                background:
+                  "conic-gradient(from 0deg, rgba(226,232,240,0.08), #f8fafc, #94a3b8, rgba(226,232,240,0.12), #cbd5e1, #64748b, rgba(226,232,240,0.08))",
+                animationDuration: "6s",
+              }}
+            />
+            <div className="relative rounded-[14px] bg-[#0a0f1a] px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
+              {/* Synced site logo */}
+              <SiteLogoBox size={48} rounded={14} />
               <div className="flex-1 min-w-0">
-                <p className="text-base font-black text-cyan-400 mb-1">AI Design Studio</p>
-                <p className="text-xs text-slate-400 leading-relaxed mb-3">
-                  Your full creative workspace — generate images and videos with 20+ AI models, use reference images to guide your generations, and manage your entire session history in one place.
+                <p className="text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">
+                  AI Design Studio
                 </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {["20+ Models", "Image Generation", "Video Generation", "Reference Images", "Session History", "Multi-Queue"].map(tag => (
-                    <span key={tag} className="text-[9px] font-mono text-cyan-400/70 bg-cyan-500/10 border border-cyan-500/15 px-2 py-0.5 rounded-full">
+                <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
+                  Your full creative workspace — generate images and videos with 20+ AI models, guided by your reference images.
+                </p>
+                <div className="hidden lg:flex flex-wrap gap-1.5 mt-2 [@media(max-height:560px)]:hidden">
+                  {["20+ Models", "Image Generation", "Video Generation", "Reference Images", "Session History"].map(tag => (
+                    <span key={tag} className="text-[9px] font-mono text-slate-300 bg-white/[0.06] border border-white/10 px-2 py-0.5 rounded-full">
                       {tag}
                     </span>
                   ))}
                 </div>
               </div>
-              <button className="shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold transition-all">
-                Open Studio <ArrowRight size={11} />
-              </button>
+              {/* Open Studio — animated light sweep */}
+              <span className="relative overflow-hidden shrink-0 flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-bold group-hover:bg-white/15 group-hover:border-white/40 transition-all">
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                  style={{ animation: "sheen-sweep 2.6s infinite" }}
+                />
+                Open Studio <ArrowRight size={13} />
+              </span>
             </div>
-          </Link>
-        </div>
+          </div>
+        </Link>
 
-        {/* Bottom row: Account + Shop */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        {/* Bottom row: Account + Shop — side by side on all sizes */}
+        <div className="shrink-0 grid grid-cols-2 gap-2 sm:gap-3">
 
           {/* Account */}
-          <div className="rounded-2xl border border-white/6 bg-white/2 backdrop-blur-sm p-5">
-            <p className="text-[11px] font-mono text-slate-600 uppercase tracking-widest mb-3">Account</p>
-            <div className="space-y-2">
-              <Link href="/subscriptions">
-                <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-white/6 bg-white/2 hover:border-purple-500/30 hover:bg-purple-500/5 text-xs text-slate-400 hover:text-purple-400 transition-all">
-                  <Settings size={12} />
-                  Manage Subscriptions
+          <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
+            <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Account</p>
+            <div className="space-y-1.5">
+              <Link href="/subscriptions" className="block">
+                <button className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all">
+                  <Settings size={11} className="shrink-0" />
+                  <span className="truncate">Subscriptions</span>
                 </button>
               </Link>
-              <Link href="/purchase-history">
-                <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-white/6 bg-white/2 hover:border-cyan-500/30 hover:bg-cyan-500/5 text-xs text-slate-400 hover:text-cyan-400 transition-all">
-                  <Receipt size={12} />
-                  Purchase History
+              <Link href="/purchase-history" className="block">
+                <button className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all">
+                  <Receipt size={11} className="shrink-0" />
+                  <span className="truncate">Purchase History</span>
                 </button>
               </Link>
-              <Link href="/requests-feedback">
-                <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-white/6 bg-white/2 hover:border-fuchsia-500/30 hover:bg-fuchsia-500/5 text-xs text-slate-400 hover:text-fuchsia-400 transition-all">
-                  <Terminal size={12} />
-                  Feedback
+              <Link href="/requests-feedback" className="block">
+                <button className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all">
+                  <Terminal size={11} className="shrink-0" />
+                  <span className="truncate">Feedback</span>
                 </button>
               </Link>
               <button
                 onClick={() => { setShowPasswordModal(true); setPwError(""); setPwSuccess(false) }}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-white/6 bg-white/2 hover:border-amber-500/30 hover:bg-amber-500/5 text-xs text-slate-400 hover:text-amber-400 transition-all"
+                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all"
               >
-                <KeyRound size={12} />
-                Change Password
+                <KeyRound size={11} className="shrink-0" />
+                <span className="truncate">Change Password</span>
               </button>
             </div>
           </div>
 
           {/* Shop */}
-          <div className="rounded-2xl border border-white/6 bg-white/2 backdrop-blur-sm p-5">
-            <p className="text-[11px] font-mono text-slate-600 uppercase tracking-widest mb-3">Shop</p>
-            <div className="space-y-2">
-              <Link href="/buy-tickets">
-                <div className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-cyan-500/20 bg-cyan-500/5 hover:border-cyan-400/40 hover:bg-cyan-500/10 transition-all cursor-pointer group">
-                  <div className="flex items-center gap-2">
-                    <Ticket size={13} className="text-cyan-400" />
-                    <div>
-                      <p className="text-xs font-semibold text-cyan-400">Buy Tickets</p>
-                      <p className="text-[10px] text-slate-600">
-                        {hasPromptStudioDev ? `Dev tier — ${isGrandfathered ? '30%' : '20%'} off` : 'From $5.00'}
+          <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
+            <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Shop</p>
+            <div className="space-y-1.5">
+              <Link href="/buy-tickets" className="block">
+                <div className="flex items-center justify-between px-2.5 py-2 rounded-lg border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Ticket size={12} className="text-white shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-white truncate">Buy Tickets</p>
+                      <p className="text-[9px] text-slate-600 truncate">
+                        {hasPromptStudioDev ? 'Dev tier — 10% off' : 'From $5.00'}
                       </p>
                     </div>
                   </div>
-                  <ArrowRight size={12} className="text-cyan-500/50 group-hover:text-cyan-400 transition-colors" />
+                  <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
                 </div>
               </Link>
               {!hasPromptStudioDev && (
-                <Link href="/prompting-studio/subscribe">
-                  <div className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-purple-500/20 bg-purple-500/5 hover:border-purple-400/40 hover:bg-purple-500/10 transition-all cursor-pointer group">
-                    <div className="flex items-center gap-2">
-                      <Sparkles size={13} className="text-purple-400" />
-                      <div>
-                        <p className="text-xs font-semibold text-purple-400">Upgrade to Dev Tier</p>
-                        <p className="text-[10px] text-slate-600">20% off tickets · From $20</p>
+                <Link href="/prompting-studio/subscribe" className="block">
+                  <div className="flex items-center justify-between px-2.5 py-2 rounded-lg border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Sparkles size={12} className="text-slate-300 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold text-white truncate">Upgrade to Dev Tier</p>
+                        <p className="text-[9px] text-slate-600 truncate">10% off tickets · From $20</p>
                       </div>
                     </div>
-                    <ArrowRight size={12} className="text-purple-500/50 group-hover:text-purple-400 transition-colors" />
+                    <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
                   </div>
                 </Link>
               )}
               {hasPromptStudioDev && (
-                <Link href="/subscriptions">
-                  <div className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-purple-500/20 bg-purple-500/5 hover:border-purple-400/40 hover:bg-purple-500/10 transition-all cursor-pointer group">
-                    <div className="flex items-center gap-2">
-                      <Sparkles size={13} className="text-purple-400" />
-                      <div>
-                        <p className="text-xs font-semibold text-purple-400">Dev Tier Active</p>
-                        <p className="text-[10px] text-slate-600">Manage subscription</p>
+                <Link href="/subscriptions" className="block">
+                  <div className="flex items-center justify-between px-2.5 py-2 rounded-lg border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Sparkles size={12} className="text-slate-300 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold text-white truncate">Dev Tier Active</p>
+                        <p className="text-[9px] text-slate-600 truncate">Manage subscription</p>
                       </div>
                     </div>
-                    <ArrowRight size={12} className="text-purple-500/50 group-hover:text-purple-400 transition-colors" />
+                    <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
                   </div>
                 </Link>
               )}
@@ -464,27 +460,25 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Quick Message */}
-        <div className="rounded-2xl border border-white/6 bg-white/2 backdrop-blur-sm p-5">
-          <p className="text-[11px] font-mono text-slate-600 uppercase tracking-widest mb-1">Quick Message</p>
-          <p className="text-[11px] text-slate-600 mb-3 leading-snug">
-            Messages sent here are <span className="text-slate-500">anonymous</span>. For account-level concerns or support, please use the <span className="text-fuchsia-400/80">Feedback</span> button above.
-          </p>
-          <div className="flex gap-2">
-            <input
-              value={echoMessage}
-              onChange={(e) => setEchoMessage(e.target.value)}
-              placeholder="Send feedback or a request..."
-              className="flex-1 bg-black/30 border border-white/8 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/40 transition-colors"
-              onKeyDown={(e) => e.key === 'Enter' && !isTransmitting && echoMessage.trim() && handleEchoSubmit()}
-            />
-            <button
-              onClick={handleEchoSubmit}
-              disabled={isTransmitting || !echoMessage.trim()}
-              className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500/20 to-fuchsia-500/20 border border-cyan-500/30 text-cyan-300 text-xs font-semibold hover:from-cyan-500/30 hover:to-fuchsia-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              {submitSuccess ? '✓' : isTransmitting ? '...' : 'Send'}
-            </button>
+        {/* Documents & Support — every page from the Policies hub, one tap away */}
+        <div className="shrink-0 rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
+          <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Documents &amp; Support</p>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+            {[
+              { href: "/policies", label: "Policies", icon: FileText },
+              { href: "/contact", label: "Contact", icon: Mail },
+              { href: "/terms", label: "Terms", icon: FileText },
+              { href: "/privacy", label: "Privacy", icon: FileText },
+              { href: "/refund", label: "Refund", icon: FileText },
+              { href: "/report", label: "Report", icon: ShieldCheck },
+            ].map(({ href, label, icon: Icon }) => (
+              <Link key={href} href={href}>
+                <button className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[10px] text-slate-400 hover:text-white transition-all">
+                  <Icon size={10} className="shrink-0" />
+                  <span className="truncate">{label}</span>
+                </button>
+              </Link>
+            ))}
           </div>
         </div>
 
@@ -497,12 +491,12 @@ export default function DashboardPage() {
     {showPasswordModal && (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowPasswordModal(false)} />
-        <div className="relative w-full max-w-md rounded-2xl border border-amber-500/20 bg-[#080c18] shadow-2xl shadow-amber-500/5 p-6">
+        <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-[#080c18] shadow-2xl shadow-black/40 p-6">
           {/* Header */}
           <div className="flex items-center justify-between mb-5">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-                <KeyRound size={15} className="text-amber-400" />
+              <div className="w-8 h-8 rounded-xl bg-white/[0.06] border border-white/15 flex items-center justify-center">
+                <KeyRound size={15} className="text-slate-200" />
               </div>
               <div>
                 <h2 className="text-sm font-black text-white">Change Password</h2>
@@ -532,7 +526,7 @@ export default function DashboardPage() {
                     value={pwCurrent}
                     onChange={e => setPwCurrent(e.target.value)}
                     placeholder="Enter current password"
-                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-amber-500/40 transition-colors"
+                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-white/25 transition-colors"
                   />
                   <button type="button" onClick={() => setShowPwCurrent(v => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
                     {showPwCurrent ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -549,7 +543,7 @@ export default function DashboardPage() {
                     value={pwCurrentConfirm}
                     onChange={e => setPwCurrentConfirm(e.target.value)}
                     placeholder="Re-enter current password"
-                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-amber-500/40 transition-colors"
+                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-white/25 transition-colors"
                   />
                   <button type="button" onClick={() => setShowPwCurrentConfirm(v => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
                     {showPwCurrentConfirm ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -568,7 +562,7 @@ export default function DashboardPage() {
                     value={pwNew}
                     onChange={e => setPwNew(e.target.value)}
                     placeholder="Enter new password"
-                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-amber-500/40 transition-colors"
+                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-white/25 transition-colors"
                   />
                   <button type="button" onClick={() => setShowPwNew(v => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
                     {showPwNew ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -587,7 +581,7 @@ export default function DashboardPage() {
                     onChange={e => setPwNewConfirm(e.target.value)}
                     placeholder="Re-enter new password"
                     onKeyDown={e => e.key === 'Enter' && !pwSubmitting && handleChangePassword()}
-                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-amber-500/40 transition-colors"
+                    className="w-full bg-black/40 border border-white/8 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-slate-600 outline-none focus:border-white/25 transition-colors"
                   />
                   <button type="button" onClick={() => setShowPwNewConfirm(v => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
                     {showPwNewConfirm ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -609,7 +603,7 @@ export default function DashboardPage() {
                 <button
                   onClick={handleChangePassword}
                   disabled={pwSubmitting || !pwCurrent || !pwCurrentConfirm || !pwNew || !pwNewConfirm}
-                  className="flex-1 py-2 rounded-lg bg-amber-500/15 border border-amber-500/30 text-xs font-semibold text-amber-400 hover:bg-amber-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  className="flex-1 py-2 rounded-lg bg-white/10 border border-white/20 text-xs font-semibold text-slate-200 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                 >
                   {pwSubmitting ? 'Updating...' : 'Update Password'}
                 </button>

@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { getUserRefLimit } from '@/lib/ref-limits'
+import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth'
 
 // Account-scoped reference library (portal-v2 Refs dropdown).
 // "Clear" is a soft delete (isCleared) — rows and R2 files are kept so
@@ -16,10 +17,15 @@ async function getAuthUser() {
 }
 
 // GET — full active library + folder tree + limit
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const user = await getAuthUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const resolved = await resolveRequestUser(req)
+    if ('error' in resolved) return resolved.error
+    const { user, apiAuth } = resolved
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'references:read')
+      if (denied) return denied
+    }
 
     const [references, folders, limit] = await Promise.all([
       prisma.userReference.findMany({
@@ -45,8 +51,13 @@ export async function GET() {
 // POST — create rows for already-uploaded R2 URLs. Limit-checked atomically.
 export async function POST(req: Request) {
   try {
-    const user = await getAuthUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const resolved = await resolveRequestUser(req)
+    if ('error' in resolved) return resolved.error
+    const { user, apiAuth } = resolved
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'references:write')
+      if (denied) return denied
+    }
 
     const body = await req.json()
     const items: { url?: unknown; folderId?: unknown }[] = Array.isArray(body?.items) ? body.items : []

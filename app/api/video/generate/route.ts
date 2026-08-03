@@ -5,6 +5,7 @@ import { syncAndClaimFalSlot } from '@/lib/admin-queue-helpers';
 import { isGenerationBlocked } from '@/lib/generation-guard';
 import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
+import { authenticateApiKey, invalidKeyResponse, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth';
 
 
 fal.config({
@@ -14,37 +15,56 @@ fal.config({
 // FAL endpoint IDs by model
 const FAL_ENDPOINTS: Record<string, string> = {
   'wan-2.5':               'fal-ai/wan-25-preview/image-to-video',
+  // Wan 2.7 (ADMIN ONLY while testing) — endpoint ids verified via fal's model API
+  'wan-2.7':               'fal-ai/wan/v2.7/image-to-video',
+  'wan-2.7-text':          'fal-ai/wan/v2.7/text-to-video',
   'kling-v3':              'fal-ai/kling-video/v3/pro/image-to-video',
   'kling-o3':              'fal-ai/kling-video/o3/standard/image-to-video',
   'kling-v3-motion':       'fal-ai/kling-video/v3/pro/motion-control',
   'seedance-1.5':          'fal-ai/bytedance/seedance/v1.5/pro/image-to-video',
   'seedance-1.5-text':     'fal-ai/bytedance/seedance/v1.5/pro/text-to-video',
-  'seedance-2.0-t2v':           'fal-ai/bytedance/seedance-2.0/text-to-video',
-  'seedance-2.0-i2v':           'fal-ai/bytedance/seedance-2.0/image-to-video',
-  'seedance-2.0-r2v':           'fal-ai/bytedance/seedance-2.0/reference-to-video',
-  'seedance-2.0-fast-t2v':      'fal-ai/bytedance/seedance-2.0/fast/text-to-video',
-  'seedance-2.0-fast-i2v':      'fal-ai/bytedance/seedance-2.0/fast/image-to-video',
-  'seedance-2.0-fast-r2v':      'fal-ai/bytedance/seedance-2.0/fast/reference-to-video',
+  // SD 2.0 lives under the `bytedance` owner — a `fal-ai/` prefix 404s with
+  // "Path /seedance-2.0/... not found" (verified against the live queue API)
+  'seedance-2.0-t2v':           'bytedance/seedance-2.0/text-to-video',
+  'seedance-2.0-i2v':           'bytedance/seedance-2.0/image-to-video',
+  'seedance-2.0-r2v':           'bytedance/seedance-2.0/reference-to-video',
+  'seedance-2.0-fast-t2v':      'bytedance/seedance-2.0/fast/text-to-video',
+  'seedance-2.0-fast-i2v':      'bytedance/seedance-2.0/fast/image-to-video',
+  'seedance-2.0-fast-r2v':      'bytedance/seedance-2.0/fast/reference-to-video',
   'lipsync-v3':                 'fal-ai/sync-lipsync/v3',
   'happy-horse':                'alibaba/happy-horse/image-to-video',
+  // Gemini Omni Flash lives under the `google` owner — NO `fal-ai/` prefix
+  // (same pattern as bytedance/seedance-2.0 above). ADMIN-ONLY model.
+  'gemini-omni-flash-t2v':      'google/gemini-omni-flash',
+  'gemini-omni-flash-i2v':      'google/gemini-omni-flash/image-to-video',
+  'gemini-omni-flash-r2v':      'google/gemini-omni-flash/reference-to-video',
+  'gemini-omni-flash-edit':     'google/gemini-omni-flash/edit',
 };
+
+// Models only admin accounts may use (pricing TBD) — enforced server-side,
+// independent of the client-supplied adminMode flag
+const ADMIN_ONLY_VIDEO_MODELS = new Set(['gemini-omni-flash', 'wan-2.7']);
 
 export async function POST(request: NextRequest) {
   try {
+    // Bearer API key (desktop app) first, session cookie fallback
+    const apiAuth0 = await authenticateApiKey(request)
+    if (apiAuth0 === 'invalid') return invalidKeyResponse()
+    const apiAuth = apiAuth0
     const _ck = await cookies(); const _tok = _ck.get('session')?.value
-    const _u = _tok ? await getUserFromSession(_tok) : null
+    const _u = apiAuth ? apiAuth.user : (_tok ? await getUserFromSession(_tok) : null)
     if (await isGenerationBlocked(_u?.email)) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
     const {
-      userId,
+      userId: userIdRaw,
       prompt,
       imageUrl,
       duration = '5',
       resolution = '1080p',
       audioUrl,
-      adminMode = false,
+      adminMode: adminModeRaw = false,
       model = 'wan-2.5',
       generateAudio = false,
       klingAspectRatio = '16:9',
@@ -55,12 +75,15 @@ export async function POST(request: NextRequest) {
       motionVideoDurationSec,
       characterOrientation = 'image',
       keepOriginalSound = true,
-      // SeeDance 2.0 reference-to-video
+      // SeeDance 2.0 reference-to-video (also reused for Gemini Omni Flash modes)
       sd20Mode = 't2v',
       referenceImageUrls,
       referenceVideoUrls,
       referenceAudioUrls,
       referenceVideoDurationSec = 0,
+      // Gemini Omni Flash edit (video-to-video)
+      editVideoUrl,
+      editVideoDurationSec = 0,
       // Lipsync v3
       lipsyncVideoUrl,
       lipsyncAudioUrl,
@@ -70,23 +93,63 @@ export async function POST(request: NextRequest) {
       wan25SafetyChecker = true,
       // Seedance 1.5 safety
       seedance15SafetyChecker = true,
+      // WAN 2.7 safety
+      wan27SafetyChecker = true,
     } = await request.json();
 
+    // CCBill compliance: fal content-safety flags from the client are only honored
+    // for verified admins — regular users ALWAYS run with the checker ON, no matter
+    // what the request body claims.
+    const { checkIsAdmin: _checkIsAdmin } = await import('@/lib/admin-check')
+    const isAdminUser = _u ? await _checkIsAdmin(_u.email) : false
+
+    // Bearer calls: enforce scopes + per-model permission; the authenticated
+    // user's id ALWAYS overrides the legacy body userId (never trust the body
+    // for ticket deduction on the key path), and adminMode is a portal concept.
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'generate:video', 'tickets:spend')
+      if (denied) return denied
+      if (!canUseModel(apiAuth, 'video', model)) return modelNotPermittedResponse(model)
+    }
+    const userId = apiAuth ? apiAuth.user.id : userIdRaw
+    const adminMode = apiAuth ? false : adminModeRaw
+
+    // Admin-only models: hard server gate, regardless of what the client sent
+    if (ADMIN_ONLY_VIDEO_MODELS.has(model) && !isAdminUser) {
+      return NextResponse.json({ success: false, error: 'Admin only' }, { status: 403 });
+    }
+
     const isSD20Family = model === 'seedance-2.0' || model === 'seedance-2.0-fast'
+    const isOmni = model === 'gemini-omni-flash'
     const isLipsync = model === 'lipsync-v3'
     // For SD20 family: auto-detect mode from imageUrl; explicit r2v overrides
     const effectiveSd20Mode = isSD20Family
       ? (sd20Mode === 'r2v' ? 'r2v' : imageUrl ? 'i2v' : 't2v')
-      : sd20Mode
+      : isOmni
+        ? (sd20Mode === 'r2v' || sd20Mode === 'edit' ? sd20Mode : imageUrl ? 'i2v' : 't2v')
+        : sd20Mode
     const isTextToVideo = model === 'seedance-1.5'
       ? !imageUrl
       : isSD20Family
-        ? (effectiveSd20Mode === 't2v')
-        : false
+        ? (effectiveSd20Mode !== 'i2v') // t2v/r2v need no start frame
+        : isOmni
+          ? (effectiveSd20Mode !== 'i2v') // t2v/r2v/edit need no start frame
+          : false
     if (!imageUrl && !isTextToVideo && !isLipsync) {
       return NextResponse.json({ success: false, error: 'Missing required fields' }, { status: 400 });
     }
-    if (model !== 'kling-v3-motion' && !isLipsync && !prompt) {
+    if (isOmni && effectiveSd20Mode === 'edit' && !editVideoUrl) {
+      return NextResponse.json({ success: false, error: 'Edit mode requires a source video' }, { status: 400 });
+    }
+    if (isOmni && effectiveSd20Mode === 'r2v' && !(Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)) {
+      return NextResponse.json({ success: false, error: 'Reference mode requires at least one reference image' }, { status: 400 });
+    }
+    // fal SD20 r2v: input videos must total 2-15s (the 15s cap is enforced client-side)
+    if (isSD20Family && effectiveSd20Mode === 'r2v' && Array.isArray(referenceVideoUrls) && referenceVideoUrls.length > 0 && (referenceVideoDurationSec || 0) < 2) {
+      return NextResponse.json({ success: false, error: 'Reference videos must total at least 2 seconds' }, { status: 400 });
+    }
+    // Wan 2.7 i2v: prompt is optional when a start image is provided (fal schema)
+    if (model !== 'kling-v3-motion' && !isLipsync && !prompt && !(model === 'wan-2.7' && imageUrl)) {
       return NextResponse.json({ success: false, error: 'Missing required fields' }, { status: 400 });
     }
     if (model === 'kling-v3-motion' && !motionVideoUrl) {
@@ -123,7 +186,8 @@ export async function POST(request: NextRequest) {
       const audioMultiplier = generateAudio ? 1.0 : 0.5
       ticketCost = Math.ceil(parseInt(duration) * 2.0 * resMultiplier * audioMultiplier) + 1
     } else if (model === 'seedance-2.0') {
-      const resMultiplier = resolution === '1080p' ? 2.25 : resolution === '480p' ? 0.5 : 1.0
+      // fal's SeeDance 2.0 has no 1080p (480p/720p only) — 720p is the 1.0x base
+      const resMultiplier = resolution === '480p' ? 0.5 : 1.0
       const hasVideoRefs = sd20Mode === 'r2v' && Array.isArray(referenceVideoUrls) && referenceVideoUrls.length > 0
       const videoInputMultiplier = hasVideoRefs ? 0.6 : 1.0
       const outputDurSec = duration === 'auto' ? 5 : parseInt(duration)
@@ -137,6 +201,17 @@ export async function POST(request: NextRequest) {
       const outputDurSec = duration === 'auto' ? 5 : parseInt(duration)
       const effectiveDur = outputDurSec + (hasVideoRefs ? (referenceVideoDurationSec || 0) : 0)
       ticketCost = Math.ceil(effectiveDur * 12 * resMultiplier * videoInputMultiplier)
+    } else if (model === 'gemini-omni-flash') {
+      // PLACEHOLDER ≈ SeeDance 2.0 (15 tickets/sec); no resolution knob on this model
+      const sec = effectiveSd20Mode === 'edit'
+        ? Math.max(3, Math.ceil(editVideoDurationSec || 8))
+        : (parseInt(duration) || 8);
+      ticketCost = sec * 15;
+    } else if (model === 'wan-2.7') {
+      // PLACEHOLDER — modeled on Wan 2.5's per-second rates (1080p 20/5s = 4/s,
+      // 720p 13/5s = 2.6/s). ADMIN ONLY until priced manually.
+      const sec = parseInt(duration) || 5;
+      ticketCost = Math.ceil(sec * (resolution === '1080p' ? 4 : 2.6));
     } else if (model === 'happy-horse') {
       ticketCost = parseInt(duration) * (resolution === '1080p' ? 12 : 7);
     } else {
@@ -181,10 +256,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Build FAL input based on model
-    const falEndpoint = isSD20Family
+    const falEndpoint = (isSD20Family || isOmni)
       ? FAL_ENDPOINTS[`${model}-${effectiveSd20Mode}`] || FAL_ENDPOINTS[`${model}-t2v`]
       : model === 'seedance-1.5' && !imageUrl
       ? FAL_ENDPOINTS['seedance-1.5-text']
+      : model === 'wan-2.7' && !imageUrl
+      ? FAL_ENDPOINTS['wan-2.7-text']
       : FAL_ENDPOINTS[model] || FAL_ENDPOINTS['wan-2.5'];
     let falInput: Record<string, any>;
 
@@ -225,15 +302,17 @@ export async function POST(request: NextRequest) {
         resolution,
         duration: String(duration),
         generate_audio: generateAudio,
-        enable_safety_checker: seedance15SafetyChecker === true,
+        enable_safety_checker: isAdminUser ? seedance15SafetyChecker === true : true,
       };
       if (imageUrl) falInput.image_url = imageUrl;
       if (endImageUrl) falInput.end_image_url = endImageUrl;
     } else if (isSD20Family) {
-      // Base params shared across all SD20 modes
+      // Base params shared across all SD20 modes.
+      // fal's SeeDance 2.0 family accepts 480p/720p only — clamp any stale 1080p
+      // from an old client to 720p instead of 422ing the whole job.
       const sd20Base: Record<string, any> = {
         prompt,
-        resolution,
+        resolution: resolution === '1080p' ? '720p' : resolution,
         generate_audio: generateAudio,
         enable_safety_checker: false,
       };
@@ -253,6 +332,39 @@ export async function POST(request: NextRequest) {
         // t2v
         falInput = { ...sd20Base };
       }
+    } else if (isOmni) {
+      // Gemini Omni Flash schema: prompt + aspect_ratio (16:9|9:16) + duration
+      // (INTEGER 3-10). No resolution/audio/safety params — extraneous keys 422.
+      // Edit (video-to-video) takes ONLY prompt + video_url.
+      const omniBase: Record<string, any> = { prompt };
+      if (effectiveSd20Mode !== 'edit') {
+        if (duration && duration !== 'auto') omniBase.duration = parseInt(duration) || 8;
+        if (klingAspectRatio === '9:16' || klingAspectRatio === '16:9') omniBase.aspect_ratio = klingAspectRatio;
+      }
+      if (effectiveSd20Mode === 'i2v') {
+        falInput = { ...omniBase, image_url: imageUrl };
+      } else if (effectiveSd20Mode === 'r2v') {
+        falInput = { ...omniBase, image_urls: (referenceImageUrls as string[]).slice(0, 9) };
+      } else if (effectiveSd20Mode === 'edit') {
+        falInput = { prompt, video_url: editVideoUrl };
+      } else {
+        falInput = { ...omniBase };
+      }
+    } else if (model === 'wan-2.7') {
+      // ADMIN ONLY (testing). fal schema: 720p/1080p, duration 2-15 (integer),
+      // optional prompt (i2v), first + end frame, driving audio; aspect_ratio is
+      // t2v-only (i2v infers it from the start image).
+      falInput = {
+        resolution,
+        duration: parseInt(duration) || 5,
+        enable_prompt_expansion: true,
+        enable_safety_checker: isAdminUser ? wan27SafetyChecker === true : true,
+      };
+      if (prompt?.trim()) falInput.prompt = prompt.trim();
+      if (imageUrl) falInput.image_url = imageUrl;
+      else if (klingAspectRatio && klingAspectRatio !== 'auto') falInput.aspect_ratio = klingAspectRatio;
+      if (endImageUrl) falInput.end_image_url = endImageUrl;
+      if (audioUrl) falInput.audio_url = audioUrl;
     } else if (model === 'happy-horse') {
       falInput = {
         image_url: imageUrl,
@@ -269,7 +381,7 @@ export async function POST(request: NextRequest) {
         resolution,
         duration,
         enable_prompt_expansion: true,
-        enable_safety_checker: wan25SafetyChecker === true,
+        enable_safety_checker: isAdminUser ? wan25SafetyChecker === true : true,
       };
       if (audioUrl) falInput.audio_url = audioUrl;
     }
@@ -357,12 +469,16 @@ export async function POST(request: NextRequest) {
 
       console.error('FAL queue submit error:', falError);
       const isContentViolation = falError.body?.detail?.[0]?.type === 'content_policy_violation';
+      const rawDetail = Array.isArray(falError.body?.detail)
+        ? falError.body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ')
+        : falError.body?.message || falError.message || 'Unknown error'
+      const { friendlyFalVideoError } = await import('@/lib/fal-friendly-errors')
       return NextResponse.json(
         {
           success: false,
           error: isContentViolation
             ? 'Content policy violation: Your prompt or image was flagged. Please use different content.'
-            : `Failed to queue video generation: ${falError.message || 'Unknown error'}`,
+            : `Failed to queue video generation: ${friendlyFalVideoError(rawDetail)}`,
           isContentViolation,
         },
         { status: 400 }

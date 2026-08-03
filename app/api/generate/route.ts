@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server'
 import { after } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getUserFromSession } from '@/lib/auth'
-import { cookies } from 'next/headers'
+import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
 import { fal } from "@fal-ai/client"
@@ -39,24 +38,10 @@ export async function POST(request: Request) {
   try {
     console.log('=== UNIVERSE SCAN STARTED ===')
 
-    // Check authentication
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      )
-    }
-
-    const user = await getUserFromSession(token)
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Invalid session' },
-        { status: 401 }
-      )
-    }
+    // Check authentication — bearer API key (desktop app) or session cookie
+    const resolved = await resolveRequestUser(request)
+    if ('error' in resolved) return resolved.error
+    const { user, apiAuth } = resolved
 
     console.log('User:', user.email, 'Balance:', user.tickets?.balance)
 
@@ -79,8 +64,8 @@ export async function POST(request: Request) {
       aspectRatio = '16:9',
       referenceImages = [],
       model = 'gemini-2.5-flash-image',  // Default to Flash Scanner v2.5
-      adminMode = false,  // Admin mode - no ticket deduction
-      syncMode = false,   // If true: wait for FAL.ai and return imageUrl directly (used by composition canvas)
+      adminMode: adminModeRaw = false,  // Admin mode - no ticket deduction
+      syncMode: syncModeRaw = false,   // If true: wait for FAL.ai and return imageUrl directly (used by composition canvas)
       loraUrl,            // Optional LoRA weights URL
       loraName,           // Optional LoRA display name (for metadata)
       loraScale = 1.0,    // LoRA strength (0-2)
@@ -112,6 +97,30 @@ export async function POST(request: Request) {
       // FLUX 1 Dev params
       fluxDevSafetyChecker = true,
     } = body
+
+    // Gemini scanner models were retired from the public offering (2026-07-29):
+    // ADMIN ONLY, enforced server-side regardless of which UI submitted the job
+    const ADMIN_ONLY_IMAGE_MODELS = new Set([
+      'gemini-2.5-flash-image', 'gemini-3-pro-image', 'gemini-3-pro-image-preview',
+      'flash-scanner-v2.5', 'pro-scanner-v3',
+    ])
+    if (ADMIN_ONLY_IMAGE_MODELS.has(model)) {
+      const { checkIsAdmin } = await import('@/lib/admin-check')
+      if (!(await checkIsAdmin(user.email))) {
+        return NextResponse.json({ error: 'This model is not available' }, { status: 403 })
+      }
+    }
+
+    // Bearer API-key calls: enforce scopes + per-model permission, and force the
+    // queue path (adminMode/syncMode are portal concepts — sync blocks too long
+    // for a desktop poller).
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'generate:image', 'tickets:spend')
+      if (denied) return denied
+      if (!canUseModel(apiAuth, 'image', model)) return modelNotPermittedResponse(model)
+    }
+    const adminMode = apiAuth ? false : adminModeRaw
+    const syncMode = apiAuth ? false : syncModeRaw
 
     // Check if admin mode is requested and user is actually admin
     const isAdminUser = user.email === 'dirtysecretai@gmail.com'

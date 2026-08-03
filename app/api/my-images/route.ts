@@ -1,29 +1,18 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getUserFromSession } from '@/lib/auth'
-import { cookies } from 'next/headers'
 import { deleteFromR2 } from '@/lib/r2'
+import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth'
 
 
 export async function GET(request: Request) {
   try {
-    // Check authentication
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      )
-    }
-
-    const user = await getUserFromSession(token)
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Invalid session' },
-        { status: 401 }
-      )
+    // Check authentication — bearer API key (desktop app) or session cookie
+    const resolved = await resolveRequestUser(request)
+    if ('error' in resolved) return resolved.error
+    const { user, apiAuth } = resolved
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'feed:read')
+      if (denied) return denied
     }
 
     // Parse pagination parameters
@@ -33,6 +22,14 @@ export async function GET(request: Request) {
     const skip = (page - 1) * limit
     const type = searchParams.get('type') // 'image' | 'video' | null (all)
     const showHidden = searchParams.get('hidden') === 'true' // hidden-only view
+    // Folder scope: absent → all folders; 'root' → unfiled only (folderId null);
+    // numeric → that folder. A scalar folderId key composes safely alongside the
+    // type filter's OR and the cursor's AND (no key collision).
+    const folderIdParam = searchParams.get('folderId')
+    const folderFilter =
+      folderIdParam === null || folderIdParam === '' ? {}
+      : folderIdParam === 'root' ? { folderId: null }
+      : { folderId: parseInt(folderIdParam) }
     const falRequestIdsParam = searchParams.get('falRequestIds') // comma-separated list
     // Cursor (keyset) pagination — the feed sends the last item it has (createdAt + id).
     // Loading "everything older than this cursor" is O(limit) at any depth, unlike
@@ -46,11 +43,21 @@ export async function GET(request: Request) {
     const cursorMode = searchParams.get('cursor') === '1'
     const hasCursor = !!beforeParam && !!beforeIdParam
 
-    const VIDEO_MODELS = ['wan-2.5', 'kling-v3', 'kling-o3', 'kling-v3-motion', 'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'lipsync-v3']
+    // Video detection: known video model names OR videoMetadata.isVideo=true
+    // (set by the chat hub + video pipeline) — the JSON flag is authoritative,
+    // so new video models can't leak into the image feed if this list lags.
+    // Keep in sync with the model ids in app/api/video/generate/route.ts — a video
+    // model missing here leaks its videos into the image feed (the image side can
+    // only exclude by model name, see note below)
+    const VIDEO_MODELS = ['wan-2.5', 'wan-2.7', 'kling-v3', 'kling-o3', 'kling-v3-motion', 'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'lipsync-v3', 'happy-horse', 'gemini-omni-flash']
+    // NOTE: the image side must stay a plain notIn — `NOT (json = true)` is
+    // NULL (not true) for rows without videoMetadata in SQL's 3-valued logic,
+    // which silently empties the whole image feed.
+    const isVideoJson = { videoMetadata: { path: ['isVideo'], equals: true } }
     const typeFilter = type === 'image'
       ? { model: { notIn: VIDEO_MODELS } }
       : type === 'video'
-      ? { model: { in: VIDEO_MODELS } }
+      ? { OR: [{ model: { in: VIDEO_MODELS } }, isVideoJson] }
       : {}
 
     // Fast path: fetch by specific FAL request IDs (used by iOS restore to detect completed-while-closed jobs)
@@ -76,6 +83,7 @@ export async function GET(request: Request) {
           loraUrl: (img.videoMetadata as any)?.loraUrl || null,
           loraName: (img.videoMetadata as any)?.loraName || null,
           falRequestId: img.falRequestId || null,
+          folderId: img.folderId ?? null,
         })),
       })
     }
@@ -86,6 +94,7 @@ export async function GET(request: Request) {
       // Normal feed excludes hidden items; ?hidden=true shows only hidden items
       isHidden: showHidden,
       ...typeFilter,
+      ...folderFilter,
     }
 
     // Keyset predicate: rows strictly "older" than the cursor, using id as a tiebreak
@@ -100,7 +109,9 @@ export async function GET(request: Request) {
         }
       : {}
 
-    const where = { ...baseWhere, ...cursorWhere }
+    // AND-combine instead of spreading: both the type filter and the cursor
+    // predicate use OR/AND keys, which a plain spread would silently clobber
+    const where = hasCursor ? { AND: [baseWhere, cursorWhere] } : baseWhere
 
     const images = await prisma.generatedImage.findMany({
       where,
@@ -124,6 +135,7 @@ export async function GET(request: Request) {
       videoMetadata: img.videoMetadata || null,
       loraUrl: (img.videoMetadata as any)?.loraUrl || null,
       loraName: (img.videoMetadata as any)?.loraName || null,
+      folderId: img.folderId ?? null,
     }))
 
     // Cursor mode: no expensive total count; "more" = we filled a full page. Also
@@ -161,20 +173,40 @@ export async function GET(request: Request) {
 // the stored file are untouched; only the isHidden flag changes.
 export async function PATCH(request: Request) {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-    if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-
-    const user = await getUserFromSession(token)
-    if (!user) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+    const resolved = await resolveRequestUser(request)
+    if ('error' in resolved) return resolved.error
+    const { user, apiAuth } = resolved
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'feed:manage')
+      if (denied) return denied
+    }
 
     const body = await request.json()
-    const ids: number[] = body.ids
-    const hidden: boolean = body.hidden
+    const ids: number[] = Array.isArray(body.ids)
+      ? body.ids.filter((n: unknown) => typeof n === 'number')
+      : []
 
-    if (!Array.isArray(ids) || ids.length === 0) {
+    if (ids.length === 0) {
       return NextResponse.json({ error: 'No image IDs provided' }, { status: 400 })
     }
+
+    // Move action: reassign the images' folder. folderId null = unfiled (root).
+    // Destination folder ownership is verified before the update.
+    if (body.action === 'move') {
+      const folderId: number | null = typeof body.folderId === 'number' ? body.folderId : null
+      if (folderId !== null) {
+        const owned = await prisma.userGenerationFolder.count({ where: { id: folderId, userId: user.id } })
+        if (owned === 0) return NextResponse.json({ error: 'Invalid folder' }, { status: 400 })
+      }
+      const moved = await prisma.generatedImage.updateMany({
+        where: { id: { in: ids }, userId: user.id, isDeleted: false },
+        data: { folderId },
+      })
+      return NextResponse.json({ success: true, moved: moved.count })
+    }
+
+    // Default action: hide/unhide.
+    const hidden: boolean = body.hidden
     if (typeof hidden !== 'boolean') {
       return NextResponse.json({ error: 'hidden must be a boolean' }, { status: 400 })
     }
@@ -197,12 +229,13 @@ export async function PATCH(request: Request) {
 // Soft-deletes the specified images after verifying they belong to the user.
 export async function DELETE(request: Request) {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-    if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-
-    const user = await getUserFromSession(token)
-    if (!user) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+    const resolved = await resolveRequestUser(request)
+    if ('error' in resolved) return resolved.error
+    const { user, apiAuth } = resolved
+    if (apiAuth) {
+      const denied = requireScopes(apiAuth, 'feed:manage')
+      if (denied) return denied
+    }
 
     const body = await request.json()
     const ids: number[] = body.ids

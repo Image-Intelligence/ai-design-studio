@@ -9,24 +9,22 @@ export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const folders = await prisma.datasetBucketFolder.findMany({ orderBy: { createdAt: 'asc' } })
 
-  // Collect up to 4 direct preview URLs per folder from its direct buckets
+  // Collect up to 4 direct preview URLs per folder from its direct buckets.
+  // BOUNDED per-folder query (take: 40) — a single unbounded findMany across all
+  // foldered buckets returned ~57k rows / 7.24MB and blew Prisma Accelerate's 5MB
+  // cap (P6009), which 500'd this route and made every folder vanish from the UI.
+  // Mirrors the per-bucket pattern in app/api/admin/buckets/route.ts.
   const previewMap = new Map<number, string[]>()
   if (folders.length > 0) {
-    const folderIds = folders.map(f => f.id)
-    const rows = await prisma.datasetBucketImage.findMany({
-      where: { bucket: { folderId: { in: folderIds } } },
-      select: {
-        image:  { select: { imageUrl: true } },
-        bucket: { select: { folderId: true } },
-      },
-      orderBy: { imageId: 'asc' },
-    })
-    for (const row of rows) {
-      if (VIDEO_RE.test(row.image.imageUrl)) continue
-      const fid = row.bucket.folderId!
-      const existing = previewMap.get(fid) ?? []
-      if (existing.length < 4) { existing.push(row.image.imageUrl); previewMap.set(fid, existing) }
-    }
+    await Promise.all(folders.map(async f => {
+      const rows = await prisma.datasetBucketImage.findMany({
+        where: { bucket: { folderId: f.id } },
+        select: { image: { select: { imageUrl: true } } },
+        orderBy: { imageId: 'asc' },
+        take: 40,
+      })
+      previewMap.set(f.id, rows.map(r => r.image.imageUrl).filter(u => !VIDEO_RE.test(u)).slice(0, 4))
+    }))
   }
 
   return NextResponse.json(

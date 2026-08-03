@@ -1,4 +1,5 @@
 import { Metadata } from 'next'
+import { SitePageHeader, SiteBrandHero } from '@/components/SitePageHeader'
 
 export const metadata: Metadata = {
   title: 'Terms of Service | AI Design Studio',
@@ -7,35 +8,39 @@ export const metadata: Metadata = {
 
 export default function TermsPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 text-slate-100">
-      <div className="max-w-4xl mx-auto px-6 py-12">
-        <h1 className="text-4xl font-bold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400">
+    <div className="min-h-screen bg-[#050810] text-slate-100">
+      <SitePageHeader />
+      <div className="max-w-4xl mx-auto px-6 py-10">
+        <div className="mb-10">
+          <SiteBrandHero />
+        </div>
+        <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Terms of Service
         </h1>
-        <p className="text-slate-400 mb-8">Last Updated: June 2, 2026 | Version 4.1</p>
+        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: July 27, 2026 | Version 4.3</p>
 
         <div className="space-y-8 text-slate-300">
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">1. Acceptance of Terms</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">1. Acceptance of Terms</h2>
             <p className="mb-4">
               By accessing or using AI Design Studio ("the Service"), operated by Prompt & Protocol LLC, you agree to be bound by these Terms of Service ("Terms").
               If you do not agree to these Terms, do not use the Service.
             </p>
-            <p className="mb-4 font-bold text-yellow-400">
+            <p className="mb-4 font-bold text-amber-300">
               You must be at least 18 years of age to use this Service. Our service is not directed at or intended for individuals
               under the age of 18. By using the Service, you represent and warrant that you are at least 18 years old.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">2. Service Description</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">2. Service Description</h2>
             <p className="mb-4">
               AI Design Studio is a unified AI creative platform that provides access to multiple state-of-the-art AI image and video
               generation models through a single interface. The platform is accessed via the AI Design Studio web application and
               is powered by third-party AI providers including fal.ai, OpenAI, Google, and ByteDance.
             </p>
 
-            <h3 className="text-xl font-semibold mb-3 text-purple-400">2.1 Image Generation</h3>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.1 Image Generation</h3>
             <p className="mb-2">The following image generation models are currently available to users:</p>
             <ul className="list-disc list-inside space-y-1 ml-4 mb-4">
               <li><strong>NanoBanana Pro 2</strong> (Google Gemini) — High-quality image generation up to 4K</li>
@@ -46,7 +51,7 @@ export default function TermsPage() {
               <li><strong>Z-Image Base / Z-Image Turbo</strong> — Fast and versatile image generation</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 text-purple-400">2.2 Video Generation</h3>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.2 Video Generation</h3>
             <p className="mb-2">The following video generation models are currently available to users:</p>
             <ul className="list-disc list-inside space-y-1 ml-4 mb-4">
               <li><strong>WAN 2.5</strong> — Text-to-video and image-to-video generation</li>
@@ -58,7 +63,7 @@ export default function TermsPage() {
               <li><strong>Lipsync v3</strong> — AI-powered lip sync for existing video</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 text-purple-400">2.3 Platform Features</h3>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.3 Platform Features</h3>
             <p className="mb-2">The AI Design Studio interface provides the following capabilities:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
               <li><strong>Unified Generation Feed</strong> — All generated images and videos appear in a live session feed with real-time status updates</li>
@@ -69,7 +74,7 @@ export default function TermsPage() {
               <li><strong>Content Safety Controls</strong> — Built-in content safety filtering on applicable models to maintain platform compliance</li>
             </ul>
 
-            <p className="mt-4 font-semibold text-yellow-400">
+            <p className="mt-4 font-semibold text-amber-300">
               IMPORTANT: The Service includes experimental AI technology that may sometimes produce inaccurate, unexpected, or
               unintended content. Generated outputs should never be relied upon as professional advice for medical, legal,
               financial, or safety-critical purposes. Model availability is subject to change without notice.
@@ -85,7 +90,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">3. Third-Party Services & Compliance</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">3. Third-Party Services & Compliance</h2>
             <p className="mb-4">
               Our Service utilizes third-party AI providers. By using our Service, you acknowledge and agree that:
             </p>
@@ -98,14 +103,14 @@ export default function TermsPage() {
             </ul>
             <p className="mt-4">You can review the terms of our third-party providers:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 mt-2">
-              <li><a href="https://fal.ai/terms" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">fal.ai Terms of Service</a></li>
-              <li><a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Google Gemini API Terms of Service</a></li>
-              <li><a href="https://fal.ai/privacy" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">fal.ai Privacy Policy</a></li>
+              <li><a href="https://fal.ai/terms" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">fal.ai Terms of Service</a></li>
+              <li><a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Google Gemini API Terms of Service</a></li>
+              <li><a href="https://fal.ai/privacy" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">fal.ai Privacy Policy</a></li>
             </ul>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">4. User Account and Access</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">4. User Account and Access</h2>
             <p className="mb-4">To access the Service, you must create an account using Clerk authentication. You are responsible for:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Maintaining the confidentiality of your account credentials</li>
@@ -116,9 +121,9 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">5. Tickets and Subscriptions</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">5. Tickets and Subscriptions</h2>
 
-            <h3 className="text-xl font-semibold mb-3 text-purple-400">5.1 Ticket System</h3>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">5.1 Ticket System</h3>
             <p className="mb-4">
               The Service operates on a ticket-based system. Each generation request consumes tickets based on the model, quality
               setting, resolution, and duration selected. Costs below reflect standard settings; higher quality or resolution
@@ -155,9 +160,9 @@ export default function TermsPage() {
               <li><strong>Lipsync v3:</strong> Minimum 10 tickets · 6 tickets/second of source video</li>
             </ul>
 
-            <p className="mt-2 text-sm text-yellow-400">Ticket costs are deducted at the time of a successful generation and are non-refundable once consumed. Pricing is subject to change with notice.</p>
+            <p className="mt-2 text-sm text-amber-300">Ticket costs are deducted at the time of a successful generation and are non-refundable once consumed. Pricing is subject to change with notice.</p>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.2 Dev Tier Subscriptions</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.2 Dev Tier Subscriptions</h3>
             <p className="mb-4">We offer recurring subscription plans ("Dev Tier") that provide periodic ticket allocations and a discount on one-time ticket purchases:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li><strong>Biweekly Plan:</strong> $20 USD every 2 weeks — 250 tickets per cycle</li>
@@ -165,7 +170,7 @@ export default function TermsPage() {
               <li><strong>Yearly Plan:</strong> $480 USD per year — 500 tickets per month (6,000 tickets annually, allocated upfront)</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.3 Subscription Terms</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.3 Subscription Terms</h3>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Subscriptions automatically renew unless canceled before the next billing cycle</li>
               <li>Tickets are allocated at the start of each billing cycle</li>
@@ -176,7 +181,7 @@ export default function TermsPage() {
               <li>We reserve the right to modify subscription pricing with 30 days advance notice</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.4 Payment Processing</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.4 Payment Processing</h3>
             <p className="mb-4">
               All payments are processed through <strong>CCBill</strong>, a third-party payment processing service. CCBill manages
               payment authorization, billing, and transaction security on our behalf. By completing a purchase, you agree to
@@ -185,11 +190,11 @@ export default function TermsPage() {
             </p>
             <p className="mb-4">
               If you have a billing dispute or question about a charge, please contact us at{' '}
-              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>{' '}
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">promptandprotocol@gmail.com</a>{' '}
               before initiating a chargeback. Chargebacks initiated without prior contact may result in immediate account suspension.
             </p>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">5.5 One-Time Ticket Purchases</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.5 One-Time Ticket Purchases</h3>
             <p className="mb-4">
               All one-time ticket purchases are <strong>final and non-refundable</strong> once the transaction is completed. This includes:
             </p>
@@ -273,12 +278,16 @@ export default function TermsPage() {
               remaining tickets or subscription fees. We reserve the right to report violations to applicable authorities and
               card networks.
             </p>
+
+            <p className="mt-4 text-sm text-slate-400">
+              See also Section 21 (Content Provider Agreement) and Section 22 (Content Removal, Complaints &amp; Appeals).
+            </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">7. Content and Intellectual Property</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">7. Content and Intellectual Property</h2>
 
-            <h3 className="text-xl font-semibold mb-3 text-purple-400">7.1 Your Content</h3>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">7.1 Your Content</h3>
             <p className="mb-4">
               You retain ownership of the text prompts and inputs ("Your Content") that you submit to the Service. By submitting
               Your Content, you grant us a worldwide, non-exclusive, royalty-free license to:
@@ -289,7 +298,7 @@ export default function TermsPage() {
               <li>Use anonymized prompts and usage data to improve our service (no images shared without consent)</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">7.2 Generated Content</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">7.2 Generated Content</h3>
             <p className="mb-4">
               Subject to your compliance with these Terms and payment of applicable fees, you may use the generated images
               ("Generated Content") for your personal or commercial purposes. However, you acknowledge that:
@@ -304,9 +313,9 @@ export default function TermsPage() {
               <li>Certain AI models may have restrictions on commercial use - you are responsible for compliance</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">7.3 Image Storage & Deletion</h3>
-            <div className="bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-lg mb-3">
-              <p className="font-bold text-yellow-400 mb-2">⚠️ IMPORTANT: Download Responsibility</p>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">7.3 Image Storage & Deletion</h3>
+            <div className="bg-amber-500/[0.06] border border-amber-500/25 p-4 rounded-lg mb-3">
+              <p className="font-bold text-amber-300 mb-2">⚠️ IMPORTANT: Download Responsibility</p>
               <p>You are <strong>solely responsible</strong> for downloading and backing up your generated images. We provide temporary storage only.</p>
             </div>
             <ul className="list-disc list-inside space-y-2 ml-4">
@@ -316,7 +325,7 @@ export default function TermsPage() {
               <li>Storage duration may be reduced with notice during periods of high storage costs</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">7.4 Service Content</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">7.4 Service Content</h3>
             <p className="mb-4">
               The Service, including its design, code, features, and functionality, is owned by Prompt & Protocol LLC and is protected
               by copyright, trademark, and other intellectual property laws. You may not copy, modify, distribute, or create
@@ -325,11 +334,11 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">8. Data Usage and Privacy</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">8. Data Usage and Privacy</h2>
             <p className="mb-4">
-              Your use of the Service is subject to our Privacy Policy. Please review our <a href="/privacy" className="text-cyan-400 hover:underline">Privacy Policy</a> to understand how we collect, use, and protect your information.
+              Your use of the Service is subject to our Privacy Policy. Please review our <a href="/privacy" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Privacy Policy</a> to understand how we collect, use, and protect your information.
             </p>
-            <p className="mb-4 font-semibold text-yellow-400">
+            <p className="mb-4 font-semibold text-amber-300">
               IMPORTANT DATA SHARING NOTICE:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
@@ -341,7 +350,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">9. Service Availability and Modifications</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">9. Service Availability and Modifications</h2>
             <p className="mb-4">We reserve the right to:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Modify, suspend, or discontinue any aspect of the Service at any time</li>
@@ -356,7 +365,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">10. Geographic Restrictions</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">10. Geographic Restrictions</h2>
             <p className="mb-4">
               The Service may not be available in all geographic regions. Due to third-party AI provider restrictions (specifically
               Google Gemini API requirements), users in the European Economic Area (EEA), Switzerland, and United Kingdom may be
@@ -365,8 +374,8 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">11. Disclaimer of Warranties</h2>
-            <div className="bg-slate-800/50 border-2 border-slate-700 p-4 rounded-lg">
+            <h2 className="text-2xl font-bold mb-4 text-white">11. Disclaimer of Warranties</h2>
+            <div className="bg-white/[0.03] border-2 border-white/10 p-4 rounded-lg">
               <p className="mb-3 font-bold text-white uppercase">
                 THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
                 INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT,
@@ -381,15 +390,15 @@ export default function TermsPage() {
                 <li>The uniqueness or non-infringement of Generated Content</li>
                 <li>The results you may obtain from using the Service</li>
               </ul>
-              <p className="mt-3 font-semibold text-yellow-400">
+              <p className="mt-3 font-semibold text-amber-300">
                 YOU ASSUME ALL RISK FOR YOUR USE OF THE SERVICE AND GENERATED CONTENT.
               </p>
             </div>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">12. Limitation of Liability</h2>
-            <div className="bg-slate-800/50 border-2 border-slate-700 p-4 rounded-lg">
+            <h2 className="text-2xl font-bold mb-4 text-white">12. Limitation of Liability</h2>
+            <div className="bg-white/[0.03] border-2 border-white/10 p-4 rounded-lg">
               <p className="mb-3 font-bold text-white uppercase">
                 TO THE MAXIMUM EXTENT PERMITTED BY LAW, PROMPT & PROTOCOL LLC, ITS AFFILIATES, OFFICERS, DIRECTORS, EMPLOYEES, AND
                 AGENTS SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS
@@ -401,7 +410,7 @@ export default function TermsPage() {
                 <li>Errors, mistakes, or inaccuracies in Generated Content</li>
                 <li>Loss of data, including generated images after the 30-day retention period</li>
                 <li>Unauthorized access to or alteration of your account or data</li>
-                <li>Third-party service interruptions or failures (fal.ai, Google Gemini, Lemon Squeezy)</li>
+                <li>Third-party service interruptions or failures (fal.ai, Google Gemini, CCBill)</li>
                 <li>Infringement claims related to Generated Content</li>
                 <li>Account suspension or termination</li>
               </ul>
@@ -417,7 +426,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">13. Indemnification</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">13. Indemnification</h2>
             <p className="mb-4">
               You agree to indemnify, defend, and hold harmless Prompt & Protocol LLC, its affiliates, and their respective officers,
               directors, employees, and agents from and against any claims, liabilities, damages, losses, costs, and expenses
@@ -433,7 +442,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">14. Account Suspension and Termination</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">14. Account Suspension and Termination</h2>
             <p className="mb-4">
               We reserve the right to suspend or terminate your account and access to the Service at any time, with or without notice, for:
             </p>
@@ -447,14 +456,14 @@ export default function TermsPage() {
               <li>Excessive or abusive usage patterns</li>
               <li>Any conduct we deem harmful to our service, other users, or third parties</li>
             </ul>
-            <p className="mt-4 font-semibold text-yellow-400">
+            <p className="mt-4 font-semibold text-amber-300">
               Upon termination, your right to use the Service immediately ceases, and any unused tickets or subscription benefits
               will be forfeited without refund.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">15. Dispute Resolution and Arbitration</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">15. Dispute Resolution and Arbitration</h2>
             <p className="mb-4">
               Any dispute arising out of or relating to these Terms or the Service shall be resolved through binding arbitration
               in accordance with the rules of the American Arbitration Association. The arbitration shall take place in the
@@ -466,14 +475,14 @@ export default function TermsPage() {
             </p>
             <p className="mb-4">
               <strong>Opt-Out Right:</strong> You may opt out of arbitration by sending written notice to{' '}
-              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>{' '}
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">promptandprotocol@gmail.com</a>{' '}
               within 30 days of first accepting these Terms. Your opt-out notice must include your name, address, and a clear
               statement that you wish to opt out of arbitration.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">16. Governing Law</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">16. Governing Law</h2>
             <p className="mb-4">
               These Terms shall be governed by and construed in accordance with the laws of the State of Florida, United States,
               without regard to its conflict of law provisions. Any legal action or proceeding (if arbitration is opted out or
@@ -482,7 +491,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">17. Changes to Terms</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">17. Changes to Terms</h2>
             <p className="mb-4">
               We may update these Terms from time to time. We may notify you of material changes by:
             </p>
@@ -498,7 +507,7 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">18. Severability</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">18. Severability</h2>
             <p className="mb-4">
               If any provision of these Terms is found to be invalid, illegal, or unenforceable, the remaining provisions shall
               continue in full force and effect to the maximum extent possible.
@@ -506,19 +515,19 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">19. Entire Agreement</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">19. Entire Agreement</h2>
             <p className="mb-4">
-              These Terms, together with our <a href="/privacy" className="text-cyan-400 hover:underline">Privacy Policy</a> and{' '}
-              <a href="/refund" className="text-cyan-400 hover:underline">Refund Policy</a>, constitute the entire agreement between you
+              These Terms, together with our <a href="/privacy" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Privacy Policy</a> and{' '}
+              <a href="/refund" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Refund Policy</a>, constitute the entire agreement between you
               and Prompt &amp; Protocol LLC regarding the Service and supersede all prior agreements and understandings.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">20. Contact Information</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">20. Contact Information</h2>
             <p className="mb-4">
               For questions about these Terms, please contact us at:{' '}
-              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">
                 promptandprotocol@gmail.com
               </a>
             </p>
@@ -527,11 +536,106 @@ export default function TermsPage() {
             </p>
           </section>
 
-          <div className="mt-12 p-6 border-2 border-cyan-500/30 rounded-lg bg-slate-800/50">
+          <section>
+            <h2 className="text-2xl font-bold mb-4 text-white">21. Content Provider Agreement</h2>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.1 Scope and Verified Providers</h3>
+            <p className="mb-4">
+              Any user who submits prompts, uploads reference images, or otherwise causes content to be created or stored on the
+              Service (a "Content Provider") enters into this Content Provider Agreement, which forms a binding part of these
+              Terms. Only registered account holders who have accepted these Terms and completed our 18+ age certification may
+              act as Content Providers. Anonymous content submission is not permitted.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.2 Prohibited Conduct</h3>
+            <p className="mb-4">
+              Content Providers shall not create, upload, or distribute content that is illegal under applicable law or that
+              violates the rules of the card networks (including Visa and Mastercard) or of our payment processors. Content that
+              promotes or facilitates human trafficking, sex trafficking, or physical abuse, and any depiction of non-consensual
+              activity, is strictly prohibited, in addition to everything listed in Section 6 (Prohibited Use Policy).
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.3 Consent of Depicted Persons</h3>
+            <p className="mb-4">
+              If any real, identifiable person appears in or is depicted by content you create on the Service — including through
+              uploaded reference images or likeness-based prompts — you must first obtain, and keep on record, that person's
+              written consent to (a) be depicted in the content, (b) the public distribution of the content, and (c) the upload
+              of the content to, and (where such functionality is available) its download from, the Service. You must provide
+              copies of such consent records to us promptly upon request.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.4 Age and Identity Verification of Depicted Persons</h3>
+            <p className="mb-4">
+              You must verify the identity and age of every real person depicted in your content and you represent and warrant
+              that all depicted persons are above the legal age of majority. Supporting documentation must be retained and
+              produced to us or to our payment processor upon request. Content that depicts or appears to depict minors in any
+              sexual or suggestive context is absolutely prohibited and will be reported to the appropriate authorities.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.5 Content Review and Moderation</h3>
+            <p className="mb-4">
+              All content on the Service is subject to review both before and after publication. We employ automated safety
+              filters and human moderation, and we may remove any content, refuse any generation request, or suspend or
+              terminate any account at our sole discretion, with or without notice.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.6 Marketing Restrictions</h3>
+            <p className="mb-4">
+              You may not use — and we do not permit — marketing, promotion, or content search terms that state or imply the
+              availability of child sexual abuse material, non-consensual activity, or any other illegal content.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">21.7 AI-Generated Content Notice</h3>
+            <p className="mb-4">
+              All visual content produced by the Service is synthetic, generated by artificial intelligence models, and does not
+              depict real events. This notice does not exempt Content Providers from the obligations in Sections 21.3 and 21.4
+              where the likeness of a real person is used.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-2xl font-bold mb-4 text-white">22. Content Removal, Complaints &amp; Appeals</h2>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">22.1 How to Report Content</h3>
+            <p className="mb-4">
+              Anyone — with or without an account — may report content that may be illegal or that breaches these Terms or card
+              network rules by using the form at{' '}
+              <a href="/report" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">prompt-protocol.vercel.app/report</a> or by emailing{' '}
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">promptandprotocol@gmail.com</a>.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">22.2 Resolution Timeline</h3>
+            <p className="mb-4">
+              All reported complaints are reviewed and resolved within seven (7) days. Content confirmed to be illegal
+              is removed immediately upon identification, and valid requests to remove non-consensual intimate imagery
+              are actioned within forty-eight (48) hours.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">22.3 Depicted-Person Appeals</h3>
+            <p className="mb-4">
+              Any person depicted in content on the Service may appeal for its removal. If the investigation determines that
+              consent was not given, has been withdrawn, or is void under applicable law, the content will be removed.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">22.4 Neutral Dispute Resolution</h3>
+            <p className="mb-4">
+              If a Content Provider disagrees with the outcome of a depicted-person appeal, the disagreement will be referred to
+              a neutral third-party body for resolution at our expense.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">22.5 Record-Keeping and Processor Reporting</h3>
+            <p className="mb-4">
+              We maintain records of all complaints, violations, and the actions taken in response, and we report this
+              information to our payment processor on a monthly basis as required by card network rules.
+            </p>
+          </section>
+
+          <div className="mt-12 p-6 border-2 border-white/15 rounded-lg bg-white/[0.03]">
             <p className="font-semibold mb-3 text-lg">By using AI Design Studio, you acknowledge that:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 text-sm">
               <li>You have read, understood, and agree to be bound by these Terms of Service</li>
               <li>You are at least 18 years of age</li>
+              <li>If you act as a Content Provider, you agree to the Content Provider Agreement (Section 21)</li>
               <li>You will comply with all applicable laws and third-party provider terms (fal.ai, Google Gemini)</li>
               <li>You understand the limitations and risks of AI-generated content</li>
               <li>You understand that your data may be shared with third-party AI providers</li>

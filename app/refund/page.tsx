@@ -1,4 +1,5 @@
 import { Metadata } from 'next'
+import { SitePageHeader, SiteBrandHero } from '@/components/SitePageHeader'
 
 export const metadata: Metadata = {
   title: 'Refund Policy | AI Design Studio',
@@ -7,19 +8,23 @@ export const metadata: Metadata = {
 
 export default function RefundPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 text-slate-100">
-      <div className="max-w-4xl mx-auto px-6 py-12">
-        <h1 className="text-4xl font-bold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400">
+    <div className="min-h-screen bg-[#050810] text-slate-100">
+      <SitePageHeader />
+      <div className="max-w-4xl mx-auto px-6 py-10">
+        <div className="mb-10">
+          <SiteBrandHero />
+        </div>
+        <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Refund Policy
         </h1>
-        <p className="text-slate-400 mb-2">Last Updated: February 27, 2026 | Version 1.0</p>
-        <p className="text-slate-400 mb-8">Prompt &amp; Protocol LLC — AI Design Studio</p>
+        <p className="text-center text-sm text-slate-500 mb-2">Last Updated: February 27, 2026 | Version 1.0</p>
+        <p className="text-center text-sm text-slate-500 mb-8">Prompt &amp; Protocol LLC — AI Design Studio</p>
 
         <div className="space-y-8 text-slate-300">
 
           {/* Overview box */}
-          <div className="border-2 border-yellow-500/40 bg-yellow-500/5 p-6 rounded-lg">
-            <h2 className="text-xl font-bold mb-3 text-yellow-400">Policy Summary</h2>
+          <div className="border-2 border-amber-500/30 bg-amber-500/[0.05] p-6 rounded-lg">
+            <h2 className="text-xl font-bold mb-3 text-amber-300">Policy Summary</h2>
             <p className="text-sm leading-relaxed">
               All ticket purchases and subscription fees paid to Prompt &amp; Protocol LLC are <strong className="text-white">final and non-refundable</strong>,
               with one limited exception: verifiable technical failures that resulted in ticket deductions without any generated output.
@@ -29,7 +34,7 @@ export default function RefundPage() {
           </div>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">1. Why We Do Not Offer Refunds</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">1. Why We Do Not Offer Refunds</h2>
             <p className="mb-4">
               AI Design Studio operates on a compute-cost model. Every image generation request dispatches a live call to
               third-party AI infrastructure (fal.ai, Google Gemini API) that incurs real-time GPU and API costs the moment
@@ -49,7 +54,7 @@ export default function RefundPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">2. Ticket Purchases — No Refunds</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">2. Ticket Purchases — No Refunds</h2>
             <p className="mb-4">
               All one-time ticket purchases are <strong>final at the moment of payment confirmation</strong>. No refund will be issued for:
             </p>
@@ -62,13 +67,13 @@ export default function RefundPage() {
               <li>Account suspensions or terminations resulting from violations of our Terms of Service</li>
               <li>Changes to ticket pricing or model availability after purchase</li>
             </ul>
-            <p className="mt-4 font-semibold text-yellow-400">
+            <p className="mt-4 font-semibold text-amber-300">
               Ticket balances have no cash value and cannot be transferred, sold, traded, or converted to any form of monetary compensation.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">3. Subscription Fees — No Refunds</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">3. Subscription Fees — No Refunds</h2>
             <p className="mb-4">
               All subscription payments (Dev Tier — Biweekly, Monthly, or Yearly) are <strong>non-refundable</strong>, including:
             </p>
@@ -80,7 +85,7 @@ export default function RefundPage() {
               <li>Charges for billing cycles during which the Service experienced partial downtime due to third-party provider issues</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">3.1 How to Cancel Your Subscription</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">3.1 How to Cancel Your Subscription</h3>
             <p className="mb-4">
               You may cancel your subscription at any time through your account settings. Cancellation stops future billing immediately.
               Your subscription and any remaining ticket balance remain active through the end of the current paid period.
@@ -88,13 +93,13 @@ export default function RefundPage() {
             </p>
             <p className="mb-4">
               If you are unable to cancel through the account settings, contact us at{' '}
-              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>{' '}
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">promptandprotocol@gmail.com</a>{' '}
               before your next renewal date. We cannot retroactively cancel charges for billing cycles that have already been processed.
             </p>
           </section>
 
-          <section className="border-2 border-cyan-500/30 bg-cyan-500/5 p-6 rounded-lg">
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">4. The Only Exception: Technical Failure Credits</h2>
+          <section className="border-2 border-white/15 bg-white/[0.04] p-6 rounded-lg">
+            <h2 className="text-2xl font-bold mb-4 text-white">4. The Only Exception: Technical Failure Credits</h2>
             <p className="mb-4">
               We recognize that technical failures can occasionally occur — situations where our system or a third-party provider
               deducted tickets from your account but produced no image output. This is the <strong>only circumstance</strong> under
@@ -102,14 +107,14 @@ export default function RefundPage() {
               not a cash or payment refund.
             </p>
 
-            <h3 className="text-xl font-semibold mb-3 text-purple-400">4.1 What Qualifies as a Technical Failure</h3>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">4.1 What Qualifies as a Technical Failure</h3>
             <p className="mb-2">A qualifying technical failure is specifically:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
               <li>Tickets were deducted from your balance AND</li>
               <li>No image was delivered to your canvas or gallery AND</li>
               <li>The failure was caused by a server-side error, API timeout, or infrastructure outage on our end or our providers' end</li>
             </ul>
-            <p className="mb-4 font-semibold text-yellow-400">The following do NOT qualify as technical failures:</p>
+            <p className="mb-4 font-semibold text-amber-300">The following do NOT qualify as technical failures:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Generations blocked by AI content safety filters (your tickets are automatically refunded by our system in real time)</li>
               <li>Images generated successfully but disliked, unexpected, or not matching your creative intent</li>
@@ -119,10 +124,10 @@ export default function RefundPage() {
               <li>Model-specific limitations (aspect ratio restrictions, style limitations, etc.)</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-purple-400">4.2 How to Request a Ticket Credit</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">4.2 How to Request a Ticket Credit</h3>
             <p className="mb-4">
               To submit a ticket credit request, email{' '}
-              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>{' '}
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">promptandprotocol@gmail.com</a>{' '}
               with the subject line <strong>"Ticket Credit Request"</strong> and include:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
@@ -140,11 +145,11 @@ export default function RefundPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">5. Chargebacks and Payment Disputes</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">5. Chargebacks and Payment Disputes</h2>
             <p className="mb-4">
               Before initiating a chargeback or payment dispute with your bank or credit card company, we strongly encourage
               you to contact us directly at{' '}
-              <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">promptandprotocol@gmail.com</a>.
+              <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">promptandprotocol@gmail.com</a>.
               Most concerns can be resolved quickly without involving third-party payment processors.
             </p>
             <p className="mb-4">
@@ -158,14 +163,14 @@ export default function RefundPage() {
               <li>Potential recovery of disputed amounts through legal means, including applicable chargeback fees</li>
               <li>Permanent ban from creating new accounts on AI Design Studio</li>
             </ul>
-            <p className="mt-4 text-yellow-400 font-semibold">
+            <p className="mt-4 text-amber-300 font-semibold">
               We reserve the right to dispute any chargeback filed for a transaction that complied with this Refund Policy
               and our Terms of Service.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">6. Service Modifications and Discontinued Models</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">6. Service Modifications and Discontinued Models</h2>
             <p className="mb-4">
               Prompt &amp; Protocol LLC reserves the right to modify, suspend, or discontinue AI models, features, or the Service
               at any time. Tickets are sold as general-purpose generation credits, not as credits tied to any specific model.
@@ -184,7 +189,7 @@ export default function RefundPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">7. Account Termination for Policy Violations</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">7. Account Termination for Policy Violations</h2>
             <p className="mb-4">
               As stated in our Terms of Service, accounts terminated for violations of our Prohibited Use Policy or Terms of Service
               will have all remaining ticket balances and subscription benefits permanently forfeited without compensation.
@@ -196,16 +201,16 @@ export default function RefundPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">8. Governing Law</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">8. Governing Law</h2>
             <p className="mb-4">
               This Refund Policy is governed by the laws of the State of Florida, United States. Any disputes regarding this policy
               are subject to the dispute resolution and arbitration provisions set forth in our{' '}
-              <a href="/terms" className="text-cyan-400 hover:underline">Terms of Service</a>.
+              <a href="/terms" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Terms of Service</a>.
             </p>
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">9. Changes to This Policy</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">9. Changes to This Policy</h2>
             <p className="mb-4">
               Prompt &amp; Protocol LLC reserves the right to update this Refund Policy at any time. Material changes will be posted
               on this page with an updated "Last Updated" date. Your continued use of the Service or any purchase made after
@@ -215,15 +220,15 @@ export default function RefundPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold mb-4 text-cyan-400">10. Contact Us</h2>
+            <h2 className="text-2xl font-bold mb-4 text-white">10. Contact Us</h2>
             <p className="mb-4">
               For questions about this Refund Policy or to submit a ticket credit request, contact us at:
             </p>
-            <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-4">
+            <div className="bg-white/[0.03] border border-white/10 rounded-lg p-4">
               <p className="font-semibold text-white mb-1">Prompt &amp; Protocol LLC</p>
               <p className="text-sm">
                 Email:{' '}
-                <a href="mailto:promptandprotocol@gmail.com" className="text-cyan-400 hover:underline">
+                <a href="mailto:promptandprotocol@gmail.com" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">
                   promptandprotocol@gmail.com
                 </a>
               </p>
@@ -233,7 +238,7 @@ export default function RefundPage() {
             </div>
           </section>
 
-          <div className="mt-12 p-6 border-2 border-cyan-500/30 rounded-lg bg-slate-800/50">
+          <div className="mt-12 p-6 border-2 border-white/15 rounded-lg bg-white/[0.03]">
             <p className="font-semibold mb-3 text-lg">By completing any purchase on AI Design Studio, you acknowledge that:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 text-sm">
               <li>You have read and understood this Refund Policy in its entirety</li>
@@ -246,8 +251,8 @@ export default function RefundPage() {
 
           <div className="text-center pt-4 pb-2">
             <div className="flex justify-center gap-6 text-sm">
-              <a href="/terms" className="text-cyan-400 hover:underline">Terms of Service</a>
-              <a href="/privacy" className="text-cyan-400 hover:underline">Privacy Policy</a>
+              <a href="/terms" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Terms of Service</a>
+              <a href="/privacy" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Privacy Policy</a>
             </div>
           </div>
 
