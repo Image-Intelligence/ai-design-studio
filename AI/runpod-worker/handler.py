@@ -29,6 +29,7 @@ import subprocess
 import shutil
 import glob
 import tempfile
+import threading
 
 import types
 
@@ -49,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-06-02-v67'
+HANDLER_VERSION = '2026-08-03-v69'
 
 import importlib
 
@@ -2159,6 +2160,10 @@ def handler(job):
     concepts = inp['concepts']
     ckpt_key = inp['checkpoint_r2_key']
     out_key  = inp.get('output_r2_key') or f'training/loras/{run_name.replace(" ", "_")}.safetensors'
+    # Optional: R2 prefix for intermediate epoch snapshots (e.g. 'training/loras/my-run/epochs/').
+    # When set AND the config enables save_after/save_after_unit, every OneTrainer
+    # intermediate save (a complete standalone LoRA) is uploaded there after training.
+    snap_prefix = (inp.get('snapshots_r2_prefix') or '').strip()
     bucket   = os.environ['R2_BUCKET_NAME']
 
     logs.append(f"[runpod] Starting '{run_name}' (job {job_id})")
@@ -2233,6 +2238,8 @@ def handler(job):
     config['base_model_name']          = ckpt_path
     config['output_model_destination'] = output_path
     config['output_model_format']      = config.get('output_model_format', 'SAFETENSORS')
+    # Pin the workspace so intermediate saves land at a known path (<run_dir>/workspace/save/)
+    config['workspace_dir'] = os.path.join(run_dir, 'workspace')
     config.pop('concepts', None)
 
     concepts_payload = [
@@ -2268,6 +2275,42 @@ def handler(job):
         json.dump(concepts_payload, f, indent=2)
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
+
+    # ── 4b. live epoch-snapshot uploader ────────────────────────────────────
+    # Each intermediate save is a complete standalone LoRA — upload them AS
+    # SOON as OneTrainer writes them so finished epochs are testable in the
+    # portal while later epochs are still training. A file is only uploaded
+    # once its size is stable across two scans (i.e. fully written).
+    uploaded_snaps: set = set()
+    snap_stop = threading.Event()
+    def _snap_watcher():
+        save_dir = os.path.join(config['workspace_dir'], 'save')
+        last_sizes: dict = {}
+        while not snap_stop.is_set():
+            try:
+                for sp in glob.glob(os.path.join(save_dir, '**', '*.safetensors'), recursive=True):
+                    name = os.path.basename(sp)
+                    if name in uploaded_snaps:
+                        continue
+                    try:
+                        sz = os.path.getsize(sp)
+                    except OSError:
+                        continue
+                    if last_sizes.get(sp) == sz and sz > 1_000_000:
+                        skey = snap_prefix.rstrip('/') + '/' + name
+                        try:
+                            r2.upload_file(sp, bucket, skey)
+                            uploaded_snaps.add(name)
+                            logs.append(f'[runpod] Epoch snapshot uploaded (live): {name}')
+                            _flush_logs(r2, bucket, job_id, logs)
+                        except Exception as se:
+                            logs.append(f'[runpod] WARNING: live snapshot upload failed ({name}): {se}')
+                    last_sizes[sp] = sz
+            except Exception:
+                pass
+            snap_stop.wait(30)
+    if snap_prefix:
+        threading.Thread(target=_snap_watcher, daemon=True).start()
 
     # ── 5. train ────────────────────────────────────────────────────────────
     logs.append('[runpod] Starting OneTrainer...')
@@ -2311,11 +2354,35 @@ def handler(job):
     except Exception as e:
         return {'success': False, 'error': f'Upload failed: {e}', 'logs': logs}
 
+    # ── 7. final snapshot sweep (anything the live watcher hasn't sent yet) ──
+    snap_stop.set()
+    snapshot_keys = []
+    if snap_prefix:
+        save_dir = os.path.join(config['workspace_dir'], 'save')
+        snaps = sorted(glob.glob(os.path.join(save_dir, '**', '*.safetensors'), recursive=True))
+        if snaps:
+            for sp in snaps:
+                name = os.path.basename(sp)
+                skey = snap_prefix.rstrip('/') + '/' + name
+                if name in uploaded_snaps:
+                    snapshot_keys.append(skey)
+                    continue
+                try:
+                    r2.upload_file(sp, bucket, skey)
+                    snapshot_keys.append(skey)
+                except Exception as se:
+                    logs.append(f'[runpod] WARNING: snapshot upload failed ({name}): {se}')
+            logs.append(f'[runpod] {len(snapshot_keys)} snapshot(s) in R2.')
+        else:
+            logs.append('[runpod] No epoch snapshots found (save_after not enabled or none produced).')
+        _flush_logs(r2, bucket, job_id, logs)
+
     shutil.rmtree(run_dir, ignore_errors=True)
 
     return {
         'success':      True,
         'output_r2_key': out_key,
+        'snapshot_keys': snapshot_keys,
         'elapsed_min':  elapsed,
         'logs':         logs,
     }
