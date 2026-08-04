@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-04-v73'
+HANDLER_VERSION = '2026-08-06-v74'
 
 import importlib
 
@@ -2320,9 +2320,14 @@ def handler(job):
     _flush_logs(r2, bucket, job_id, logs)
 
     # ── 1. checkpoint ───────────────────────────────────────────────────────
+    # NOTE: every training-path return carries refresh_worker=True — RunPod
+    # terminates the worker as soon as the job ends (success OR failure)
+    # instead of keeping it warm. Training is the one job type where a fresh
+    # container beats a warm one: it frees the machine immediately and
+    # guarantees clean VRAM/disk for the next job. Inference stays warm.
     if not _download(r2, ckpt_key, ckpt_path, 'checkpoint', logs):
         _flush_logs(r2, bucket, job_id, logs)
-        return {'success': False, 'error': 'Checkpoint download failed', 'logs': logs}
+        return {'success': False, 'error': 'Checkpoint download failed', 'logs': logs, 'refresh_worker': True}
     _flush_logs(r2, bucket, job_id, logs)
 
     # ── 2. shared model files (cached across runs in MODELS_DIR) ────────────
@@ -2337,7 +2342,7 @@ def handler(job):
             continue
         if not _download(r2, key, path, label, logs):
             _flush_logs(r2, bucket, job_id, logs)
-            return {'success': False, 'error': f'{label} download failed', 'logs': logs}
+            return {'success': False, 'error': f'{label} download failed', 'logs': logs, 'refresh_worker': True}
         _flush_logs(r2, bucket, job_id, logs)
 
     # tell FluxModelLoader where the model files are
@@ -2355,7 +2360,7 @@ def handler(job):
         extract_dir = os.path.join(dataset_root, f"{ci}-{c['name'] or 'concept'}")
         if not _download(r2, c['r2_dataset_key'], zip_path, f"dataset '{c['name']}'", logs):
             _flush_logs(r2, bucket, job_id, logs)
-            return {'success': False, 'error': f"Dataset download failed: {c['name']}", 'logs': logs}
+            return {'success': False, 'error': f"Dataset download failed: {c['name']}", 'logs': logs, 'refresh_worker': True}
         _flush_logs(r2, bucket, job_id, logs)
         os.makedirs(extract_dir, exist_ok=True)
         with zipfile.ZipFile(zip_path, 'r') as z:
@@ -2376,6 +2381,7 @@ def handler(job):
                     f"Extracted to: {extract_dir}"
                 ),
                 'logs': logs,
+                'refresh_worker': True,
             }
         _flush_logs(r2, bucket, job_id, logs)
         concept_dirs.append(image_dir)
@@ -2495,18 +2501,18 @@ def handler(job):
     _flush_logs(r2, bucket, job_id, logs)
 
     if proc.returncode != 0:
-        return {'success': False, 'error': f'Training exited {proc.returncode}', 'logs': logs}
+        return {'success': False, 'error': f'Training exited {proc.returncode}', 'logs': logs, 'refresh_worker': True}
 
     # ── 6. upload result ────────────────────────────────────────────────────
     if not os.path.exists(output_path):
-        return {'success': False, 'error': 'Output LoRA file not found', 'logs': logs}
+        return {'success': False, 'error': 'Output LoRA file not found', 'logs': logs, 'refresh_worker': True}
 
     logs.append(f'[runpod] Uploading LoRA to R2 ({out_key})...')
     try:
         r2.upload_file(output_path, os.environ['R2_BUCKET_NAME'], out_key)
         logs.append('[runpod] Upload complete!')
     except Exception as e:
-        return {'success': False, 'error': f'Upload failed: {e}', 'logs': logs}
+        return {'success': False, 'error': f'Upload failed: {e}', 'logs': logs, 'refresh_worker': True}
 
     # ── 7. final snapshot sweep (anything the live watcher hasn't sent yet) ──
     snap_stop.set()
@@ -2541,6 +2547,9 @@ def handler(job):
         'snapshot_keys': snapshot_keys,
         'elapsed_min':  elapsed,
         'logs':         logs,
+        # Recycle this worker NOW — training is done, release the machine
+        # instead of holding it warm through the idle timeout
+        'refresh_worker': True,
     }
 
 
