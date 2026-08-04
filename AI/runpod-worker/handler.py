@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-04-v71'
+HANDLER_VERSION = '2026-08-04-v73'
 
 import importlib
 
@@ -401,6 +401,62 @@ def _download(r2, key: str, dest: str, label: str, logs: list) -> bool:
 
 
 INFERENCE_CACHE = '/workspace/inference_cache'
+
+
+# ── Disk management ──────────────────────────────────────────────────────────
+# Job dirs pile up fast (a training run leaves a 22GB checkpoint copy, its
+# datasets AND ~20GB of epoch snapshots behind) and the checkpoint cache keeps
+# one 22GB file per checkpoint ever used. Enough of either and jobs start
+# failing with "No space left on device" at 97% — so every job starts with a
+# stale-dir sweep, and downloads evict old cached checkpoints when space is low.
+
+def _free_gb(path: str = '/workspace') -> float:
+    try:
+        import shutil as _sh
+        return _sh.disk_usage(path).free / 1024**3
+    except Exception:
+        return 999.0
+
+
+def _sweep_stale_job_dirs(current_job_id: str, logs: list) -> None:
+    """Delete per-job work dirs left by previous (possibly crashed) jobs."""
+    import shutil as _sh
+    try:
+        if not os.path.isdir(WORK_DIR):
+            return
+        for d in os.listdir(WORK_DIR):
+            p = os.path.join(WORK_DIR, d)
+            if d == current_job_id or not os.path.isdir(p):
+                continue
+            try:
+                _sh.rmtree(p)
+                logs.append(f'[disk] Removed stale job dir {d}')
+            except Exception:
+                pass
+        logs.append(f'[disk] Free space: {_free_gb():.1f} GB')
+    except Exception:
+        pass
+
+
+def _evict_checkpoint_cache(keep_filename: str, need_gb: float, logs: list) -> None:
+    """Delete least-recently-used cached checkpoints until need_gb is free."""
+    try:
+        if _free_gb() >= need_gb or not os.path.isdir(INFERENCE_CACHE):
+            return
+        files = [os.path.join(INFERENCE_CACHE, f) for f in os.listdir(INFERENCE_CACHE)
+                 if f != keep_filename and os.path.isfile(os.path.join(INFERENCE_CACHE, f))]
+        files.sort(key=lambda p: os.path.getmtime(p))
+        for p in files:
+            if _free_gb() >= need_gb:
+                break
+            try:
+                sz = os.path.getsize(p) / 1024**3
+                os.remove(p)
+                logs.append(f'[disk] Evicted cached checkpoint {os.path.basename(p)} ({sz:.1f} GB)')
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
@@ -1307,10 +1363,15 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             controlnet_enabled = False
             logs.append('[controlnet] No valid images decoded — ControlNet disabled.')
 
+    # Disk hygiene: clear leftovers from previous jobs, then make sure there is
+    # room for the checkpoint before downloading (evict LRU cached checkpoints)
+    _sweep_stale_job_dirs(job_id, logs)
+
     # 1. Checkpoint — cached by filename so warm workers skip the download
     ckpt_filename = ckpt_key.split('/')[-1]
     ckpt_path = os.path.join(INFERENCE_CACHE, ckpt_filename)
     if not os.path.exists(ckpt_path):
+        _evict_checkpoint_cache(ckpt_filename, 30, logs)
         logs.append(f'[inference] Downloading checkpoint {ckpt_filename}...')
         _flush_logs(r2, bucket, job_id, logs)
         if not _download(r2, ckpt_key, ckpt_path, 'checkpoint', logs):
@@ -1318,6 +1379,9 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             return {'success': False, 'error': 'Checkpoint download failed', 'logs': logs}
     else:
         logs.append(f'[inference] Checkpoint cached: {ckpt_filename}')
+        # Touch so LRU eviction sees this checkpoint as recently used
+        try: os.utime(ckpt_path, None)
+        except Exception: pass
     _flush_logs(r2, bucket, job_id, logs)
 
     # 2. LoRAs (job-specific, not cached)
@@ -2248,6 +2312,13 @@ def handler(job):
     os.makedirs(dataset_root, exist_ok=True)
     os.makedirs(MODELS_DIR, exist_ok=True)
 
+    # Disk hygiene: previous jobs' leftovers are the #1 cause of late-run
+    # "No space left on device" failures. Training needs the most room —
+    # checkpoint copy + datasets + epoch snapshots — so demand a big margin.
+    _sweep_stale_job_dirs(job_id, logs)
+    _evict_checkpoint_cache('', 60, logs)
+    _flush_logs(r2, bucket, job_id, logs)
+
     # ── 1. checkpoint ───────────────────────────────────────────────────────
     if not _download(r2, ckpt_key, ckpt_path, 'checkpoint', logs):
         _flush_logs(r2, bucket, job_id, logs)
@@ -2274,10 +2345,14 @@ def handler(job):
     os.environ['VAE_MODEL_DIR']  = MODELS_DIR
 
     # ── 3. datasets ─────────────────────────────────────────────────────────
+    # Extraction dirs are keyed by INDEX + name: two concepts with the same
+    # (or blank) name previously extracted into ONE shared folder, so both
+    # OneTrainer concepts pointed at the merged set — every image trained
+    # twice per epoch.
     concept_dirs = []
-    for c in concepts:
-        zip_path    = os.path.join(run_dir, f"{c['name']}.zip")
-        extract_dir = os.path.join(dataset_root, c['name'])
+    for ci, c in enumerate(concepts):
+        zip_path    = os.path.join(run_dir, f"concept-{ci}.zip")
+        extract_dir = os.path.join(dataset_root, f"{ci}-{c['name'] or 'concept'}")
         if not _download(r2, c['r2_dataset_key'], zip_path, f"dataset '{c['name']}'", logs):
             _flush_logs(r2, bucket, job_id, logs)
             return {'success': False, 'error': f"Dataset download failed: {c['name']}", 'logs': logs}
@@ -2374,6 +2449,14 @@ def handler(job):
                             uploaded_snaps.add(name)
                             logs.append(f'[runpod] Epoch snapshot uploaded (live): {name}')
                             _flush_logs(r2, bucket, job_id, logs)
+                            # R2 has it — free the local copy immediately. Long
+                            # runs otherwise stack 20+ GB of snapshots on disk
+                            # and die at 97% with "No space left on device".
+                            try:
+                                os.remove(sp)
+                                last_sizes.pop(sp, None)
+                            except Exception:
+                                pass
                         except Exception as se:
                             logs.append(f'[runpod] WARNING: live snapshot upload failed ({name}): {se}')
                     last_sizes[sp] = sz
@@ -2441,6 +2524,8 @@ def handler(job):
                 try:
                     r2.upload_file(sp, bucket, skey)
                     snapshot_keys.append(skey)
+                    try: os.remove(sp)
+                    except Exception: pass
                 except Exception as se:
                     logs.append(f'[runpod] WARNING: snapshot upload failed ({name}): {se}')
             logs.append(f'[runpod] {len(snapshot_keys)} snapshot(s) in R2.')
