@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-04-v70'
+HANDLER_VERSION = '2026-08-04-v71'
 
 import importlib
 
@@ -2212,6 +2212,19 @@ def handler(job):
     if inp.get('action') == 'download_to_r2':
         return _handle_download_to_r2(job['id'], inp)
 
+    # Training job on a warm worker that previously served inference: purge the
+    # inference caches first — a cached FluxPipeline alone holds ~30 GB of VRAM
+    # that training needs. Disk caches (/workspace models) are left alone.
+    if _PIPE_CACHE or _CN_CACHE or _YOLO_CACHE or _GFPGAN_CACHE:
+        print('[train] Warm worker has inference caches loaded — clearing before training...', flush=True)
+        _PIPE_CACHE.clear(); _CN_CACHE.clear(); _YOLO_CACHE.clear(); _GFPGAN_CACHE.clear()
+        try:
+            import gc as _gc, torch as _torch
+            _gc.collect()
+            _torch.cuda.empty_cache()
+            print(f'[train] VRAM free after purge: {_torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB', flush=True)
+        except Exception as _purge_err:
+            print(f'[train] Cache purge cleanup warning: {_purge_err}', flush=True)
 
     run_name = inp.get('run_name', 'Training Run')
     config   = dict(inp['config'])
