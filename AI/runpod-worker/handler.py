@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-06-v74'
+HANDLER_VERSION = '2026-08-07-v75'
 
 import importlib
 
@@ -1260,6 +1260,11 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
     # ADetailer
     adetailer          = bool(inp.get('adetailer', False))
     adetailer_strength = float(inp.get('adetailer_strength', 0.35))
+    # Color grade — deterministic final pass (no diffusion, zero likeness risk):
+    # contrast/saturation multipliers (1.0 = off) + optional S-curve blend (0-1)
+    color_contrast   = max(0.5, min(2.0, float(inp.get('color_contrast', 1.0))))
+    color_saturation = max(0.5, min(2.0, float(inp.get('color_saturation', 1.0))))
+    color_s_curve    = max(0.0, min(1.0, float(inp.get('color_s_curve', 0.0))))
     # GFPGAN face restoration
     gfpgan_enabled = bool(inp.get('gfpgan', False))
     gfpgan_weight  = float(inp.get('gfpgan_weight', 0.8))
@@ -2137,6 +2142,31 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[inference] GFPGAN restoration (weight={gfpgan_weight:.2f})...')
             _flush_logs(r2, bucket, job_id, logs)
             image = _gfpgan_restore(image, gfpgan_weight, logs)
+            _flush_logs(r2, bucket, job_id, logs)
+
+        # 6f. Optional color grade — the very last image op. Pure pixel math on
+        # the finished image (PIL/numpy): contrast + saturation multipliers and
+        # an optional S-curve tone blend. Deterministic and likeness-free.
+        if abs(color_contrast - 1.0) > 1e-3 or abs(color_saturation - 1.0) > 1e-3 or color_s_curve > 1e-3:
+            try:
+                from PIL import ImageEnhance as _IE
+                if abs(color_contrast - 1.0) > 1e-3:
+                    image = _IE.Contrast(image).enhance(color_contrast)
+                if abs(color_saturation - 1.0) > 1e-3:
+                    image = _IE.Color(image).enhance(color_saturation)
+                if color_s_curve > 1e-3:
+                    import numpy as _np_cg
+                    _arr = _np_cg.asarray(image.convert('RGB')).astype(_np_cg.float32) / 255.0
+                    # Sigmoid S-curve normalized to hit the 0/1 endpoints, blended by amount
+                    _sig = 1.0 / (1.0 + _np_cg.exp(-8.0 * (_arr - 0.5)))
+                    _lo  = 1.0 / (1.0 + _np_cg.exp(4.0))
+                    _hi  = 1.0 / (1.0 + _np_cg.exp(-4.0))
+                    _sig = (_sig - _lo) / (_hi - _lo)
+                    _out = _arr * (1.0 - color_s_curve) + _sig * color_s_curve
+                    image = Image.fromarray((_np_cg.clip(_out, 0.0, 1.0) * 255.0).astype(_np_cg.uint8))
+                logs.append(f'[color] Grade applied — contrast {color_contrast:.2f}, saturation {color_saturation:.2f}, s-curve {color_s_curve:.2f}')
+            except Exception as _cge:
+                logs.append(f'[color] WARNING: grade failed ({_cge}) — using ungraded image')
             _flush_logs(r2, bucket, job_id, logs)
 
         # 7. Upload result
