@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-07-v75'
+HANDLER_VERSION = '2026-08-07-v76'
 
 import importlib
 
@@ -471,7 +471,14 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
 
     global _YOLO_CACHE
     MODEL_PATH   = '/workspace/models/adetailer/face_yolov8n.pt'
-    INPAINT_SIZE = 512
+    # Render size for the face repaint. The old fixed 512×512 SQUARE render
+    # was the eye-morphing culprit on 4K+ outputs: a ~2000px face crop got
+    # squashed to 512 (irises ~75px, aspect-distorted when the crop wasn't
+    # square), re-rendered, then Lanczos-stretched 4× back over the sharp
+    # image — eyes came back warped. Crops now render aspect-preserved at up
+    # to MAX_RENDER on the long side (/64 for flux), so a big face repaints
+    # at 4× the old resolution.
+    MAX_RENDER   = 1024
     PADDING      = 0.25   # expand each bbox side by 25 %
     FEATHER      = 20     # edge blend width in pixels
 
@@ -500,9 +507,12 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
         py2 = min(float(H), y2 + bh * PADDING)
         rw, rh = int(px2 - px1), int(py2 - py1)
 
-        # Crop → resize to INPAINT_SIZE for detail pass
-        face_crop    = output.crop((int(px1), int(py1), int(px2), int(py2)))
-        face_resized = face_crop.resize((INPAINT_SIZE, INPAINT_SIZE), Image.LANCZOS)
+        # Crop → aspect-preserved render size (long side ≤ MAX_RENDER, /64)
+        face_crop = output.crop((int(px1), int(py1), int(px2), int(py2)))
+        _scale = min(1.0, MAX_RENDER / max(rw, rh, 1))
+        tw = max(256, int(round(rw * _scale / 64)) * 64)
+        th = max(256, int(round(rh * _scale / 64)) * 64)
+        face_resized = face_crop.resize((tw, th), Image.LANCZOS)
 
         gen = torch.Generator('cuda').manual_seed(int(seed) + 100 + i) if seed is not None else None
         fixed_resized = pipe_i2i(
@@ -512,8 +522,8 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
             num_inference_steps=steps,
             guidance_scale=guidance,
             generator=gen,
-            width=INPAINT_SIZE,
-            height=INPAINT_SIZE,
+            width=tw,
+            height=th,
         ).images[0]
 
         # Resize fixed face back to original region size
@@ -531,7 +541,7 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
         mask = mask.filter(ImageFilter.GaussianBlur(radius=FEATHER // 2))
 
         output.paste(fixed_back, (int(px1), int(py1)), mask=mask)
-        logs.append(f'[adetailer] Face {i+1}/{len(boxes)} fixed.')
+        logs.append(f'[adetailer] Face {i+1}/{len(boxes)} fixed ({rw}×{rh} rendered @ {tw}×{th}).')
 
     return output
 
