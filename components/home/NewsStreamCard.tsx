@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Bell, ChevronLeft, ChevronRight, ArrowUpRight } from "lucide-react"
+import { SilverRimOverlay } from "./SilverRimOverlay"
 
 // A carousel "News & Updates" card for the home page — flips through the latest
 // published articles and short portal notifications one at a time (auto-advancing,
@@ -97,9 +98,12 @@ export function NewsStreamCard({ className = "" }: { className?: string }) {
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
+      {/* Animated silver rim */}
+      <SilverRimOverlay />
+
       {/* Header chip */}
       <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/50 backdrop-blur-sm border border-white/10">
-        <Bell size={12} className="text-cyan-400" />
+        <Bell size={12} className="text-slate-200" />
         <span className="text-[11px] font-bold text-white">News &amp; Updates</span>
       </div>
 
@@ -139,9 +143,9 @@ export function NewsStreamCard({ className = "" }: { className?: string }) {
                 </div>
                 {it.kind === "article" ? (
                   <>
-                    <p className="text-base font-bold text-white leading-snug line-clamp-2 group-hover:text-cyan-200 transition-colors">{it.title}</p>
+                    <p className="text-base font-bold text-white leading-snug line-clamp-2">{it.title}</p>
                     {it.summary && <p className="text-[12px] text-slate-300/80 line-clamp-2 mt-1">{it.summary}</p>}
-                    <span className="inline-flex items-center gap-1 text-[11px] text-cyan-300 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">Read article <ArrowUpRight size={12} /></span>
+                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-200 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">Read article <ArrowUpRight size={12} /></span>
                   </>
                 ) : (
                   <p className="text-sm text-slate-100 leading-relaxed line-clamp-4">{it.text}</p>

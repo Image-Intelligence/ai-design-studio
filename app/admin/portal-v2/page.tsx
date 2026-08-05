@@ -5,7 +5,7 @@ import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import ChatHub, { ChatProviderSettings, ChatLayoutSettings, ChatAgentSettings, ChatAgentCapabilities, ChatApiKeysSettings } from "@/components/chat-hub"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, Pin, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2 } from "lucide-react"
+import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, Pin, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
@@ -505,6 +505,16 @@ interface PendingSlot {
   aspectRatio?: string
   quality?: string
   referenceImageUrls?: string[]
+  // Fresh RunPod worker detected for this job (model load ahead → longer ETA)
+  coldStart?: boolean
+  // RunPod queue tracking: inQueue while no worker has picked the job up;
+  // execStartMs = when execution actually began. Timers/ETAs/duration history
+  // run from execStartMs so queue wait doesn't pollute them.
+  inQueue?: boolean
+  execStartMs?: number
+  // Full generation settings (flux* keys for custom-flux) — persisted on the
+  // slot so a page refresh mid-run doesn't lose them before the DB save
+  videoMetadata?: Record<string, unknown>
 }
 
 // --- VIDEO TYPES ---
@@ -796,14 +806,165 @@ const SILVER_RIM_CONIC =
 // entirely except for the moving notch.
 const SILVER_ORBIT_CONIC =
   "conic-gradient(from 0deg, #cbd5e1 0deg, #cbd5e1 330deg, rgba(203,213,225,0) 340deg, rgba(203,213,225,0) 350deg, #cbd5e1 360deg)"
+// Red variant for failed-generation popups — same ring + travelling break
+const RED_ORBIT_CONIC =
+  "conic-gradient(from 0deg, #f87171 0deg, #f87171 330deg, rgba(248,113,113,0) 340deg, rgba(248,113,113,0) 350deg, #f87171 360deg)"
+
+// Smart-mode dimension table for flux1-dev: ~1MP native generation with
+// /64-multiple dims (flux's sweet spot); larger targets go through upscaling
+const SMART_FLUX_DIMS: Record<string, [number, number]> = {
+  "1:1": [1024, 1024], "4:5": [896, 1120], "3:4": [896, 1152],
+  "2:3": [832, 1216], "9:16": [768, 1344],
+  "5:4": [1120, 896], "4:3": [1152, 896], "3:2": [1216, 832],
+  "16:9": [1344, 768], "21:9": [1536, 640],
+}
+
+// "Auto" aspect with no reference image: guess a sensible shape from the
+// prompt. Person/portrait words → 4:5, scenery/wide words → 16:9, else 1:1.
+function guessFluxDimsFromPrompt(prompt: string): { w: number; h: number; ar: string } {
+  const p = ` ${prompt.toLowerCase()} `
+  const portrait  = /\b(portrait|selfie|headshot|head\s?shot|close[- ]?up|full[- ]?body|standing|woman|man|girl|guy|lady|person|model|face)\b/
+  const landscape = /\b(landscape|panorama|panoramic|cityscape|skyline|scenery|vista|seascape|mountains?|valley|desert|horizon|wide[- ]?(shot|angle)|aerial)\b/
+  const ar = landscape.test(p) && !portrait.test(p) ? '16:9' : portrait.test(p) ? '4:5' : '1:1'
+  const [w, h] = SMART_FLUX_DIMS[ar]
+  return { w, h, ar }
+}
+
+// Center-crop a data-URL image to a target aspect — lets a FIXED aspect chip
+// work with i2i: the reference is cropped to the new shape client-side instead
+// of being stretched by the worker's resize-to-width×height.
+async function cropDataUrlToAspect(dataUrl: string, targetW: number, targetH: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image()
+    img.onload = () => {
+      const target = targetW / targetH
+      let sw = img.width, sh = img.height
+      if (sw / sh > target) sw = Math.round(sh * target)
+      else sh = Math.round(sw / target)
+      if (Math.abs(sw - img.width) < 2 && Math.abs(sh - img.height) < 2) { resolve(dataUrl); return }
+      const canvas = document.createElement('canvas')
+      canvas.width = sw; canvas.height = sh
+      const ctx = canvas.getContext('2d')
+      if (!ctx) { resolve(dataUrl); return }
+      ctx.drawImage(img, Math.round((img.width - sw) / 2), Math.round((img.height - sh) / 2), sw, sh, 0, 0, sw, sh)
+      resolve(canvas.toDataURL('image/jpeg', 0.92))
+    }
+    img.onerror = reject
+    img.src = dataUrl
+  })
+}
+
+// Sampler choices for custom-flux RunPod inference — all are the FlowMatch Euler
+// scheduler with different sigma schedules (the only samplers flux supports)
+type FluxSamplerId = 'euler' | 'euler-beta' | 'euler-karras' | 'euler-exp'
+
+// Smart resolution targets (long-side px). Anything past 4K is reached via the
+// sequential pipeline: ESRGAN steps scale to an EXACT pixel target, and a Flux
+// tiling pass can be chained first for real generated detail.
+type FluxSmartRes = '1k' | '2k' | '3k' | '4k' | '5k' | '6k' | '7k' | '8k'
+const SMART_RES_TARGET_PX: Record<Exclude<FluxSmartRes, '1k'>, number> = {
+  '2k': 2048, '3k': 3072, '4k': 4096, '5k': 5120, '6k': 6144, '7k': 7168, '8k': 8192,
+}
+// Finish presets — how the smart picker reaches the target. ESRGAN polishes but
+// flattens LoRA texture when overused; tiled Flux passes re-apply the LoRA'd
+// model at each scale. The alternating presets weave the two: Flux strengths
+// DECREASE down the chain (0.35 → 0.22 → 0.12) so later passes reinforce
+// identity/texture without repainting composition, and every chain ends on an
+// ESRGAN pass for the final crisp polish.
+type FluxSmartFinish = 'sharp' | 'detail' | 'alternate' | 'deep' | 'natural' | 'polish' | 'enhance' | 'enhance2' | 'enhance3' | 'enhance4' | 'enhance5' | 'enhance6' | 'enhance7' | 'enhance8' | 'enhance9' | 'enhance10' | 'enhance11' | 'enhance12' | 'enhance13' | 'enhance14' | 'swap'
+const SMART_FINISH_LABEL: Record<FluxSmartFinish, string> = {
+  sharp: 'Sharp', detail: 'Detail', alternate: 'Alternate', deep: 'Deep',
+  natural: 'Natural', polish: 'Polish',
+  enhance: 'Enhance v1', enhance2: 'Enhance v2', enhance3: 'Enhance v3', enhance4: 'Enhance v4', enhance5: 'Enhance v5', enhance6: 'Enhance v6', enhance7: 'Enhance v7', enhance8: 'Enhance v8', enhance9: 'Enhance v9', enhance10: 'Enhance v10', enhance11: 'Enhance v11', enhance12: 'Enhance v12', enhance13: 'Enhance v13', enhance14: 'Enhance v14',
+  swap: 'Char Swap',
+}
+// Compact tag shown on each Finish tile; the full description renders once in
+// the dropdown footer for the selected finish (keeps the popup short)
+const SMART_FINISH_TAG: Record<FluxSmartFinish, string> = {
+  sharp:     'ESRGAN only · fastest',
+  detail:    'one Flux pass + polish',
+  natural:   'realism · no plastic',
+  polish:    'tamed detail weave',
+  alternate: 'strong detail weave',
+  deep:      'max detail · slowest',
+  enhance:   'i2i · subtle quality',
+  enhance2:  'i2i · heavy detail',
+  enhance3:  'i2i · crisp polish',
+  enhance4:  'i2i · zoom-crisp detail',
+  enhance5:  'i2i · clear & idealized',
+  enhance6:  'i2i · strand separation',
+  enhance7:  'i2i · likeness + wax smooth',
+  enhance8:  'i2i · glow re-light',
+  enhance9:  'i2i · glow ×2',
+  enhance10: 'i2i · full re-light',
+  enhance11: 'i2i · glow + skin relief',
+  enhance12: 'i2i · crystal clear',
+  enhance13: 'i2i · anchor + likeness ctrl',
+  enhance14: 'i2i · v12 + true eyes',
+  swap:      'LoRA character i2i',
+}
+const SMART_FINISH_DESC: Record<FluxSmartFinish, string> = {
+  sharp:     'ESRGAN only — fast, crisp polish with no diffusion pass.',
+  detail:    'Flux 2× detail pass, then ESRGAN polish to target.',
+  natural:   'Anti-hallucination realism — low-res detail pass, neutral ESRGAN, faint Flux re-grain last (no crunch, no plastic).',
+  polish:    'Tamed Alternate — softer mid pass + neutral final ESRGAN. Pop without the plastic.',
+  alternate: 'Flux → ESRGAN → Flux → ESRGAN — strong woven detail (can over-detail faces).',
+  deep:      '3 alternated Flux passes — max detail, slowest; may invent skin texture at high res.',
+  enhance:   'Enhance v1 — SUBTLE: 0.30 i2i re-render + one gentle detail pass + neutral polish. Least invented detail, most faithful to the reference.',
+  enhance2:  'Enhance v2 — HEAVY: Deep-grade hair/skin detail passes with a natural (non-waxy) finish + face-detection pass. Most invented detail.',
+  enhance3:  'Enhance v3 — BALANCED: tamed detail passes, neutral upscale, then a crisp UltraSharp polish at full size + face pass. Sharper, less hallucination than v2.',
+  enhance4:  'Enhance v4 — ZOOM-CRISP: stronger mid re-draw kills hair fuzz, UltraSharp handles ALL scaling, double polish at full size, ADetailer 0.40 re-renders eyes/lips last. Micro-detail that survives zooming.',
+  enhance5:  'Enhance v5 — CLEAR & IDEALIZED: Deep\'s weave (flux re-render → UltraSharp, three times) at tamed strengths on the i2i base. Ends on a flux re-render + single UltraSharp — Deep/Alternate clearness without v4\'s max-sharpness or freckle invention.',
+  enhance6:  'Enhance v6 — STRAND SEPARATION: v5 with the mid pass raised to near-Deep (0.20) — re-draws hair as distinct strands you can see between — and Deep\'s 0.12 finishing pass for extra polish. Face freckle level unchanged (ADetailer repaints it last).',
+  enhance7:  'Enhance v7 — LIKENESS FIRST + WAX SMOOTH: v3\'s minimal flux budget (identity drift lives in flux passes — hair color, face), UltraSharp does the big scaling (Deep\'s clay/wax look), neutral x4plus LAST smooths the fuzz away. ADetailer eased to 0.25.',
+  enhance8:  'Enhance v8 — GLOW RE-LIGHT: the fuzz/flat look was baked into the 0.30 i2i base (70% of the soft reference survived). v8 raises i2i to 0.40 so flux RE-LIGHTS and redraws the base — bright, 3D, glowing like Deep/Polish on txt2img — on v7\'s likeness-safe chain. Add lighting terms to your prompt ("glowing studio lighting, glossy").',
+  enhance9:  'Enhance v9 — GLOW ×2: double the v8 step — i2i 0.50 (flux owns the render, reference anchors pose/composition, your LoRA + trigger word carry the face) and Deep\'s 0.35 first pass. Maximum glow before Char Swap territory. Prompt with lighting terms + your trigger word.',
+  enhance10: 'Enhance v10 — FULL RE-LIGHT: i2i 0.55 (Char Swap\'s strength — the reference is now a pose/composition guide, the render is fully flux) + first pass 0.40 beyond Deep, with ADetailer raised to 0.30 as a drift COUNTER — the LoRA re-locks the face as the final step. The far end of the enhance family.',
+  enhance11: 'Enhance v11 — GLOW + SKIN RELIEF: levers between v9/v10 (i2i 0.52, first pass 0.38), and the mid pass finally raised 0.08 → 0.15 — that pass is where Deep manufactures its specular skin bumps (Deep runs 0.22). Ends on the neutral x4plus, which also tames v10\'s blue/green strand fringing. Prompt "glossy dewy skin, visible pores" for the wet-look sheen.',
+  enhance12: 'Enhance v12 — CRYSTAL CLEAR: sampler-smart (euler-beta with a reference for likeness; plain Euler in t2i to protect anatomy), mid pass back to 0.10 (v11\'s 0.15 drifted), and a sharp-over-smooth triple finish: UltraSharp scale → x4plus smooth (kills fringing/fuzz) → UltraSharp polish LAST for through-your-eyes clarity. Prompt "vivid colors, high contrast, HDR" for punch.',
+  enhance13: 'Enhance v13 — ANCHOR: reference-strong enhance with a Likeness control. Pick who owns the face: Reference (i2i 0.32, no face pass, char LoRA relaxed), Both (0.42 balanced), or LoRA (0.55, stronger face pass, char LoRA boosted). Mark your character LoRA with the "Char" chip in the LoRA panel so the system knows which one carries identity.',
+  enhance14: 'Enhance v14 — V12 + TRUE EYES: your favorite recipe, morph-proofed. The eye warping was ADetailer repainting 4K faces at a squashed 512px square then stretching back — worker v76 renders face crops aspect-true at up to 1024px, and v14 eases the face pass to 0.22 so irises are refined, not redrawn. Needs worker v76 deployed.',
+  swap:      'Re-render the reference with YOUR LoRA character: 0.55 i2i keeps pose & scene, trigger word + ADetailer face pass swap the person.',
+}
+const FLUX_SAMPLERS: { id: FluxSamplerId; label: string; desc: string }[] = [
+  { id: 'euler',        label: 'Euler',        desc: 'Default — simple sigma schedule' },
+  { id: 'euler-beta',   label: 'Euler β',      desc: 'Beta sigmas — favors mid-range detail' },
+  { id: 'euler-karras', label: 'Euler Karras', desc: 'Karras sigmas — finer late steps' },
+  { id: 'euler-exp',    label: 'Euler Exp',    desc: 'Exponential sigmas — softer transitions' },
+]
+
+// Drop-in animated silver rim, masked to a thin edge band — render inside any
+// `relative isolate` rounded container to give it the site's signature chrome
+function RimOverlay({ rounded = "rounded-xl" }: { rounded?: string }) {
+  return (
+    <div
+      aria-hidden
+      className={`absolute inset-0 ${rounded} overflow-hidden pointer-events-none z-20`}
+      style={{
+        padding: "1.5px",
+        WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+        WebkitMaskComposite: "xor",
+        mask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+        maskComposite: "exclude",
+      } as React.CSSProperties}
+    >
+      <span
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+        style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+      />
+    </div>
+  )
+}
 // Silver orbit ring that hugs the RENDERED media box: object-contain leaves
 // letterbox bars, so the ring is measured to the picture itself, not the pane.
 // Re-measures on pane/media resize (ResizeObserver catches load + layout shifts).
-function OrbitMediaFrame({ containerRef, mediaRef, deps, hidden = false, innerHidden = false, mediaRotateDeg = 0, mediaScale = 1 }: {
+function OrbitMediaFrame({ containerRef, mediaRef, deps, hidden = false, innerHidden = false, mediaRotateDeg = 0, mediaScale = 1, conic }: {
   containerRef: React.RefObject<HTMLElement | null>
   mediaRef: React.RefObject<HTMLElement | null>
   deps: unknown[]
   hidden?: boolean
+  // Ring color override (e.g. RED_ORBIT_CONIC on failed-generation popups)
+  conic?: string
   // Hide just the media-hugging ring (e.g. while pinch-zoomed) — the outer
   // pane ring stays
   innerHidden?: boolean
@@ -852,7 +1013,7 @@ function OrbitMediaFrame({ containerRef, mediaRef, deps, hidden = false, innerHi
   const spinner = (
     <span
       className="absolute -inset-[75%] animate-spin"
-      style={{ background: SILVER_ORBIT_CONIC, animationDuration: "9s", animationDelay: phase }}
+      style={{ background: conic ?? SILVER_ORBIT_CONIC, animationDuration: "9s", animationDelay: phase }}
     />
   )
   return (
@@ -4889,15 +5050,252 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
 }
 
 // --- FEED PLACEHOLDERS ---
-function LoadingSlot({ onClick }: { onClick?: () => void }) {
+// Rolling per-model generation-duration history (last 10 runs each, median),
+// split into WARM and COLD buckets — a fresh RunPod worker loads the whole
+// checkpoint first and takes several times longer, so mixing the two made the
+// ETA describe neither. Cold starts are detected by worker identity (flux) or
+// by a run blowing 1.75× past the warm median.
+const GEN_DUR_KEY = "pv2-gen-durations-v2"
+const medianOf = (a?: number[]): number | null => {
+  if (!Array.isArray(a) || a.length === 0) return null
+  const s = [...a].sort((x, y) => x - y)
+  return s[Math.floor(s.length / 2)]
+}
+function recordGenDuration(modelId: string, sec: number, cold?: boolean) {
+  if (!modelId || sec < 2 || sec > 3600) return
+  try {
+    const d = JSON.parse(localStorage.getItem(GEN_DUR_KEY) || "{}")
+    const b = d[modelId] ?? (d[modelId] = { warm: [], cold: [] })
+    const wm = medianOf(b.warm)
+    const isCold = cold ?? (wm != null && sec >= wm * 1.75)
+    const arr: number[] = isCold ? b.cold : b.warm
+    arr.push(Math.round(sec))
+    if (arr.length > 10) arr.splice(0, arr.length - 10)
+    localStorage.setItem(GEN_DUR_KEY, JSON.stringify(d))
+  } catch {}
+}
+function expectedGenDuration(modelId: string, cold?: boolean, variant?: string, priorMult = 1): number | null {
+  try {
+    const all = JSON.parse(localStorage.getItem(GEN_DUR_KEY) || "{}")
+    const pick = (b?: { warm?: number[]; cold?: number[] }): number | null => {
+      if (!b) return null
+      const warm = medianOf(b.warm), coldM = medianOf(b.cold)
+      // Known cold with no cold history yet: estimate ~2.5× warm
+      if (cold === true) return coldM ?? (warm != null ? Math.round(warm * 2.5) : null)
+      return warm ?? coldM
+    }
+    if (variant) {
+      // Exact tier history first (e.g. custom-flux-lora::pipe8192-detail)
+      const v = pick(all[`${modelId}${variant}`])
+      if (v != null) return v
+      // No history for this tier yet: scale the plain-run median by the tier's
+      // rough cost multiplier so an 8K pipeline doesn't inherit a 1K ETA
+      const baseEst = pick(all[modelId]) ?? pick(all[`${modelId}::native`])
+      return baseEst != null ? Math.round(baseEst * priorMult) : null
+    }
+    return pick(all[modelId])
+  } catch { return null }
+}
+
+// ── Custom-flux timing tiers ──
+// Heavy upscale pipelines take many times longer than native runs, so each
+// cost tier gets its own duration bucket (appended to the model key).
+function fluxDurationVariant(meta?: Record<string, unknown> | null): string {
+  if (!meta || !meta.fluxWidth) return ''
+  const up = typeof meta.fluxUpscale === 'string' ? meta.fluxUpscale : 'none'
+  let base = 'native'
+  if (up === '2k-esrgan') base = 'up2048'
+  else if (up === '4k-esrgan') base = 'up3840'
+  else if (up === 'combo') base = 'combo'
+  else if (up === 'pipeline') {
+    const steps = Array.isArray(meta.fluxPipelineSteps) ? meta.fluxPipelineSteps as { type?: string; targetPx?: number }[] : []
+    const maxPx = Math.max(0, ...steps.filter(s => s?.type === 'esrgan').map(s => s.targetPx ?? 0))
+    const fluxN = steps.filter(s => s?.type === 'flux').length
+    base = `pipe${maxPx > 0 ? maxPx : 'x' + steps.length}${fluxN > 0 ? `-d${fluxN}` : ''}`
+  } else if (up !== 'none') base = `fluxtile-${up}`
+  const extras = `${meta.fluxRefine ? '+refine' : ''}${meta.fluxAdetailer ? '+faces' : ''}${meta.fluxGfpgan ? '+gfpgan' : ''}${meta.fluxNegativePrompt ? '+neg' : ''}`
+  return `::${base}${extras}`
+}
+// Rough cost multiplier vs a plain native run — used ONLY while a tier has no
+// real timing history yet. Tuned from observed A40 behavior; real medians take
+// over after the first couple of runs in a tier.
+function fluxVariantPrior(meta?: Record<string, unknown> | null): number {
+  if (!meta || !meta.fluxWidth) return 1
+  const up = typeof meta.fluxUpscale === 'string' ? meta.fluxUpscale : 'none'
+  const pxMult = (px: number) =>
+    px >= 8192 ? 4 : px >= 7168 ? 3.5 : px >= 6144 ? 3 : px >= 5120 ? 2.6 :
+    px >= 4096 ? 2.1 : px >= 3072 ? 1.7 : px >= 2048 ? 1.35 : 1
+  let mult = 1
+  if (up === '2k-esrgan') mult = 1.35
+  else if (up === '4k-esrgan') mult = 2.1
+  else if (up === 'combo') mult = 2.5
+  else if (up === 'pipeline') {
+    const steps = Array.isArray(meta.fluxPipelineSteps) ? meta.fluxPipelineSteps as { type?: string; targetPx?: number }[] : []
+    const maxPx = Math.max(0, ...steps.filter(s => s?.type === 'esrgan').map(s => s.targetPx ?? 0))
+    const fluxN = steps.filter(s => s?.type === 'flux').length
+    mult = pxMult(maxPx)
+    // Each tiled Flux pass roughly adds a base-generation's worth of work
+    // (more at high px) — Alternate ≈ 2 passes, Deep ≈ 3
+    if (fluxN > 0) mult *= 1 + 0.9 * fluxN
+  } else if (up !== 'none') {
+    const px = ({ '2k': 2048, '4k': 4096, '5k': 5120, '6k': 6144, '8k': 8192 } as Record<string, number>)[up] ?? 0
+    mult = pxMult(px) * 1.6 // flux tiling is heavier than esrgan at the same px
+  }
+  if (meta.fluxRefine) mult += 0.6
+  if (meta.fluxAdetailer) mult += 0.4
+  if (meta.fluxGfpgan) mult += 0.15
+  if (meta.fluxNegativePrompt) mult *= 1.8 // true CFG = two passes per step
+  return mult
+}
+// Slot ids embed their creation timestamp (slot-<ts>-n / flux-<ts> / …)
+const slotStartMs = (slotId: string): number | null => {
+  const m = slotId.match(/(?:^|-)(\d{13})(?:-|$)/)
+  return m ? Number(m[1]) : null
+}
+
+// Synced site logo, cached at module level so a burst of loading slots shares
+// ONE /api/admin/config fetch instead of one per tile
+let siteLogoTileCache: string | null | undefined
+function useSiteLogoCached() {
+  const [url, setUrl] = useState<string | null>(siteLogoTileCache ?? null)
+  useEffect(() => {
+    if (siteLogoTileCache !== undefined) { setUrl(siteLogoTileCache ?? null); return }
+    fetch("/api/admin/config")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { siteLogoTileCache = d?.logoUrl ?? null; setUrl(siteLogoTileCache ?? null) })
+      .catch(() => { siteLogoTileCache = null })
+  }, [])
+  return url
+}
+
+// Branded in-progress tile: silver rim outline, site-theme backdrop (silver
+// glows + drifting light band) and the synced logo in a fast-spinning rim as
+// the loading indicator — replaces the old grey box + plain spinner.
+function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, modelId, coldStart, durVariant, durPrior, aspectRatio, waiting }: {
+  label: string
+  accent?: "silver" | "amber"
+  onClick?: () => void
+  startedAtMs?: number
+  modelId?: string
+  coldStart?: boolean
+  // Timing-tier suffix + no-history cost prior (custom flux upscale tiers)
+  durVariant?: string
+  durPrior?: number
+  // "2:3" / "1024x1536" — the tile takes the generation's shape (default square)
+  aspectRatio?: string
+  // Job is still in the RunPod queue — no timer/ETA yet (nothing is running)
+  waiting?: boolean
+}) {
+  const logoUrl = useSiteLogoCached()
+  // 1s ticker drives the elapsed/ETA readout + progress fill
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    if (!startedAtMs) return
+    const t = setInterval(() => forceTick(n => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [startedAtMs])
+  // Cold-start awareness: trust the worker-identity signal when present;
+  // otherwise escalate to the cold estimate once the warm ETA is clearly blown
+  const [assumeCold, setAssumeCold] = useState(false)
+  useEffect(() => {
+    if (modelId !== 'custom-flux-lora' || waiting) return
+    if (coldStart !== undefined || assumeCold || !startedAtMs || !modelId) return
+    const warm = expectedGenDuration(modelId, false, durVariant, durPrior)
+    if (warm == null) return
+    if ((Date.now() - startedAtMs) / 1000 > warm * 1.2 + 10) setAssumeCold(true)
+  })
+  // ETA + progress bar are custom-flux only — other models keep just the
+  // elapsed stopwatch (their durations vary too much by provider queue)
+  const isFluxTile = modelId === 'custom-flux-lora'
+  const isCold = isFluxTile ? (coldStart ?? (assumeCold ? true : undefined)) : undefined
+  const expected = isFluxTile && modelId ? expectedGenDuration(modelId, isCold, durVariant, durPrior) : null
+  const elapsed = startedAtMs ? Math.max(0, (Date.now() - startedAtMs) / 1000) : null
+  const pctv = expected && elapsed != null ? Math.min(96, (elapsed / expected) * 100) : null
+  const remain = expected && elapsed != null ? Math.round(expected - elapsed) : null
+  // CSS aspect-ratio (not Tailwind aspect-square) + flex-col/flex-1 — the same
+  // Safari-safe pattern as FailedSlot; "2:3" and "1024x1536" both parse
+  const cssAr = aspectRatio && aspectRatio !== 'auto'
+    ? aspectRatio.replace(/x/i, ':').replace(':', ' / ')
+    : '1 / 1'
   return (
-    <button
-      onClick={onClick}
-      className="aspect-square w-full bg-slate-800 flex flex-col items-center justify-center gap-2 hover:bg-slate-700 transition-colors"
-    >
-      <div className="w-6 h-6 rounded-full border-2 border-slate-600 border-t-slate-300 animate-spin" />
-    </button>
+    <div className="relative isolate w-full rounded-lg overflow-hidden p-[1.5px] flex flex-col" style={{ aspectRatio: cssAr }}>
+      {/* Outer animated silver rim */}
+      <span
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+      />
+      <button
+        onClick={onClick}
+        className="relative flex-1 min-h-0 w-full rounded-[7px] bg-[#070b14] overflow-hidden flex flex-col items-center justify-center gap-2.5"
+      >
+        {/* Site-theme backdrop — soft silver glows + a drifting band of light */}
+        <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at center, rgba(148,163,184,0.10), transparent 70%)" }} />
+        <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 18% 12%, rgba(248,250,252,0.07), transparent 45%)" }} />
+        <span
+          className="absolute inset-y-0 left-0 w-1/2 pointer-events-none"
+          style={{
+            background: "linear-gradient(100deg, transparent, rgba(226,232,240,0.05), rgba(248,250,252,0.10), rgba(226,232,240,0.05), transparent)",
+            animation: "sheen-sweep 2.8s ease-in-out infinite",
+          }}
+        />
+        {/* Synced logo in a fast-spinning silver rim — the loading indicator */}
+        <span className="relative isolate flex items-center justify-center overflow-hidden shrink-0 w-10 h-10 rounded-xl">
+          <span
+            className="absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 animate-spin -z-10"
+            style={{ background: SILVER_RIM_CONIC, animationDuration: "2.2s" }}
+          />
+          <span className="absolute inset-[1.5px] flex items-center justify-center overflow-hidden bg-slate-900 rounded-[10px]">
+            {logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={logoUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <Sparkles size={16} className="text-white/50" />
+            )}
+          </span>
+        </span>
+        <p className={`relative text-[9px] font-mono uppercase tracking-[0.25em] ${accent === "amber" ? "text-amber-400/70" : "text-slate-500"}`}>{label}</p>
+        {/* Queue wait: no timer — nothing is executing yet */}
+        {waiting && (
+          <p className="relative text-[8px] font-mono text-amber-400/70">
+            in queue · waiting for a worker{isCold === true ? " (cold boot)" : ""}
+          </p>
+        )}
+        {/* Measured ETA — median of this model's last runs on this device */}
+        {!waiting && elapsed != null && (
+          <p className="relative text-[8px] font-mono text-slate-600">
+            {Math.round(elapsed)}s
+            {isCold === true && <span className="text-amber-400/60"> · cold start</span>}
+            {remain != null
+              ? (remain > 0 ? ` · ~${remain}s left` : " · finishing…")
+              : isFluxTile ? " · timing this run for future ETAs" : ""}
+          </p>
+        )}
+        {!waiting && pctv != null && (
+          <div className="relative w-3/5 max-w-[140px] h-1 rounded-full bg-white/[0.08] overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-slate-400 to-white transition-[width] duration-1000 ease-linear"
+              style={{ width: `${pctv}%` }}
+            />
+          </div>
+        )}
+      </button>
+    </div>
   )
+}
+
+function LoadingSlot({ onClick, startedAtMs, modelId, coldStart, durVariant, durPrior, aspectRatio, waiting }: { onClick?: () => void; startedAtMs?: number | null; modelId?: string; coldStart?: boolean; durVariant?: string; durPrior?: number; aspectRatio?: string; waiting?: boolean }) {
+  return <BrandLoadingTile label={waiting ? "Queued" : "Generating"} onClick={onClick} startedAtMs={startedAtMs ?? undefined} modelId={modelId} coldStart={coldStart} durVariant={durVariant} durPrior={durPrior} aspectRatio={aspectRatio} waiting={waiting} />
+}
+
+// The generation's shape for a pending slot: flux dims from the stored config,
+// other models from their requested aspect ratio
+function slotAspectRatio(slot: PendingSlot): string | undefined {
+  const vm = slot.videoMetadata
+  const w = vm && typeof vm.fluxWidth === 'number' ? vm.fluxWidth : null
+  const h = vm && typeof vm.fluxHeight === 'number' ? vm.fluxHeight : null
+  if (w && h) return `${w}:${h}`
+  const ar = slot.aspectRatio ?? slot.nb2AspectRatio
+  return ar && ar !== 'auto' ? ar : undefined
 }
 
 function StreamingSlot({ dataUrl, onClick }: { dataUrl: string; onClick?: () => void }) {
@@ -4926,38 +5324,103 @@ function StreamingSlot({ dataUrl, onClick }: { dataUrl: string; onClick?: () => 
 }
 
 function QueuedSlot({ onClick }: { onClick?: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="aspect-square w-full bg-slate-900 border border-amber-500/20 hover:border-amber-500/40 flex flex-col items-center justify-center gap-2 transition-colors"
-    >
-      <div className="w-5 h-5 rounded-full border-2 border-amber-500/50 border-t-amber-400 animate-spin" />
-      <p className="text-[9px] text-amber-400/60 font-mono tracking-wide">QUEUED</p>
-    </button>
-  )
+  return <BrandLoadingTile label="Queued" accent="amber" onClick={onClick} />
 }
 
-function FailedSlot({ prompt, error, onClick, onDismiss }: { prompt: string; error: string; onClick?: () => void; onDismiss?: () => void }) {
+// One-click retry bridge: failed feed tiles live in the page component, but the
+// generation pipeline (runGenerate) lives in the image prompt bar. The bar
+// registers its retry entrypoint here; tile Re-generate buttons call it with
+// the tile's stored config — same model/prompt/aspect/quality/refs, so the
+// run (and its ticket cost) is identical to the original.
+interface RetryRunOpts {
+  modelId?: string
+  prompt: string
+  aspectRatio?: string
+  quality?: string
+  refUrls?: string[]
+  loraUrl?: string | null
+}
+const retryBridge: { fn: ((opts: RetryRunOpts) => void) | null } = { fn: null }
+
+// Red variant of the animated rim — error-coded, same motion as the silver one
+const RED_RIM_CONIC =
+  "conic-gradient(from 0deg, rgba(248,113,113,0.15), #fca5a5, #ef4444, rgba(248,113,113,0.2), #f87171, #b91c1c, rgba(248,113,113,0.15))"
+
+// Compress raw provider/server errors into something a person can read at
+// tile size. The full raw text stays available in the detail modal.
+function friendlyFailError(raw: string): string {
+  const e = (raw || "").trim() || "Generation failed"
+  if (/non-JSON response|expected pattern|<html|<!DOCTYPE|Internal Server Error/i.test(e)) return "The server hit a snag and no image came back."
+  if (/timeout|timed out|ETIMEDOUT|deadline/i.test(e)) return "The model timed out on this one."
+  if (/nsfw|safety|content polic|flagged|moderat/i.test(e)) return "Blocked by the model's content filter."
+  if (/unauthorized|forbidden|401|403/i.test(e)) return "The provider rejected the request."
+  if (/insufficient|not enough tickets|balance/i.test(e)) return "Not enough tickets for this run."
+  if (/queue.*full/i.test(e)) return "The queue was full — try again in a moment."
+  if (/network|fetch failed|failed to fetch|load failed|ECONN/i.test(e)) return "Network hiccup — the request never made it."
+  const cleaned = e.replace(/^Error:\s*/i, "").replace(/\s*\(HTTP \d+\)[\s\S]*$/i, "").trim()
+  return cleaned.length > 110 ? cleaned.slice(0, 107) + "…" : cleaned
+}
+
+function FailedSlot({ prompt, error, aspectRatio, onClick, onDismiss, onRetry }: {
+  prompt: string
+  error: string
+  aspectRatio?: string
+  onClick?: () => void
+  onDismiss?: () => void
+  onRetry?: () => void
+}) {
+  const [retried, setRetried] = useState(false)
+  // Match the shape the generation was going to be (auto → square)
+  const arCss = (() => {
+    if (!aspectRatio || aspectRatio === "auto") return "1 / 1"
+    const p = aspectRatio.replace(/x/i, ":").split(":").map(parseFloat)
+    return p.length === 2 && p[0] > 0 && p[1] > 0 ? `${p[0]} / ${p[1]}` : "1 / 1"
+  })()
   return (
-    <div
-      onClick={onClick}
-      className="relative aspect-square w-full bg-slate-900 border border-red-500/20 hover:border-red-500/40 flex flex-col items-center justify-center p-3 gap-2 transition-colors cursor-pointer group/fail"
-    >
-      {onDismiss && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onDismiss() }}
-          title="Dismiss this error"
-          aria-label="Dismiss this error"
-          className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/50 border border-white/10 flex items-center justify-center text-slate-500 hover:text-white hover:border-red-400/50 transition-all opacity-70 sm:opacity-0 sm:group-hover/fail:opacity-100 z-10"
-        >
-          <X size={10} />
-        </button>
-      )}
-      <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
-        <X size={10} className="text-red-400" />
+    // flex-col + flex-1 (NOT h-full): Safari mis-resolves percentage heights
+    // against aspect-ratio boxes, letting the card face spill over the bottom
+    // padding band and swallow the rim there
+    <div className="relative isolate w-full rounded-lg overflow-hidden p-[1.5px] flex flex-col" style={{ aspectRatio: arCss }}>
+      {/* Animated RED rim — same motion as the silver tiles, error-coded */}
+      <span
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        style={{ background: RED_RIM_CONIC, animationDuration: "5s" }}
+      />
+      <div
+        onClick={onClick}
+        className="relative flex-1 min-h-0 w-full rounded-[7px] bg-slate-950 flex flex-col items-center justify-center p-3 gap-1.5 cursor-pointer group/fail overflow-hidden"
+      >
+        {onDismiss && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDismiss() }}
+            title="Dismiss this error"
+            aria-label="Dismiss this error"
+            className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/50 border border-white/10 flex items-center justify-center text-slate-500 hover:text-white hover:border-red-400/50 transition-all opacity-70 sm:opacity-0 sm:group-hover/fail:opacity-100 z-10"
+          >
+            <X size={10} />
+          </button>
+        )}
+        <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
+          <X size={10} className="text-red-400" />
+        </div>
+        <p className="text-[10px] font-semibold text-red-400/80 text-center leading-tight">Generation failed</p>
+        <p className="text-[9px] text-red-400/60 text-center leading-tight line-clamp-2 max-w-full px-1">{friendlyFailError(error)}</p>
+        <p className="text-[9px] text-slate-600 text-center leading-tight line-clamp-1 italic max-w-full px-1">"{prompt}"</p>
+        {onRetry && (
+          <button
+            onClick={(e) => { e.stopPropagation(); if (retried) return; setRetried(true); onRetry() }}
+            disabled={retried}
+            className={`mt-0.5 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[10px] font-bold transition-all ${
+              retried
+                ? "border-white/10 bg-white/[0.04] text-slate-500 cursor-default"
+                : "border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-500/50"
+            }`}
+          >
+            <RotateCcw size={10} />
+            {retried ? "Re-queued" : "Re-generate"}
+          </button>
+        )}
       </div>
-      <p className="text-[9px] text-red-400/70 text-center leading-tight line-clamp-1">{error}</p>
-      <p className="text-[9px] text-slate-600 text-center leading-tight line-clamp-2 italic">"{prompt}"</p>
     </div>
   )
 }
@@ -4975,6 +5438,121 @@ function AIDisclaimer() {
 }
 
 // --- PENDING DETAIL MODAL ---
+// Grouped custom-flux settings pills — Model / LoRAs (with strengths + epoch)
+// / Generation / Upscale (numbered pipeline steps) / Extras. Shared by the
+// finished-image detail modal and the pending (generating) popup. Render
+// inside a `flex flex-wrap gap-1.5` container.
+function FluxSettingsGroups({ vm }: { vm: Record<string, any> }) {
+  const pill = (txt: string, cls = 'bg-white/[0.04] border-white/10 text-slate-300', key?: string, title?: string) => (
+    <span key={key ?? txt} title={title} className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] font-mono ${cls}`}>{txt}</span>
+  )
+  // Character-LoRA pill — the site's spinning-rim treatment in VIOLET, so the
+  // identity carrier reads instantly (same masked-conic technique as the
+  // prompt card's silver rim, scaled down to pill size)
+  const charPill = (txt: string, key?: string, title?: string) => (
+    <span key={key ?? txt} title={title}
+      className="relative isolate inline-flex items-center px-2 py-0.5 rounded-md border border-violet-400/30 bg-violet-500/20 text-violet-100 text-[11px] font-mono">
+      <span
+        className="absolute inset-0 rounded-md overflow-hidden pointer-events-none z-10"
+        style={{
+          padding: '1.5px',
+          WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+          WebkitMaskComposite: 'xor',
+          mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+          maskComposite: 'exclude',
+        } as React.CSSProperties}
+      >
+        <span
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+          style={{
+            background: 'conic-gradient(from 0deg, transparent 0%, #a78bfa 10%, #ede9fe 18%, transparent 30%, transparent 50%, #8b5cf6 60%, #ddd6fe 68%, transparent 80%, transparent 100%)',
+            animationDuration: '3s',
+          }}
+        />
+      </span>
+      {txt}
+    </span>
+  )
+  const grp = (label: string, children: React.ReactNode) => (
+    <div className="w-full space-y-1" key={label}>
+      <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-slate-700">{label}</p>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
+    </div>
+  )
+  const steps = Array.isArray(vm.fluxPipelineSteps)
+    ? vm.fluxPipelineSteps as Array<{ type?: string; upscaleFactor?: number; strength?: number; model?: string; targetPx?: number }>
+    : []
+  const loraNames = Array.isArray(vm.fluxLoras) ? vm.fluxLoras as string[] : []
+  const loraStr   = Array.isArray(vm.fluxLoraStrengths) ? vm.fluxLoraStrengths as number[] : []
+  const loraKeys  = Array.isArray(vm.fluxLoraKeys) ? vm.fluxLoraKeys as string[] : []
+  const loraChar  = Array.isArray(vm.fluxLoraCharacter) ? vm.fluxLoraCharacter as boolean[] : []
+  return (
+    <>
+      {grp('Model', (
+        <>
+          {vm.fluxCheckpoint
+            ? pill(String(vm.fluxCheckpoint), 'bg-amber-500/10 border-amber-500/20 text-amber-300')
+            : pill('unknown checkpoint', 'bg-white/[0.03] border-white/[0.06] text-slate-600')}
+        </>
+      ))}
+      {loraNames.length > 0 && grp('LoRAs', loraNames.map((n, i) => {
+        // Which checkpoint of the run: parse the R2 key — epoch snapshots are
+        // <ts>-save-<step>-<epoch>-<n>, finals are <run>/final.safetensors.
+        // Skip the tag if the display name already says which one.
+        const key = typeof loraKeys[i] === 'string' ? loraKeys[i] : ''
+        const em  = key.match(/\/epochs\/.*-save-(\d+)-(\d+)-\d+\.safetensors$/i)
+        const tag = /epoch|final/i.test(n) ? null
+          : em ? `epoch ${em[2]}`
+          : /\/final\.safetensors$/i.test(key) ? 'final'
+          : null
+        // Character-marked LoRA (identity carrier) gets the animated violet rim
+        const isChar = loraChar[i] === true
+        const label = `${n}${tag ? ` · ${tag}` : ''} · ${typeof loraStr[i] === 'number' ? loraStr[i].toFixed(2) : '1.00'}${isChar ? ' · character' : ''}`
+        return isChar
+          ? charPill(label, `fl-${i}`, key || undefined)
+          : pill(label, 'bg-violet-500/10 border-violet-500/20 text-violet-300', `fl-${i}`, key || undefined)
+      }))}
+      {grp('Generation', (
+        <>
+          {pill(`${vm.fluxWidth}×${vm.fluxHeight}`, undefined, 'dims')}
+          {vm.fluxSteps ? pill(`${vm.fluxSteps} steps`, 'bg-slate-500/10 border-slate-500/20 text-slate-300', 'steps') : null}
+          {vm.fluxGuidance ? pill(`cfg ${vm.fluxGuidance}`, 'bg-slate-500/10 border-slate-500/20 text-slate-300', 'cfg') : null}
+          {pill(String(vm.fluxSampler ?? 'euler'), 'bg-slate-500/10 border-slate-500/20 text-slate-300', 'smp')}
+          {vm.fluxSeed && vm.fluxSeed !== 'random' ? pill(`seed ${vm.fluxSeed}`, 'bg-slate-500/10 border-slate-500/20 text-slate-400', 'seed') : null}
+          {vm.fluxNegativePrompt ? pill(`neg${vm.fluxNegCfg ? ` cfg${vm.fluxNegCfg}` : ''}`, 'bg-red-500/10 border-red-500/20 text-red-300', 'neg', String(vm.fluxNegativePrompt)) : null}
+        </>
+      ))}
+      {vm.fluxUpscale && vm.fluxUpscale !== 'none' && grp('Upscale', (
+        <>
+          {vm.fluxSmartRes && pill(
+            `${String(vm.fluxSmartRes).toUpperCase()} · ${SMART_FINISH_LABEL[vm.fluxSmartFinish as FluxSmartFinish] ?? 'Sharp'}`,
+            'bg-white/[0.08] border-white/25 text-white', 'smart')}
+          {vm.fluxUpscale === 'pipeline' && steps.length > 0
+            ? steps.map((s, i) => pill(
+                s.type === 'flux'
+                  ? `${i + 1} · Flux ${s.upscaleFactor ?? 2}× @ ${typeof s.strength === 'number' ? s.strength.toFixed(2) : '0.35'}`
+                  : `${i + 1} · ESRGAN ${s.model ?? 'ultrasharp'}${s.targetPx ? ` → ${s.targetPx}px` : ''}`,
+                'bg-cyan-500/10 border-cyan-500/20 text-cyan-300', `ps-${i}`))
+            : pill(
+                vm.fluxUpscale === 'combo'
+                  ? `combo ${vm.fluxComboOrder === 'flux-first' ? 'flux→esrgan' : 'esrgan→flux'}`
+                  : String(vm.fluxUpscale),
+                'bg-cyan-500/10 border-cyan-500/20 text-cyan-300', 'up')}
+          {vm.fluxEsrganModel && vm.fluxUpscale !== 'pipeline' ? pill(String(vm.fluxEsrganModel), 'bg-slate-500/10 border-slate-500/20 text-slate-300', 'esr') : null}
+        </>
+      ))}
+      {(vm.fluxRefine || vm.fluxGfpgan || vm.fluxAdetailer || vm.fluxImg2img) && grp('Extras', (
+        <>
+          {vm.fluxRefine ? pill('refine', 'bg-indigo-500/10 border-indigo-500/20 text-indigo-300') : null}
+          {vm.fluxAdetailer ? pill('adetailer', 'bg-indigo-500/10 border-indigo-500/20 text-indigo-300') : null}
+          {vm.fluxGfpgan ? pill(`gfpgan${vm.fluxGfpganWeight ? ` ${Number(vm.fluxGfpganWeight).toFixed(1)}` : ''}`, 'bg-indigo-500/10 border-indigo-500/20 text-indigo-300', 'gf') : null}
+          {vm.fluxImg2img ? pill(`i2i${vm.fluxImg2imgStr ? ` ${Number(vm.fluxImg2imgStr).toFixed(2)}` : ''}`, 'bg-indigo-500/10 border-indigo-500/20 text-indigo-300', 'i2i') : null}
+        </>
+      ))}
+    </>
+  )
+}
+
 function PendingDetailModal({
   prompt,
   model,
@@ -4985,6 +5563,7 @@ function PendingDetailModal({
   startFrameUrl,
   endFrameUrl,
   isQueued,
+  videoMetadata,
   onClose,
   onUsePrompt,
   onDismiss,
@@ -4998,6 +5577,8 @@ function PendingDetailModal({
   startFrameUrl?: string
   endFrameUrl?: string
   isQueued?: boolean
+  // Full generation settings (flux* keys) — shows the grouped settings panel
+  videoMetadata?: Record<string, unknown>
   onClose: () => void
   onUsePrompt: (text: string) => void
   onDismiss?: () => void
@@ -5082,7 +5663,15 @@ function PendingDetailModal({
                 {modelName}
               </span>
             </div>
-            {(aspectRatio || quality) && (
+            {videoMetadata?.fluxWidth ? (
+              /* Custom flux: the same grouped settings as the finished-image popup */
+              <div>
+                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Settings</p>
+                <div className="flex flex-wrap gap-1.5">
+                  <FluxSettingsGroups vm={videoMetadata as Record<string, any>} />
+                </div>
+              </div>
+            ) : (aspectRatio || quality) && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Settings</p>
                 <div className="flex flex-wrap gap-1.5">
@@ -5578,7 +6167,7 @@ function ImageDetailModal({
 }: {
   image: ImageItem
   onClose: () => void
-  onRescan: (image: ImageItem) => void
+  onRescan: (image: ImageItem, opts?: { keepSeed?: boolean }) => void
   onUsePrompt: (text: string) => void
   onAddRef: (url: string, r2Key?: string) => void
   navList?: ImageItem[]
@@ -5602,6 +6191,7 @@ function ImageDetailModal({
   )
 
   const modelName = getModelDisplayName(image.model)
+  const siteLogo = useSiteLogoCached()
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
   const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality)
@@ -5648,6 +6238,23 @@ function ImageDetailModal({
     disabled: zoom.scale > 1,
   })
 
+  // Media aspect ratio (record metadata, refined by the real pixels on load) —
+  // LANDSCAPE generations let the card grow wide on desktop so a 16:9 image
+  // uses the screen's horizontal room instead of sitting tiny in a portrait box
+  const arFromMeta = (() => {
+    const s = image.aspectRatio
+    if (!s || s === "auto") return null
+    const p = s.replace(/x/i, ":").split(":").map(parseFloat)
+    return p.length === 2 && p[0] > 0 && p[1] > 0 ? p[0] / p[1] : null
+  })()
+  const [measuredAr, setMeasuredAr] = useState<number | null>(null)
+  useEffect(() => { setMeasuredAr(null) }, [image.id, image.imageUrl])
+  const mediaAr = measuredAr ?? arFromMeta ?? 1
+  const sidePanelPx = infoPos === "left" || infoPos === "right" ? 288 : 0
+  const cardMaxWidth = mediaAr > 1.15
+    ? `min(96vw, calc(86vh * ${Math.min(mediaAr, 2.5).toFixed(3)} + ${sidePanelPx}px))`
+    : "56rem"
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-sm"
@@ -5671,9 +6278,9 @@ function ImageDetailModal({
         </button>
       )}
       <div
-        className={`relative w-full h-full sm:max-w-4xl sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
+        className={`relative isolate w-full h-full sm:max-w-[var(--card-max)] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#05080f] sm:bg-[#070b14]/95 sm:backdrop-blur-md shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
         onClick={(e) => e.stopPropagation()}
-        style={cardStyle}
+        style={{ ...cardStyle, ["--card-max" as string]: cardMaxWidth } as React.CSSProperties}
         {...swipeHandlers}
       >
         {/* Close */}
@@ -5702,22 +6309,33 @@ function ImageDetailModal({
           className="relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0"
           {...(!image.failed ? { ...zoom.zoomHandlers, style: zoom.paneStyle } : {})}
         >
-          {!image.failed && <BrandBackdrop />}
+          <BrandBackdrop />
           <OrbitMediaFrame
             containerRef={zoom.paneRef}
             mediaRef={modalImgRef}
             deps={[image.imageUrl, infoPos]}
-            hidden={!!image.failed}
-            innerHidden={zoom.scale > 1}
+            innerHidden={zoom.scale > 1 || !!image.failed}
+            conic={image.failed ? RED_ORBIT_CONIC : undefined}
           />
           {image.failed ? (
-            <div className="flex flex-col items-center gap-3 p-8 text-center">
-              <div className="w-14 h-14 rounded-full border-2 border-red-500/50 flex items-center justify-center">
-                <X size={22} className="text-red-400" />
+            <div className="relative z-[5] flex flex-col items-center gap-3 p-8 text-center max-w-md">
+              {/* Red-rimmed icon chip — failed twin of the silver treatment */}
+              <div className="relative isolate w-14 h-14 rounded-2xl overflow-hidden p-[1.5px]">
+                <span
+                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[150%] animate-spin -z-10"
+                  style={{ background: RED_RIM_CONIC, animationDuration: "5s" }}
+                />
+                <div className="w-full h-full rounded-[14px] bg-[#0a0508] flex items-center justify-center">
+                  <X size={22} className="text-red-400" />
+                </div>
               </div>
-              <p className="text-sm text-red-400 font-semibold tracking-wide">Generation Failed</p>
-              <div className="w-full max-w-sm max-h-48 overflow-y-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-left">
-                <p className="text-[11px] text-slate-400 font-mono leading-relaxed whitespace-pre-wrap break-all select-all">{image.failError || "The generation did not complete."}</p>
+              <p className="text-base font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-red-300 via-red-400 to-red-300/70">
+                Generation Failed
+              </p>
+              <p className="text-[13px] text-slate-300 leading-relaxed">{friendlyFailError(image.failError || "")}</p>
+              <div className="w-full max-h-40 overflow-y-auto rounded-xl border border-red-500/20 bg-[#070b14]/90 backdrop-blur-sm p-3 text-left">
+                <p className="text-[8px] font-mono uppercase tracking-[0.2em] text-slate-600 mb-1.5">Technical details</p>
+                <p className="text-[10px] text-slate-500 font-mono leading-relaxed whitespace-pre-wrap break-all select-all">{image.failError || "The generation did not complete."}</p>
               </div>
             </div>
           ) : (
@@ -5728,6 +6346,7 @@ function ImageDetailModal({
               className="max-w-full max-h-full object-contain cursor-pointer hover:opacity-90"
               title="Open full size"
               style={zoom.imgStyle}
+              onLoad={e => { const el = e.currentTarget; if (el.naturalWidth > 0 && el.naturalHeight > 0) setMeasuredAr(el.naturalWidth / el.naturalHeight) }}
               onClick={() => { if (zoom.shouldSuppressClick()) return; window.open(image.imageUrl, "_blank") }}
             />
           )}
@@ -5739,6 +6358,24 @@ function ImageDetailModal({
 
           {/* Layout switcher */}
           <InfoPosSwitcher pos={infoPos} onChange={setInfoPos} />
+
+          {/* Brand header — synced site logo in a silver-rim chip + gradient title */}
+          <div className="hidden sm:flex items-center gap-2.5 px-4 pt-3.5 pb-1 shrink-0">
+            <div className="relative isolate w-7 h-7 rounded-lg overflow-hidden p-[1.5px] shrink-0">
+              <span
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[160%] animate-spin -z-10"
+                style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+              />
+              <div className="w-full h-full rounded-[6px] bg-[#0a0f1c] flex items-center justify-center overflow-hidden">
+                {siteLogo
+                  ? <img src={siteLogo} alt="" className="w-full h-full object-cover" />
+                  : <Sparkles size={12} className="text-slate-300" />}
+              </div>
+            </div>
+            <span className="text-[13px] font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">
+              Generation Info
+            </span>
+          </div>
 
           {/* Top/bottom band: info sections + actions sit side-by-side (sm+) */}
           <div className={horiz ? "contents sm:flex sm:flex-row sm:flex-1 sm:min-h-0" : "contents"}>
@@ -5828,66 +6465,11 @@ function ImageDetailModal({
                       )}
                     </>
                   ) : modelConfig?.isCustomFlux ? (
-                    <>
-                      {image.videoMetadata?.fluxWidth && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
-                          {String(image.videoMetadata.fluxWidth)}×{String(image.videoMetadata.fluxHeight)}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxSteps && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-300 text-[11px] font-mono">
-                          {String(image.videoMetadata.fluxSteps)} steps
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxGuidance && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-300 text-[11px] font-mono">
-                          cfg {String(image.videoMetadata.fluxGuidance)}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxUpscale && image.videoMetadata.fluxUpscale !== 'none' && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[11px] font-mono">
-                          {image.videoMetadata.fluxUpscale === 'combo'
-                            ? `combo ${image.videoMetadata.fluxComboOrder === 'flux-first' ? 'flux→esrgan' : 'esrgan→flux'}`
-                            : image.videoMetadata.fluxUpscale === 'pipeline'
-                            ? `pipeline (${Array.isArray(image.videoMetadata.fluxPipelineSteps) ? (image.videoMetadata.fluxPipelineSteps as Array<{type:string}>).map(s => s.type).join('→') : '?'})`
-                            : String(image.videoMetadata.fluxUpscale)}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxEsrganModel && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-300 text-[11px] font-mono">
-                          {String(image.videoMetadata.fluxEsrganModel)}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxRefine && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">refine</span>
-                      )}
-                      {image.videoMetadata?.fluxGfpgan && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">
-                          gfpgan {image.videoMetadata.fluxGfpganWeight ? Number(image.videoMetadata.fluxGfpganWeight).toFixed(1) : ''}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxAdetailer && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">adetailer</span>
-                      )}
-                      {image.videoMetadata?.fluxImg2img && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-[11px] font-mono">
-                          i2i {image.videoMetadata.fluxImg2imgStr ? Number(image.videoMetadata.fluxImg2imgStr).toFixed(2) : ''}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxSeed && image.videoMetadata.fluxSeed !== 'random' && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-400 text-[11px] font-mono">
-                          seed {String(image.videoMetadata.fluxSeed)}
-                        </span>
-                      )}
-                      {image.videoMetadata?.fluxCheckpoint && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
-                          {String(image.videoMetadata.fluxCheckpoint)}
-                        </span>
-                      )}
-                      {!image.videoMetadata?.fluxWidth && (
-                        <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
-                      )}
-                    </>
+                    !image.videoMetadata?.fluxWidth ? (
+                      <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
+                    ) : (
+                      <FluxSettingsGroups vm={image.videoMetadata as Record<string, any>} />
+                    )
                   ) : (
                     <>
                       {image.aspectRatio && (
@@ -5999,13 +6581,39 @@ function ImageDetailModal({
                 </button>
               )
             ) : (
-              <button
-                onClick={() => { onRescan(image); onClose() }}
-                className="w-full py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
-              >
-                <RotateCcw size={12} />
-                {image.failed ? "Try Again" : "Rescan"}
-              </button>
+              <div className="space-y-1.5">
+                {/* Rescan — site logo in a spinning silver frame + sheen sweep */}
+                <div className="relative isolate rounded-lg overflow-hidden p-[1.5px]">
+                  <span
+                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin -z-10"
+                    style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+                  />
+                  <button
+                    onClick={() => { onRescan(image); onClose() }}
+                    className="relative overflow-hidden w-full py-2 rounded-[7px] bg-[#0a0f1c] hover:bg-[#111827] text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+                  >
+                    <span
+                      className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/15 to-transparent pointer-events-none"
+                      style={{ animation: "sheen-sweep 2.6s infinite" }}
+                    />
+                    {siteLogo
+                      ? <img src={siteLogo} alt="" className="w-4 h-4 rounded object-cover shrink-0" />
+                      : <RotateCcw size={12} />}
+                    {image.failed ? "Try Again" : "Rescan"}
+                  </button>
+                </div>
+                {/* Custom flux with a recorded seed: rescan reproducing the EXACT
+                    image (plain Rescan restores settings but rolls a fresh seed) */}
+                {!image.failed && modelConfig?.isCustomFlux && typeof image.videoMetadata?.fluxSeed === 'number' && (
+                  <button
+                    onClick={() => { onRescan(image, { keepSeed: true }); onClose() }}
+                    className="w-full py-1.5 rounded-lg border border-white/15 bg-white/[0.06] hover:bg-white/[0.1] hover:border-white/25 text-slate-200 hover:text-white text-[11px] font-semibold transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <RotateCcw size={11} />
+                    Rescan with seed {String(image.videoMetadata.fluxSeed)}
+                  </button>
+                )}
+              </div>
             )}
             {image.failed && onDismissFail && (
               <button
@@ -6177,9 +6785,35 @@ function VideoDetailModal({
   const hasPrev = navList && navIndex !== undefined && navIndex > 0
   const hasNext = navList && navIndex !== undefined && navIndex >= 0 && navIndex < navList.length - 1
 
+  const siteLogo = useSiteLogoCached()
   const [infoPos, setInfoPos, restoreInfoPos] = useInfoPanelPos()
   // Top/bottom modes render the info as a compact horizontal band so the video keeps priority
   const horiz = infoPos === "top" || infoPos === "bottom"
+
+  // Media aspect (metadata, refined by the real dimensions once loaded) —
+  // landscape videos widen the card on desktop instead of sitting tiny.
+  // Videos default to 16:9 when no aspect is recorded.
+  const arFromMeta = (() => {
+    const s = video.aspectRatio
+    if (!s || s === "auto") return null
+    const p = s.replace(/x/i, ":").split(":").map(parseFloat)
+    return p.length === 2 && p[0] > 0 && p[1] > 0 ? p[0] / p[1] : null
+  })()
+  const [measuredAr, setMeasuredAr] = useState<number | null>(null)
+  useEffect(() => { setMeasuredAr(null) }, [video.videoUrl])
+  useEffect(() => {
+    const el = videoElRef.current
+    if (!el) return
+    const onMeta = () => { if (el.videoWidth > 0 && el.videoHeight > 0) setMeasuredAr(el.videoWidth / el.videoHeight) }
+    if (el.readyState >= 1) onMeta()
+    el.addEventListener("loadedmetadata", onMeta)
+    return () => el.removeEventListener("loadedmetadata", onMeta)
+  }, [video.videoUrl])
+  const mediaAr = measuredAr ?? arFromMeta ?? 16 / 9
+  const sidePanelPx = infoPos === "left" || infoPos === "right" ? 288 : 0
+  const cardMaxWidth = mediaAr > 1.15
+    ? `min(96vw, calc(86vh * ${Math.min(mediaAr, 2.5).toFixed(3)} + ${sidePanelPx}px))`
+    : "56rem"
 
   const { swipeHandlers, cardStyle } = useModalSwipeNav({
     hasPrev: !!hasPrev,
@@ -6211,9 +6845,9 @@ function VideoDetailModal({
         </button>
       )}
       <div
-        className={`relative w-full h-full sm:max-w-4xl sm:rounded-2xl border-0 sm:border border-white/10 bg-slate-950 sm:bg-slate-950/95 shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
+        className={`relative isolate w-full h-full sm:max-w-[var(--card-max)] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#05080f] sm:bg-[#070b14]/95 sm:backdrop-blur-md shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
         onClick={(e) => e.stopPropagation()}
-        style={cardStyle}
+        style={{ ...cardStyle, ["--card-max" as string]: cardMaxWidth } as React.CSSProperties}
         {...swipeHandlers}
       >
         {/* Close */}
@@ -6274,6 +6908,24 @@ function VideoDetailModal({
 
           {/* Layout switcher */}
           <InfoPosSwitcher pos={infoPos} onChange={setInfoPos} />
+
+          {/* Brand header — synced site logo in a silver-rim chip + gradient title */}
+          <div className="hidden sm:flex items-center gap-2.5 px-4 pt-3.5 pb-1 shrink-0">
+            <div className="relative isolate w-7 h-7 rounded-lg overflow-hidden p-[1.5px] shrink-0">
+              <span
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[160%] animate-spin -z-10"
+                style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+              />
+              <div className="w-full h-full rounded-[6px] bg-[#0a0f1c] flex items-center justify-center overflow-hidden">
+                {siteLogo
+                  ? <img src={siteLogo} alt="" className="w-full h-full object-cover" />
+                  : <Sparkles size={12} className="text-slate-300" />}
+              </div>
+            </div>
+            <span className="text-[13px] font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">
+              Generation Info
+            </span>
+          </div>
 
           {/* Top/bottom band: info sections + actions sit side-by-side (sm+) */}
           <div className={horiz ? "contents sm:flex sm:flex-row sm:flex-1 sm:min-h-0" : "contents"}>
@@ -6373,13 +7025,26 @@ function VideoDetailModal({
           <div className={horiz
             ? "p-3 sm:p-4 border-t sm:border-t-0 sm:border-l border-white/8 space-y-2 shrink-0 sm:w-64 sm:overflow-y-auto"
             : "p-3 sm:p-4 border-t border-white/8 space-y-2 shrink-0"}>
-            <button
-              onClick={() => { onRescan(video); onClose() }}
-              className="w-full py-2 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
-            >
-              <RotateCcw size={12} />
-              {video.failed ? "Try Again" : "Use This Prompt"}
-            </button>
+            {/* Silver-framed brand button — same treatment as the image modal's Rescan */}
+            <div className="relative isolate rounded-lg overflow-hidden p-[1.5px]">
+              <span
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin -z-10"
+                style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+              />
+              <button
+                onClick={() => { onRescan(video); onClose() }}
+                className="relative overflow-hidden w-full py-2 rounded-[7px] bg-[#0a0f1c] hover:bg-[#111827] text-white text-[12px] font-semibold transition-colors flex items-center justify-center gap-2"
+              >
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/15 to-transparent pointer-events-none"
+                  style={{ animation: "sheen-sweep 2.6s infinite" }}
+                />
+                {siteLogo
+                  ? <img src={siteLogo} alt="" className="w-4 h-4 rounded object-cover shrink-0" />
+                  : <RotateCcw size={12} />}
+                {video.failed ? "Try Again" : "Use This Prompt"}
+              </button>
+            </div>
             {!video.failed && (
               <div className="flex gap-2">
                 <button
@@ -6486,6 +7151,8 @@ function ImageGrid({
   adminFilters = null,
   showHidden = false,
   onDismissFail,
+  onRetryFail,
+  onRetryPending,
   tileBorders = false,
 }: {
   signedIn: boolean
@@ -6506,6 +7173,8 @@ function ImageGrid({
   adminFilters?: AdminFeedFilters | null
   showHidden?: boolean
   onDismissFail?: (item: ImageItem) => void
+  onRetryFail?: (item: ImageItem) => void
+  onRetryPending?: (slot: PendingSlot) => void
   tileBorders?: false | "slim" | "fill" | "smart"
 }) {
   const fullRes = tileRes === "full"
@@ -6528,6 +7197,26 @@ function ImageGrid({
   // Sticky column assignment for pending/fresh tiles woven into the masonry tops —
   // keyed by tile key so a finishing generation stays in its spinner's column
   const headColMapRef = useRef(new Map<string, number>())
+  // Persisted head-strip layout for masonry "Rows": the visual order + column of
+  // recent generations, saved to localStorage. Without this, a refresh drops the
+  // session's gens into the body where newest-first shortest-column packing
+  // REVERSES the left-to-right order the user watched fill in — tiles switched
+  // places. On reload, ids in this list are woven back into the column tops at
+  // their exact saved spots; everything else packs below as usual.
+  const HEAD_LAYOUT_KEY = "pv2-feed-head-layout"
+  const HEAD_LAYOUT_MAX = 60
+  const headLayoutRef = useRef<Array<{ id: number; col: number }>>([])
+  const [, setHeadLayoutLoaded] = useState(false) // re-render once hydrated
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem(HEAD_LAYOUT_KEY) || "null")
+      if (Array.isArray(s)) {
+        headLayoutRef.current = s.filter((e): e is { id: number; col: number } =>
+          !!e && typeof e.id === "number" && typeof e.col === "number")
+      }
+    } catch {}
+    setHeadLayoutLoaded(true)
+  }, [])
   const pageLimitRef = useRef(typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 24)
   // Bumped whenever the filter set changes — in-flight responses from the old
   // filter set are discarded instead of being appended to the fresh list
@@ -6689,8 +7378,9 @@ function ImageGrid({
         // in their own pinned strip above the masonry, because shortest-column
         // packing re-shuffles every tile when items are PREPENDED — without the
         // split, each new generation visually rebuilt the whole feed.
-        const headNodes: { weight: number; node: ReactNode; key: string }[] = []
+        const headNodes: { weight: number; node: ReactNode; key: string; presetCol?: number }[] = []
         const nodes: { weight: number; node: ReactNode }[] = []
+        const rowsMode = fullSize && fullSizeLayout === "masonry" && masonryMode === "rows"
 
         // Pending + fresh (top of feed) — only in the normal (non-admin, non-hidden) view
         if (!adminFilters && !showHidden) {
@@ -6700,15 +7390,15 @@ function ImageGrid({
                   ? <StreamingSlot key={slot.slotId} dataUrl={slot.streamDataUrl} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
                   : slot.queueJobId && !slot.nb2RequestId
                     ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
-                    : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />)
-              : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} />
-            headNodes.push({ weight: 1, node, key: slot.slotId })
+                    : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} startedAtMs={slot.execStartMs ?? slotStartMs(slot.slotId)} modelId={slot.modelId} coldStart={slot.coldStart} durVariant={fluxDurationVariant(slot.videoMetadata)} durPrior={fluxVariantPrior(slot.videoMetadata)} aspectRatio={slotAspectRatio(slot)} waiting={slot.inQueue} />)
+              : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} aspectRatio={slot.aspectRatio} onRetry={onRetryPending ? () => onRetryPending(slot) : undefined} />
+            headNodes.push({ weight: arHeightWeight(slot.status === "failed" ? slot.aspectRatio : slotAspectRatio(slot)), node, key: slot.slotId })
           })
           freshImages.forEach((img) => {
             const node = img.failed
-              ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} />
+              ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
-            headNodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node, key: `fresh-${img.id}` })
+            headNodes.push({ weight: arHeightWeight(img.aspectRatio), node, key: `fresh-${img.id}` })
           })
         }
 
@@ -6740,12 +7430,34 @@ function ImageGrid({
             const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0
             return bTime - aTime
           })
+          // Rows mode: images whose position was persisted while they were fresh
+          // rejoin the HEAD strip at their saved column instead of repacking into
+          // the body (which would reshuffle them newest-first)
+          const layout = headLayoutRef.current
+          const layoutCols = rowsMode ? new Map(layout.map(e => [e.id, e.col])) : new Map<number, number>()
+          // Stale-layout guard: a saved entry only restores if it's still newer
+          // than every body item — if newer generations exist OUTSIDE the saved
+          // strip (made in another mode/device), the old strip is obsolete and
+          // its images repack into the body instead of jumping above them
+          const newestBody = merged.find(m => !layoutCols.has(m.id))
+          const cutoffT = newestBody?.createdAt ? new Date(newestBody.createdAt).getTime() : -Infinity
+          const restoredById = new Map<number, { weight: number; node: ReactNode; key: string; presetCol?: number }>()
           merged.forEach((img) => {
             const node = img.failed
-              ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} onClick={selectMode ? undefined : () => onImageClick(img)} onDismiss={onDismissFail ? () => onDismissFail(img) : undefined} />
+              ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} onDismiss={onDismissFail ? () => onDismissFail(img) : undefined} />
               : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
-            nodes.push({ weight: img.failed ? 1 : arHeightWeight(img.aspectRatio), node })
+            if (layoutCols.has(img.id) && (img.createdAt ? new Date(img.createdAt).getTime() : 0) >= cutoffT) {
+              restoredById.set(img.id, { weight: arHeightWeight(img.aspectRatio), node, key: `db-${img.id}`, presetCol: layoutCols.get(img.id) })
+            } else {
+              nodes.push({ weight: arHeightWeight(img.aspectRatio), node })
+            }
           })
+          // Append in SAVED order (visual order, newest rows first) so stacking
+          // within each column reproduces exactly what the user last saw
+          for (const e of layout) {
+            const r = restoredById.get(e.id)
+            if (r) headNodes.push(r)
+          }
         }
 
         // Masonry "Rows": JS shortest-column packing — left-to-right, and tiles never
@@ -6754,12 +7466,17 @@ function ImageGrid({
         // prepending into one column only pushes that column down, so new generations
         // land in masonry style without redistributing (= visually rebuilding) the
         // feed, and a finishing generation reuses its spinner's freed column.
-        if (fullSize && fullSizeLayout === "masonry" && masonryMode === "rows") {
+        if (rowsMode) {
           const n = cols ?? autoCols
           const columns = distributeMasonry(nodes, n)
           const colMap = headColMapRef.current
           const liveKeys = new Set(headNodes.map(h => h.key))
           for (const k of Array.from(colMap.keys())) if (!liveKeys.has(k)) colMap.delete(k)
+          // Restored tiles claim their SAVED columns first so they count toward
+          // occupancy before any new tile picks a spot
+          headNodes.forEach(h => {
+            if (h.presetCol !== undefined && h.presetCol < n && !colMap.has(h.key)) colMap.set(h.key, h.presetCol)
+          })
           // Count live tiles already holding a column, then hand new tiles the
           // least-occupied column (freed columns get reused first)
           const counts = new Array(n).fill(0)
@@ -6776,6 +7493,28 @@ function ImageGrid({
           for (let i = headNodes.length - 1; i >= 0; i--) {
             const c = colMap.get(headNodes[i].key)!
             columns[c] = [headNodes[i], ...columns[c]]
+          }
+          // Persist the strip (id + column, in visual order) so a refresh
+          // rebuilds these exact positions instead of repacking newest-first.
+          // Saved entries whose images aren't loaded yet (below the first page)
+          // keep their spot as a tail; pending spinners are transient and skipped.
+          if (!adminFilters && !showHidden) {
+            try {
+              const next: Array<{ id: number; col: number }> = []
+              for (const h of headNodes) {
+                const m = /^(?:fresh|db)-(\d+)$/.exec(h.key)
+                if (!m) continue
+                const c = colMap.get(h.key)
+                if (c !== undefined) next.push({ id: Number(m[1]), col: c })
+              }
+              if (next.length > 0 || images.length > 0) {
+                const nextIds = new Set(next.map(e => e.id))
+                const loadedIds = new Set<number>([...images.map(i => i.id), ...freshImages.map(i => i.id), ...savedFails.map(f => f.id)])
+                const tail = headLayoutRef.current.filter(e => !nextIds.has(e.id) && !loadedIds.has(e.id))
+                headLayoutRef.current = [...next, ...tail].slice(0, HEAD_LAYOUT_MAX)
+                localStorage.setItem(HEAD_LAYOUT_KEY, JSON.stringify(headLayoutRef.current))
+              }
+            } catch {}
           }
           return (
             <div className="flex gap-2 items-start">
@@ -7256,9 +7995,81 @@ function AspectRatioPicker({
 
 // --- DOWNLOAD TO R2 PANEL ---
 
+// Live PC stats strip for Local mode — polls /api/admin/system-stats every 2s
+// while rendered (unmounts when Advanced closes or mode switches to RunPod),
+// and skips polls while the tab is hidden.
+function LocalSystemMonitor() {
+  const [stats, setStats] = useState<{
+    cpu: number | null
+    ram: { used: number; total: number }
+    gpu: { util: number; vramUsed: number; vramTotal: number; temp: number; power: number | null } | null
+  } | null>(null)
+  const [unreachable, setUnreachable] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    const tick = async () => {
+      if (document.hidden) return
+      try {
+        const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+        const res = await fetch('/api/admin/system-stats', { headers: pass ? { 'x-admin-password': pass } : {} })
+        if (!res.ok) throw new Error()
+        const data = await res.json()
+        if (alive) { setStats(data); setUnreachable(false) }
+      } catch { if (alive) setUnreachable(true) }
+    }
+    tick()
+    const iv = setInterval(tick, 2000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [])
+
+  // Color escalates with load: quiet → amber at 75% → red at 90%
+  const loadCls = (pct: number) =>
+    pct >= 90 ? 'text-red-300' : pct >= 75 ? 'text-amber-300' : 'text-slate-200'
+
+  const gb = (b: number) => (b / 1024 ** 3).toFixed(1)
+
+  const Pill = ({ label, value, cls }: { label: string; value: string; cls?: string }) => (
+    <div className="flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] min-w-[70px]">
+      <span className="text-[8px] font-mono uppercase tracking-[0.15em] text-slate-600">{label}</span>
+      <span className={`text-[11px] font-mono tabular-nums ${cls ?? 'text-slate-200'}`}>{value}</span>
+    </div>
+  )
+
+  if (unreachable) {
+    return (
+      <div className="text-[10px] font-mono text-slate-600">
+        System monitor unavailable — stats only work when the site runs on this PC (localhost).
+      </div>
+    )
+  }
+  if (!stats) return null
+
+  const ramPct  = stats.ram.total > 0 ? (stats.ram.used / stats.ram.total) * 100 : 0
+  const vramPct = stats.gpu && stats.gpu.vramTotal > 0 ? (stats.gpu.vramUsed / stats.gpu.vramTotal) * 100 : 0
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600 w-16 shrink-0">This PC</span>
+      <Pill label="CPU" value={stats.cpu == null ? '—' : `${stats.cpu}%`} cls={stats.cpu == null ? undefined : loadCls(stats.cpu)} />
+      <Pill label="RAM" value={`${gb(stats.ram.used)}/${gb(stats.ram.total)}G`} cls={loadCls(ramPct)} />
+      {stats.gpu ? (
+        <>
+          <Pill label="GPU" value={`${Math.round(stats.gpu.util)}%`} cls={loadCls(stats.gpu.util)} />
+          <Pill label="VRAM" value={`${(stats.gpu.vramUsed / 1024).toFixed(1)}/${(stats.gpu.vramTotal / 1024).toFixed(0)}G`} cls={loadCls(vramPct)} />
+          <Pill label="Temp" value={`${Math.round(stats.gpu.temp)}°C`} cls={stats.gpu.temp >= 85 ? 'text-red-300' : stats.gpu.temp >= 75 ? 'text-amber-300' : 'text-slate-200'} />
+          {stats.gpu.power != null && <Pill label="Power" value={`${Math.round(stats.gpu.power)}W`} />}
+        </>
+      ) : (
+        <Pill label="GPU" value="n/a" />
+      )}
+    </div>
+  )
+}
+
 function DownloadToR2Panel() {
   const [url, setUrl]                   = useState('')
-  const [ckptSection, setCkptSection]   = useState<'dev' | 'fill' | 'kontext' | 'esrgan'>('dev')
+  const [ckptSection, setCkptSection]   = useState<'dev' | 'fill' | 'kontext' | 'lora' | 'esrgan'>('dev')
   const [modelName, setModelName]       = useState('')
   const [civitaiToken, setCivitaiToken] = useState('')
   const [jobId, setJobId]               = useState<string | null>(null)
@@ -7276,6 +8087,7 @@ function DownloadToR2Panel() {
     const fname = name.includes('.') ? name : `${name}${defaultExt}`
     if (ckptSection === 'fill')    return `training/checkpoints/flux-fill-${fname}`
     if (ckptSection === 'kontext') return `training/checkpoints/flux-kontext-${fname}`
+    if (ckptSection === 'lora')    return `training/loras/${fname}`
     if (ckptSection === 'esrgan')  return `training/models/esrgan/${fname}`
     return `training/checkpoints/${fname}`
   })()
@@ -7345,6 +8157,7 @@ function DownloadToR2Panel() {
     { id: 'dev'     as const, label: 'Flux 1 Dev',    accent: 'amber',   desc: 'Base dev checkpoints' },
     { id: 'fill'    as const, label: 'Flux Fill',      accent: 'emerald', desc: 'Inpainting / fill' },
     { id: 'kontext' as const, label: 'Flux 1 Kontext', accent: 'violet',  desc: 'Context-aware' },
+    { id: 'lora'    as const, label: 'LoRA',           accent: 'sky',     desc: 'Flux LoRAs (e.g. Turbo)' },
     { id: 'esrgan'  as const, label: 'ESRGAN',         accent: 'orange',  desc: 'Upscale models' },
   ]
 
@@ -7377,13 +8190,14 @@ function DownloadToR2Panel() {
       {/* Destination section */}
       <div className="space-y-2">
         <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Destination</label>
-        <div className="grid grid-cols-4 gap-1.5">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
           {SECTIONS.map(s => {
             const isActive = ckptSection === s.id
             const colorMap: Record<string, string> = {
               amber:   isActive ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'   : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
               emerald: isActive ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
               violet:  isActive ? 'border-violet-500/50 bg-violet-500/10 text-violet-300'  : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
+              sky:     isActive ? 'border-sky-500/50 bg-sky-500/10 text-sky-300'          : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
               orange:  isActive ? 'border-orange-500/50 bg-orange-500/10 text-orange-300'  : 'border-white/[0.08] text-slate-500 hover:border-white/[0.15] hover:text-slate-300',
             }
             return (
@@ -7407,7 +8221,7 @@ function DownloadToR2Panel() {
         <input
           value={modelName}
           onChange={e => setModelName(e.target.value)}
-          placeholder={ckptSection === 'esrgan' ? 'my-upscaler.pth' : 'my-checkpoint.safetensors'}
+          placeholder={ckptSection === 'esrgan' ? 'my-upscaler.pth' : ckptSection === 'lora' ? 'flux-turbo-alpha.safetensors' : 'my-checkpoint.safetensors'}
           disabled={isRunning}
           className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sky-500/50 disabled:opacity-50"
         />
@@ -7416,6 +8230,7 @@ function DownloadToR2Panel() {
             → <span className={`${
               ckptSection === 'fill'    ? 'text-emerald-400/70' :
               ckptSection === 'kontext' ? 'text-violet-400/70'  :
+              ckptSection === 'lora'    ? 'text-sky-400/70'     :
               ckptSection === 'esrgan'  ? 'text-orange-400/70'  :
                                           'text-amber-400/70'
             }`}>{computedR2Key}</span>
@@ -7613,9 +8428,15 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
   // Workspace view: pan/zoom the whole artboard (layers-tool gestures, resets
   // each open). Scale+translate only — view rotation would break the
   // rect-based pointer→canvas mapping every drawing tool depends on.
-  const [canvasView, setCanvasView] = useState({ s: 1, tx: 0, ty: 0, r: 0 })
-  const viewPanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
-  const viewPinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
+  // s = horizontal view scale, sy = vertical — normally equal (uniform zoom);
+  // they diverge only when a side handle stretches the canvas on one axis
+  const [canvasView, setCanvasView] = useState({ s: 1, sy: 1, tx: 0, ty: 0, r: 0 })
+  // Canvas selection: tap the canvas edge (or the empty workspace when nothing
+  // is selected) to select the CANVAS itself — outline + corner handles for
+  // resizing the whole view, mirroring how elements inside are selected.
+  const [canvasSelected, setCanvasSelected] = useState(false)
+  const viewPanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
+  const viewPinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
   const layerClientPtsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
   const layerInputRef = useRef<HTMLInputElement>(null)
   const layerDragRef = useRef<{ kind: FrameHandle | 'move' | 'rot'; start: { x: number; y: number }; orig: CropRect; origR: number; layerId: string; itemId: string } | null>(null)
@@ -7690,6 +8511,57 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
       setLayerBusy(false)
     }
   }
+
+  // The window paste listener mounts once — route through a ref so it always
+  // calls the CURRENT addImageToLayer (which reads live selLayerId state)
+  const addImageToLayerRef = useRef(addImageToLayer)
+  addImageToLayerRef.current = addImageToLayer
+
+  // Paste a copied image into the selected layer (or a new one) — the button
+  // uses the async Clipboard API (iPad Safari shows its Paste permission
+  // bubble), and desktop Ctrl/Cmd+V lands in the paste-event listener below.
+  const pasteImageFromClipboard = async () => {
+    if (layerBusy) return
+    setLayerError(null)
+    // The async Clipboard API only exists on HTTPS/localhost — over plain HTTP
+    // (e.g. the dev server via LAN IP on iPad) fall back to a native paste
+    // target: the OS long-press → Paste callout works in any context.
+    if (!navigator.clipboard?.read) { setShowPasteTarget(true); return }
+    try {
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        const type = item.types.find(t => t.startsWith('image/'))
+        if (!type) continue
+        const blob = await item.getType(type)
+        await addImageToLayer(new File([blob], `pasted.${type.split('/')[1] || 'png'}`, { type }))
+        return
+      }
+      setLayerError('No image on the clipboard — copy an image first')
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') setShowPasteTarget(true)
+      else setLayerError(e?.message || 'Could not read the clipboard')
+    }
+  }
+  // Fallback paste target (non-HTTPS or permission denied): an empty
+  // contentEditable the user long-presses (or ⌘V's) into; the paste event
+  // still carries the image even where clipboard.read() is unavailable.
+  const [showPasteTarget, setShowPasteTarget] = useState(false)
+  const pasteTargetRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => { if (showPasteTarget) pasteTargetRef.current?.focus() }, [showPasteTarget])
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      // Don't hijack pastes aimed at text fields (prompt box, rename inputs, …)
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      const file = [...(e.clipboardData?.items ?? [])].find(i => i.type.startsWith('image/'))?.getAsFile()
+      if (!file) return
+      e.preventDefault()
+      void addImageToLayerRef.current(file)
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Enable: the current canvas becomes "Layer 1 (base)" — hosted as a layer item
   // covering the full artboard — and the canvas clears to a transparent paint
@@ -7802,7 +8674,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     setStack(st)
     setSelLayerId(null); setSelItemId(null)
     baseMigratedRef.current = false
-    setCanvasView({ s: 1, tx: 0, ty: 0, r: 0 })
+    setCanvasView({ s: 1, sy: 1, tx: 0, ty: 0, r: 0 })
     clearOverlay()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [image.id])
@@ -8027,6 +8899,23 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         }
       }
     }
+    // Tap near the canvas EDGE → select the canvas itself (outline + corner
+    // handles for resizing the whole view). Checked before the item hit-test
+    // so a full-canvas base layer doesn't swallow the edge taps.
+    {
+      const c = canvasRef.current
+      if (c) {
+        const band = 16 * displayScale()
+        const inCanvas = pos.x >= 0 && pos.x <= c.width && pos.y >= 0 && pos.y <= c.height
+        const nearEdge = pos.x <= band || pos.x >= c.width - band || pos.y <= band || pos.y >= c.height - band
+        if (inCanvas && nearEdge) {
+          setCanvasSelected(true)
+          setSelItemId(null)
+          clearOverlay()
+          return false // fall through to view-pan so select+drag moves the canvas
+        }
+      }
+    }
     // Otherwise hit-test items top-most first (rotation-aware)
     for (let li = st.layers.length - 1; li >= 0; li--) {
       const l = st.layers[li]
@@ -8038,6 +8927,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         const lp = toLocalPt(pos, r, itemRot(item))
         if (lp.x > r.x && lp.x < r.x + r.w && lp.y > r.y && lp.y < r.y + r.h) {
           setSelLayerId(l.id); setSelItemId(item.id)
+          setCanvasSelected(false)
           // NOTE: the selecting tap deliberately does NOT arm the double-tap
           // timer — the contract is 1 tap = select, then 2 taps = fit-to-canvas
           layerDragRef.current = { kind: 'move', start: pos, orig: r, origR: item.r || 0, layerId: l.id, itemId: item.id }
@@ -8048,7 +8938,9 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         }
       }
     }
+    // Tap on dead space → deselect everything (item AND canvas)
     setSelItemId(null)
+    setCanvasSelected(false)
     clearOverlay()
     return false
   }
@@ -8182,13 +9074,213 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
   // empty area around the artboard doubles as a pan/zoom surface (Select tool,
   // Fit mode; Full mode keeps native touch scrolling).
   const panePtsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const panePanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
-  const panePinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; tx: number; ty: number; r: number } } | null>(null)
+  const panePanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
+  const panePinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
+  // Dashed workspace guides — the same faint line effect the elements draw on
+  // the canvas overlay, rendered over the PANE while a canvas-level snap engages
+  const [paneGuides, setPaneGuides] = useState<{ gx: number | null; gy: number | null }>({ gx: null, gy: null })
+  const clearPaneGuides = () => setPaneGuides(g => (g.gx !== null || g.gy !== null) ? { gx: null, gy: null } : g)
+  // Magnetic snapping for the artboard itself: while panning the canvas around
+  // the workspace, its (transformed) bounding box snaps to the pane's edges,
+  // corners and centerlines — same feel as images snapping to the canvas.
+  // Works on the axis-aligned bbox, so it's correct at any rotation/scale.
+  const snapViewTxTy = (tx: number, ty: number) => {
+    const pane = editorPaneRef.current, art = artboardRef.current
+    if (!pane || !art) return { tx, ty }
+    const pr = pane.getBoundingClientRect()
+    const ar = art.getBoundingClientRect()
+    // Where the artboard bbox lands at the proposed translation (bbox reflects
+    // the last-rendered canvasView, which matches the closure value)
+    const ddx = tx - canvasView.tx, ddy = ty - canvasView.ty
+    const tol = 12
+    let ax = 0, bx = tol + 1, tgx: number | null = null
+    for (const [edge, target] of [
+      [ar.left + ddx, pr.left], [ar.right + ddx, pr.right], [(ar.left + ar.right) / 2 + ddx, (pr.left + pr.right) / 2],
+    ] as [number, number][]) {
+      const d = target - edge
+      if (Math.abs(d) <= tol && Math.abs(d) < bx) { bx = Math.abs(d); ax = d; tgx = target }
+    }
+    let ay = 0, by = tol + 1, tgy: number | null = null
+    for (const [edge, target] of [
+      [ar.top + ddy, pr.top], [ar.bottom + ddy, pr.bottom], [(ar.top + ar.bottom) / 2 + ddy, (pr.top + pr.bottom) / 2],
+    ] as [number, number][]) {
+      const d = target - edge
+      if (Math.abs(d) <= tol && Math.abs(d) < by) { by = Math.abs(d); ay = d; tgy = target }
+    }
+    setPaneGuides({ gx: tgx !== null ? tgx - pr.left : null, gy: tgy !== null ? tgy - pr.top : null })
+    return { tx: tx + ax, ty: ty + ay }
+  }
+  // Resize the canvas view by dragging the logo-chip handles — all 8 (corners
+  // + edge midpoints), uniform scale anchored at the OPPOSITE corner/edge, like
+  // resizing an image. The dragged corner/edge snaps to the workspace edges and
+  // centerlines, adjusting the scale so it lands exactly flush.
+  type ViewHandle = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w'
+  const viewResizeRef = useRef<{
+    orig: { s: number; sy: number; tx: number; ty: number; r: number }
+    anchor: { x: number; y: number }
+    center: { x: number; y: number }
+    p0: { x: number; y: number }
+    axis: 'both' | 'x' | 'y'
+    pane: { left: number; right: number; top: number; bottom: number }
+    d0: number
+  } | null>(null)
+  // Side handles change the canvas's REAL dimensions (crop-expand behavior):
+  // dragging outward adds transparent space on that side, inward crops it off.
+  // A dashed preview with the new pixel size shows during the drag; the resize
+  // commits on release through the same path as the crop tool's Apply.
+  const canvasExpandRef = useRef<{
+    side: 'n' | 's' | 'e' | 'w'
+    start: { x: number; y: number }
+    cW: number; cH: number
+    pxPerCanvas: number          // client px per canvas px along the drag axis
+    canvasRect: { left: number; top: number; width: number; height: number }
+    paneRect: { left: number; top: number }
+    delta: number                // canvas px added (+) / cropped (−) on that side
+  } | null>(null)
+  const [expandPreview, setExpandPreview] = useState<{ left: number; top: number; width: number; height: number; w: number; h: number } | null>(null)
+
+  const onViewHandleDown = (h: ViewHandle) => (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation(); e.preventDefault()
+    const art = artboardRef.current, paneEl = editorPaneRef.current
+    if (!art || !paneEl) return
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    if (h === 'n' || h === 's' || h === 'e' || h === 'w') {
+      const c = canvasRef.current; if (!c) return
+      const cr = c.getBoundingClientRect()
+      const pr = paneEl.getBoundingClientRect()
+      canvasExpandRef.current = {
+        side: h,
+        start: { x: e.clientX, y: e.clientY },
+        cW: c.width, cH: c.height,
+        pxPerCanvas: h === 'e' || h === 'w' ? (cr.width / c.width || 1) : (cr.height / c.height || 1),
+        canvasRect: { left: cr.left, top: cr.top, width: cr.width, height: cr.height },
+        paneRect: { left: pr.left, top: pr.top },
+        delta: 0,
+      }
+      return
+    }
+    const b = art.getBoundingClientRect()
+    const cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2
+    const P: Record<ViewHandle, { x: number; y: number }> = {
+      nw: { x: b.left, y: b.top }, ne: { x: b.right, y: b.top },
+      sw: { x: b.left, y: b.bottom }, se: { x: b.right, y: b.bottom },
+      n: { x: cx, y: b.top }, s: { x: cx, y: b.bottom },
+      w: { x: b.left, y: cy }, e: { x: b.right, y: cy },
+    }
+    const OPP: Record<ViewHandle, ViewHandle> = { nw: 'se', ne: 'sw', sw: 'ne', se: 'nw', n: 's', s: 'n', e: 'w', w: 'e' }
+    const anchor = P[OPP[h]]
+    const p0 = P[h]
+    const pr = paneEl.getBoundingClientRect()
+    viewResizeRef.current = {
+      orig: canvasView,
+      anchor,
+      center: { x: cx, y: cy },
+      p0,
+      axis: 'both', // side handles return above (real canvas resize) — only corners reach here
+      pane: { left: pr.left, right: pr.right, top: pr.top, bottom: pr.bottom },
+      d0: Math.hypot(p0.x - anchor.x, p0.y - anchor.y) || 1,
+    }
+  }
+  const onViewHandleMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const ex = canvasExpandRef.current
+    if (ex) {
+      e.stopPropagation()
+      // Pointer movement along the axis → canvas px (positive = outward)
+      const raw = ex.side === 'e' ? e.clientX - ex.start.x
+                : ex.side === 'w' ? ex.start.x - e.clientX
+                : ex.side === 's' ? e.clientY - ex.start.y
+                :                   ex.start.y - e.clientY
+      const dim = ex.side === 'e' || ex.side === 'w' ? ex.cW : ex.cH
+      ex.delta = Math.max(64 - dim, Math.round(raw / ex.pxPerCanvas))
+      const ext = ex.delta * ex.pxPerCanvas
+      let left = ex.canvasRect.left - ex.paneRect.left
+      let top = ex.canvasRect.top - ex.paneRect.top
+      let width = ex.canvasRect.width, height = ex.canvasRect.height
+      if (ex.side === 'e') width += ext
+      else if (ex.side === 'w') { left -= ext; width += ext }
+      else if (ex.side === 's') height += ext
+      else { top -= ext; height += ext }
+      setExpandPreview({
+        left, top, width, height,
+        w: ex.side === 'e' || ex.side === 'w' ? ex.cW + ex.delta : ex.cW,
+        h: ex.side === 'n' || ex.side === 's' ? ex.cH + ex.delta : ex.cH,
+      })
+      return
+    }
+    const d = viewResizeRef.current; if (!d) return
+    e.stopPropagation()
+    const s0x = d.orig.s || 1, s0y = d.orig.sy || 1
+    // Clamp against the axis actually being resized
+    const base = d.axis === 'y' ? s0y : s0x
+    const clampR = (r: number) => Math.min(6 / base, Math.max(0.25 / base, r))
+    let ratio: number
+    if (d.axis === 'x')      ratio = Math.abs(e.clientX - d.anchor.x) / (Math.abs(d.p0.x - d.anchor.x) || 1)
+    else if (d.axis === 'y') ratio = Math.abs(e.clientY - d.anchor.y) / (Math.abs(d.p0.y - d.anchor.y) || 1)
+    else                     ratio = (Math.hypot(e.clientX - d.anchor.x, e.clientY - d.anchor.y) || 1) / d.d0
+    ratio = clampR(ratio)
+    // Snap the dragged corner/edge to the workspace edges + centerlines by
+    // adjusting the uniform scale so it lands exactly flush
+    const tol = 12
+    const px = d.anchor.x + (d.p0.x - d.anchor.x) * ratio
+    const py = d.anchor.y + (d.p0.y - d.anchor.y) * ratio
+    let best: { dist: number; r: number; axis: 'x' | 'y'; target: number } | null = null
+    if (d.axis !== 'y' && Math.abs(d.p0.x - d.anchor.x) > 1) {
+      for (const target of [d.pane.left, d.pane.right, (d.pane.left + d.pane.right) / 2]) {
+        const dist = Math.abs(px - target)
+        const r = clampR((target - d.anchor.x) / (d.p0.x - d.anchor.x))
+        if (dist <= tol && r > 0 && (!best || dist < best.dist)) best = { dist, r, axis: 'x', target }
+      }
+    }
+    if (d.axis !== 'x' && Math.abs(d.p0.y - d.anchor.y) > 1) {
+      for (const target of [d.pane.top, d.pane.bottom, (d.pane.top + d.pane.bottom) / 2]) {
+        const dist = Math.abs(py - target)
+        const r = clampR((target - d.anchor.y) / (d.p0.y - d.anchor.y))
+        if (dist <= tol && r > 0 && (!best || dist < best.dist)) best = { dist, r, axis: 'y', target }
+      }
+    }
+    if (best) ratio = best.r
+    setPaneGuides({
+      gx: best?.axis === 'x' ? best.target - d.pane.left : null,
+      gy: best?.axis === 'y' ? best.target - d.pane.top : null,
+    })
+    // Side handles STRETCH that axis only; corners scale both uniformly.
+    // transform-origin is the artboard center, so each axis scales about it —
+    // counter-translate per axis so the anchor (opposite corner/edge) stays pinned
+    const rx = d.axis === 'y' ? 1 : ratio
+    const ry = d.axis === 'x' ? 1 : ratio
+    setCanvasView({
+      s: s0x * rx,
+      sy: s0y * ry,
+      r: d.orig.r,
+      tx: d.orig.tx + (d.anchor.x - d.center.x) * (1 - rx),
+      ty: d.orig.ty + (d.anchor.y - d.center.y) * (1 - ry),
+    })
+  }
+  const onViewHandleUp = () => {
+    const ex = canvasExpandRef.current
+    canvasExpandRef.current = null
+    setExpandPreview(null)
+    if (ex && Math.abs(ex.delta) >= 1) {
+      // Rect in canvas coords covering the resized bounds — negative x/y grows
+      // on the left/top, larger w/h grows on the right/bottom
+      commitCanvasRect(
+        ex.side === 'e' ? { x: 0, y: 0, w: ex.cW + ex.delta, h: ex.cH }
+        : ex.side === 'w' ? { x: -ex.delta, y: 0, w: ex.cW + ex.delta, h: ex.cH }
+        : ex.side === 's' ? { x: 0, y: 0, w: ex.cW, h: ex.cH + ex.delta }
+        :                   { x: 0, y: -ex.delta, w: ex.cW, h: ex.cH + ex.delta }
+      )
+    }
+    viewResizeRef.current = null
+    clearPaneGuides()
+  }
+  const paneTapRef = useRef<{ x: number; y: number; t: number; pinched: boolean } | null>(null)
   const onPanePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (tool !== 'select' || fitMode !== 'fit') return
     if (e.target !== e.currentTarget) return // the canvas + layers column own their events
     e.currentTarget.setPointerCapture(e.pointerId)
     panePtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (panePtsRef.current.size === 1) paneTapRef.current = { x: e.clientX, y: e.clientY, t: Date.now(), pinched: false }
+    else if (paneTapRef.current) paneTapRef.current.pinched = true
     if (panePtsRef.current.size === 2) {
       const pts = [...panePtsRef.current.values()]
       panePanRef.current = null
@@ -8217,6 +9309,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         if (Math.abs(deg - snap) < 4) deg = snap
         setCanvasView({
           s: Math.min(6, Math.max(0.25, pinch.orig.s * (dist / pinch.dist0))),
+          sy: Math.min(6, Math.max(0.25, (pinch.orig.sy || 1) * (dist / pinch.dist0))),
           r: ((deg % 360) + 360) % 360,
           tx: pinch.orig.tx + (mid.x - pinch.mid0.x),
           ty: pinch.orig.ty + (mid.y - pinch.mid0.y),
@@ -8226,14 +9319,31 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     }
     if (panePanRef.current) {
       const pan = panePanRef.current
-      setCanvasView({ s: pan.orig.s, r: pan.orig.r, tx: pan.orig.tx + (e.clientX - pan.start.x), ty: pan.orig.ty + (e.clientY - pan.start.y) })
+      const snapped = snapViewTxTy(pan.orig.tx + (e.clientX - pan.start.x), pan.orig.ty + (e.clientY - pan.start.y))
+      setCanvasView({ s: pan.orig.s, sy: pan.orig.sy || 1, r: pan.orig.r, tx: snapped.tx, ty: snapped.ty })
     }
   }
   const onPanePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!panePtsRef.current.has(e.pointerId)) return
     panePtsRef.current.delete(e.pointerId)
     if (panePinchRef.current && panePtsRef.current.size < 2) panePinchRef.current = null
-    if (panePtsRef.current.size === 0) panePanRef.current = null
+    if (panePtsRef.current.size === 0) {
+      panePanRef.current = null
+      clearPaneGuides()
+      // A clean tap on the empty workspace (no drag, no pinch): deselect
+      // whatever is selected — or, with nothing selected, select the canvas
+      const tap = paneTapRef.current
+      paneTapRef.current = null
+      if (tap && !tap.pinched && Date.now() - tap.t < 600 && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 8) {
+        if (selItemId || canvasSelected) {
+          setSelItemId(null)
+          setCanvasSelected(false)
+          clearOverlay()
+        } else {
+          setCanvasSelected(true)
+        }
+      }
+    }
   }
 
   // Load image into canvas on mount.
@@ -8242,10 +9352,15 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
   // Fix: fetch HTTPS URLs as a blob first → create a same-origin blob URL → no canvas taint.
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return
+    let cancelled = false
 
     const drawToCanvas = (src: string) => {
       const img = document.createElement('img')
       img.onload = () => {
+        // The load is async — if the editor closed (or swapped images) before it
+        // finished, the overlay ref is null and writing to it would crash
+        const overlay = overlayRef.current
+        if (cancelled || !overlay) return
         // Use full native resolution (capped at 4096 to prevent OOM on huge images).
         // CSS scales the canvas to fit the modal; getPos() corrects for the ratio.
         const maxRes = 4096
@@ -8253,7 +9368,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         const w = Math.round(img.width * scale)
         const h = Math.round(img.height * scale)
         canvas.width = w; canvas.height = h
-        overlayRef.current!.width = w; overlayRef.current!.height = h
+        overlay.width = w; overlay.height = h
         canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
         setDims({ w, h })
         // Multi-layer refs keep the base in Layer 1 — the canvas is a transparent
@@ -8287,7 +9402,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         }
         setLoaded(true)
       }
-      img.onerror = () => setLoaded(true)
+      img.onerror = () => { if (!cancelled) setLoaded(true) }
       img.src = src
     }
 
@@ -8299,6 +9414,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
       // blob: or data: — already same-origin, no taint risk
       drawToCanvas(image.url)
     }
+    return () => { cancelled = true }
   }, [image.url])
 
   const getPos = (e: React.PointerEvent) => {
@@ -8313,12 +9429,13 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     }
     // Rotated workspace: the bounding box no longer matches the canvas face —
     // un-rotate/un-scale around the bbox center, then map layout px → canvas px
-    const sv = canvasView.s || 1
+    // (un-rotate first, then divide per axis — scale applies before rotation)
+    const sv = canvasView.s || 1, svy = canvasView.sy || 1
     const dx = e.clientX - (rect.left + rect.width / 2)
     const dy = e.clientY - (rect.top + rect.height / 2)
     const cos = Math.cos(-rot), sin = Math.sin(-rot)
     const lx = (dx * cos - dy * sin) / sv
-    const ly = (dx * sin + dy * cos) / sv
+    const ly = (dx * sin + dy * cos) / svy
     const w = canvas.offsetWidth || 1, h = canvas.offsetHeight || 1
     return {
       x: (lx + w / 2) * canvas.width / w,
@@ -8614,13 +9731,48 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         if (Math.abs(deg - snap) < 4) deg = snap
         deg = ((deg % 360) + 360) % 360
         const minSz = 16 * displayScale()
-        const w = Math.max(minSz, pinch.orig.w * sc)
-        const h = Math.max(minSz, pinch.orig.h * sc)
-        setItemRectLocal(pinch.layerId, pinch.itemId, {
-          x: pinch.orig.x + pinch.orig.w / 2 - w / 2,
-          y: pinch.orig.y + pinch.orig.h / 2 - h / 2,
-          w, h,
-        }, deg)
+        let w = Math.max(minSz, pinch.orig.w * sc)
+        let h = Math.max(minSz, pinch.orig.h * sc)
+        const cEl = canvasRef.current
+        // SIZE snap: when a side approaches the canvas span, lock the uniform
+        // scale so it fits wall-to-wall exactly — then keep pinching through it
+        // to continue toward the other walls
+        if (cEl) {
+          const sizeTol = 14 * displayScale()
+          if (Math.abs(w - cEl.width) <= sizeTol) {
+            const scFit = cEl.width / pinch.orig.w
+            w = cEl.width
+            h = Math.max(minSz, pinch.orig.h * scFit)
+          } else if (Math.abs(h - cEl.height) <= sizeTol) {
+            const scFit = cEl.height / pinch.orig.h
+            h = cEl.height
+            w = Math.max(minSz, pinch.orig.w * scFit)
+          }
+        }
+        // POSITION snap: edges/centers stick magnetically to the canvas walls
+        // and centerlines, same feel as one-finger dragging
+        let px = pinch.orig.x + pinch.orig.w / 2 - w / 2
+        let py = pinch.orig.y + pinch.orig.h / 2 - h / 2
+        let gx: number | null = null, gy: number | null = null
+        if (cEl) {
+          const tol = 14 * displayScale()
+          let bestX = tol + 1
+          for (const t of [0, cEl.width, cEl.width / 2]) {
+            for (const [edge, off] of [[px, 0], [px + w, -w], [px + w / 2, -w / 2]] as [number, number][]) {
+              const dist = Math.abs(edge - t)
+              if (dist <= tol && dist < bestX) { bestX = dist; px = t + off; gx = t }
+            }
+          }
+          let bestY = tol + 1
+          for (const t of [0, cEl.height, cEl.height / 2]) {
+            for (const [edge, off] of [[py, 0], [py + h, -h], [py + h / 2, -h / 2]] as [number, number][]) {
+              const dist = Math.abs(edge - t)
+              if (dist <= tol && dist < bestY) { bestY = dist; py = t + off; gy = t }
+            }
+          }
+        }
+        snapGuidesRef.current = { gx, gy }
+        setItemRectLocal(pinch.layerId, pinch.itemId, { x: px, y: py, w, h }, deg)
         requestAnimationFrame(drawLayerSelOverlay)
         return
       }
@@ -8636,6 +9788,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
           if (Math.abs(deg - snap) < 4) deg = snap
           setCanvasView({
             s: Math.min(6, Math.max(0.25, vp.orig.s * (dist / vp.dist0))),
+            sy: Math.min(6, Math.max(0.25, (vp.orig.sy || 1) * (dist / vp.dist0))),
             r: ((deg % 360) + 360) % 360,
             tx: vp.orig.tx + (mid.x - vp.mid0.x),
             ty: vp.orig.ty + (mid.y - vp.mid0.y),
@@ -8645,7 +9798,8 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
       }
       if (viewPanRef.current) {
         const pan = viewPanRef.current
-        setCanvasView({ s: pan.orig.s, r: pan.orig.r, tx: pan.orig.tx + (e.clientX - pan.start.x), ty: pan.orig.ty + (e.clientY - pan.start.y) })
+        const snapped = snapViewTxTy(pan.orig.tx + (e.clientX - pan.start.x), pan.orig.ty + (e.clientY - pan.start.y))
+        setCanvasView({ s: pan.orig.s, sy: pan.orig.sy || 1, r: pan.orig.r, tx: snapped.tx, ty: snapped.ty })
         return
       }
       if (layerDragRef.current) handleLayerPointerMove(getPos(e))
@@ -8783,11 +9937,13 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
       }
       if (viewPanRef.current) {
         viewPanRef.current = null
+        clearPaneGuides()
         return
       }
       if (layerPinchRef.current && layerPointersRef.current.size < 2) {
         const pinch = layerPinchRef.current
         layerPinchRef.current = null
+        snapGuidesRef.current = { gx: null, gy: null }
         const st = stackRef.current
         const c = canvasRef.current
         if (st && c) {
@@ -8854,8 +10010,10 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     }
   }
 
-  const applyCrop = () => {
-    const r = cropRectRef.current; if (!r || r.w < 2 || r.h < 2) return
+  // Commit a rect (canvas coords, may extend past the bounds) as the canvas's
+  // NEW real dimensions — out-of-bounds regions become transparent space.
+  // Shared by the crop tool's Apply and the canvas-selection side handles.
+  const commitCanvasRect = (r: { x: number; y: number; w: number; h: number }) => {
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
     const oldW = canvas.width, oldH = canvas.height
@@ -8883,11 +10041,16 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         })),
       })
     }
-    clearOverlay(); cropRectRef.current = null; setHasCropSel(false)
     pushHistory()
+    syncOrbit()
+  }
+
+  const applyCrop = () => {
+    const r = cropRectRef.current; if (!r || r.w < 2 || r.h < 2) return
+    commitCanvasRect(r)
+    clearOverlay(); cropRectRef.current = null; setHasCropSel(false)
     // Frame mode: rebuild the frame around the newly cropped image so the user can keep refining
     if (cropMode === 'frame') initCropFrame()
-    syncOrbit()
   }
 
   // ── Mask + Cut ───────────────────────────────────────────────────────────
@@ -9298,9 +10461,9 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
               >
                 {lockAspect ? <Lock size={11} /> : <Unlock size={11} />} Ratio
               </button>
-              {(canvasView.s !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0) && (
+              {(canvasView.s !== 1 || canvasView.sy !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0) && (
                 <button
-                  onClick={() => setCanvasView({ s: 1, tx: 0, ty: 0, r: 0 })}
+                  onClick={() => setCanvasView({ s: 1, sy: 1, tx: 0, ty: 0, r: 0 })}
                   title="Reset the artboard position and zoom"
                   className="text-[10px] px-2 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors shrink-0"
                 >
@@ -9496,6 +10659,26 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         >
           {/* Branded logo wall fills the workspace AROUND the artboard */}
           <BrandBackdrop />
+          {/* Dashed workspace snap guides — same treatment as the element
+              alignment guides, shown while a canvas-level snap is engaged */}
+          {paneGuides.gx !== null && (
+            <div className="absolute top-0 bottom-0 z-30 pointer-events-none"
+              style={{ left: paneGuides.gx, width: 1, backgroundImage: 'repeating-linear-gradient(to bottom, rgba(248,250,252,0.35) 0 5px, transparent 5px 10px)' }} />
+          )}
+          {paneGuides.gy !== null && (
+            <div className="absolute left-0 right-0 z-30 pointer-events-none"
+              style={{ top: paneGuides.gy, height: 1, backgroundImage: 'repeating-linear-gradient(to right, rgba(248,250,252,0.35) 0 5px, transparent 5px 10px)' }} />
+          )}
+          {/* Canvas-resize preview: dashed outline of the new REAL canvas bounds
+              while a side handle is dragged, with the resulting pixel size */}
+          {expandPreview && (
+            <div className="absolute z-30 pointer-events-none border-[1.5px] border-dashed border-white/80 rounded-sm flex items-center justify-center"
+              style={{ left: expandPreview.left, top: expandPreview.top, width: expandPreview.width, height: expandPreview.height }}>
+              <span className="px-2 py-0.5 rounded-full bg-black/70 border border-white/15 text-[10px] font-mono text-white whitespace-nowrap">
+                {expandPreview.w} × {expandPreview.h}
+              </span>
+            </div>
+          )}
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center gap-2 text-slate-600 text-sm z-10">
               <Loader2 size={16} className="animate-spin" /> Loading…
@@ -9510,8 +10693,8 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
             className={`relative isolate inline-block rounded-lg ${tool === 'crop' ? 'overflow-visible' : 'overflow-hidden'} shadow-xl transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}
             style={{
               touchAction: 'none',
-              ...(canvasView.s !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0
-                ? { transform: `translate(${canvasView.tx}px, ${canvasView.ty}px) rotate(${canvasView.r}deg) scale(${canvasView.s})`, transformOrigin: 'center center' }
+              ...(canvasView.s !== 1 || canvasView.sy !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0
+                ? { transform: `translate(${canvasView.tx}px, ${canvasView.ty}px) rotate(${canvasView.r}deg) scale(${canvasView.s}, ${canvasView.sy})`, transformOrigin: 'center center' }
                 : {}),
             }}
           >
@@ -9587,6 +10770,46 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
                 </div>
               ))}
             </div>
+            {/* Canvas selection — tap the canvas edge or the empty workspace to
+                select the canvas itself: outline + corner logo-chip handles for
+                resizing the whole view, anchored opposite — just like resizing
+                an image. Chips counter-scaled so they stay 20px at any zoom. */}
+            {loaded && tool === 'select' && fitMode === 'fit' && canvasSelected && !selItemId && (
+              <div className="absolute inset-0 z-30 pointer-events-none rounded-lg"
+                style={{ border: '1.5px solid rgba(255,255,255,0.9)', boxShadow: 'inset 0 0 12px rgba(0,0,0,0.35)' }} />
+            )}
+            {loaded && tool === 'select' && fitMode === 'fit' && canvasSelected && !selItemId && ([
+              { h: 'nw' as const, pos: { left: 3, top: 3 },                wrap: '',                 origin: 'top left',      cursor: 'nwse-resize' },
+              { h: 'ne' as const, pos: { right: 3, top: 3 },               wrap: '',                 origin: 'top right',     cursor: 'nesw-resize' },
+              { h: 'sw' as const, pos: { left: 3, bottom: 3 },             wrap: '',                 origin: 'bottom left',   cursor: 'nesw-resize' },
+              { h: 'se' as const, pos: { right: 3, bottom: 3 },            wrap: '',                 origin: 'bottom right',  cursor: 'nwse-resize' },
+              { h: 'n' as const,  pos: { left: '50%' as const, top: 3 },   wrap: 'translateX(-50%)', origin: 'top center',    cursor: 'ns-resize' },
+              { h: 's' as const,  pos: { left: '50%' as const, bottom: 3 },wrap: 'translateX(-50%)', origin: 'bottom center', cursor: 'ns-resize' },
+              { h: 'w' as const,  pos: { left: 3, top: '50%' as const },   wrap: 'translateY(-50%)', origin: 'center left',   cursor: 'ew-resize' },
+              { h: 'e' as const,  pos: { right: 3, top: '50%' as const },  wrap: 'translateY(-50%)', origin: 'center right',  cursor: 'ew-resize' },
+            ]).map(({ h, pos, wrap, origin, cursor }) => (
+              // Outer wrapper handles centering (edge midpoints); inner div
+              // counter-scales about the canvas-touching side so chips stay
+              // 20px and glued to the border at any zoom
+              <div key={`vh-${h}`} className="absolute z-40" style={{ ...pos, ...(wrap ? { transform: wrap } : {}), touchAction: 'none' }}>
+                <div
+                  onPointerDown={onViewHandleDown(h)}
+                  onPointerMove={onViewHandleMove}
+                  onPointerUp={onViewHandleUp}
+                  onPointerCancel={onViewHandleUp}
+                  style={{ transform: `scale(${1 / (canvasView.s || 1)}, ${1 / (canvasView.sy || 1)})`, transformOrigin: origin, cursor, touchAction: 'none' }}
+                >
+                  <div className="w-[20px] h-[20px] rounded-[6px] overflow-hidden border-2 border-white bg-slate-900 shadow-lg flex items-center justify-center">
+                    {cropHandleLogo ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={cropHandleLogo} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <Sparkles size={10} className="text-slate-200" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
             {loaded && tool === 'crop' && (
               <div
                 ref={orbitRef}
@@ -9662,7 +10885,41 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
                     {layerBusy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
                     {layerBusy ? 'Adding…' : 'Add image'}
                   </button>
+                  <button
+                    onClick={() => void pasteImageFromClipboard()}
+                    disabled={layerBusy || !stack?.enabled}
+                    title={selLayerId ? 'Paste a copied image into the selected layer' : 'Paste a copied image on a new layer'}
+                    className="flex items-center justify-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <ClipboardPaste size={11} /> Paste
+                  </button>
                 </div>
+                {showPasteTarget && (
+                  <div className="px-3 py-2 border-b border-white/[0.06] shrink-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[9px] font-mono uppercase tracking-wider text-slate-500">Paste target</span>
+                      <button onClick={() => setShowPasteTarget(false)} className="text-slate-600 hover:text-white transition-colors"><X size={11} /></button>
+                    </div>
+                    <div className="relative">
+                      <div
+                        ref={pasteTargetRef}
+                        contentEditable
+                        suppressContentEditableWarning
+                        onPaste={e => {
+                          e.preventDefault()
+                          const file = [...(e.clipboardData?.items ?? [])].find(i => i.type.startsWith('image/'))?.getAsFile()
+                          if (file) { setShowPasteTarget(false); void addImageToLayer(file) }
+                          else setLayerError('No image on the clipboard — copy an image first')
+                        }}
+                        onInput={e => { e.currentTarget.textContent = '' }}
+                        className="w-full min-h-[52px] rounded-lg border border-dashed border-white/25 bg-white/[0.03] focus:outline-none focus:border-white/50"
+                      />
+                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center px-2 text-center text-[10px] leading-snug text-slate-500">
+                        Tap &amp; hold here, then choose Paste
+                      </span>
+                    </div>
+                  </div>
+                )}
                 <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
                   {!stack?.enabled && (
                     <p className="text-[10px] text-slate-600 text-center py-3 px-2 leading-relaxed">Preparing the layered canvas…</p>
@@ -10525,7 +11782,9 @@ function StencilModal({
 
 // --- CUSTOM FLUX LORA PANEL ---
 
-type FluxLoraEntry = { id: string; name: string; key: string; strength: number }
+// character: marked as the identity-carrying LoRA — Enhance v13's likeness
+// system tunes its strength based on the chosen likeness source
+type FluxLoraEntry = { id: string; name: string; key: string; strength: number; character?: boolean }
 type FluxMode = 'local' | 'runpod'
 
 function CustomFluxPanel({
@@ -10536,6 +11795,12 @@ function CustomFluxPanel({
   onPrependImage,
   activeRefImages = [],
   promptOverride,
+  fluxOverride,
+  onUploadRef,
+  onDeactivateRef,
+  onEditRef,
+  onSaveLayers,
+  canUseLayers = false,
 }: {
   onAddPending:      (slot: PendingSlot) => void
   onUpdatePending:   (slotId: string, update: Partial<PendingSlot>) => void
@@ -10543,7 +11808,16 @@ function CustomFluxPanel({
   onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[], videoMetadata?: Record<string, unknown>) => void
   onPrependImage:    (img: ImageItem) => void
   activeRefImages?:  RefImage[]
+  // Reference plumbing — upload straight from the prompt box, deactivate from
+  // the floating thumbnail, click-through to the reference editor
+  onUploadRef?:      (items: RefImage[]) => void
+  onDeactivateRef?:  (id: string) => void
+  onEditRef?:        (id: string, newUrl: string) => Promise<RefImage | null> | void
+  onSaveLayers?:     (id: string, stack: RefLayerStack | null) => void
+  canUseLayers?:     boolean
   promptOverride?:   { text: string; version: number }
+  // Rescan: full flux* settings from a past generation to restore into the panel
+  fluxOverride?:     { meta: Record<string, unknown>; version: number } | null
 }) {
   const [mode, setMode]               = useState<FluxMode>('runpod')
   const [checkpoint, setCheckpoint]   = useState('')
@@ -10560,6 +11834,15 @@ function CustomFluxPanel({
   const [seed, setSeed]               = useState(-1)
   const [width, setWidth]             = useState(1024)
   const [height, setHeight]           = useState(1024)
+  // Sampler = sigma schedule for the FlowMatch Euler scheduler (RunPod only)
+  const [sampler, setSampler]         = useState<FluxSamplerId>('euler')
+  // Negative prompt via true CFG — needs a second forward pass per step, so
+  // generation is ~2× slower while a negative prompt is set (RunPod only)
+  const [negativePrompt, setNegativePrompt] = useState('')
+  const [negCfg, setNegCfg]                 = useState(4.0)
+  // Batch size: jobs queued per Generate press (RunPod only — they distribute
+  // across available workers; extras wait in RunPod's queue)
+  const [imageCount, setImageCount]         = useState(1)
   const [generating, setGenerating]   = useState(false)
   const [jobId, setJobId]             = useState<string | null>(null)
   const [resultUrl, setResultUrl]     = useState<string | null>(null)
@@ -10570,6 +11853,9 @@ function CustomFluxPanel({
   const [refineStrength, setRefineStrength]     = useState(0.3)
   // Upscaling
   const [upscaleEnabled, setUpscaleEnabled]     = useState(false)
+  // Panel visibility is separate from the on/off state — the popup can be
+  // closed while upscaling stays enabled (switch lives inside the panel)
+  const [upscalePanelOpen, setUpscalePanelOpen] = useState(false)
   const [upscaleMethod, setUpscaleMethod]       = useState<'flux'|'esrgan'|'combo'|'pipeline'>('esrgan')
   const [upscaleScale, setUpscaleScale]         = useState<2|4>(2)
   const [fluxTarget,   setFluxTarget]           = useState<'2k'|'4k'|'5k'|'6k'|'8k'>('2k')
@@ -10597,6 +11883,11 @@ function CustomFluxPanel({
   const [adetailerStrength, setAdetailerStrength] = useState(0.35)
   const [gfpgan, setGfpgan]                     = useState(false)
   const [gfpganWeight, setGfpganWeight]         = useState(0.8)
+  // Color grade — worker-side deterministic final pass (contrast/saturation
+  // multipliers + S-curve tone blend; 1.0/1.0/0 = off, zero likeness risk)
+  const [colorContrast, setColorContrast]       = useState(1.0)
+  const [colorSaturation, setColorSaturation]   = useState(1.0)
+  const [colorSCurve, setColorSCurve]           = useState(0.0)
   const [ipAdapter, setIpAdapter]               = useState(false)
   const [ipScale, setIpScale]                   = useState(0.6)
   const [img2img, setImg2img]                   = useState(false)
@@ -10608,6 +11899,80 @@ function CustomFluxPanel({
   const [inpaintImageB64,   setInpaintImageB64]   = useState('')
   const [inpaintMaskB64,    setInpaintMaskB64]    = useState('')
   const [inpaintStrength,   setInpaintStrength]   = useState(0.85)
+
+  // ── Panel-state persistence hydrate/persist effects live AFTER the Smart-row
+  // state declarations (they read smartAr/smartRes/smartFinish) — see below.
+  const FLUX_PANEL_STATE_KEY = 'pv2-flux-panel-state'
+  // STATE, not a ref: the persist effect must not fire until a render that has
+  // the hydrated values. With a ref, the persist effect ran in the same flush
+  // as hydration — still holding this render's DEFAULT values — and clobbered
+  // the saved state (StrictMode's double-mount then re-hydrated the clobber).
+  const [fluxStateHydrated, setFluxStateHydrated] = useState(false)
+  const hydrateFluxPanelState = () => {
+    try {
+      const s = JSON.parse(localStorage.getItem(FLUX_PANEL_STATE_KEY) || 'null')
+      if (s && typeof s === 'object') {
+        if (s.mode === 'local' || s.mode === 'runpod') setMode(s.mode)
+        if (typeof s.checkpoint === 'string' && s.checkpoint) setCheckpoint(s.checkpoint)
+        if (Array.isArray(s.loras)) {
+          const ls = (s.loras as unknown[]).filter((l): l is FluxLoraEntry =>
+            !!l && typeof (l as FluxLoraEntry).key === 'string' && !!(l as FluxLoraEntry).key && typeof (l as FluxLoraEntry).id === 'string')
+          if (ls.length > 0) setLoras(ls)
+        }
+        if (typeof s.prompt === 'string') setPrompt(s.prompt)
+        if (typeof s.steps === 'number') setSteps(s.steps)
+        if (typeof s.guidance === 'number') setGuidance(s.guidance)
+        if (typeof s.seed === 'number') setSeed(s.seed)
+        if (typeof s.width === 'number') setWidth(s.width)
+        if (typeof s.height === 'number') setHeight(s.height)
+        if (FLUX_SAMPLERS.some(x => x.id === s.sampler)) setSampler(s.sampler)
+        if (typeof s.negativePrompt === 'string') setNegativePrompt(s.negativePrompt)
+        if (typeof s.negCfg === 'number') setNegCfg(s.negCfg)
+        if (typeof s.imageCount === 'number' && s.imageCount >= 1 && s.imageCount <= 4) setImageCount(s.imageCount)
+        if (typeof s.smartAr === 'string' && (s.smartAr === 'auto' || SMART_FLUX_DIMS[s.smartAr])) setSmartAr(s.smartAr)
+        if (s.smartRes === '1k' || (typeof s.smartRes === 'string' && s.smartRes in SMART_RES_TARGET_PX)) setSmartRes(s.smartRes)
+        if (typeof s.smartFinish === 'string' && s.smartFinish in SMART_FINISH_LABEL) setSmartFinish(s.smartFinish as FluxSmartFinish)
+        if (s.likenessSource === 'ref' || s.likenessSource === 'both' || s.likenessSource === 'lora') setLikenessSource(s.likenessSource)
+        if (typeof s.upscaleEnabled === 'boolean') setUpscaleEnabled(s.upscaleEnabled)
+        if (['flux', 'esrgan', 'combo', 'pipeline'].includes(s.upscaleMethod)) setUpscaleMethod(s.upscaleMethod)
+        if (s.upscaleScale === 2 || s.upscaleScale === 4) setUpscaleScale(s.upscaleScale)
+        if (['2k', '4k', '5k', '6k', '8k'].includes(s.fluxTarget)) setFluxTarget(s.fluxTarget)
+        if (s.esrganModel === 'ultrasharp' || s.esrganModel === 'x4plus') setEsrganModel(s.esrganModel)
+        if (s.comboOrder === 'flux-first' || s.comboOrder === 'esrgan-first') setComboOrder(s.comboOrder)
+        if (typeof s.fluxTileStrength === 'number') setFluxTileStrength(s.fluxTileStrength)
+        if (Array.isArray(s.pipelineSteps) && s.pipelineSteps.length > 0) setPipelineSteps(s.pipelineSteps)
+        if (typeof s.refine === 'boolean') setRefine(s.refine)
+        if (typeof s.refineStrength === 'number') setRefineStrength(s.refineStrength)
+        if (typeof s.adetailer === 'boolean') setAdetailer(s.adetailer)
+        if (typeof s.adetailerStrength === 'number') setAdetailerStrength(s.adetailerStrength)
+        if (typeof s.gfpgan === 'boolean') setGfpgan(s.gfpgan)
+        if (typeof s.gfpganWeight === 'number') setGfpganWeight(s.gfpganWeight)
+        if (typeof s.colorContrast === 'number') setColorContrast(s.colorContrast)
+        if (typeof s.colorSaturation === 'number') setColorSaturation(s.colorSaturation)
+        if (typeof s.colorSCurve === 'number') setColorSCurve(s.colorSCurve)
+        if (typeof s.ipAdapter === 'boolean') setIpAdapter(s.ipAdapter)
+        if (typeof s.ipScale === 'number') setIpScale(s.ipScale)
+        if (typeof s.img2img === 'boolean') setImg2img(s.img2img)
+        if (typeof s.img2imgStrength === 'number') setImg2imgStrength(s.img2imgStrength)
+        if (typeof s.inpaintStrength === 'number') setInpaintStrength(s.inpaintStrength)
+      }
+    } catch {}
+    setFluxStateHydrated(true)
+  }
+  const persistFluxPanelState = () => {
+    if (!fluxStateHydrated) return
+    try {
+      localStorage.setItem(FLUX_PANEL_STATE_KEY, JSON.stringify({
+        mode, checkpoint, loras, prompt, steps, guidance, seed, width, height,
+        sampler, negativePrompt, negCfg, imageCount, smartAr, smartRes, smartFinish, likenessSource,
+        upscaleEnabled, upscaleMethod, upscaleScale, fluxTarget, esrganModel,
+        comboOrder, fluxTileStrength, pipelineSteps,
+        refine, refineStrength, adetailer, adetailerStrength,
+        gfpgan, gfpganWeight, ipAdapter, ipScale, img2img, img2imgStrength, inpaintStrength,
+        colorContrast, colorSaturation, colorSCurve,
+      }))
+    } catch {}
+  }
   // Multi-shape inpaint queue (per-shape context mode)
   const [inpaintJobs,       setInpaintJobs]       = useState<InpaintJobMeta[] | null>(null)
   const [inpaintOriginalB64, setInpaintOriginalB64] = useState('')
@@ -10633,6 +11998,470 @@ function CustomFluxPanel({
   }
   const [autoBaseDims, setAutoBaseDims]         = useState<{ w: number; h: number } | null>(null)
 
+  // ── Smart mode: aspect + target size in → best-practice settings out ──
+  // The full controls strip lives behind the Advanced toggle; picking here
+  // sets flux-optimal dims (~1MP, /64), 20 steps, guidance 3.5, and switches
+  // ESRGAN upscaling on for 2K/4K targets. The readout shows what was applied.
+  const [advOpen, setAdvOpen]   = useState(false)
+  const [smartAr, setSmartAr]   = useState('1:1')
+  const [smartRes, setSmartRes] = useState<FluxSmartRes>('1k')
+  // How the target is reached — see FluxSmartFinish at module scope
+  const [smartFinish, setSmartFinish] = useState<FluxSmartFinish>('sharp')
+  // Likeness source for Enhance v13 "Anchor": who owns the face —
+  //   ref  = the reference image (low i2i, ADetailer off, char LoRA relaxed)
+  //   both = balanced (mid i2i, gentle face pass, char LoRA full)
+  //   lora = the character LoRA (high i2i, stronger face pass, char LoRA boosted)
+  const [likenessSource, setLikenessSource] = useState<'ref' | 'both' | 'lora'>('both')
+  // Custom site-style dropdowns (native <select> shows as an iOS system picker)
+  const [arOpen, setArOpen]           = useState(false)
+  const [resOpen, setResOpen]         = useState(false)
+  // Enhance version sub-list inside the Finish grid (10 versions collapsed
+  // behind one tile so the popup stays short)
+  const [enhOpen, setEnhOpen]         = useState(false)
+  // Finish is its own Smart-row dropdown (split out of Resolution)
+  const [finOpen, setFinOpen]         = useState(false)
+  const [samplerOpen, setSamplerOpen] = useState(false)
+  const arRef      = useRef<HTMLDivElement>(null)
+  const resRef     = useRef<HTMLDivElement>(null)
+  const finRef     = useRef<HTMLDivElement>(null)
+  const samplerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (arRef.current && !arRef.current.contains(e.target as Node)) setArOpen(false)
+      if (resRef.current && !resRef.current.contains(e.target as Node)) setResOpen(false)
+      if (finRef.current && !finRef.current.contains(e.target as Node)) setFinOpen(false)
+      if (samplerRef.current && !samplerRef.current.contains(e.target as Node)) setSamplerOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  // Persistence effects run here — below every state declaration they touch
+  // (the helpers themselves are defined next to the state, above)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { hydrateFluxPanelState() }, [])
+  // Persist on every render — writes are tiny and gated on the hydrate flag
+  useEffect(() => { persistFluxPanelState() })
+
+  const applySmart = (ar: string, res: FluxSmartRes, finish?: FluxSmartFinish, likenessOverride?: 'ref' | 'both' | 'lora') => {
+    const fin = finish ?? smartFinish
+    const likeness = likenessOverride ?? likenessSource
+    setSmartAr(ar)
+    setSmartRes(res)
+    if (finish) setSmartFinish(finish)
+    // 'auto' = reference shape when one is active; otherwise dims are guessed
+    // from the prompt at generate time (1:1 placeholder in the meantime)
+    const [w, h] = ar === 'auto'
+      ? (autoBaseDims ? [autoBaseDims.w, autoBaseDims.h] as [number, number] : SMART_FLUX_DIMS['1:1'])
+      : (SMART_FLUX_DIMS[ar] ?? [1024, 1024])
+    setWidth(w); setHeight(h)
+    setSteps(20); setGuidance(3.5)
+    if (res === '1k') {
+      setUpscaleEnabled(false)
+      return
+    }
+    setUpscaleEnabled(true)
+    const target = SMART_RES_TARGET_PX[res]
+    if (fin === 'sharp') {
+      // ESRGAN only. 2K/4K map to the worker's native esrgan modes; other
+      // targets use a single pipeline ESRGAN step scaled to the exact px.
+      if (res === '2k' || res === '4k') {
+        setUpscaleMethod('esrgan')
+        setUpscaleScale(res === '2k' ? 2 : 4)
+      } else {
+        setUpscaleMethod('pipeline')
+        setPipelineSteps([{ type: 'esrgan', model: 'ultrasharp', targetPx: target }])
+      }
+      return
+    }
+    // Flux-woven chains. Flux 2× first (detail at ~2× native, where tiling is
+    // cheap); alternating presets add same-size Flux passes (factor 1) at a
+    // mid resolution / the target, each softer than the last, with ESRGAN
+    // between and after every pass. An ESRGAN step at its current size still
+    // runs the model — it acts as a pure polish pass.
+    setUpscaleMethod('pipeline')
+    const L0 = Math.max(w, h)
+    if (fin === 'detail') {
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.35 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    // Mid checkpoint ≈ half the target (never below the post-Flux 2× size)
+    const mid = Math.min(target, Math.max(2 * L0, Math.round(target / 512) * 256))
+    // ── Enhance family: i2i quality upgrades of the active reference, kept as
+    // separate versions for side-by-side testing. All start from a gentle 0.30
+    // re-render; they differ in how much detail is INVENTED vs how much the
+    // result is sharpened/polished.
+    if (fin === 'enhance') {
+      // v1 — SUBTLE: one light detail pass + neutral finish. Faithful, least
+      // invented texture.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.15 },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance2') {
+      // v2 — HEAVY: Deep's detail energy without its wax. Strong low-res Flux
+      // pass (hair/skin invented cheaply there), tamed mid pass, neutral
+      // x4plus finish, faint final re-grain; ADetailer for the face region.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setAdetailer(true)
+      setAdetailerStrength(0.35)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.35 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.18 },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+      ])
+      return
+    }
+    if (fin === 'enhance3') {
+      // v3 — BALANCED: v2 came out too heavy on invented detail and not crisp
+      // enough. Detail passes are tamed (0.35→0.25, 0.18→0.10), and the chain
+      // ENDS on a same-size UltraSharp pass — at 1.0× ESRGAN acts as a pure
+      // sharpen/polish, trading hallucinated texture for crispness.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setAdetailer(true)
+      setAdetailerStrength(0.30)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.25 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.10 },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance4') {
+      // v4 — ZOOM-CRISP: v3's hair fuzz traced to two causes — the mid flux
+      // pass was too weak (0.10) to re-draw strands after scaling, and the big
+      // jump to target ran through x4plus, which smooths fine hair. v4 fixes
+      // both: mid pass up to 0.14 (re-draws strands), and UltraSharp does ALL
+      // the scaling (crisp strand edges) plus a same-size polish. Skin-wax risk
+      // from UltraSharp is acceptable because ADetailer runs AFTER the whole
+      // pipeline at final res — the face (eyes/lips) is re-rendered fresh as
+      // the last step, at 0.40 for stronger micro-detail than v3's 0.30.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setAdetailer(true)
+      setAdetailerStrength(0.40)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.30 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.14 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance5') {
+      // v5 — CLEAR & IDEALIZED: v4 read as "maximum sharpness" + invented
+      // freckles. The clearness the user wants from Deep/Alternate comes from
+      // their STRUCTURE — every UltraSharp is followed by a flux re-render
+      // (which repaints lighting/texture coherently = the idealized look),
+      // and the chain ends flux → single UltraSharp, never a double-sharpen.
+      // v5 is Deep's exact weave at tamed strengths (0.30/0.12/0.10 vs Deep's
+      // 0.35/0.22/0.12) on the i2i base; ADetailer eased back to 0.35 so the
+      // face gets idealized detail without freckle invention.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setAdetailer(true)
+      setAdetailerStrength(0.35)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.30 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.12 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'flux', upscaleFactor: 1, strength: 0.10 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance6') {
+      // v6 — STRAND SEPARATION: v5's freckle/detail balance was right, but the
+      // user wants Deep's hair — visibly separated strands with gaps between
+      // them. That effect is the MID flux pass: Deep runs it at 0.22 vs v5's
+      // 0.12, strong enough to RE-DRAW hair as distinct strands rather than
+      // sharpen a clump. v6 raises it to 0.20 and adopts Deep's 0.12 finishing
+      // pass for the extra polish. Face texture stays at v5's level because
+      // ADetailer (0.35) repaints the face AFTER the chain — the stronger mid
+      // pass lands on hair/clothing/background, not the final face.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setAdetailer(true)
+      setAdetailerStrength(0.35)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.30 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.20 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'flux', upscaleFactor: 1, strength: 0.12 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance7') {
+      // v7 — LIKENESS FIRST + WAX SMOOTH. Post-mortem of v4/5/6: flux passes
+      // are the ONLY steps that drift identity (each re-render pulls toward the
+      // model prior — that's the black→brown hair), while ESRGAN passes cannot
+      // change identity at all. And the "clay/wax" smoothness the user loves in
+      // Deep/Polish is ESRGAN-dominant rendering. So: v3's proven minimal flux
+      // budget (0.25 + 0.08 — best likeness of the family), UltraSharp does the
+      // big jump to target (Deep's clay look), then a same-size NEUTRAL x4plus
+      // pass LAST smooths fuzz and grain into the soft wax finish. ADetailer
+      // eased to 0.25 — enough face refine without repainting identity.
+      setImg2img(true)
+      setImg2imgStrength(0.30)
+      setAdetailer(true)
+      setAdetailerStrength(0.25)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.25 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance8') {
+      // v8 — GLOW RE-LIGHT. Root cause found for the fuzz that survived every
+      // chain variant: it was never in the chain — it was in the BASE. Enhance
+      // starts from a 0.30 i2i re-render, so ~70% of the reference's soft
+      // pixels and flat lighting survive, and the upscalers faithfully magnify
+      // that softness. Deep/Polish look bright/3D/glowing because their base
+      // (txt2img) is 100% flux-rendered. v8 raises i2i to 0.40 — enough for
+      // flux to RE-LIGHT the scene and redraw hair crisply from the start,
+      // while the reference + character LoRA still anchor identity. The chain
+      // is v7's likeness-safe stack unchanged (first pass 0.30 for a bit more
+      // glow at low res, where it's cheap and safe).
+      setImg2img(true)
+      setImg2imgStrength(0.40)
+      setAdetailer(true)
+      setAdetailerStrength(0.25)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.30 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance9') {
+      // v9 — GLOW ×2: v8 was "the perfect direction, needs double". The v7→v8
+      // delta was i2i +0.10 and first pass +0.05 — doubled: i2i 0.50 (flux now
+      // owns the render; the reference anchors pose/composition and the
+      // character LoRA + trigger word carry the face) and first pass 0.35
+      // (Deep's exact value). Chain otherwise v8's likeness-safe stack.
+      // 0.50 sits just under Char Swap's 0.55 — the ceiling of "enhance".
+      setImg2img(true)
+      setImg2imgStrength(0.50)
+      setAdetailer(true)
+      setAdetailerStrength(0.25)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.35 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance10') {
+      // v10 — FULL RE-LIGHT: v9 pushed further in the same direction. i2i 0.55
+      // (Char Swap's strength — the render is fully flux's now, the reference
+      // is a pose/composition/framing guide) and first pass 0.40, past Deep.
+      // ADetailer RAISED to 0.30 deliberately: at this re-render strength the
+      // base drifts more, so the face pass acts as a drift COUNTER — the
+      // character LoRA + trigger word re-lock identity as the final step.
+      setImg2img(true)
+      setImg2imgStrength(0.55)
+      setAdetailer(true)
+      setAdetailerStrength(0.30)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.40 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance11') {
+      // v11 — GLOW + SKIN RELIEF. Levers split between v9 and v10 (i2i 0.52,
+      // first pass 0.38 — v10's 0.40 caused blue/green chroma fringing on fine
+      // dark hair strands, a known UltraSharp artifact that stronger low-res
+      // passes amplify). The NEW ingredient: mid pass 0.08 → 0.15. Comparing
+      // the user's Deep sample, its "bumps like warts" specular skin relief is
+      // manufactured by Deep's 0.22 mid-res pass — the one dial the enhance
+      // family starved for likeness. 0.15 buys back ~2/3 of that relief with
+      // a fraction of the drift. Final x4plus kept — it also smooths chroma
+      // fringing. ADetailer 0.28 (between v9/v10).
+      setImg2img(true)
+      setImg2imgStrength(0.52)
+      setAdetailer(true)
+      setAdetailerStrength(0.28)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.38 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.15 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance12') {
+      // v12 — CRYSTAL CLEAR. User discovery folded in: euler-beta's sigma
+      // schedule spends more steps at low noise → preserves structure, so
+      // likeness survives stronger settings (v11's drift vanished under it).
+      // Mid pass retreats to 0.10 (0.15 was the drift culprit). Clarity comes
+      // from a sharp-over-smooth TRIPLE finish: UltraSharp scales to target,
+      // x4plus smooths (kills fuzz + chroma fringing), then a same-size
+      // UltraSharp polish LAST re-etches edge definition over the clean base.
+      // SAMPLER-SMART: euler-beta only helps when structure comes from a ref;
+      // in pure t2i it starves the high-noise steps where ANATOMY is decided,
+      // so no-ref runs use plain euler (see the refCount effect for live flips)
+      setSampler(activeRefImages.length > 0 ? 'euler-beta' : 'euler')
+      setImg2img(true)
+      setImg2imgStrength(0.52)
+      setAdetailer(true)
+      setAdetailerStrength(0.28)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.38 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.10 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance13') {
+      // v13 — ANCHOR: reference-strong enhance whose identity settings follow
+      // the Likeness control. The insight from v1-v12: i2i strength decides
+      // who owns the face (low = the reference's pixels, high = the LoRA), and
+      // ADetailer is a LoRA-driven repaint — so "keep the reference likeness"
+      // means LOW i2i and NO face pass, while "LoRA likeness" means the
+      // opposite. Character-marked LoRAs (the "Char" chip) get their strength
+      // tuned to match: relaxed under ref, boosted under lora.
+      setSampler(activeRefImages.length > 0 ? 'euler-beta' : 'euler')
+      setImg2img(true)
+      setImg2imgStrength(likeness === 'ref' ? 0.32 : likeness === 'both' ? 0.42 : 0.55)
+      // (v13 continues below)
+      if (likeness === 'ref') {
+        setAdetailer(false)
+      } else {
+        setAdetailer(true)
+        setAdetailerStrength(likeness === 'both' ? 0.25 : 0.35)
+      }
+      setLoras(prev => prev.map(l => l.character && l.key
+        ? { ...l, strength: likeness === 'ref' ? Math.min(l.strength, 0.85) : likeness === 'both' ? 1.0 : 1.1 }
+        : l))
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.35 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'enhance14') {
+      // v14 — V12 + TRUE EYES. The eye morphing in v12's 4K outputs traced to
+      // the worker's ADetailer: it repainted the detected face crop at a FIXED
+      // 512×512 square (a ~2000px 4K face → irises rendered at ~75px, aspect-
+      // distorted, then stretched 4× back). Worker v76 renders face crops
+      // aspect-preserved at up to 1024px. v14 = v12's exact recipe with the
+      // face pass eased 0.28 → 0.22 so eyes get refined rather than redrawn.
+      setSampler(activeRefImages.length > 0 ? 'euler-beta' : 'euler')
+      setImg2img(true)
+      setImg2imgStrength(0.52)
+      setAdetailer(true)
+      setAdetailerStrength(0.22)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.38 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.10 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      ])
+      return
+    }
+    if (fin === 'swap') {
+      // CHARACTER SWAP: strong i2i keeps the reference's pose/composition
+      // while the LoRA + trigger word re-render the person; ADetailer then
+      // re-renders the face region specifically with the LoRA'd model.
+      setImg2img(true)
+      setImg2imgStrength(0.55)
+      setAdetailer(true)
+      setAdetailerStrength(0.5)
+      setUpscaleMethod('pipeline')
+      setPipelineSteps([{ type: 'esrgan', model: 'x4plus', targetPx: target }])
+      return
+    }
+    if (fin === 'natural') {
+      // Anti-hallucination realism: ONE detail pass at low res (where tiled
+      // Flux invents the least), neutral x4plus instead of plastic-prone
+      // UltraSharp, and a barely-there Flux pass LAST — it re-grains the
+      // ESRGAN sheen with natural texture instead of sharpening it further.
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.30 },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+        { type: 'flux', upscaleFactor: 1, strength: 0.08 },
+      ])
+      return
+    }
+    if (fin === 'polish') {
+      // Tamed Alternate: same weave but the mid-res pass drops 0.22 → 0.15
+      // (less invented face detail) and the finishing ESRGAN is neutral
+      // x4plus — keeps the pop without the plastic
+      setPipelineSteps([
+        { type: 'flux', upscaleFactor: 2, strength: 0.30 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+        { type: 'flux', upscaleFactor: 1, strength: 0.15 },
+        { type: 'esrgan', model: 'x4plus', targetPx: target },
+      ])
+      return
+    }
+    const chain: PipelineStep[] = [
+      { type: 'flux', upscaleFactor: 2, strength: 0.35 },
+      { type: 'esrgan', model: 'ultrasharp', targetPx: mid },
+      { type: 'flux', upscaleFactor: 1, strength: 0.22 },
+      { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+    ]
+    if (fin === 'deep') {
+      chain.push(
+        { type: 'flux', upscaleFactor: 1, strength: 0.12 },
+        { type: 'esrgan', model: 'ultrasharp', targetPx: target },
+      )
+    }
+    setPipelineSteps(chain)
+  }
+
   // Derived upscale param sent to the API
   const upscaleParam = !upscaleEnabled ? 'none'
     : upscaleMethod === 'flux'     ? fluxTarget
@@ -10652,16 +12481,61 @@ function CustomFluxPanel({
       setAutoBaseDims(dims)
       setWidth(dims.w)
       setHeight(dims.h)
+      // A newly activated reference flips the aspect chip to Auto — its shape
+      // is the truth now; picking a fixed ratio afterwards center-crops it
+      setSmartAr('auto')
     }
     imgEl.onerror = () => setAutoBaseDims(null)
     imgEl.src = firstRefUrl
   }, [firstRefId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── i2i follows the active reference automatically — an active ref IS the
+  // i2i source, no separate enable step. Stencil/inpaint manage img2img on
+  // their own, so don't fight them while a crop or mask is loaded.
+  const refCount = activeRefImages.length
+  useEffect(() => {
+    if (stencilCropB64 || inpaintMode) return
+    setImg2img(refCount > 0)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refCount])
+
+  // Sampler-smart enhance presets (v12/v13/v14): euler-beta preserves
+  // structure FROM A REFERENCE, but in pure t2i it starves the high-noise
+  // steps where anatomy is decided. When the ref state flips while one of
+  // these presets is active, retune — unless the user manually picked an
+  // exotic sampler (karras/exp), which we never stomp.
+  useEffect(() => {
+    if (smartFinish !== 'enhance12' && smartFinish !== 'enhance13' && smartFinish !== 'enhance14') return
+    setSampler(prev => (prev === 'euler' || prev === 'euler-beta')
+      ? (refCount > 0 ? 'euler-beta' : 'euler')
+      : prev)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refCount, smartFinish])
+
+  // Reference editor popup (opened by clicking the floating thumbnail) +
+  // direct upload from the prompt box (1-image i2i — replaces the current ref)
+  const [editingRef, setEditingRef] = useState<RefImage | null>(null)
+  const refUploadInputRef = useRef<HTMLInputElement>(null)
+  const handleRefFilePick = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (!dataUrl) return
+      activeRefImages.forEach(r => onDeactivateRef?.(r.id))
+      onUploadRef?.([{ id: `ref-${Date.now()}`, url: dataUrl, file }])
+    }
+    reader.readAsDataURL(file)
+  }
 
   // Available models
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([])
   const [comfyLoras, setComfyLoras]             = useState<string[]>([])
   const [r2Checkpoints, setR2Checkpoints]       = useState<Array<{key:string;name:string}>>([])
   const [r2Loras, setR2Loras]                   = useState<Array<{key:string;name:string}>>([])
+  // Run folder → base checkpoint / display name (from run.json — the display
+  // name follows the Monitor's rename feature)
+  const [loraBaseModels, setLoraBaseModels]     = useState<Record<string, string>>({})
+  const [loraRunNames, setLoraRunNames]         = useState<Record<string, string>>({})
   const [modelsLoaded, setModelsLoaded]         = useState(false)
 
   const [modelsError, setModelsError] = useState<string | null>(null)
@@ -10675,18 +12549,22 @@ function CustomFluxPanel({
       .catch(() => {})
   }, [])
 
-  const refreshModels = useCallback(() => {
-    setModelsLoaded(false)
-    setModelsError(null)
+  const refreshModels = useCallback((opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setModelsLoaded(false)
+      setModelsError(null)
+    }
     const ctrl = new AbortController()
     const tid = setTimeout(() => ctrl.abort(), 12000)
     fetch('/api/admin/flux-inference/models', { signal: ctrl.signal })
       .then(r => r.json())
-      .then((d: { comfy: { checkpoints: string[]; loras: string[] }; r2: { checkpoints: Array<{key:string;name:string}>; loras: Array<{key:string;name:string}>; missingEnv?: string[] } }) => {
+      .then((d: { comfy: { checkpoints: string[]; loras: string[] }; r2: { checkpoints: Array<{key:string;name:string}>; loras: Array<{key:string;name:string}>; loraBaseModels?: Record<string, string>; loraRunNames?: Record<string, string>; missingEnv?: string[] } }) => {
         setComfyCheckpoints(d.comfy?.checkpoints ?? [])
         setComfyLoras(d.comfy?.loras ?? [])
         setR2Checkpoints(d.r2?.checkpoints ?? [])
         setR2Loras(d.r2?.loras ?? [])
+        setLoraBaseModels(d.r2?.loraBaseModels ?? {})
+        setLoraRunNames(d.r2?.loraRunNames ?? {})
         if (d.r2?.missingEnv?.length) setModelsError(`Missing env: ${d.r2.missingEnv.join(', ')}`)
         setModelsLoaded(true)
       })
@@ -10697,8 +12575,13 @@ function CustomFluxPanel({
       .finally(() => clearTimeout(tid))
   }, [])
 
-  // Load available models on mount
+  // Load available models on mount, then keep the list fresh — epoch snapshots
+  // stream into R2 WHILE a run trains, so re-list every 60s to pick them up
   useEffect(() => { refreshModels() }, [refreshModels])
+  useEffect(() => {
+    const t = setInterval(() => refreshModels({ silent: true }), 60_000)
+    return () => clearInterval(t)
+  }, [refreshModels])
 
   // RunPod polling is handled by the parent via onStartNb2Polling
 
@@ -10761,6 +12644,196 @@ function CustomFluxPanel({
   const checkpoints = mode === 'local' ? comfyCheckpoints.map(n => ({ key: n, name: n })) : r2Checkpoints
   const loraOptions = mode === 'local' ? comfyLoras.map(n => ({ key: n, name: n }))     : r2Loras
 
+  // ── Rescan restore: apply a past generation's flux* settings ──
+  // Scalars apply immediately; checkpoint + LoRAs wait for the model list
+  // (they match by name, and the list loads async).
+  const appliedFluxOverrideRef = useRef(0)
+  const pendingModelRestoreRef = useRef<{ ckpt?: string; loras?: string[]; strengths?: number[] } | null>(null)
+  const [modelRestoreTick, setModelRestoreTick] = useState(0)
+  useEffect(() => {
+    if (!fluxOverride || fluxOverride.version === appliedFluxOverrideRef.current) return
+    appliedFluxOverrideRef.current = fluxOverride.version
+    const m = fluxOverride.meta
+    if (typeof m.fluxWidth === 'number')    setWidth(m.fluxWidth)
+    if (typeof m.fluxHeight === 'number')   setHeight(m.fluxHeight)
+    if (typeof m.fluxSteps === 'number')    setSteps(m.fluxSteps)
+    if (typeof m.fluxGuidance === 'number') setGuidance(m.fluxGuidance)
+    setSeed(typeof m.fluxSeed === 'number' ? m.fluxSeed : -1)
+    setSampler(typeof m.fluxSampler === 'string' && FLUX_SAMPLERS.some(s => s.id === m.fluxSampler) ? m.fluxSampler as FluxSamplerId : 'euler')
+    setNegativePrompt(typeof m.fluxNegativePrompt === 'string' ? m.fluxNegativePrompt : '')
+    if (typeof m.fluxNegCfg === 'number') setNegCfg(m.fluxNegCfg)
+    setColorContrast(typeof m.fluxColorContrast === 'number' ? m.fluxColorContrast : 1)
+    setColorSaturation(typeof m.fluxColorSaturation === 'number' ? m.fluxColorSaturation : 1)
+    setColorSCurve(typeof m.fluxColorSCurve === 'number' ? m.fluxColorSCurve : 0)
+    // Mirror the Smart row: aspect chip from dims, resolution chip from upscale.
+    // NEVER restore 'auto' — the restored width/height are the ground truth and
+    // Auto would re-derive them (ref gone / prompt guess) and lose fidelity, so
+    // auto-dims generations restore as the closest fixed ratio instead.
+    const arEntry = Object.entries(SMART_FLUX_DIMS).find(([, [w, h]]) => w === m.fluxWidth && h === m.fluxHeight)
+    if (typeof m.fluxSmartAr === 'string' && SMART_FLUX_DIMS[m.fluxSmartAr]) setSmartAr(m.fluxSmartAr)
+    else if (arEntry) setSmartAr(arEntry[0])
+    else if (typeof m.fluxWidth === 'number' && typeof m.fluxHeight === 'number' && m.fluxHeight > 0) {
+      const r = m.fluxWidth / m.fluxHeight
+      let best = '1:1', bd = Infinity
+      for (const [k, [w, h]] of Object.entries(SMART_FLUX_DIMS)) {
+        const d = Math.abs(w / h - r)
+        if (d < bd) { bd = d; best = k }
+      }
+      setSmartAr(best)
+    }
+    const up = typeof m.fluxUpscale === 'string' ? m.fluxUpscale : 'none'
+    if (up === 'none') {
+      setUpscaleEnabled(false); setSmartRes('1k')
+    } else {
+      setUpscaleEnabled(true)
+      if (up === '2k-esrgan')      { setUpscaleMethod('esrgan'); setUpscaleScale(2); setSmartRes('2k'); setSmartFinish('sharp') }
+      else if (up === '4k-esrgan') { setUpscaleMethod('esrgan'); setUpscaleScale(4); setSmartRes('4k'); setSmartFinish('sharp') }
+      else if (up === 'combo')     setUpscaleMethod('combo')
+      else if (up === 'pipeline')  {
+        setUpscaleMethod('pipeline')
+        if (Array.isArray(m.fluxPipelineSteps) && (m.fluxPipelineSteps as unknown[]).length > 0) {
+          const steps = m.fluxPipelineSteps as PipelineStep[]
+          setPipelineSteps(steps)
+          // Mirror the Smart chips: resolution from the ESRGAN target, finish
+          // from whether a Flux detail step is in the chain
+          const esr = steps.find(s => s.type === 'esrgan' && typeof s.targetPx === 'number')
+          const resKey = (Object.entries(SMART_RES_TARGET_PX) as [Exclude<FluxSmartRes, '1k'>, number][])
+            .find(([, px]) => px === esr?.targetPx)?.[0]
+          if (resKey) setSmartRes(resKey)
+          const fluxN = steps.filter(s => s.type === 'flux').length
+          setSmartFinish(fluxN === 0 ? 'sharp' : fluxN === 1 ? 'detail' : fluxN === 2 ? 'alternate' : 'deep')
+        }
+      }
+      else                         setUpscaleMethod('flux')
+      // Recorded Smart picks are the ground truth — override the derived guesses
+      if (typeof m.fluxSmartRes === 'string' && (m.fluxSmartRes === '1k' || m.fluxSmartRes in SMART_RES_TARGET_PX)) setSmartRes(m.fluxSmartRes as FluxSmartRes)
+      if (typeof m.fluxSmartFinish === 'string' && m.fluxSmartFinish in SMART_FINISH_LABEL) setSmartFinish(m.fluxSmartFinish as FluxSmartFinish)
+      if (m.fluxLikenessSource === 'ref' || m.fluxLikenessSource === 'both' || m.fluxLikenessSource === 'lora') setLikenessSource(m.fluxLikenessSource)
+    }
+    if (m.fluxEsrganModel === 'ultrasharp' || m.fluxEsrganModel === 'x4plus') setEsrganModel(m.fluxEsrganModel)
+    if (m.fluxComboOrder === 'flux-first' || m.fluxComboOrder === 'esrgan-first') setComboOrder(m.fluxComboOrder)
+    // Checkpoint + LoRAs — new records carry exact R2 keys: restore directly,
+    // no model-list matching (and no waiting for the async list to load)
+    const ckptKey = typeof m.fluxCheckpointKey === 'string' && m.fluxCheckpointKey ? m.fluxCheckpointKey : null
+    if (ckptKey) setCheckpoint(ckptKey)
+    const loraKeys = Array.isArray(m.fluxLoraKeys)
+      ? (m.fluxLoraKeys as unknown[]).filter((k): k is string => typeof k === 'string' && k.length > 0)
+      : []
+    if (loraKeys.length > 0) {
+      const names     = Array.isArray(m.fluxLoras) ? m.fluxLoras as string[] : []
+      const strengths = Array.isArray(m.fluxLoraStrengths) ? m.fluxLoraStrengths as number[] : []
+      const charFlags = Array.isArray(m.fluxLoraCharacter) ? m.fluxLoraCharacter as boolean[] : []
+      setLoras(loraKeys.map((key, i) => ({
+        id: `lora-restore-${Date.now()}-${i}`,
+        name: names[i] || key.split('/').pop() || '',
+        key,
+        strength: typeof strengths[i] === 'number' ? strengths[i] : 1.0,
+        character: charFlags[i] === true || undefined,
+      })))
+    }
+    // Legacy records (names only) fall back to matching against the model list
+    pendingModelRestoreRef.current = {
+      ckpt:      !ckptKey && typeof m.fluxCheckpoint === 'string' ? m.fluxCheckpoint : undefined,
+      loras:     loraKeys.length === 0 && Array.isArray(m.fluxLoras) ? (m.fluxLoras as unknown[]).filter((n): n is string => typeof n === 'string') : undefined,
+      strengths: Array.isArray(m.fluxLoraStrengths) ? (m.fluxLoraStrengths as unknown[]).filter((n): n is number => typeof n === 'number') : undefined,
+    }
+    // A ref write doesn't re-run the matching effect (that was the bug that
+    // left checkpoint/LoRAs blank) — bump a state tick so it always fires
+    setModelRestoreTick(t => t + 1)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fluxOverride])
+  useEffect(() => {
+    const p = pendingModelRestoreRef.current
+    if (!p || !modelsLoaded) return
+    if (!p.ckpt && !p.loras?.length) { pendingModelRestoreRef.current = null; return }
+    const stripExt = (n: string) => n.replace(/\.[^.]+$/, '')
+    if (p.ckpt) {
+      const found = checkpoints.find(c => stripExt(c.name) === p.ckpt || c.name === p.ckpt || c.key.includes(p.ckpt!))
+      if (found) setCheckpoint(found.key)
+    }
+    if (p.loras && p.loras.length > 0) {
+      const strengths = p.strengths ?? []
+      const restored = p.loras.map((name, i) => {
+        const found = loraOptions.find(o => o.name === name || stripExt(o.name) === stripExt(name) || o.key.split('/').pop() === name)
+        return found ? { id: `lora-restore-${Date.now()}-${i}`, name: found.name, key: found.key, strength: typeof strengths[i] === 'number' ? strengths[i] : 1.0 } : null
+      }).filter((l): l is FluxLoraEntry => l !== null)
+      if (restored.length > 0) setLoras(restored)
+    }
+    pendingModelRestoreRef.current = null
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelRestoreTick, modelsLoaded, checkpoints, loraOptions])
+
+  // Group R2 LoRAs by training run: training/loras/<run>/{final.safetensors, epochs/*.safetensors}.
+  // Each epoch snapshot is a complete standalone LoRA — the run gets one entry in the main
+  // select plus an epoch dropdown to pick which checkpoint of the run to use.
+  // OneTrainer snapshot names: <timestamp>-save-<step>-<epoch>-<n>.safetensors
+  const epochNumOf = (name: string) => {
+    const m = name.match(/-save-\d+-(\d+)-\d+\.safetensors$/i)
+    if (m) return parseInt(m[1])
+    const t = name.match(/(\d+)(?=\.safetensors$)/i)
+    return t ? parseInt(t[1]) : 0
+  }
+  const loraRuns: Array<{ run: string; repKey: string; files: Array<{ key: string; label: string }> }> = []
+  const flatLoras: Array<{ key: string; name: string }> = []
+  if (mode === 'local') {
+    flatLoras.push(...loraOptions)
+  } else {
+    const runMap = new Map<string, { final: { key: string } | null; epochs: Array<{ key: string; name: string }> }>()
+    for (const l of r2Loras) {
+      const m = l.key.match(/^training\/loras\/([^/]+)\/(?:([^/]+\.safetensors)$|epochs\/([^/]+\.safetensors)$)/i)
+      if (!m) { flatLoras.push(l); continue }
+      const entry = runMap.get(m[1]) ?? { final: null, epochs: [] }
+      if (m[2]) entry.final = { key: l.key }
+      else entry.epochs.push({ key: l.key, name: m[3] })
+      runMap.set(m[1], entry)
+    }
+    for (const [run, e] of runMap) {
+      e.epochs.sort((a, b) => epochNumOf(a.name) - epochNumOf(b.name))
+      const files: Array<{ key: string; label: string }> = []
+      if (e.final) files.push({ key: e.final.key, label: 'Final' })
+      files.push(...e.epochs.map(s => ({ key: s.key, label: `Epoch ${epochNumOf(s.name) || '?'}` })))
+      if (files.length > 0) loraRuns.push({ run, repKey: e.final?.key ?? files[files.length - 1].key, files })
+    }
+    loraRuns.sort((a, b) => a.run.localeCompare(b.run))
+  }
+  const runOfKey = (key: string) => loraRuns.find(r => r.files.some(f => f.key === key))
+
+  // Display label per run — run.json's run_name (follows renames) with the
+  // folder as fallback
+  const runLabel = (folder: string) => loraRunNames[folder] || folder
+  // Version families: runs whose DISPLAY names differ only by a trailing
+  // v2 / -v2 / "Thomasv2" suffix group together. Keys are normalized
+  // (case/underscore/space) so "Alexandra_Thomas" and "Alexandra Thomas v2"
+  // land in one family.
+  const stripVer = (n: string) => n.replace(/[\s_-]*v\d+$/i, '')
+  const verOf = (n: string) => { const m = n.match(/[\s_-]*v(\d+)$/i); return m ? parseInt(m[1], 10) : 1 }
+  const famKeyOf = (n: string) => stripVer(n).toLowerCase().replace(/[\s_]+/g, ' ').trim()
+  const loraFamilies: Array<{ base: string; versions: typeof loraRuns }> = []
+  {
+    const famMap = new Map<string, { base: string; arr: typeof loraRuns }>()
+    for (const r of loraRuns) {
+      const label = runLabel(r.run)
+      const key = famKeyOf(label)
+      const entry = famMap.get(key) ?? { base: stripVer(label), arr: [] }
+      entry.arr.push(r)
+      famMap.set(key, entry)
+    }
+    for (const { base, arr } of famMap.values()) {
+      arr.sort((a, b2) => verOf(runLabel(a.run)) - verOf(runLabel(b2.run)))
+      loraFamilies.push({ base, versions: arr })
+    }
+    loraFamilies.sort((a, b2) => a.base.localeCompare(b2.base))
+  }
+  // Site-style dropdown open state (one per LoRA slot) + outside-click close
+  const [loraDdOpen, setLoraDdOpen] = useState<string | null>(null)
+  useEffect(() => {
+    function h(e: MouseEvent) {
+      if (!(e.target as Element)?.closest?.('[data-lora-dd]')) setLoraDdOpen(null)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
   const canGenerate = !generating && !!checkpoint && prompt.trim().length > 0
 
   const handleStencilApply = useCallback((result: StencilResult) => {
@@ -10797,6 +12870,9 @@ function CustomFluxPanel({
       loras: loras.filter(l => l.key).map(l => ({ name: l.name, key: l.key, r2_key: l.key, strength: l.strength })),
       width: reqWidth, height: reqHeight, steps, guidance,
       seed: seed === -1 ? null : seed,
+      sampler,
+      negative_prompt: mode === 'runpod' ? negativePrompt.trim() : '',
+      true_cfg:        negCfg,
       refine: mode === 'runpod' ? refine : false, refine_strength: refineStrength,
       upscale: 'none', upscale_strength: fluxTileStrength,
       adetailer: false, adetailer_strength: adetailerStrength,
@@ -10921,15 +12997,40 @@ function CustomFluxPanel({
 
   const handleGenerate = async () => {
     if (!canGenerate) return
-    if (inpaintJobs && inpaintJobs.length >= 1) return runMultiInpaint()
+    if (inpaintJobs && inpaintJobs.length >= 1) {
+      if (mode === 'runpod') return runMultiInpaint()
+      // Local ComfyUI runs synchronously — multi-region queues aren't supported
+      if (inpaintJobs.length > 1) {
+        setError('Multi-region inpaint needs RunPod mode — local runs one region at a time')
+        return
+      }
+      // Single region falls through: body carries the region image + mask below
+    }
     setGenerating(true)
     setError(null)
     setResultUrl(null)
     setStatus('submitting')
 
-    // Use auto-detected dims from ref image whenever available — ref always sets aspect ratio.
-    const reqWidth  = autoBaseDims?.w ?? width
-    const reqHeight = autoBaseDims?.h ?? height
+    // Dims resolution — Auto matches the reference's shape (or guesses from the
+    // prompt when no ref is active); a FIXED aspect always wins, and with i2i
+    // the reference gets center-cropped to it below instead of stretched.
+    const autoAr = smartAr === 'auto'
+    const i2iRefActive = !inpaintMode && !stencilCropB64 && img2img && activeRefImages.length > 0
+    let reqWidth = width, reqHeight = height
+    if (autoAr && i2iRefActive && autoBaseDims) {
+      reqWidth = autoBaseDims.w; reqHeight = autoBaseDims.h
+    } else if (autoAr && !i2iRefActive && !stencilCropB64) {
+      const g = guessFluxDimsFromPrompt(prompt)
+      reqWidth = g.w; reqHeight = g.h
+    }
+
+    // Reference URLs actually used by this generation (i2i source + IP-Adapter
+    // refs) — recorded on the slot/DB row so the info panel shows them like the
+    // other models. Permanent https URLs only (data URLs would bloat storage).
+    const usedRefSet = new Set<string>()
+    if (i2iRefActive) usedRefSet.add(activeRefImages[0].url)
+    if (mode === 'runpod' && ipAdapter) activeRefImages.slice(0, 3).forEach(r => usedRefSet.add(r.url))
+    const usedRefUrls = [...usedRefSet].filter(u => u.startsWith('https://'))
 
     const body = {
       mode,
@@ -10940,6 +13041,9 @@ function CustomFluxPanel({
         .map(l => ({ name: l.name, key: l.key, r2_key: l.key, strength: l.strength })),
       width: reqWidth, height: reqHeight, steps, guidance,
       seed: seed === -1 ? null : seed,
+      sampler,
+      negative_prompt: mode === 'runpod' ? negativePrompt.trim() : '',
+      true_cfg:        negCfg,
       // Post-processing (RunPod only)
       refine:             mode === 'runpod' ? refine         : false,
       refine_strength:    refineStrength,
@@ -10956,14 +13060,17 @@ function CustomFluxPanel({
       })) : undefined,
       adetailer:          mode === 'runpod' ? adetailer      : false,
       adetailer_strength: adetailerStrength,
+      color_contrast:     mode === 'runpod' ? colorContrast   : 1,
+      color_saturation:   mode === 'runpod' ? colorSaturation : 1,
+      color_s_curve:      mode === 'runpod' ? colorSCurve     : 0,
       gfpgan:             mode === 'runpod' ? gfpgan         : false,
       gfpgan_weight:      gfpganWeight,
       ip_adapter_images:  [] as string[],  // filled below
       ip_adapter_scale:   ipScale,
       img2img_image:      '',              // filled below
       img2img_strength:   img2imgStrength,
-      inpaint_image:    mode === 'runpod' && inpaintMode ? inpaintImageB64 : '',
-      inpaint_mask:     mode === 'runpod' && inpaintMode ? inpaintMaskB64  : '',
+      inpaint_image:    inpaintMode ? inpaintImageB64 : '',
+      inpaint_mask:     inpaintMode ? inpaintMaskB64  : '',
       inpaint_strength: inpaintStrength,
       use_flux_fill:    isFluxFill,
       controlnet:            mode === 'runpod' && controlnet && cnConditions.some(c => !!c.imgB64),
@@ -10972,8 +13079,10 @@ function CustomFluxPanel({
         : [],
     }
 
-    // img2img source: encode first active ref at 1024px (higher than IP-Adapter needs for structure preservation)
-    if (mode === 'runpod' && !inpaintMode) {
+    // img2img source: encode first active ref at 1024px (higher than IP-Adapter needs
+    // for structure preservation). Local mode uses it too — plain i2i, or a Kontext
+    // reference edit when a kontext checkpoint is selected.
+    if (!inpaintMode) {
       if (stencilCropB64) {
         body.img2img_image = stencilCropB64
       } else if (img2img && activeRefImages.length > 0) {
@@ -10991,8 +13100,10 @@ function CustomFluxPanel({
             if (!r.ok) throw new Error(`Failed to load ref image (${r.status})`)
             encoded = await compressBlobToDataUrl(await r.blob(), 1024, 0.92)
           }
-          body.img2img_image = encoded
-          console.log('[img2img] encoded source image, size:', `${Math.round(encoded.length / 1024)}KB`)
+          // Fixed aspect + i2i: crop the reference to the chosen shape so the
+          // worker's resize-to-dims doesn't stretch it
+          body.img2img_image = autoAr ? encoded : await cropDataUrlToAspect(encoded, reqWidth, reqHeight)
+          console.log('[img2img] encoded source image, size:', `${Math.round(body.img2img_image.length / 1024)}KB`)
         } catch (e) {
           setError(`img2img: failed to encode source image — ${String(e)}`)
           setGenerating(false)
@@ -11030,22 +13141,36 @@ function CustomFluxPanel({
 
     try {
       const pass = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('admin-password') ?? '') : ''
+      // Batch: queue N independent RunPod jobs per press (local always runs 1 —
+      // it's synchronous). Fixed seeds increment per job so images differ.
+      const runCount = mode === 'runpod' ? imageCount : 1
+      const baseSeed = seed === -1 ? null : seed
+      for (let gi = 0; gi < runCount; gi++) {
       const res  = await fetch('/api/admin/flux-inference/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, seed: baseSeed === null ? null : baseSeed + gi }),
       })
       const data = await res.json() as { mode: string; job_id?: string; image_data_url?: string; error?: string; seed?: number }
-      if (!res.ok || data.error) { setError(data.error ?? 'Generation failed'); setGenerating(false); return }
+      if (!res.ok || data.error) {
+        setError(data.error ?? 'Generation failed')
+        if (gi > 0) setStatus('')
+        break
+      }
 
       const ckptShort = checkpoint.split('/').pop()?.replace(/\.[^.]+$/, '') ?? checkpoint
       const fluxMeta: Record<string, unknown> = {
         fluxCheckpoint:   ckptShort,
+        // Exact keys — Rescan restores these directly, no name matching needed
+        fluxCheckpointKey: checkpoint,
+        fluxLoraKeys:      loras.filter(l => l.key).map(l => l.key),
         fluxWidth:        reqWidth,
         fluxHeight:       reqHeight,
         fluxSteps:        steps,
         fluxGuidance:     guidance,
-        fluxSeed:         seed === -1 ? 'random' : seed,
+        // Server returns the RESOLVED seed (random requests get their actual
+        // value) so the exact generation can be reproduced via Rescan
+        fluxSeed:         data.seed ?? (seed === -1 ? 'random' : seed),
         fluxUpscale:         upscaleParam,
         fluxEsrganModel:     (upscaleParam.includes('esrgan') || upscaleParam === 'combo') ? esrganModel : undefined,
         fluxComboOrder:      upscaleParam === 'combo' ? comboOrder : undefined,
@@ -11055,19 +13180,32 @@ function CustomFluxPanel({
         fluxAdetailer:    adetailer || undefined,
         fluxGfpgan:       gfpgan || undefined,
         fluxGfpganWeight: gfpgan ? gfpganWeight : undefined,
+        fluxColorContrast:   colorContrast !== 1 ? colorContrast : undefined,
+        fluxColorSaturation: colorSaturation !== 1 ? colorSaturation : undefined,
+        fluxColorSCurve:     colorSCurve > 0 ? colorSCurve : undefined,
         fluxImg2img:      img2img || undefined,
         fluxImg2imgStr:   img2img ? img2imgStrength : undefined,
         fluxLoras:        loras.filter(l => l.key).map(l => l.name || l.key.split('/').pop() || ''),
+        fluxLoraStrengths: loras.filter(l => l.key).map(l => l.strength),
+        fluxLoraCharacter: loras.filter(l => l.key).map(l => !!l.character),
+        fluxSampler:        sampler !== 'euler' ? sampler : undefined,
+        fluxNegativePrompt: negativePrompt.trim() || undefined,
+        fluxNegCfg:         negativePrompt.trim() ? negCfg : undefined,
+        // The Smart-row picks, verbatim — so the info panel can say "6K · Detail"
+        // instead of making the user decode the pipeline
+        fluxSmartRes:    smartRes !== '1k' && upscaleEnabled ? smartRes : undefined,
+        fluxSmartFinish: smartRes !== '1k' && upscaleEnabled ? smartFinish : undefined,
+        fluxSmartAr:     smartAr,
+        fluxLikenessSource: smartFinish === 'enhance13' ? likenessSource : undefined,
       }
 
       if (data.mode === 'local' && data.image_data_url) {
         // Local: show inline and also add to session feed
         setResultUrl(data.image_data_url)
         onPrependImage({ id: Date.now(), imageUrl: data.image_data_url, prompt: prompt.trim(), model: 'custom-flux-lora', createdAt: new Date().toISOString(), videoMetadata: fluxMeta as Record<string, any> })
-        setGenerating(false)
       } else if (data.mode === 'runpod' && data.job_id) {
         // RunPod: hand off to parent's polling → image appears in feed when done
-        const slotId = `flux-${Date.now()}`
+        const slotId = `flux-${Date.now()}-${gi}`
         const slot: PendingSlot = {
           slotId,
           status:         'loading',
@@ -11076,6 +13214,8 @@ function CustomFluxPanel({
           nb2RequestId:   data.job_id,
           nb2FalEndpoint: '',
           nb2StatusUrl:   '/api/admin/flux-inference/nb2-status',
+          videoMetadata:  fluxMeta,
+          referenceImageUrls: usedRefUrls.length > 0 ? usedRefUrls : undefined,
         }
         onAddPending(slot)
         // Persist so polling survives a page refresh
@@ -11084,18 +13224,23 @@ function CustomFluxPanel({
           stored.unshift(slot)
           localStorage.setItem('pv2-pending-slots', JSON.stringify(stored))
         } catch {}
-        onStartNb2Polling(data.job_id, '', [slotId], prompt.trim(), 'png', `${reqWidth}x${reqHeight}`, '/api/admin/flux-inference/nb2-status', undefined, 0, [], fluxMeta)
-        setGenerating(false)
-        setStatus('')
+        onStartNb2Polling(data.job_id, '', [slotId], prompt.trim(), 'png', `${reqWidth}x${reqHeight}`, '/api/admin/flux-inference/nb2-status', undefined, 0, usedRefUrls, fluxMeta)
       }
+      } // end batch loop
+      setGenerating(false)
+      setStatus('')
     } catch (e) {
       setError(String(e))
       setGenerating(false)
     }
   }
 
-  const [configOpen, setConfigOpen]     = useState(false)
   const [loraOpen, setLoraOpen]         = useState(false)
+  // Epoch snapshots stream into R2 while a run trains — re-list the moment the
+  // LoRA panel opens so a fresh epoch shows up without waiting for the 60s tick
+  useEffect(() => {
+    if (loraOpen) refreshModels({ silent: true })
+  }, [loraOpen, refreshModels])
   const [ckptOpen, setCkptOpen]         = useState(false)
   const [downloadOpen, setDownloadOpen] = useState(false)
   const ckptRef      = useRef<HTMLDivElement>(null)
@@ -11149,86 +13294,6 @@ function CustomFluxPanel({
 
         {/* Download to R2 panel — collapsible */}
         {downloadOpen && <DownloadToR2Panel />}
-
-        {/* Config panel — collapsible */}
-        {configOpen && (
-          <div className="rounded-xl border border-white/[0.08] bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2.5">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-mono text-cyan-400/60 uppercase tracking-widest">Config</span>
-              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setRefineStrength(0.3); setFluxTileStrength(0.3); setAdetailerStrength(0.35); setIpScale(0.6); setGfpganWeight(0.8) }}
-                className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
-            </div>
-            {[
-              { label: 'Steps',    value: steps,    min: 1,   max: 50,   step: 1,    set: setSteps,    fmt: (v: number) => String(v) },
-              { label: 'Guidance', value: guidance, min: 0.5, max: 10,   step: 0.5,  set: setGuidance, fmt: (v: number) => v.toFixed(1) },
-              { label: 'Width',    value: width,    min: 512, max: 2048, step: 64,   set: setWidth,    fmt: (v: number) => String(v) },
-              { label: 'Height',   value: height,   min: 512, max: 2048, step: 64,   set: setHeight,   fmt: (v: number) => String(v) },
-            ].map(({ label, value, min, max, step, set, fmt }) => (
-              <div key={label} className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
-                <span className={`text-[10px] font-mono ${img2img && autoBaseDims && (label === 'Width' || label === 'Height') ? 'text-indigo-400/80' : 'text-slate-500'}`}>{label}</span>
-                <input type="range" min={min} max={max} step={step} value={value}
-                  onChange={e => set(parseFloat(e.target.value) as never)}
-                  className="w-full accent-cyan-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-cyan-300 tabular-nums text-right">{fmt(value)}</span>
-              </div>
-            ))}
-            {img2img && autoBaseDims && (
-              <p className="text-[10px] text-indigo-400/50 -mt-1">Width &amp; Height auto-set from reference aspect ratio — drag to override</p>
-            )}
-            <div className="grid grid-cols-[5rem_1fr] items-center gap-3 pt-0.5">
-              <span className="text-[10px] font-mono text-slate-500">Seed</span>
-              <input type="number" value={seed === -1 ? '' : seed} placeholder="random"
-                onChange={e => setSeed(e.target.value === '' ? -1 : parseInt(e.target.value))}
-                className="w-32 bg-white/5 border border-white/10 rounded px-2 py-1 text-[11px] font-mono text-white placeholder-slate-600 focus:outline-none focus:border-white/20" />
-            </div>
-            {/* Refine + upscale strength — only shown when RunPod mode and relevant toggle is on */}
-            {mode === 'runpod' && refine && (
-              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
-                <span className="text-[10px] font-mono text-emerald-400/70">Refine str</span>
-                <input type="range" min={0.1} max={0.6} step={0.05} value={refineStrength}
-                  onChange={e => setRefineStrength(parseFloat(e.target.value))}
-                  className="w-full accent-emerald-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-emerald-300 tabular-nums text-right">{refineStrength.toFixed(2)}</span>
-              </div>
-            )}
-            {mode === 'runpod' && adetailer && (
-              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
-                <span className="text-[10px] font-mono text-rose-400/70">Faces str</span>
-                <input type="range" min={0.2} max={0.6} step={0.05} value={adetailerStrength}
-                  onChange={e => setAdetailerStrength(parseFloat(e.target.value))}
-                  className="w-full accent-rose-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-rose-300 tabular-nums text-right">{adetailerStrength.toFixed(2)}</span>
-              </div>
-            )}
-            {mode === 'runpod' && ipAdapter && (
-              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
-                <span className="text-[10px] font-mono text-teal-400/70">IP scale</span>
-                <input type="range" min={0.1} max={1.0} step={0.05} value={ipScale}
-                  onChange={e => setIpScale(parseFloat(e.target.value))}
-                  className="w-full accent-teal-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-teal-300 tabular-nums text-right">{ipScale.toFixed(2)}</span>
-              </div>
-            )}
-            {mode === 'runpod' && gfpgan && (
-              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
-                <span className="text-[10px] font-mono text-purple-400/70">GFPGAN wt</span>
-                <input type="range" min={0.1} max={1.0} step={0.05} value={gfpganWeight}
-                  onChange={e => setGfpganWeight(parseFloat(e.target.value))}
-                  className="w-full accent-purple-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-purple-300 tabular-nums text-right">{gfpganWeight.toFixed(2)}</span>
-              </div>
-            )}
-            {mode === 'runpod' && img2img && (
-              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 border-t border-white/5 pt-2">
-                <span className="text-[10px] font-mono text-indigo-400/70">i2i str</span>
-                <input type="range" min={0.1} max={1.0} step={0.05} value={img2imgStrength}
-                  onChange={e => setImg2imgStrength(parseFloat(e.target.value))}
-                  className="w-full accent-indigo-400 cursor-pointer h-0.5" />
-                <span className="text-[11px] font-mono text-indigo-300 tabular-nums text-right">{img2imgStrength.toFixed(2)}</span>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* ControlNet configuration panel — up to 3 conditions */}
         {mode === 'runpod' && controlnet && (
@@ -11336,37 +13401,194 @@ function CustomFluxPanel({
 
         {/* LoRA panel — collapsible */}
         {loraOpen && (
-          <div ref={loraPanelRef} className="rounded-xl border border-white/[0.08] bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
+          <div ref={loraPanelRef} className="relative isolate rounded-xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md px-4 py-3 space-y-2">
+            <RimOverlay />
             {/* Header */}
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-cyan-400/60 uppercase tracking-widest">LoRAs</span>
+              <span className="text-[10px] font-mono font-semibold text-slate-400 uppercase tracking-[0.2em]">LoRAs</span>
               <button onClick={() => setLoraOpen(false)} className="text-slate-600 hover:text-slate-300 transition-colors p-0.5">
                 <X size={11} />
               </button>
             </div>
 
-            {/* LoRA entries */}
-            {loras.map(lora => (
-              <div key={lora.id} className="flex items-center gap-2">
-                <select value={lora.key}
-                  onChange={e => {
-                    const opt = loraOptions.find(o => o.key === e.target.value)
-                    updateLora(lora.id, { key: e.target.value, name: opt?.name ?? e.target.value })
-                  }}
-                  className="flex-1 bg-slate-800 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none cursor-pointer">
-                  <option value="" className="bg-slate-800 text-slate-400">— select LoRA —</option>
-                  {loraOptions.map(o => <option key={o.key} value={o.key} className="bg-slate-800 text-white">{o.name}</option>)}
-                </select>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-[10px] font-mono text-cyan-300 tabular-nums w-8 text-right">{lora.strength.toFixed(2)}</span>
-                  <input type="range" min={0} max={2} step={0.05} value={lora.strength}
-                    onChange={e => updateLora(lora.id, { strength: parseFloat(e.target.value) })}
-                    className="w-20 accent-cyan-400 cursor-pointer h-0.5" />
+            {/* LoRA entries — site-style dropdown (native selects render as iOS
+                pickers), version families (v1/v2/v3) + base-model tags */}
+            {loras.map(lora => {
+              const selectedRun = runOfKey(lora.key)
+              const selectRun = (r: typeof loraRuns[number]) => {
+                updateLora(lora.id, { key: r.repKey, name: runLabel(r.run) })
+                setLoraDdOpen(null)
+              }
+              const buttonLabel = lora.key
+                ? (lora.name || lora.key.split('/').pop() || lora.key) + (!selectedRun && !flatLoras.some(o => o.key === lora.key) && !modelsLoaded ? ' (loading list…)' : '')
+                : '— select LoRA —'
+              return (
+              <div key={lora.id} className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 min-w-0" data-lora-dd={lora.id}>
+                    <button onClick={() => setLoraDdOpen(v => v === lora.id ? null : lora.id)}
+                      className={`w-full flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
+                        loraDdOpen === lora.id ? 'bg-white/[0.12] border-white/30 text-white'
+                        : lora.key ? 'bg-white/[0.08] border-white/20 text-white'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-white'}`}>
+                      <span className="truncate text-left">{buttonLabel}</span>
+                      <ChevronDown size={10} className={`shrink-0 transition-transform ${loraDdOpen === lora.id ? 'rotate-180' : ''}`} />
+                    </button>
+                    {loraDdOpen === lora.id && (
+                      <div className="absolute bottom-full mb-1.5 left-0 right-0 z-50 min-w-[280px] rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden max-h-80 overflow-y-auto">
+                        <div className="px-3 py-1.5 border-b border-white/5">
+                          <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Trained LoRAs</span>
+                        </div>
+                        <button onClick={() => { updateLora(lora.id, { key: '', name: '' }); setLoraDdOpen(null) }}
+                          className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 hover:text-white hover:bg-white/[0.06] transition-colors">
+                          — none —
+                        </button>
+                        {!modelsLoaded && (
+                          <div className="px-3 py-2 text-[11px] text-slate-500 flex items-center gap-2">
+                            <Loader2 size={11} className="animate-spin shrink-0" />Loading…
+                          </div>
+                        )}
+                        {loraFamilies.map(fam => {
+                          const activeVer = fam.versions.find(v => v.run === selectedRun?.run)
+                          const latest = fam.versions[fam.versions.length - 1]
+                          // VERSIONS ARE PER BASE MODEL: runs sharing this name
+                          // are sub-grouped by the checkpoint they were trained
+                          // on, and v1/v2/… count within each base — so the
+                          // same subject retrained on a new base starts at v1.
+                          const baseGroups: Array<{ base?: string; runs: typeof fam.versions }> = []
+                          {
+                            const gm = new Map<string, { base?: string; runs: typeof fam.versions }>()
+                            for (const v of fam.versions) {
+                              const b = loraBaseModels[v.run]
+                              const k = b ?? '(unknown)'
+                              const g = gm.get(k) ?? { base: b, runs: [] }
+                              g.runs.push(v)
+                              gm.set(k, g)
+                            }
+                            for (const g of gm.values()) {
+                              g.runs.sort((a, b2) => verOf(runLabel(a.run)) - verOf(runLabel(b2.run)))
+                              baseGroups.push(g)
+                            }
+                          }
+                          const singlePlain = baseGroups.length === 1 && baseGroups[0].runs.length === 1
+                          return (
+                            <div key={fam.base} className={`px-3 py-2 border-b border-white/5 transition-colors ${activeVer ? 'bg-white/[0.08]' : 'hover:bg-white/[0.05]'}`}>
+                              <button onClick={() => selectRun(activeVer ?? latest)} className="w-full text-left">
+                                <span className={`block text-[11px] truncate ${activeVer ? 'text-white' : 'text-slate-300'}`}>{fam.base}</span>
+                              </button>
+                              <div className="mt-1 space-y-1">
+                                {baseGroups.map((g, gi) => (
+                                  <div key={gi} className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[9px] font-mono text-amber-400/60 truncate max-w-[160px]">
+                                      {g.base ? `base: ${g.base}` : 'base unknown'}
+                                    </span>
+                                    {!singlePlain && g.runs.map((v, vi) => {
+                                      // Explicit version in the run's NAME wins
+                                      // ("Alexandra Thomas v2" shows v2 even as
+                                      // the only run of its base); unnumbered
+                                      // runs count sequentially within the base
+                                      const named = verOf(runLabel(v.run))
+                                      return (
+                                        <button key={v.run} onClick={() => selectRun(v)}
+                                          title={runLabel(v.run)}
+                                          className={`px-2 py-0.5 rounded-md border text-[9px] font-mono transition-colors ${
+                                            activeVer?.run === v.run ? 'bg-white/20 border-white/40 text-white' : 'border-white/[0.08] text-slate-500 hover:text-white hover:border-white/25'}`}>
+                                          v{named > 1 ? named : vi + 1}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {flatLoras.length > 0 && (
+                          <>
+                            <div className="px-3 py-1.5 border-b border-white/5">
+                              <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Files</span>
+                            </div>
+                            {flatLoras.map(o => (
+                              <button key={o.key} onClick={() => { updateLora(lora.id, { key: o.key, name: o.name }); setLoraDdOpen(null) }}
+                                className={`w-full text-left px-3 py-2 text-[11px] truncate transition-colors ${
+                                  lora.key === o.key ? 'text-white bg-white/[0.1]' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'}`}>
+                                {o.name}
+                              </button>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => updateLora(lora.id, { character: !lora.character })}
+                    title="Character LoRA — carries the subject's identity. Enhance v13's Likeness control tunes this LoRA's strength (relaxed on Reference, boosted on LoRA)."
+                    className={`shrink-0 px-1.5 py-0.5 rounded-md border text-[9px] font-mono transition-colors ${
+                      lora.character ? 'bg-violet-500/20 border-violet-400/50 text-violet-200' : 'border-white/[0.08] text-slate-600 hover:text-slate-300 hover:border-white/20'}`}>
+                    Char
+                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] font-mono text-cyan-300 tabular-nums w-8 text-right">{lora.strength.toFixed(2)}</span>
+                    <input type="range" min={0} max={2} step={0.05} value={lora.strength}
+                      onChange={e => updateLora(lora.id, { strength: parseFloat(e.target.value) })}
+                      className="w-20 accent-cyan-400 cursor-pointer h-0.5" />
+                  </div>
+                  <button onClick={() => removeLora(lora.id)}
+                    className="text-slate-600 hover:text-red-400 transition-colors p-1 shrink-0"><X size={10} /></button>
                 </div>
-                <button onClick={() => removeLora(lora.id)}
-                  className="text-slate-600 hover:text-red-400 transition-colors p-1 shrink-0"><X size={10} /></button>
+                {/* Epoch picker — site-style dropdown (runs can have 100+
+                    epoch checkpoints; chips overcrowded the panel). Final
+                    first, then newest → oldest. Also shown while a run is
+                    still training (epochs only, no Final yet) so in-flight
+                    snapshots are visible even when there's just one. */}
+                {selectedRun && (selectedRun.files.length > 1 || selectedRun.files[0]?.label !== 'Final') && (() => {
+                  const epKey = `${lora.id}:ep`
+                  const epOrdered = [
+                    ...selectedRun.files.filter(f => f.label === 'Final'),
+                    ...selectedRun.files.filter(f => f.label !== 'Final').slice().reverse(),
+                  ]
+                  const curLabel = selectedRun.files.find(f => f.key === lora.key)?.label ?? 'Latest'
+                  return (
+                    <div className="flex items-center gap-1.5 pl-1">
+                      <span className="text-[9px] text-slate-500 uppercase tracking-wider shrink-0">Epoch</span>
+                      <div className="relative flex-1 min-w-0" data-lora-dd={epKey}>
+                        <button onClick={() => setLoraDdOpen(v => v === epKey ? null : epKey)}
+                          className={`w-full flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg border text-[10px] font-mono transition-all ${
+                            loraDdOpen === epKey ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-300 hover:border-white/20 hover:text-white'}`}>
+                          <span className="truncate">{curLabel}</span>
+                          <ChevronDown size={9} className={`shrink-0 transition-transform ${loraDdOpen === epKey ? 'rotate-180' : ''}`} />
+                        </button>
+                        {loraDdOpen === epKey && (
+                          <div className="absolute bottom-full mb-1.5 left-0 right-0 z-50 rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden max-h-60 overflow-y-auto">
+                            <div className="px-3 py-1.5 border-b border-white/5">
+                              <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Epoch checkpoint · {selectedRun.files.length}</span>
+                            </div>
+                            {epOrdered.map(f => (
+                              <button key={f.key}
+                                onClick={() => { updateLora(lora.id, { key: f.key, name: f.label !== 'Final' ? `${runLabel(selectedRun.run)} · ${f.label}` : runLabel(selectedRun.run) }); setLoraDdOpen(null) }}
+                                className={`w-full text-left px-3 py-1.5 text-[10px] font-mono transition-colors ${
+                                  lora.key === f.key ? 'text-white bg-white/[0.1]' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'}`}>
+                                {f.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
+                {/* Base-model mismatch — a LoRA applied to a different checkpoint
+                    than it was trained on usually comes out weaker/off */}
+                {(() => {
+                  const b = selectedRun ? loraBaseModels[selectedRun.run] : undefined
+                  const ck = checkpoint ? (checkpoint.split('/').pop() ?? '').replace(/\.[^.]+$/, '') : ''
+                  return b && ck && b !== ck ? (
+                    <p className="pl-1 text-[9px] font-mono text-amber-400/70 leading-snug">
+                      ⚠ trained on {b} — current checkpoint is {ck}
+                    </p>
+                  ) : null
+                })()}
               </div>
-            ))}
+            )})}
 
             {/* Upload progress */}
             {loraUploading && (
@@ -11401,9 +13623,27 @@ function CustomFluxPanel({
         )}
 
         {/* Upscaling configuration panel */}
-        {mode === 'runpod' && upscaleEnabled && (
-          <div className="rounded-xl border border-violet-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-3">
-            <span className="text-[10px] font-mono text-violet-400/60 uppercase tracking-widest">Upscaling</span>
+        {mode === 'runpod' && upscalePanelOpen && (
+          <div className="relative isolate rounded-xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md px-4 py-3 space-y-3">
+            <RimOverlay />
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono font-semibold text-slate-400 uppercase tracking-[0.2em]">Upscaling</span>
+              <div className="flex items-center gap-2.5">
+                {/* On/off switch — independent of panel visibility */}
+                <button onClick={() => setUpscaleEnabled(v => !v)} title={upscaleEnabled ? 'Disable upscaling' : 'Enable upscaling'}
+                  className={`relative w-9 h-5 rounded-full border transition-colors ${
+                    upscaleEnabled ? 'bg-violet-500/40 border-violet-400/50' : 'bg-white/10 border-white/15'}`}>
+                  <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all ${
+                    upscaleEnabled ? 'left-[18px] bg-white' : 'left-0.5 bg-slate-400'}`} />
+                </button>
+                <span className={`text-[10px] font-mono ${upscaleEnabled ? 'text-violet-300' : 'text-slate-600'}`}>
+                  {upscaleEnabled ? 'ON' : 'OFF'}
+                </span>
+                <button onClick={() => setUpscalePanelOpen(false)} className="text-slate-600 hover:text-white transition-colors">
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
 
             {/* Method */}
             <div className="grid grid-cols-[4.5rem_1fr] items-center gap-3">
@@ -11823,16 +14063,12 @@ function CustomFluxPanel({
           </div>
         )}
 
-        {/* img2img: shows which ref will be used as the starting image */}
-        {mode === 'runpod' && img2img && (
-          <div className="rounded-xl border border-indigo-500/20 bg-slate-900/90 backdrop-blur-md px-4 py-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-indigo-400/60 uppercase tracking-widest">img2img Source</span>
-              <span className="text-[10px] text-slate-600">first active ref · activate in the Refs panel above</span>
-            </div>
-            {activeRefImages.length > 0 ? (() => {
-              const baseW = autoBaseDims?.w ?? width
-              const baseH = autoBaseDims?.h ?? height
+        {/* Active reference — floating thumbnail above the prompt box. The ref
+            IS the i2i source (auto-enabled); click the thumb to edit it, × to
+            deactivate. Replaces the old full-width img2img card. */}
+        {mode === 'runpod' && img2img && activeRefImages.length > 0 && (() => {
+              const baseW = smartAr === 'auto' ? (autoBaseDims?.w ?? width) : width
+              const baseH = smartAr === 'auto' ? (autoBaseDims?.h ?? height) : height
               let finalW = baseW, finalH = baseH
               if (upscaleEnabled) {
                 if (upscaleMethod === 'pipeline') {
@@ -11865,43 +14101,66 @@ function CustomFluxPanel({
                   finalW *= upscaleScale; finalH *= upscaleScale
                 }
               }
-              const upscaleLabel = !upscaleEnabled ? null
-                : upscaleMethod === 'flux'     ? `Flux Tiling → ${fluxTarget.toUpperCase()}`
-                : upscaleMethod === 'esrgan'   ? `${upscaleScale}× ${esrganModel === 'ultrasharp' ? 'UltraSharp' : 'RealESRGAN'}`
-                : upscaleMethod === 'pipeline' ? `Pipeline (${pipelineSteps.map(s => s.type === 'flux' ? `Flux ${s.upscaleFactor ?? 2}×` : 'ESRGAN').join('→')})`
-                : `4× Combo (${comboOrder === 'flux-first' ? 'Flux→ESRGAN' : 'ESRGAN→Flux'})`
+              const ref0 = activeRefImages[0]
               return (
-                <div className="flex items-start gap-3 flex-wrap">
-                  {/* Thumbnail at natural aspect ratio */}
-                  <div className="relative shrink-0 max-w-[56px] max-h-[56px] rounded-md overflow-hidden border border-indigo-500/30 flex items-center justify-center bg-black/30">
+                <div className="flex items-end gap-2.5 px-1">
+                  {/* Thumbnail — click to open the reference editor */}
+                  <div onClick={() => setEditingRef(ref0)} title="Edit reference"
+                    className="relative group shrink-0 rounded-xl overflow-hidden border border-white/15 bg-black/40 shadow-2xl cursor-pointer">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={activeRefImages[0].url} alt="" className="max-w-[56px] max-h-[56px] object-contain" />
+                    <img src={ref0.url} alt="" className="h-20 w-auto max-w-[130px] object-contain" />
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <span className="text-[10px] font-semibold text-white tracking-wide">Edit</span>
+                    </span>
+                    <button
+                      onClick={e => { e.stopPropagation(); onDeactivateRef?.(ref0.id) }}
+                      title="Remove reference"
+                      className="absolute top-1 right-1 w-[18px] h-[18px] flex items-center justify-center rounded-full bg-black/70 border border-white/20 text-slate-300 hover:text-white hover:border-white/40 transition-all">
+                      <X size={9} />
+                    </button>
                   </div>
-                  <div className="flex flex-col gap-1 min-w-0">
-                    <span className="text-[10px] text-slate-400">Diffusion starts from this image · strength {img2imgStrength.toFixed(2)}</span>
+                  <div className="flex flex-col gap-1 pb-0.5 min-w-0">
+                    <label className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                      <span className="font-mono uppercase tracking-wider text-slate-500">i2i</span>
+                      <input type="range" min={0.1} max={1} step={0.05} value={img2imgStrength}
+                        onChange={e => setImg2imgStrength(+e.target.value)} className="w-20 accent-indigo-400" />
+                      <span className="font-mono text-indigo-300">{img2imgStrength.toFixed(2)}</span>
+                    </label>
                     {autoBaseDims ? (
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-[10px] font-mono text-indigo-300">
-                          Base: {baseW}×{baseH}
-                          {upscaleLabel && <span className="text-slate-500"> → Final: <span className="text-indigo-200">{finalW.toLocaleString()}×{finalH.toLocaleString()}</span> <span className="text-slate-600">({upscaleLabel})</span></span>}
-                        </span>
-                        {!upscaleLabel && <span className="text-[10px] text-slate-600">No upscale selected — output will be {baseW}×{baseH}</span>}
-                      </div>
+                      <span className="text-[9px] font-mono text-slate-500 truncate">
+                        {baseW}×{baseH}
+                        {upscaleEnabled && <> → <span className="text-slate-400">{finalW.toLocaleString()}×{finalH.toLocaleString()}</span></>}
+                      </span>
                     ) : (
-                      <span className="text-[10px] text-slate-600 italic">Detecting dimensions…</span>
+                      <span className="text-[9px] text-slate-600 italic">Detecting dimensions…</span>
                     )}
-                    {ipAdapter && <span className="text-[10px] text-teal-400/70">+ IP-Adapter appearance guidance active</span>}
+                    {smartAr !== 'auto' && (
+                      <span className="text-[9px] font-mono text-amber-400/70">✂ cropped to {smartAr}</span>
+                    )}
+                    {ipAdapter && <span className="text-[9px] text-teal-400/70">+ IP-Adapter active</span>}
                   </div>
                 </div>
               )
-            })() : (
-              <p className="text-[11px] text-slate-600 italic">No active reference images — activate one in the Refs panel to use as the img2img source</p>
-            )}
-          </div>
-        )}
+            })()}
 
-        {/* Main card */}
-        <div className="rounded-2xl border border-white/10 bg-slate-900/80 backdrop-blur-md shadow-2xl">
+        {/* Main card — same silver-rimmed frost treatment as the public prompt card */}
+        <div className="relative isolate rounded-2xl border border-white/[0.08] bg-[#070b14]/90 backdrop-blur-md shadow-2xl">
+          {/* Animated silver rim — masked to a thin band hugging the card edge */}
+          <div
+            className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none z-20"
+            style={{
+              padding: '1.5px',
+              WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              WebkitMaskComposite: 'xor',
+              mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              maskComposite: 'exclude',
+            } as React.CSSProperties}
+          >
+            <span
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+              style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }}
+            />
+          </div>
 
           {/* Textarea */}
           <textarea
@@ -11918,39 +14177,26 @@ function CustomFluxPanel({
             className="w-full resize-none bg-transparent px-5 pt-4 pb-3 text-sm text-white placeholder-slate-500 focus:outline-none leading-relaxed"
           />
 
-          {/* Controls strip */}
+          {/* Smart row — pick shape + target size, tuned settings auto-apply;
+              the full controls strip lives behind Advanced */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 pb-3 pt-1 border-t border-white/5">
-
-            {/* Mode toggle */}
-            <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">
-              {(['local', 'runpod'] as FluxMode[]).map(m => (
-                <button key={m}
-                  onClick={() => { setMode(m); setCheckpoint(''); setLoras([{ id: `lora-${Date.now()}`, name: '', key: '', strength: 1.0 }]); setResultUrl(null); setError(null) }}
-                  className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${mode === m ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                  {m === 'local' ? 'Local' : 'RunPod'}
-                </button>
-              ))}
-            </div>
-
-            <div className="w-px h-3 bg-white/10 shrink-0" />
-
-            {/* Checkpoint picker */}
+            {/* Checkpoint picker — essential, so it lives on the compact row */}
             <div ref={ckptRef} className="relative shrink-0 flex items-center gap-1">
               <button onClick={() => setCkptOpen(v => !v)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-medium transition-all ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
                   checkpoint
-                    ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
+                    ? 'bg-white/[0.12] border-white/30 text-white'
                     : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
                 }`}>
                 {checkpointLabel}
                 <ChevronDown size={10} className={`transition-transform ${ckptOpen ? 'rotate-180' : ''}`} />
               </button>
-              <button onClick={refreshModels} title="Refresh model list from R2"
+              <button onClick={() => refreshModels()} title="Refresh model list from R2"
                 className="p-1 rounded border border-white/10 bg-white/5 text-slate-500 hover:text-white hover:border-white/20 transition-all">
                 <RefreshCw size={10} className={!modelsLoaded ? 'animate-spin' : ''} />
               </button>
               {ckptOpen && (
-                <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[280px] rounded-xl bg-[#0e1018] border border-white/10 shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
+                <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[280px] rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
                   {!modelsLoaded ? (
                     <div className="px-3 py-2 text-[11px] text-slate-500 flex items-center gap-2">
                       <Loader2 size={11} className="animate-spin shrink-0" />Loading...
@@ -11958,7 +14204,7 @@ function CustomFluxPanel({
                   ) : modelsError ? (
                     <div className="px-3 py-2 space-y-1">
                       <div className="text-[11px] text-red-400 break-all">{modelsError}</div>
-                      <button onClick={refreshModels} className="text-[10px] text-slate-500 hover:text-white flex items-center gap-1"><RefreshCw size={10} />Retry</button>
+                      <button onClick={() => refreshModels()} className="text-[10px] text-slate-500 hover:text-white flex items-center gap-1"><RefreshCw size={10} />Retry</button>
                     </div>
                   ) : (() => {
                     const fillCkpts    = checkpoints.filter(c => /fill/i.test(c.key))
@@ -11974,7 +14220,7 @@ function CustomFluxPanel({
                         ) : items.map(c => (
                           <button key={c.key} onClick={() => { setCheckpoint(c.key); setCkptOpen(false) }}
                             className={`w-full text-left px-3 py-2 text-[11px] transition-colors truncate ${
-                              checkpoint === c.key ? 'text-cyan-300 bg-cyan-500/10' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'
+                              checkpoint === c.key ? 'text-white bg-white/[0.1]' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'
                             }`}>
                             {c.name}
                           </button>
@@ -11994,6 +14240,376 @@ function CustomFluxPanel({
                 </div>
               )}
             </div>
+            <button onClick={() => setLoraOpen(v => !v)}
+              className={`shrink-0 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
+                loras.some(l => l.key) || loraOpen ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'}`}>
+              {loras.filter(l => l.key).length > 0 ? `${loras.filter(l => l.key).length} LoRA` : 'LoRA'}
+            </button>
+            {/* Aspect ratio — site-style dropdown (native selects render as iOS pickers) */}
+            <div ref={arRef} className="relative shrink-0">
+              <button onClick={() => { setArOpen(v => !v); setResOpen(false); setFinOpen(false) }}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
+                  arOpen ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-300 hover:border-white/20 hover:text-white'}`}>
+                {smartAr === 'auto' ? 'Auto' : smartAr}
+                <ChevronDown size={10} className={`transition-transform ${arOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {arOpen && (
+                <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[190px] rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden">
+                  <div className="px-3 py-1.5 border-b border-white/5">
+                    <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Aspect ratio</span>
+                  </div>
+                  <button onClick={() => { applySmart('auto', smartRes); setArOpen(false) }}
+                    className={`w-full flex items-center justify-between px-3 py-2 text-[11px] transition-colors border-b border-white/5 ${
+                      smartAr === 'auto' ? 'text-white bg-white/[0.1]' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'}`}>
+                    <span>Auto</span>
+                    <span className="font-mono text-[9px] text-slate-600">{activeRefImages.length > 0 ? 'match reference' : 'guess from prompt'}</span>
+                  </button>
+                  {Object.entries(SMART_FLUX_DIMS).map(([ar, [w, h]]) => (
+                    <button key={ar} onClick={() => { applySmart(ar, smartRes); setArOpen(false) }}
+                      className={`w-full flex items-center justify-between px-3 py-2 text-[11px] transition-colors ${
+                        smartAr === ar ? 'text-white bg-white/[0.1]' : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'}`}>
+                      <span>{ar}</span>
+                      <span className="font-mono text-[9px] text-slate-600">{w}×{h}</span>
+                    </button>
+                  ))}
+                  {activeRefImages.length > 0 && (
+                    <p className="px-3 py-1.5 border-t border-white/5 text-[9px] text-slate-600 leading-snug">
+                      Reference active — Auto keeps its shape; a fixed ratio center-crops it (never stretches).
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* Target resolution — its own compact dropdown */}
+            <div ref={resRef} className="relative shrink-0">
+              <button onClick={() => { setResOpen(v => !v); setArOpen(false); setFinOpen(false); setEnhOpen(false) }}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
+                  resOpen ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-300 hover:border-white/20 hover:text-white'}`}>
+                {smartRes.toUpperCase()}
+                <ChevronDown size={10} className={`transition-transform ${resOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {resOpen && (
+                <div className="absolute bottom-full mb-1.5 left-0 z-50 w-[280px] max-w-[88vw] rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden">
+                  <div className="px-3 py-1.5 border-b border-white/5">
+                    <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Target resolution</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 p-2">
+                    {(['1k', '2k', '3k', '4k', '5k', '6k', '7k', '8k'] as FluxSmartRes[]).map(val => (
+                      <button key={val} onClick={() => { applySmart(smartAr, val); setResOpen(false) }}
+                        className={`rounded-lg px-1.5 py-1.5 text-center transition-colors border ${
+                          smartRes === val ? 'bg-white/[0.1] border-white/25' : 'border-transparent hover:bg-white/[0.06]'}`}>
+                        <span className={`block text-[11px] font-semibold ${smartRes === val ? 'text-white' : 'text-slate-300'}`}>{val.toUpperCase()}</span>
+                        <span className="block text-[8px] text-slate-600 mt-0.5">
+                          {val === '1k' ? 'native' : `${SMART_RES_TARGET_PX[val as Exclude<FluxSmartRes, '1k'>]}px`}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Finish — its own dropdown (split from Resolution). Hidden at 1K:
+                no upscale runs, so there's nothing for a finish to do */}
+            {smartRes !== '1k' && (
+              <div ref={finRef} className="relative shrink-0">
+                <button onClick={() => { setFinOpen(v => !v); setArOpen(false); setResOpen(false); setEnhOpen(false) }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
+                    finOpen ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-300 hover:border-white/20 hover:text-white'}`}>
+                  {SMART_FINISH_LABEL[smartFinish]}
+                  <ChevronDown size={10} className={`transition-transform ${finOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {finOpen && (
+                  <div className="absolute bottom-full mb-1.5 left-0 z-50 w-[336px] max-w-[88vw] rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden">
+                    <div className="px-3 py-1.5 border-b border-white/5">
+                      <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Finish · how {smartRes.toUpperCase()} is reached</span>
+                    </div>
+                    <div className="max-h-[min(62vh,480px)] overflow-y-auto">
+                      <div className="p-2">
+                        {(() => {
+                          const allKeys = Object.keys(SMART_FINISH_LABEL) as FluxSmartFinish[]
+                          const enhKeys = allKeys.filter(k => k.startsWith('enhance'))
+                          const baseKeys = allKeys.filter(k => !k.startsWith('enhance'))
+                          const enhActive = smartFinish.startsWith('enhance')
+                          return (
+                            <>
+                              <div className="grid grid-cols-2 gap-1">
+                                {baseKeys.map(val => (
+                                  <button key={val} onClick={() => { applySmart(smartAr, smartRes, val); setEnhOpen(false) }}
+                                    className={`text-left rounded-lg px-2 py-1.5 transition-colors border ${
+                                      smartFinish === val ? 'bg-white/[0.1] border-white/25' : 'border-transparent hover:bg-white/[0.06]'}`}>
+                                    <span className={`block text-[11px] ${smartFinish === val ? 'text-white' : 'text-slate-300'}`}>{SMART_FINISH_LABEL[val]}</span>
+                                    <span className="block text-[8px] text-slate-600 mt-0.5 truncate">{SMART_FINISH_TAG[val]}</span>
+                                  </button>
+                                ))}
+                                {/* Enhance family — one tile, versions in a sub-list */}
+                                <button onClick={() => setEnhOpen(v => !v)}
+                                  className={`text-left rounded-lg px-2 py-1.5 transition-colors border ${
+                                    enhActive ? 'bg-white/[0.1] border-white/25' : enhOpen ? 'bg-white/[0.06] border-white/15' : 'border-transparent hover:bg-white/[0.06]'}`}>
+                                  <span className={`flex items-center justify-between text-[11px] ${enhActive ? 'text-white' : 'text-slate-300'}`}>
+                                    {enhActive ? SMART_FINISH_LABEL[smartFinish] : 'Enhance'}
+                                    <ChevronDown size={9} className={`shrink-0 transition-transform ${enhOpen ? 'rotate-180' : ''}`} />
+                                  </span>
+                                  <span className="block text-[8px] text-slate-600 mt-0.5 truncate">i2i upgrades · {enhKeys.length} versions</span>
+                                </button>
+                              </div>
+                              {enhOpen && (
+                                <div className="mt-1 rounded-lg border border-white/[0.08] bg-white/[0.03] overflow-hidden">
+                                  {enhKeys.map(val => (
+                                    <button key={val} onClick={() => { applySmart(smartAr, smartRes, val); setEnhOpen(false) }}
+                                      className={`w-full flex items-center justify-between px-2.5 py-1.5 text-left transition-colors ${
+                                        smartFinish === val ? 'bg-white/[0.1]' : 'hover:bg-white/[0.06]'}`}>
+                                      <span className={`text-[11px] ${smartFinish === val ? 'text-white' : 'text-slate-300'}`}>{SMART_FINISH_LABEL[val]}</span>
+                                      <span className="text-[8px] font-mono text-slate-600 truncate max-w-[55%]">{SMART_FINISH_TAG[val]}</span>
+                                    </button>
+                                  ))}
+                                  <p className="px-2.5 py-1.5 border-t border-white/5 text-[8px] text-slate-600 leading-relaxed">
+                                    Works with or without a reference. With one: the ref seeds the render (i2i). Without: pure text-to-image — same detail chain + face pass, identity from your LoRA + trigger word.
+                                  </p>
+                                </div>
+                              )}
+                              {/* v13 Likeness control — who owns the face */}
+                              {smartFinish === 'enhance13' && (
+                                <div className="mt-1.5 flex items-center gap-1 px-1 flex-wrap">
+                                  <span className="text-[8px] font-mono uppercase tracking-widest text-slate-600 mr-1">Likeness</span>
+                                  {([['ref', 'Reference'], ['both', 'Both'], ['lora', 'LoRA']] as const).map(([v, label]) => (
+                                    <button key={v} onClick={() => { setLikenessSource(v); applySmart(smartAr, smartRes, 'enhance13', v) }}
+                                      className={`px-2 py-0.5 rounded-full border text-[9px] transition-colors ${
+                                        likenessSource === v ? 'bg-white/15 border-white/30 text-white' : 'border-white/[0.08] text-slate-500 hover:text-white'}`}>
+                                      {label}
+                                    </button>
+                                  ))}
+                                  <span className="w-full text-[8px] text-slate-700 leading-snug pt-0.5">
+                                    Mark your character LoRA with "Char" in the LoRA panel — its strength follows this setting.
+                                  </span>
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
+                        <p className="px-1 pt-1.5 text-[9px] text-slate-500 leading-relaxed">
+                          <span className="text-slate-400 font-semibold">{SMART_FINISH_LABEL[smartFinish]}:</span> {SMART_FINISH_DESC[smartFinish]}
+                        </p>
+                        <p className="px-1 pt-1 text-[8px] text-slate-700 leading-relaxed">
+                          Finishes build a step pipeline — fine-tune or reorder steps in the Upscale popup.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Reference upload — same spot as the NB2 prompt-box button. One
+                image max: picking a file replaces the current active ref */}
+            {mode === 'runpod' && (
+              <>
+                <input ref={refUploadInputRef} type="file" accept="image/*" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleRefFilePick(f); e.target.value = '' }} />
+                <button onClick={() => refUploadInputRef.current?.click()}
+                  title="Upload a reference image — becomes the i2i source"
+                  className={`shrink-0 p-1.5 rounded-lg border transition-all ${
+                    activeRefImages.length > 0 ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/20'}`}>
+                  <ImagePlus size={13} />
+                </button>
+              </>
+            )}
+            <button onClick={() => setAdvOpen(v => !v)}
+              className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
+                advOpen ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'}`}>
+              <SlidersHorizontal size={11} /> Advanced
+              <ChevronDown size={10} className={`transition-transform ${advOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {/* Live readout of the applied settings — edit any of them in Advanced */}
+            <span className="flex-1 min-w-[130px] text-center text-[10px] font-mono text-slate-500 truncate">
+              {smartAr === 'auto' && activeRefImages.length === 0
+                ? `auto ${prompt.trim() ? guessFluxDimsFromPrompt(prompt).ar : '1:1'}`
+                : `${width}×${height}`} · {steps} steps · g{guidance}
+              {upscaleEnabled ? ` · ${upscaleMethod === 'esrgan' ? `${upscaleScale}×` : upscaleMethod} upscale` : ''}
+            </span>
+            {/* Batch count — same − N + stepper as the multi-image models */}
+            {mode === 'runpod' && (
+              <div className="flex items-center shrink-0" title="How many generations to queue per press — they run across your RunPod workers">
+                <button
+                  onClick={() => setImageCount(c => Math.max(1, c - 1))}
+                  disabled={imageCount <= 1}
+                  className="w-4 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:cursor-not-allowed transition-all text-sm leading-none font-bold"
+                >−</button>
+                <span className="text-[11px] font-mono text-slate-300 w-3 text-center tabular-nums select-none">{imageCount}</span>
+                <button
+                  onClick={() => setImageCount(c => Math.min(4, c + 1))}
+                  disabled={imageCount >= 4}
+                  className="w-4 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-25 disabled:cursor-not-allowed transition-all text-sm leading-none font-bold"
+                >+</button>
+              </div>
+            )}
+            <button
+              onClick={handleGenerate}
+              disabled={!canGenerate}
+              className={`relative overflow-hidden shrink-0 flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-bold transition-all ${
+                canGenerate ? 'bg-white/10 border border-white/25 text-white hover:bg-white/15' : 'bg-white/5 text-slate-600 cursor-not-allowed border border-white/10'}`}>
+              {canGenerate && (
+                <span className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none" style={{ animation: 'sheen-sweep 2.6s infinite' }} />
+              )}
+              {generating ? <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <Sparkles size={12} />}
+              {generating ? (mode === 'runpod' ? (status || 'Queued') + '…' : 'Generating…') : 'Generate'}
+            </button>
+          </div>
+
+          {/* Controls strip — the full configuration, shown via Advanced */}
+          <div className={`${advOpen ? 'block' : 'hidden'} px-3 pb-3 pt-2 border-t border-white/5 space-y-2.5`}>
+
+            {/* Main configuration — seed / CFG / sampler / steps up front */}
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Configuration</span>
+              <button onClick={() => { setSteps(20); setGuidance(3.5); setWidth(1024); setHeight(1024); setSeed(-1); setSampler('euler'); setNegativePrompt(''); setNegCfg(4.0); setRefineStrength(0.3); setFluxTileStrength(0.3); setAdetailerStrength(0.35); setIpScale(0.6); setGfpganWeight(0.8); setColorContrast(1); setColorSaturation(1); setColorSCurve(0) }}
+                className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">reset</button>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {/* Seed */}
+              <div>
+                <span className="block text-[9px] font-mono uppercase tracking-wider text-slate-600 mb-1">Seed</span>
+                <div className="flex items-center gap-1">
+                  <input type="number" value={seed === -1 ? '' : seed} placeholder="random"
+                    onChange={e => setSeed(e.target.value === '' ? -1 : parseInt(e.target.value))}
+                    className="w-full min-w-0 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white placeholder-slate-600 focus:outline-none focus:border-white/30" />
+                  {seed !== -1 && (
+                    <button onClick={() => setSeed(-1)} title="Back to random seed"
+                      className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-500 hover:text-white hover:border-white/20 transition-all shrink-0">
+                      <X size={10} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {/* CFG (flux distilled guidance) */}
+              <div>
+                <span className="block text-[9px] font-mono uppercase tracking-wider text-slate-600 mb-1">CFG</span>
+                <input type="number" step={0.5} min={0.5} max={10} value={guidance}
+                  onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) setGuidance(v) }}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-white/30" />
+              </div>
+              {/* Sampler */}
+              <div ref={samplerRef} className="relative">
+                <span className="block text-[9px] font-mono uppercase tracking-wider text-slate-600 mb-1">Sampler</span>
+                <button onClick={() => setSamplerOpen(v => !v)}
+                  className={`w-full flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
+                    samplerOpen ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/5 border-white/10 text-slate-300 hover:border-white/20 hover:text-white'}`}>
+                  <span className="truncate">{FLUX_SAMPLERS.find(s => s.id === sampler)?.label ?? 'Euler'}</span>
+                  <ChevronDown size={10} className={`shrink-0 transition-transform ${samplerOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {samplerOpen && (
+                  <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[230px] rounded-xl bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl overflow-hidden">
+                    <div className="px-3 py-1.5 border-b border-white/5">
+                      <span className="text-[9px] font-mono font-semibold text-slate-500 uppercase tracking-[0.2em]">Sampler</span>
+                    </div>
+                    {FLUX_SAMPLERS.map(s => (
+                      <button key={s.id} onClick={() => { setSampler(s.id); setSamplerOpen(false) }}
+                        className={`w-full text-left px-3 py-2 transition-colors ${
+                          sampler === s.id ? 'bg-white/[0.1]' : 'hover:bg-white/[0.06]'}`}>
+                        <span className={`block text-[11px] ${sampler === s.id ? 'text-white' : 'text-slate-300'}`}>{s.label}</span>
+                        <span className="block text-[9px] text-slate-600 mt-0.5">{s.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Steps */}
+              <div>
+                <span className="block text-[9px] font-mono uppercase tracking-wider text-slate-600 mb-1">Steps</span>
+                <input type="number" min={1} max={50} value={steps}
+                  onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v)) setSteps(Math.max(1, Math.min(50, v))) }}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-white/30" />
+              </div>
+            </div>
+
+            {/* Color grade — worker-side final pass; 1.00/1.00/0 = off */}
+            {mode === 'runpod' && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600">Color grade</span>
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                  Contrast
+                  <input type="range" min={0.9} max={1.3} step={0.01} value={colorContrast}
+                    onChange={e => setColorContrast(+e.target.value)} className="w-20 accent-orange-400" />
+                  <span className={`font-mono w-8 ${colorContrast !== 1 ? 'text-orange-300' : 'text-slate-600'}`}>{colorContrast.toFixed(2)}</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                  Saturation
+                  <input type="range" min={0.9} max={1.4} step={0.01} value={colorSaturation}
+                    onChange={e => setColorSaturation(+e.target.value)} className="w-20 accent-orange-400" />
+                  <span className={`font-mono w-8 ${colorSaturation !== 1 ? 'text-orange-300' : 'text-slate-600'}`}>{colorSaturation.toFixed(2)}</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                  S-curve
+                  <input type="range" min={0} max={0.5} step={0.01} value={colorSCurve}
+                    onChange={e => setColorSCurve(+e.target.value)} className="w-20 accent-orange-400" />
+                  <span className={`font-mono w-8 ${colorSCurve > 0 ? 'text-orange-300' : 'text-slate-600'}`}>{colorSCurve.toFixed(2)}</span>
+                </label>
+                {(colorContrast !== 1 || colorSaturation !== 1 || colorSCurve > 0) && (
+                  <button onClick={() => { setColorContrast(1); setColorSaturation(1); setColorSCurve(0) }}
+                    className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors">off</button>
+                )}
+              </div>
+            )}
+
+            {/* Width / Height — manual override of the Smart-row dims */}
+            <div className="space-y-1.5">
+              {[
+                { label: 'Width',  value: width,  set: setWidth },
+                { label: 'Height', value: height, set: setHeight },
+              ].map(({ label, value, set }) => (
+                <div key={label} className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
+                  <span className={`text-[10px] font-mono ${img2img && autoBaseDims ? 'text-indigo-400/80' : 'text-slate-500'}`}>{label}</span>
+                  <input type="range" min={512} max={2048} step={64} value={value}
+                    onChange={e => set(parseInt(e.target.value))}
+                    className="w-full accent-white cursor-pointer h-0.5" />
+                  <span className="text-[11px] font-mono text-slate-200 tabular-nums text-right">{value}</span>
+                </div>
+              ))}
+              {img2img && autoBaseDims && (
+                <p className="text-[10px] text-indigo-400/50">Width &amp; Height auto-set from reference aspect ratio — drag to override</p>
+              )}
+            </div>
+
+            {/* Local mode: live PC load monitor (polls only while visible) */}
+            {mode === 'local' && <LocalSystemMonitor />}
+
+            {/* Negative prompt — true CFG, RunPod only */}
+            {mode === 'runpod' && (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600">Negative prompt</span>
+                  {negativePrompt.trim() !== '' && (
+                    <span className="text-[9px] font-mono text-amber-400/70">true CFG on — ~2× slower</span>
+                  )}
+                </div>
+                <textarea value={negativePrompt} onChange={e => setNegativePrompt(e.target.value)}
+                  placeholder="What to avoid — blurry, watermark, extra fingers… (empty = off)"
+                  rows={1}
+                  onInput={e => { const el = e.currentTarget; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 96) + 'px' }}
+                  className="w-full resize-none bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-white/30 leading-relaxed" />
+                {negativePrompt.trim() !== '' && (
+                  <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3 mt-1.5">
+                    <span className="text-[10px] font-mono text-slate-500">Neg CFG</span>
+                    <input type="range" min={1} max={10} step={0.5} value={negCfg}
+                      onChange={e => setNegCfg(parseFloat(e.target.value))}
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                    <span className="text-[11px] font-mono text-slate-200 tabular-nums text-right">{negCfg.toFixed(1)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Toggles row */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-1.5 border-t border-white/5">
+
+            {/* Mode toggle */}
+            <div className="flex rounded-md overflow-hidden border border-white/10 shrink-0">
+              {(['local', 'runpod'] as FluxMode[]).map(m => (
+                <button key={m}
+                  onClick={() => { setMode(m); setCheckpoint(''); setLoras([{ id: `lora-${Date.now()}`, name: '', key: '', strength: 1.0 }]); setResultUrl(null); setError(null) }}
+                  className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${mode === m ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                  {m === 'local' ? 'Local' : 'RunPod'}
+                </button>
+              ))}
+            </div>
 
             <div className="w-px h-3 bg-white/10 shrink-0" />
 
@@ -12010,15 +14626,26 @@ function CustomFluxPanel({
               </button>
             </div>
 
-            <div className="w-px h-3 bg-white/10 shrink-0" />
-
-            {/* Config toggle */}
-            <button onClick={() => setConfigOpen(v => !v)}
+            {/* img2img toggle — both modes (local: plain i2i, or Kontext edit
+                when a kontext checkpoint is selected) */}
+            <button onClick={() => setImg2img(v => !v)}
+              title="Start diffusion from your reference image instead of noise (img2img)"
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                configOpen ? 'border-white/20 bg-white/10 text-white' : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+                img2img
+                  ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300'
+                  : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
               }`}>
-              <SlidersHorizontal size={11} />
-              <span className="font-mono">{steps}s · {guidance.toFixed(1)}g · {width}×{height}</span>
+              i2i
+            </button>
+            {/* Stencil tool — both modes (local fill/kontext inpaint supported) */}
+            <button onClick={() => setStencilOpen(true)}
+              title="Stencil — crop a region for img2img, or paint an inpaint mask"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                (stencilCropB64 || inpaintMode)
+                  ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                  : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
+              }`}>
+              ✂ Stencil
             </button>
 
             {/* RunPod-only: Refine toggle + Quality selector */}
@@ -12065,35 +14692,19 @@ function CustomFluxPanel({
                   }`}>
                   IP
                 </button>
-                {/* img2img toggle */}
-                <button onClick={() => setImg2img(v => !v)}
-                  title="Start diffusion from your reference image instead of noise (img2img)"
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                    img2img
-                      ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300'
-                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
-                  }`}>
-                  i2i
-                </button>
-                {/* Stencil tool */}
-                <button onClick={() => setStencilOpen(true)}
-                  title="Stencil — crop a region for img2img, or paint an inpaint mask"
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                    (stencilCropB64 || inpaintMode)
-                      ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
-                      : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
-                  }`}>
-                  ✂ Stencil
-                </button>
-                {/* Upscaling toggle */}
-                <button onClick={() => setUpscaleEnabled(v => !v)}
+                {/* Upscaling — button opens the config popup; the on/off switch
+                    lives inside it, so upscale can stay on with the popup closed */}
+                <button onClick={() => setUpscalePanelOpen(v => !v)}
                   title="Configure upscaling pipeline"
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
                     upscaleEnabled
                       ? 'bg-violet-500/15 border-violet-500/40 text-violet-300'
+                      : upscalePanelOpen
+                      ? 'border-white/25 bg-white/10 text-white'
                       : 'border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white'
                   }`}>
-                  Upscale
+                  {upscaleEnabled && <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />}
+                  Upscale{upscaleEnabled ? ` ${upscaleMethod === 'esrgan' ? `${upscaleScale}×` : upscaleMethod}` : ''}
                 </button>
                 {/* ControlNet toggle */}
                 <button onClick={() => setControlnet(v => !v)}
@@ -12119,30 +14730,54 @@ function CustomFluxPanel({
               </>
             )}
 
-            {/* Spacer */}
-            <div className="hidden sm:block sm:flex-1" />
-
-            {/* Generate */}
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              {!checkpoint && (
-                <span className="text-[10px] text-amber-400/80 shrink-0">Select a checkpoint</span>
-              )}
-              <button onClick={handleGenerate} disabled={!canGenerate}
-                className={`flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg text-[12px] font-semibold transition-all flex-1 sm:flex-none ${
-                  canGenerate
-                    ? 'bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black hover:opacity-90'
-                    : 'bg-white/5 text-slate-600 cursor-not-allowed border border-white/10'
-                }`}>
-                {generating ? (
-                  <div className="w-3 h-3 rounded-full border-2 border-black/30 border-t-black animate-spin" />
-                ) : (
-                  <Sparkles size={12} />
-                )}
-                {generating
-                  ? (mode === 'runpod' ? (status || 'Queued') + '…' : 'Generating…')
-                  : 'Generate'}
-              </button>
             </div>
+
+            {/* Per-feature strength sliders — appear when the matching toggle is on */}
+            {mode === 'runpod' && refine && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-emerald-400/70">Refine str</span>
+                <input type="range" min={0.1} max={0.6} step={0.05} value={refineStrength}
+                  onChange={e => setRefineStrength(parseFloat(e.target.value))}
+                  className="w-full accent-emerald-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-emerald-300 tabular-nums text-right">{refineStrength.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && adetailer && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-rose-400/70">Faces str</span>
+                <input type="range" min={0.2} max={0.6} step={0.05} value={adetailerStrength}
+                  onChange={e => setAdetailerStrength(parseFloat(e.target.value))}
+                  className="w-full accent-rose-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-rose-300 tabular-nums text-right">{adetailerStrength.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && ipAdapter && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-teal-400/70">IP scale</span>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={ipScale}
+                  onChange={e => setIpScale(parseFloat(e.target.value))}
+                  className="w-full accent-teal-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-teal-300 tabular-nums text-right">{ipScale.toFixed(2)}</span>
+              </div>
+            )}
+            {mode === 'runpod' && gfpgan && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-purple-400/70">GFPGAN wt</span>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={gfpganWeight}
+                  onChange={e => setGfpganWeight(parseFloat(e.target.value))}
+                  className="w-full accent-purple-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-purple-300 tabular-nums text-right">{gfpganWeight.toFixed(2)}</span>
+              </div>
+            )}
+            {img2img && (
+              <div className="grid grid-cols-[5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-indigo-400/70">i2i str</span>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={img2imgStrength}
+                  onChange={e => setImg2imgStrength(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-400 cursor-pointer h-0.5" />
+                <span className="text-[11px] font-mono text-indigo-300 tabular-nums text-right">{img2imgStrength.toFixed(2)}</span>
+              </div>
+            )}
 
           </div>
         </div>
@@ -12155,6 +14790,25 @@ function CustomFluxPanel({
           onApply={handleStencilApply}
           targetW={width}
           targetH={height}
+        />
+      )}
+      {/* Reference editor — opened by clicking the floating ref thumbnail */}
+      {editingRef && (
+        <RefImageEditorModal
+          image={editingRef}
+          canUseLayers={canUseLayers}
+          layerStack={editingRef.layers ?? null}
+          onLayerStackChange={(st) => {
+            onSaveLayers?.(editingRef.id, st)
+            setEditingRef(cur => cur ? { ...cur, layers: st } : cur)
+          }}
+          onApply={(newUrl) => {
+            void Promise.resolve(onEditRef?.(editingRef.id, newUrl)).then((next) => {
+              if (next) setEditingRef(cur => cur ? next : cur)
+              else setEditingRef(null)
+            })
+          }}
+          onClose={() => setEditingRef(null)}
         />
       )}
     </div>
@@ -12762,6 +15416,8 @@ function PromptBox({
     wanSafetyChecker: boolean
     fluxDevSafetyChecker: boolean
     selectedLoraUrl: string | null
+    // One-click retry: use these exact ref URLs instead of the active refs
+    refUrlsOverride?: string[]
   }) => {
     const { model, prompt, aspectRatio, quality, outputFormat, imageCount,
             seedreamSafetyChecker, wanSafetyChecker, fluxDevSafetyChecker, selectedLoraUrl } = cfg
@@ -12851,7 +15507,12 @@ function PromptBox({
 
     // Create N slots upfront — one per image
     // Permanent (Vercel Blob) URLs for storing in DB — data URIs are ephemeral and excluded
-    const permanentRefUrls = activeRefImages.map(r => r.url).filter(u => u.startsWith("https://"))
+    // Retry passes the failed tile's stored refs verbatim; otherwise use the
+    // currently active reference images
+    const refSources: RefImage[] = cfg.refUrlsOverride
+      ? cfg.refUrlsOverride.map((u, i) => ({ id: `retry-ref-${i}`, url: u }))
+      : activeRefImages
+    const permanentRefUrls = refSources.map(r => r.url).filter(u => u.startsWith("https://"))
     const slotIds = Array.from({ length: count }, (_, i) => `slot-${Date.now()}-${i}`)
     slotIds.forEach(sid => onAddPending({ slotId: sid, status: "loading", prompt: currentPrompt, modelId: model.apiId, aspectRatio, quality, referenceImageUrls: permanentRefUrls }))
     const slotId = slotIds[0] // alias for single-image paths
@@ -12863,8 +15524,8 @@ function PromptBox({
       // iPad Safari's canvas/memory limits and throws a cryptic
       // "The string did not match the expected pattern." before any job is
       // created. Per-ref try/catch surfaces exactly which image failed.
-      const maxRefs = model.maxReferenceImages || activeRefImages.length
-      const refsToEncode = activeRefImages.slice(0, maxRefs)
+      const maxRefs = model.maxReferenceImages || refSources.length
+      const refsToEncode = refSources.slice(0, maxRefs)
       const referenceImages: string[] = []
       for (let ri = 0; ri < refsToEncode.length; ri++) {
         const ref = refsToEncode[ri]
@@ -13465,6 +16126,28 @@ function PromptBox({
     })
   }
 
+  // Register the one-click-retry entrypoint for failed feed tiles: re-runs the
+  // EXACT stored config (model/prompt/aspect/quality/refs) as a fresh paid run.
+  // No dependency array — re-registers each render so the closure stays fresh.
+  useEffect(() => {
+    retryBridge.fn = (o: RetryRunOpts) => {
+      const targetApiId = o.modelId === "nano-banana-2" ? "nano-banana-pro-2" : o.modelId
+      const m = IMAGE_MODEL_CONFIGS.find(mm => mm.apiId === targetApiId) ?? model
+      void runGenerate({
+        model: m,
+        prompt: o.prompt,
+        aspectRatio: (o.aspectRatio || "auto") as AspectRatio,
+        quality: (o.quality || quality) as Quality,
+        outputFormat,
+        imageCount: 1,
+        seedreamSafetyChecker, wanSafetyChecker, fluxDevSafetyChecker,
+        selectedLoraUrl: o.loraUrl ?? null,
+        refUrlsOverride: o.refUrls ?? [],
+      })
+    }
+    return () => { retryBridge.fn = null }
+  })
+
   // Fire the PINNED tab's config with the CURRENTLY selected reference images —
   // the pinned tab does not need to be the active one.
   const handleQuickGenerate = async () => {
@@ -13723,7 +16406,24 @@ function PromptBox({
         />
 
         {/* Prompt card */}
-        <div className="rounded-2xl border border-white/[0.08] bg-[#070b14]/90 backdrop-blur-md shadow-2xl">
+        <div className="relative isolate rounded-2xl border border-white/[0.08] bg-[#070b14]/90 backdrop-blur-md shadow-2xl">
+          {/* Animated silver rim — masked to a thin band hugging the card edge,
+              same treatment as the popup orbit rings */}
+          <div
+            className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none z-20"
+            style={{
+              padding: '1.5px',
+              WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              WebkitMaskComposite: 'xor',
+              mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              maskComposite: 'exclude',
+            } as React.CSSProperties}
+          >
+            <span
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+              style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }}
+            />
+          </div>
 
           {/* Prompt tabs — first row INSIDE the card so popups (model picker etc.)
               naturally stack above them. Chips share the row width (flex-1 + truncate)
@@ -16043,6 +18743,23 @@ function VideoFeed({
   }, [])
   // Sticky column assignment for pending/session tiles woven into the masonry tops
   const headColMapRef = useRef(new Map<string, number>())
+  // Persisted head-strip layout for masonry "Rows" — same as the image feed:
+  // saved (dbId + column) pairs weave finished videos back into their exact
+  // spots after a refresh instead of repacking newest-first
+  const VIDEO_HEAD_LAYOUT_KEY = "pv2-feed-head-layout-video"
+  const VIDEO_HEAD_LAYOUT_MAX = 60
+  const headLayoutRef = useRef<Array<{ id: number; col: number }>>([])
+  const [, setHeadLayoutLoaded] = useState(false) // re-render once hydrated
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem(VIDEO_HEAD_LAYOUT_KEY) || "null")
+      if (Array.isArray(s)) {
+        headLayoutRef.current = s.filter((e): e is { id: number; col: number } =>
+          !!e && typeof e.id === "number" && typeof e.col === "number")
+      }
+    } catch {}
+    setHeadLayoutLoaded(true)
+  }, [])
 
   const loadNextVideos = useCallback(async () => {
     if (videoLoadingRef.current || !videoHasMoreRef.current) return
@@ -16216,8 +18933,9 @@ function VideoFeed({
   // Pending + session tiles form a HEAD list woven into the masonry column tops with
   // sticky assignments (same stability trick as the image feed — new generations
   // never reshuffle the already-loaded body).
-  const headNodes: { weight: number; node: ReactNode; key: string }[] = []
+  const headNodes: { weight: number; node: ReactNode; key: string; presetCol?: number }[] = []
   const nodes: { weight: number; node: ReactNode }[] = []
+  const vRowsMode = fullSize && fullSizeLayout === "masonry" && masonryMode === "rows"
 
   if (!showHidden) {
     // Loading / queued slots (hidden view shows only DB results)
@@ -16313,6 +19031,15 @@ function VideoFeed({
     ...bodyFails.map(f => ({ t: f.createdAt ? new Date(f.createdAt).getTime() : 0, kind: "fail" as const, fail: f })),
   ].sort((a, b) => b.t - a.t)
 
+  // Rows mode: videos whose position was persisted while they were session tiles
+  // rejoin the HEAD strip at their saved column (see the image feed's notes)
+  const vLayout = headLayoutRef.current
+  const vLayoutCols = vRowsMode ? new Map(vLayout.map(e => [e.id, e.col])) : new Map<number, number>()
+  // Stale-layout guard: entries older than any non-strip body item don't restore
+  const vNewestBody = bodyEntries.find(e => !(e.kind === "db" && vLayoutCols.has(e.img.id)))
+  const vCutoffT = vNewestBody ? vNewestBody.t : -Infinity
+  const restoredVById = new Map<number, { weight: number; node: ReactNode; key: string; presetCol?: number }>()
+
   bodyEntries.forEach(entry => {
     if (entry.kind === "fail") {
       const item = entry.fail
@@ -16344,7 +19071,7 @@ function VideoFeed({
     const img = entry.img
     {
       const dbAr = img.videoMetadata?.aspectRatio || img.aspectRatio
-      nodes.push({ weight: tileWeight(dbAr), node: (
+      const vEntry = { weight: tileWeight(dbAr), node: (
         isVideoUrl(img.imageUrl) ? (
           <VideoTile
             key={img.id}
@@ -16399,9 +19126,20 @@ function VideoFeed({
             </div>
           </div>
         )
-      )})
+      )}
+      if (vLayoutCols.has(img.id) && entry.t >= vCutoffT) {
+        restoredVById.set(img.id, { ...vEntry, key: `vdb-${img.id}`, presetCol: vLayoutCols.get(img.id) })
+      } else {
+        nodes.push(vEntry)
+      }
     }
   })
+  // Append restored tiles in SAVED order so within-column stacking matches
+  // exactly what the user last saw
+  for (const e of vLayout) {
+    const r = restoredVById.get(e.id)
+    if (r) headNodes.push(r)
+  }
 
   // Pick the layout from the Feed settings (same three modes as the image feed)
   let layoutEl: ReactNode
@@ -16413,6 +19151,10 @@ function VideoFeed({
     const colMap = headColMapRef.current
     const liveKeys = new Set(headNodes.map(h => h.key))
     for (const k of Array.from(colMap.keys())) if (!liveKeys.has(k)) colMap.delete(k)
+    // Restored tiles claim their SAVED columns before new tiles count occupancy
+    headNodes.forEach(h => {
+      if (h.presetCol !== undefined && h.presetCol < n && !colMap.has(h.key)) colMap.set(h.key, h.presetCol)
+    })
     const counts = new Array(n).fill(0)
     colMap.forEach(c => { if (c < n) counts[c]++ })
     headNodes.forEach(h => {
@@ -16427,6 +19169,28 @@ function VideoFeed({
     for (let i = headNodes.length - 1; i >= 0; i--) {
       const c = colMap.get(headNodes[i].key)!
       columns[c] = [headNodes[i], ...columns[c]]
+    }
+    // Persist the strip layout (dbId + column, in visual order) — session tiles
+    // map through their dbId; spinners (no dbId yet) are transient and skipped
+    if (!showHidden) {
+      try {
+        const keyToDbId = new Map(items.filter(i => i.dbId !== undefined && !i.failed).map(i => [i.id, i.dbId!]))
+        const next: Array<{ id: number; col: number }> = []
+        for (const h of headNodes) {
+          const c = colMap.get(h.key)
+          if (c === undefined) continue
+          const m = /^vdb-(\d+)$/.exec(h.key)
+          const dbId = m ? Number(m[1]) : keyToDbId.get(h.key)
+          if (dbId !== undefined) next.push({ id: dbId, col: c })
+        }
+        if (next.length > 0 || dbImages.length > 0) {
+          const nextIds = new Set(next.map(e => e.id))
+          const loadedIds = new Set<number>([...dbImages.map(i => i.id), ...sessionDbIds])
+          const tail = headLayoutRef.current.filter(e => !nextIds.has(e.id) && !loadedIds.has(e.id))
+          headLayoutRef.current = [...next, ...tail].slice(0, VIDEO_HEAD_LAYOUT_MAX)
+          localStorage.setItem(VIDEO_HEAD_LAYOUT_KEY, JSON.stringify(headLayoutRef.current))
+        }
+      } catch {}
     }
     layoutEl = (
       <div className="flex gap-2 items-start">
@@ -16710,15 +19474,21 @@ function VideoPromptBar({
         ) : (
           /* ── All other models: standard prompt row ── */
           <>
-            {/* Row 1: Prompt — full width */}
-            <textarea
-              value={prompt}
-              onChange={e => setPrompt(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && ready) { e.preventDefault(); onGenerate(prompt) } }}
-              placeholder={promptPlaceholder}
-              rows={2}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 resize-none focus:outline-none focus:border-orange-500/40 transition-all"
-            />
+            {/* Row 1: Prompt — full width, animated silver rim */}
+            <div className="relative isolate rounded-xl overflow-hidden p-[1.5px]">
+              <span
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+              />
+              <textarea
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && ready) { e.preventDefault(); onGenerate(prompt) } }}
+                placeholder={promptPlaceholder}
+                rows={2}
+                className="block w-full bg-[#0a101d] rounded-[11px] px-3 py-2.5 text-sm text-white placeholder-slate-600 resize-none focus:outline-none transition-all"
+              />
+            </div>
             {/* Row 2: Configure + meta + Generate */}
             <div className="flex items-center gap-2">
               <button
@@ -16791,15 +19561,21 @@ function VideoPromptBar({
           )}
         </div>
 
-        {/* Prompt textarea */}
-        <textarea
-          value={prompt}
-          onChange={e => setPrompt(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && ready) { e.preventDefault(); onGenerate(prompt) } }}
-          placeholder={promptPlaceholder}
-          rows={2}
-          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 resize-none focus:outline-none focus:border-orange-500/30 transition-all"
-        />
+        {/* Prompt textarea — animated silver rim */}
+        <div className="flex-1 relative isolate rounded-lg overflow-hidden p-[1.5px]">
+          <span
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+            style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+          />
+          <textarea
+            value={prompt}
+            onChange={e => setPrompt(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && ready) { e.preventDefault(); onGenerate(prompt) } }}
+            placeholder={promptPlaceholder}
+            rows={2}
+            className="block w-full bg-[#0a101d] rounded-[7px] px-3 py-2 text-sm text-white placeholder-slate-600 resize-none focus:outline-none transition-all"
+          />
+        </div>
 
 
         {/* Generate button + meta */}
@@ -17786,6 +20562,8 @@ export default function PortalV2Page() {
   const [promptOverride, setPromptOverride] = useState<{ text: string; version: number }>({ text: "", version: 0 })
   const [videoPromptOverride, setVideoPromptOverride] = useState<{ text: string; version: number }>({ text: "", version: 0 })
   const [configOverride, setConfigOverride] = useState<{ aspectRatio?: string; quality?: string; outputFormat?: string; imageCount?: number; version: number }>({ version: 0 })
+  // Rescan payload for the custom flux panel — full flux* settings from a generation
+  const [fluxOverride, setFluxOverride] = useState<{ meta: Record<string, unknown>; version: number } | null>(null)
   const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null)
   const [selectedVideo, setSelectedVideo] = useState<VideoDetailData | null>(null)
   const [pendingDetail, setPendingDetail] = useState<PendingSlot | null>(null)
@@ -18293,13 +21071,21 @@ export default function PortalV2Page() {
             quality: slot.nb2Quality || slot.quality,
             referenceImageUrls: slot.referenceImageUrls || [],
           }
-          // No server row (e.g. the submit request itself died) — create one so the
-          // tile survives reloads like every other failure
-          if (!failKey) {
+          // No QUEUE row — create a server row so the tile survives reloads.
+          // This covers submit-request deaths (no failKey at all) AND RunPod
+          // flux runs: those have an rf-<jobId> key but no GenerationQueue row
+          // behind it, so their failures used to vanish on refresh while every
+          // queue-backed model's persisted.
+          if (rowId == null) {
             fetch('/api/user/failed-generations', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt: slot.prompt, modelId: slot.modelId || 'unknown', modelType: 'image', error: update.error }),
+              body: JSON.stringify({
+                prompt: slot.prompt, modelId: slot.modelId || 'unknown', modelType: 'image', error: update.error,
+                aspectRatio: slot.nb2AspectRatio || slot.aspectRatio,
+                quality: slot.nb2Quality || slot.quality,
+                referenceImageUrls: slot.referenceImageUrls || [],
+              }),
             }).then(r => r.json()).then(d => {
               if (d.id) setSavedFails(sf => sf.map(f => f.id === failId ? { ...f, queueRowId: d.id, failKey: `qf-${d.id}` } : f))
             }).catch(() => {})
@@ -18317,8 +21103,25 @@ export default function PortalV2Page() {
       setPendingSlots(p => p.map(s => s.slotId === slotId ? { ...s, ...update } : s))
     }
   }, [])
-  const handleRemovePending = useCallback((slotId: string) =>
-    setPendingSlots(p => p.filter(s => s.slotId !== slotId)), [])
+  const handleRemovePending = useCallback((slotId: string) => {
+    setPendingSlots(p => {
+      // Successful completions feed the per-model duration history that powers
+      // the generating tiles' measured ETA (deferred — updaters stay pure)
+      const s = p.find(x => x.slotId === slotId)
+      // Time from EXECUTION start when known — queue wait must not distort the
+      // duration history. A job removed while still queued records nothing.
+      const t0 = s?.execStartMs ?? slotStartMs(slotId)
+      if (s?.modelId && t0 && s.status === "loading" && !s.inQueue) {
+        const sec = (Date.now() - t0) / 1000
+        // Record into the tier-specific bucket (custom flux upscale tiers time
+        // very differently — an 8K detail pipeline is not a 1K native run)
+        const mid = s.modelId + fluxDurationVariant(s.videoMetadata)
+        const cold = s.coldStart
+        setTimeout(() => recordGenDuration(mid, sec, cold), 0)
+      }
+      return p.filter(x => x.slotId !== slotId)
+    })
+  }, [])
   // Deduplicate by ID and imageUrl — prevents same image appearing twice when
   // multiple polling intervals complete and each fetches /api/my-images
   const handlePrependImage = useCallback((img: ImageItem) => {
@@ -18913,11 +21716,19 @@ export default function PortalV2Page() {
     let pollCount = 0
     let pollInFlight = false
     let notFoundStreak = 0  // consecutive RunPod-404 responses (job purged or not yet registered)
+    // Cold-start bookkeeping: a queue-wait flag is PROVISIONAL — the workerId
+    // decision (once the job is picked up) is authoritative and may correct it
+    let coldQueueFlagged = false
+    let coldWorkerDecided = false
+    // Flux jobs can sit deep in the RunPod queue behind a stacked batch of
+    // heavy pipeline runs — give them 3h before declaring a timeout (other
+    // models keep the 30-min cap; their queues never run that long)
+    const maxPolls = statusUrl.includes('flux-inference') ? 2160 : 360
     const interval = setInterval(async () => {
       if (pollInFlight) return
       pollInFlight = true
       pollCount++
-      if (pollCount > 360) {
+      if (pollCount > maxPolls) {
         clearInterval(interval)
         delete nb2PollingIntervals.current[requestId]
         if (ticketCost > 0) {
@@ -18944,6 +21755,49 @@ export default function PortalV2Page() {
           signal: AbortSignal.timeout(15000),
         })
         const statusData = await statusRes.json()
+        // Cold-start detection: a workerId we haven't seen on this endpoint
+        // means a fresh worker (full model load ahead) — flag the slot ONCE so
+        // its tile switches to the cold-start ETA
+        // Queue → execution transition tracking: timers, ETAs and the duration
+        // history all run from the moment a worker actually starts the job.
+        // notFound responses (purged/unregistered job) say nothing about
+        // execution — they must not start or restart the timer.
+        if (statusData.status === 'processing' && !statusData.notFound) {
+          try {
+            const cur = pendingSlotsRef.current.find(s => slotIds.includes(s.slotId))
+            if (statusData.queued) {
+              if (cur && !cur.inQueue) slotIds.forEach(sid => handleUpdatePending(sid, { inQueue: true }))
+            } else if (cur && (cur.inQueue || !cur.execStartMs)) {
+              slotIds.forEach(sid => handleUpdatePending(sid, { inQueue: false, execStartMs: cur.execStartMs ?? Date.now() }))
+            }
+          } catch {}
+        }
+        if (statusData.workerId) {
+          try {
+            const wkKey = `pv2-last-worker:${statusUrl}`
+            const known = JSON.parse(localStorage.getItem(wkKey) || "[]") as string[]
+            const isCold = !known.includes(statusData.workerId)
+            if (isCold) localStorage.setItem(wkKey, JSON.stringify([...known.slice(-3), statusData.workerId]))
+            const cur = pendingSlotsRef.current.find(s => slotIds.includes(s.slotId))
+            // Authoritative: apply once per job — and correct a provisional
+            // queue-wait "cold" if a known-warm worker picked the job up
+            if (!coldWorkerDecided && cur && (cur.coldStart === undefined || coldQueueFlagged)) {
+              slotIds.forEach(sid => handleUpdatePending(sid, { coldStart: isCold }))
+            }
+            coldWorkerDecided = true
+          } catch {}
+        } else if (statusData.queued && statusData.coldBooting && pollCount >= 4 && !coldQueueFlagged && !coldWorkerDecided) {
+          // Queued past the warm-pickup window WHILE a worker is initializing on
+          // the endpoint → this job is almost certainly waiting on that cold
+          // boot. Provisional flag — corrected above if a warm worker takes it.
+          try {
+            const cur = pendingSlotsRef.current.find(s => slotIds.includes(s.slotId))
+            if (cur && cur.coldStart === undefined) {
+              coldQueueFlagged = true
+              slotIds.forEach(sid => handleUpdatePending(sid, { coldStart: true }))
+            }
+          } catch {}
+        }
         // Track RunPod 404s — after enough consecutive misses past the initial window, the job is purged
         if (statusData.notFound) {
           notFoundStreak++
@@ -19013,7 +21867,7 @@ export default function PortalV2Page() {
               fetch('/api/admin/flux-inference/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...(pass ? { 'x-admin-password': pass } : {}) },
-                body: JSON.stringify({ r2Key: img.r2Key, prompt, videoMetadata }),
+                body: JSON.stringify({ r2Key: img.r2Key, prompt, videoMetadata, referenceImageUrls }),
               }).then(r => r.json()).then((data: { id?: number }) => {
                 if (data.id) {
                   setFreshImages(prev => prev.map(fi => fi.id === tempId ? { ...fi, id: data.id! } : fi))
@@ -19103,6 +21957,7 @@ export default function PortalV2Page() {
             slot.nb2Quality || slot.quality,
             slot.nb2TicketCost || 0,
             slot.referenceImageUrls || [],
+            slot.videoMetadata,
           )
         } else if (data.status === 'failed') {
           clearInterval(interval)
@@ -19307,7 +22162,7 @@ export default function PortalV2Page() {
               slot.nb2RequestId!, slot.nb2FalEndpoint ?? '', [slot.slotId],
               slot.prompt, slot.nb2OutputFormat ?? 'png', slot.nb2AspectRatio ?? 'auto',
               '/api/admin/flux-inference/nb2-status', slot.nb2Quality, slot.nb2TicketCost ?? 0,
-              slot.referenceImageUrls ?? []
+              slot.referenceImageUrls ?? [], slot.videoMetadata
             )
           }
         } catch { /* non-fatal */ }
@@ -19346,9 +22201,15 @@ export default function PortalV2Page() {
         }
       } catch {}
 
-      // Pick up new cross-device tiles (jobs started on another device/tab)
+      // Pick up new cross-device tiles (jobs started on another device/tab).
+      // Tracked queue ids ride along so the server returns THOSE jobs even if
+      // they fell out of the 2-hour settled window or lack a source tag —
+      // otherwise a tile whose job the list omits would spin forever.
       try {
-        const jobsRes = await fetch("/api/prompting-studio/jobs?source=main-scanner")
+        const liveIds = Array.from(new Set(
+          pendingSlotsRef.current.flatMap(s => [s.queueId, s.queueJobId].filter((v): v is number => v != null))
+        )).slice(0, 50)
+        const jobsRes = await fetch(`/api/prompting-studio/jobs?source=main-scanner${liveIds.length ? `&ids=${liveIds.join(",")}` : ""}`)
         if (!jobsRes.ok) return
         const { jobs } = await jobsRes.json()
 
@@ -19394,13 +22255,14 @@ export default function PortalV2Page() {
             } catch {}
             matching.forEach(s => handleRemovePending(s.slotId))
           } else {
-            // Queue-row-only job (no FAL request id) — grab the newest image, same as startPolling
+            // Queue-row-only job (no FAL request id) — pull the newest few images
+            // so parallel completions in the same poll don't lose all but one
             if (completedQueueIds.current.has(j.id)) { matching.forEach(s => handleRemovePending(s.slotId)); continue }
             completedQueueIds.current.add(j.id)
             try {
-              const imgRes = await fetch("/api/my-images?page=1&limit=1&type=image")
+              const imgRes = await fetch("/api/my-images?page=1&limit=4&type=image")
               const imgData = await imgRes.json()
-              if (imgData.success && imgData.images?.[0]) handlePrependImage(imgData.images[0])
+              if (imgData.success) (imgData.images || []).forEach((img: ImageItem) => handlePrependImage(img))
             } catch {}
             matching.forEach(s => handleRemovePending(s.slotId))
           }
@@ -19442,7 +22304,11 @@ export default function PortalV2Page() {
     }
     poll()
     const id = setInterval(poll, 10000)
-    return () => clearInterval(id)
+    // iPad/Safari suspend timers while the tab is hidden — reconcile IMMEDIATELY
+    // on wake instead of waiting for the next scheduled tick
+    const onVis = () => { if (document.visibilityState === "visible") poll() }
+    document.addEventListener("visibilitychange", onVis)
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis) }
   }, [user?.id])
 
   // Computed: active ref images limited to the current model's cap
@@ -19820,7 +22686,15 @@ export default function PortalV2Page() {
       // pendingSlots
       try {
         const stored = localStorage.getItem("pv2-pending-slots")
-        if (stored) setPendingSlots(JSON.parse(stored) as PendingSlot[])
+        if (stored) {
+          // Drop restored slots with NO trackable identifier (queue id / FAL
+          // request id) — the submit died before returning one, so nothing can
+          // ever resolve them and they'd spin forever. Their real outcome is
+          // already captured by the server-side fails / images feeds.
+          const slots = (JSON.parse(stored) as PendingSlot[])
+            .filter(s => s.queueId != null || s.queueJobId != null || !!s.nb2RequestId)
+          setPendingSlots(slots)
+        }
       } catch {}
       // Failed tiles now come from the server per-account (see the
       // /api/user/failed-generations fetch effect) — the old sessionStorage keys
@@ -19889,6 +22763,8 @@ export default function PortalV2Page() {
           failKey: `qf-${r.id}`,
           createdAt: toIso(r.createdAt),
           aspectRatio: r.aspectRatio || undefined,
+          quality: r.quality || undefined,
+          referenceImageUrls: Array.isArray(r.referenceImageUrls) ? r.referenceImageUrls : [],
         }))
         const vidFails: VideoItem[] = rows.filter(r => r.modelType === 'video').map(r => ({
           id: `qf-${r.id}`,
@@ -20265,7 +23141,7 @@ export default function PortalV2Page() {
             })
             nb2Groups.forEach((slots, requestId) => {
               const first = slots[0]
-              startNb2SlotPolling(requestId, first.nb2FalEndpoint!, slots.map(s => s.slotId), first.prompt, first.nb2OutputFormat || 'png', first.nb2AspectRatio || 'auto', first.nb2StatusUrl, first.nb2Quality, first.nb2TicketCost ?? 0, first.referenceImageUrls || [])
+              startNb2SlotPolling(requestId, first.nb2FalEndpoint!, slots.map(s => s.slotId), first.prompt, first.nb2OutputFormat || 'png', first.nb2AspectRatio || 'auto', first.nb2StatusUrl, first.nb2Quality, first.nb2TicketCost ?? 0, first.referenceImageUrls || [], first.videoMetadata)
             })
           }
         }
@@ -20283,7 +23159,7 @@ export default function PortalV2Page() {
     }
   }, [scannerMode])
 
-  const handleRescan = useCallback((img: ImageItem) => {
+  const handleRescan = useCallback((img: ImageItem, opts?: { keepSeed?: boolean }) => {
     // Restore model — 'nano-banana-2' is the legacy DB value for NanoBanana Pro 2
     const resolvedModelId = img.model === 'nano-banana-2' ? 'nano-banana-pro-2' : img.model
     const modelConfig = IMAGE_MODEL_CONFIGS.find((m) => m.apiId === resolvedModelId)
@@ -20298,6 +23174,15 @@ export default function PortalV2Page() {
       quality: img.quality,
       version: prev.version + 1,
     }))
+    // Custom flux: restore the FULL panel config (dims/steps/cfg/sampler/
+    // upscale/checkpoint/LoRAs) from the generation's stored flux* metadata.
+    // Seed only carries over on "Rescan with seed" — plain Rescan rolls fresh.
+    if (modelConfig?.isCustomFlux && img.videoMetadata?.fluxWidth) {
+      const meta = opts?.keepSeed
+        ? (img.videoMetadata as Record<string, unknown>)
+        : { ...(img.videoMetadata as Record<string, unknown>), fluxSeed: 'random' }
+      setFluxOverride((prev) => ({ meta, version: (prev?.version ?? 0) + 1 }))
+    }
     // Always clear active refs first — rescan is a clean slate regardless of what's currently loaded
     setActiveRefIds([])
     // Load reference images from the generation and activate them
@@ -20310,6 +23195,39 @@ export default function PortalV2Page() {
       setRefLibrary((prev) => [...prev, ...newItems].slice(0, refLibraryLimit))
       setActiveRefIds(newItems.slice(0, limit).map((i) => i.id))
     }
+  }, [])
+
+  // One-click Re-generate from a failed tile: re-runs the EXACT stored config
+  // (model/prompt/aspect/quality/refs) as a fresh paid run through the prompt
+  // bar's registered pipeline — no composer state involved.
+  const handleRetryFail = useCallback((img: ImageItem) => {
+    const opts: RetryRunOpts = {
+      modelId: img.model,
+      prompt: img.prompt,
+      aspectRatio: img.aspectRatio,
+      quality: img.quality,
+      refUrls: img.referenceImageUrls ?? [],
+      loraUrl: img.loraUrl ?? null,
+    }
+    if (retryBridge.fn) retryBridge.fn(opts)
+    else {
+      // Prompt bar not mounted (Home/chat view) — enter the image feed first,
+      // then fire once the bar registers
+      setScannerMode("image")
+      setTimeout(() => retryBridge.fn?.(opts), 400)
+    }
+  }, [])
+
+  const handleRetryPendingSlot = useCallback((slot: PendingSlot) => {
+    const opts: RetryRunOpts = {
+      modelId: slot.modelId,
+      prompt: slot.prompt,
+      aspectRatio: slot.aspectRatio,
+      quality: slot.quality,
+      refUrls: slot.referenceImageUrls ?? [],
+    }
+    if (retryBridge.fn) retryBridge.fn(opts)
+    else { setScannerMode("image"); setTimeout(() => retryBridge.fn?.(opts), 400) }
   }, [])
 
   const handleSelectImageModel = (name: string) => {
@@ -20624,6 +23542,8 @@ export default function PortalV2Page() {
               freshImages={freshImages}
               savedFails={savedFails}
               onDismissFail={handleDismissFail}
+              onRetryFail={handleRetryFail}
+              onRetryPending={handleRetryPendingSlot}
               tileBorders={feedTileBorders ? feedBorderMode : false}
               onImageClick={setSelectedImage}
               onPendingClick={setPendingDetail}
@@ -20649,7 +23569,13 @@ export default function PortalV2Page() {
               onStartNb2Polling={startNb2SlotPolling}
               onPrependImage={handlePrependImage}
               activeRefImages={refLibrary.filter(img => activeRefIds.includes(img.id)).slice(0, 3)}
+              onUploadRef={handleUploadRef}
+              onDeactivateRef={handleDeactivateRef}
+              onEditRef={handleEditRef}
+              onSaveLayers={handleSaveRefLayers}
+              canUseLayers={hasEffectiveDevAccess}
               promptOverride={promptOverride}
+              fluxOverride={fluxOverride}
             />
           ) : (
           <PromptBox
@@ -21020,6 +23946,7 @@ export default function PortalV2Page() {
           aspectRatio={pendingDetail.aspectRatio}
           referenceImageUrls={pendingDetail.referenceImageUrls}
           isQueued={!!(pendingDetail.queueJobId && !pendingDetail.nb2RequestId)}
+          videoMetadata={pendingDetail.videoMetadata}
           onClose={() => setPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setPendingDetail(null) }}
           onDismiss={isAdminAccount ? () => {

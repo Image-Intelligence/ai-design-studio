@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3'
+import { S3Client, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3'
+import { checkAdminRequest } from '@/lib/admin-check'
 
 const COMFYUI_URL = 'http://localhost:8188'
 
@@ -43,6 +44,36 @@ async function listR2Files(prefix: string): Promise<{ key: string; name: string;
   }
 }
 
+// Per-run base model (checkpoint it was trained on), read from each run's
+// run.json. Cached 5 min — this route refreshes every 60s and the metas
+// rarely change.
+let runMetaCache: { at: number; bases: Record<string, string>; names: Record<string, string> } | null = null
+async function getLoraRunMeta(folders: string[]): Promise<{ bases: Record<string, string>; names: Record<string, string> }> {
+  // 60s TTL — long enough to keep the 60s list refresh cheap, short enough
+  // that Monitor renames show up promptly
+  if (runMetaCache && Date.now() - runMetaCache.at < 60_000) return runMetaCache
+  const bases: Record<string, string> = {}
+  const names: Record<string, string> = {}
+  if (folders.length > 0 && process.env.R2_ENDPOINT && process.env.R2_BUCKET_NAME) {
+    const r2 = makeR2()
+    await Promise.all(folders.map(async f => {
+      try {
+        const obj = await r2.send(new GetObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME, Key: `training/loras/${f}/run.json`,
+        }))
+        const text = await obj.Body?.transformToString('utf-8')
+        const meta = text ? JSON.parse(text) : null
+        const ck = meta?.checkpoint_r2_key
+        if (typeof ck === 'string' && ck) bases[f] = ck.split('/').pop()!.replace(/\.[^.]+$/, '')
+        // Display name (follows the Monitor's rename feature)
+        if (typeof meta?.run_name === 'string' && meta.run_name) names[f] = meta.run_name
+      } catch { /* no meta for this run */ }
+    }))
+  }
+  runMetaCache = { at: Date.now(), bases, names }
+  return runMetaCache
+}
+
 async function listComfyModels(nodeType: string): Promise<string[]> {
   try {
     const res = await fetch(`${COMFYUI_URL}/object_info/${nodeType}`, {
@@ -59,7 +90,8 @@ async function listComfyModels(nodeType: string): Promise<string[]> {
   } catch { return [] }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const missingEnv = ['R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']
     .filter(k => !process.env[k])
 
@@ -70,6 +102,12 @@ export async function GET() {
     listR2Files('training/loras/'),
   ])
 
+  // Distinct run folders → base checkpoint each was trained on
+  const runFolders = [...new Set(r2Loras
+    .map(l => l.key.match(/^training\/loras\/([^/]+)\//)?.[1])
+    .filter((f): f is string => !!f))]
+  const { bases: loraBaseModels, names: loraRunNames } = await getLoraRunMeta(runFolders)
+
   return NextResponse.json({
     comfy: {
       checkpoints: comfyCheckpoints,
@@ -79,6 +117,8 @@ export async function GET() {
     r2: {
       checkpoints: r2Checkpoints,
       loras:       r2Loras,
+      loraBaseModels,
+      loraRunNames,
       missingEnv:  missingEnv.length > 0 ? missingEnv : undefined,
     },
   })

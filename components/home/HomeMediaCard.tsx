@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Upload, Trash2, Loader2 } from "lucide-react"
 import { FrameModal } from "./FrameModal"
+import { SilverRimOverlay } from "./SilverRimOverlay"
 
 export type CardMedia = { mediaUrl: string; mediaType: string }
 
@@ -172,20 +173,37 @@ export function HomeMediaCard({
         // eslint-disable-next-line @next/next/no-img-element
         <img src={media.mediaUrl} alt={title} className="absolute inset-0 w-full h-full object-cover" />
       ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-white/[0.06] via-transparent to-black/40" />
+        // Branded placeholder — silver gradient wordmark instead of a bare tint
+        <div className="absolute inset-0 bg-gradient-to-br from-white/[0.05] via-transparent to-black/50 flex items-center justify-center">
+          <span
+            className="px-3 text-center text-[10px] font-black tracking-[0.25em] uppercase text-transparent bg-clip-text opacity-40"
+            style={{ backgroundImage: "linear-gradient(100deg,#94a3b8,#f8fafc,#cbd5e1,#e2e8f0,#94a3b8)" }}
+          >
+            AI Design Studio
+          </span>
+        </div>
       )}
 
       {/* Legibility scrim */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
 
+      {/* Hover sheen — the site's travelling band of silver light */}
+      <span
+        className="absolute inset-y-0 left-0 w-1/3 z-10 bg-gradient-to-r from-transparent via-white/[0.09] to-transparent pointer-events-none opacity-0 group-hover:opacity-100"
+        style={{ animation: "sheen-sweep 2.4s infinite" }}
+      />
+
+      {/* Animated silver rim */}
+      <SilverRimOverlay />
+
       {/* Foreground label */}
       <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2">
         <div className="min-w-0">
-          <p className={`text-sm font-bold tracking-tight truncate drop-shadow ${accent}`}>{title}</p>
+          <p className="text-sm font-bold tracking-tight truncate drop-shadow text-white">{title}</p>
           {subtitle && <p className="text-[11px] text-white/60 truncate">{subtitle}</p>}
         </div>
         {cost && (
-          <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-black/60 border border-white/10 text-[10px] font-mono text-cyan-300">{cost}</span>
+          <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-black/60 border border-white/15 text-[10px] font-mono text-slate-200">{cost}</span>
         )}
       </div>
 

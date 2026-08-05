@@ -5,8 +5,11 @@ import { checkAuth } from '@/lib/admin-auth'
 const VIDEO_RE = /\.(mp4|webm|mov|avi|mkv)$/i
 
 
+// ?fast=1 skips the per-folder preview queries — instant catalog, previews
+// hydrated by a follow-up full GET.
 export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const fast = new URL(req.url).searchParams.get('fast') === '1'
   const folders = await prisma.datasetBucketFolder.findMany({ orderBy: { createdAt: 'asc' } })
 
   // Collect up to 4 direct preview URLs per folder from its direct buckets.
@@ -15,15 +18,20 @@ export async function GET(req: Request) {
   // cap (P6009), which 500'd this route and made every folder vanish from the UI.
   // Mirrors the per-bucket pattern in app/api/admin/buckets/route.ts.
   const previewMap = new Map<number, string[]>()
-  if (folders.length > 0) {
+  if (!fast && folders.length > 0) {
     await Promise.all(folders.map(async f => {
       const rows = await prisma.datasetBucketImage.findMany({
         where: { bucket: { folderId: f.id } },
-        select: { image: { select: { imageUrl: true } } },
+        select: { imageId: true, image: { select: { imageUrl: true } } },
         orderBy: { imageId: 'asc' },
         take: 40,
       })
-      previewMap.set(f.id, rows.map(r => r.image.imageUrl).filter(u => !VIDEO_RE.test(u)).slice(0, 4))
+      // 400px thumb endpoint, not full originals — full-size preview decodes
+      // were crashing iPad Safari (see buckets route)
+      previewMap.set(f.id, rows
+        .filter(r => !VIDEO_RE.test(r.image.imageUrl))
+        .slice(0, 4)
+        .map(r => `/api/admin/dataset/thumb/${r.imageId}`))
     }))
   }
 

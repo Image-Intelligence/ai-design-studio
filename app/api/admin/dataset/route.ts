@@ -9,10 +9,25 @@ export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { searchParams } = new URL(req.url)
+
+  // ?ids=1,2,3 → per-image lookup for specific images (dataset composer:
+  // caption refresh after AutoFill, and url/thumb re-hydration after a
+  // preset/run-reload restore — those save slim items without URLs)
+  const idsParam = searchParams.get('ids')
+  if (idsParam) {
+    const ids = idsParam.split(',').map(Number).filter(n => !isNaN(n) && n > 0).slice(0, 500)
+    if (ids.length === 0) return NextResponse.json({ images: [] })
+    const rows = await prisma.generatedImage.findMany({
+      where: { id: { in: ids }, isDeleted: false },
+      select: { id: true, adminCaption: true, adminTags: true, imageUrl: true, thumbnailUrl: true, aspectRatio: true },
+    })
+    return NextResponse.json({ images: rows })
+  }
+
   const isExport    = searchParams.get('export') === 'true'
   const page        = Math.max(1, parseInt(searchParams.get('page') || '1'))
   const isAll       = searchParams.get('all') === 'true'
-  const limit       = isAll ? 10000 : Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '30')))
+  const limit       = isAll ? 10000 : Math.min(500, Math.max(1, parseInt(searchParams.get('limit') || '30')))
   const skip        = (page - 1) * limit
 
   // Filters — model, aspectRatio, userId support multi-value (repeated params)
@@ -51,8 +66,13 @@ export async function GET(req: Request) {
       ...(excludeBuckets.length > 0 ? { none: { bucketId: { in: excludeBuckets } } } : {}),
     }
   }
-  if (mediaType === 'video') where.NOT = { videoMetadata: { equals: Prisma.JsonNull } }
-  if (mediaType === 'image') where.videoMetadata = { equals: Prisma.AnyNull }
+  // Media type by FILE EXTENSION — the old "has videoMetadata = video" check
+  // broke once image models started storing generation settings in
+  // videoMetadata (custom flux records its config there): every recent flux
+  // image was misclassified as a video and vanished from "Images only".
+  const VIDEO_EXTS = ['.mp4', '.webm', '.mov', '.avi', '.mkv']
+  if (mediaType === 'video') where.OR  = VIDEO_EXTS.map(e => ({ imageUrl: { endsWith: e } }))
+  if (mediaType === 'image') where.AND = VIDEO_EXTS.map(e => ({ NOT: { imageUrl: { endsWith: e } } }))
 
   if (hasRefs === 'true')        where.referenceImageUrls = { isEmpty: false }
   else if (hasRefs === 'false') where.referenceImageUrls = { isEmpty: true }
@@ -156,7 +176,7 @@ export async function GET(req: Request) {
         model: true, quality: true, aspectRatio: true, ticketCost: true,
         markedForTraining: true, adminTags: true, adminCaption: true,
         createdAt: true, expiresAt: true, falRequestId: true, videoMetadata: true,
-        isDeleted: true,
+        isDeleted: true, thumbnailUrl: true,
         user:        { select: { id: true, email: true, name: true } },
         imageRating: { select: { score: true, wasAccurate: true, tags: true, feedbackText: true, createdAt: true } },
       },
@@ -166,55 +186,65 @@ export async function GET(req: Request) {
     }),
   ])
 
-  // Facet dropdowns + overall stats — bucket stats are fetched separately by the client
-  const [models, aspects, qualities, overallMarked, overallTagged, overallCaptioned] = await Promise.all([
-    prisma.generatedImage.groupBy({ by: ['model'],       where: { isDeleted: false }, _count: true }),
-    prisma.generatedImage.groupBy({ by: ['aspectRatio'], where: { isDeleted: false }, _count: true }),
-    prisma.generatedImage.groupBy({ by: ['quality'],     where: { isDeleted: false }, _count: true }),
-    prisma.generatedImage.count({ where: { isDeleted: false, markedForTraining: true } }),
-    prisma.generatedImage.count({ where: { isDeleted: false, adminTags: { isEmpty: false } } }),
-    prisma.generatedImage.count({ where: { isDeleted: false, adminCaption: { not: null } } }),
-  ])
+  // Facets + overall stats are GLOBAL (they ignore the active filters), yet
+  // they were recomputed on EVERY page/bucket/filter change — ~8 full-table
+  // queries per click that made bucket switches crawl or hang. Now they only
+  // compute when the client asks (?facets=1 — first load / manual refresh).
+  let facetsPayload: Record<string, unknown> | undefined
+  let overallStatsPayload: Record<string, number> | undefined
+  if (searchParams.get('facets') === '1') {
+    const [models, aspects, qualities, overallMarked, overallTagged, overallCaptioned] = await Promise.all([
+      prisma.generatedImage.groupBy({ by: ['model'],       where: { isDeleted: false }, _count: true }),
+      prisma.generatedImage.groupBy({ by: ['aspectRatio'], where: { isDeleted: false }, _count: true }),
+      prisma.generatedImage.groupBy({ by: ['quality'],     where: { isDeleted: false }, _count: true }),
+      prisma.generatedImage.count({ where: { isDeleted: false, markedForTraining: true } }),
+      prisma.generatedImage.count({ where: { isDeleted: false, adminTags: { isEmpty: false } } }),
+      prisma.generatedImage.count({ where: { isDeleted: false, adminCaption: { not: null } } }),
+    ])
 
-  // Top tags via raw SQL (unnest the array)
-  const topTags = await prisma.$queryRaw<{ tag: string; count: bigint }[]>`
-    SELECT unnest("adminTags") AS tag, COUNT(*) AS count
-    FROM "GeneratedImage"
-    WHERE "isDeleted" = false
-    GROUP BY tag
-    ORDER BY count DESC
-    LIMIT 30
-  `
+    // Top tags via raw SQL (unnest the array)
+    const topTags = await prisma.$queryRaw<{ tag: string; count: bigint }[]>`
+      SELECT unnest("adminTags") AS tag, COUNT(*) AS count
+      FROM "GeneratedImage"
+      WHERE "isDeleted" = false
+      GROUP BY tag
+      ORDER BY count DESC
+      LIMIT 30
+    `
 
-  // Users who have generations, ordered by count desc
-  const userFacets = await prisma.generatedImage.groupBy({
-    by: ['userId'],
-    where: { isDeleted: false },
-    _count: { id: true },
-    orderBy: { _count: { id: 'desc' } },
-    take: 100,
-  })
-  const userIds = userFacets.map(u => u.userId)
-  const userDetails = await prisma.user.findMany({
-    where: { id: { in: userIds } },
-    select: { id: true, email: true, name: true },
-  })
-  const userMap = Object.fromEntries(userDetails.map(u => [u.id, u]))
-  const users = userFacets
-    .map(u => ({ id: u.userId, email: userMap[u.userId]?.email ?? `#${u.userId}`, name: userMap[u.userId]?.name ?? null, count: u._count.id }))
-    .filter(u => u.email)
+    // Users who have generations, ordered by count desc
+    const userFacets = await prisma.generatedImage.groupBy({
+      by: ['userId'],
+      where: { isDeleted: false },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 100,
+    })
+    const userIds = userFacets.map(u => u.userId)
+    const userDetails = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, email: true, name: true },
+    })
+    const userMap = Object.fromEntries(userDetails.map(u => [u.id, u]))
+    const users = userFacets
+      .map(u => ({ id: u.userId, email: userMap[u.userId]?.email ?? `#${u.userId}`, name: userMap[u.userId]?.name ?? null, count: u._count.id }))
+      .filter(u => u.email)
 
-  return NextResponse.json({
-    images,
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    facets: {
+    facetsPayload = {
       models:    models.map(m => ({ value: m.model,       count: m._count })),
       aspects:   aspects.map(a => ({ value: a.aspectRatio, count: a._count })).filter(a => a.value),
       qualities: qualities.map(q => ({ value: q.quality, count: q._count })).filter(q => q.value),
       tags:      topTags.map(t => ({ value: t.tag, count: Number(t.count) })),
       users,
-    },
-    overallStats: { marked: overallMarked, tagged: overallTagged, captioned: overallCaptioned },
+    }
+    overallStatsPayload = { marked: overallMarked, tagged: overallTagged, captioned: overallCaptioned }
+  }
+
+  return NextResponse.json({
+    images,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    ...(facetsPayload ? { facets: facetsPayload } : {}),
+    ...(overallStatsPayload ? { overallStats: overallStatsPayload } : {}),
   }, { headers: { 'Cache-Control': 'no-store' } })
 }
 
@@ -231,12 +261,30 @@ export async function PATCH(req: Request) {
 
   try {
     const body = await req.json() as {
-      ids:        number[]
+      ids?:       number[]
       marked?:    boolean
       tags?:      string[]
       addTags?:   string[]
       removeTags?: string[]
       caption?:   string | null
+      // Per-image caption updates in one request (composer find & replace)
+      captions?:  { id: number; caption: string | null }[]
+    }
+
+    // Bulk per-image captions — independent of the ids-based paths below
+    if (Array.isArray(body.captions) && body.captions.length > 0) {
+      const rows = body.captions
+        .filter(c => typeof c?.id === 'number' && c.id > 0)
+        .slice(0, 1000)
+      // updateMany per row: a missing/deleted id is a no-op instead of failing
+      // the whole transaction
+      await prisma.$transaction(rows.map(c =>
+        prisma.generatedImage.updateMany({
+          where: { id: c.id, isDeleted: false },
+          data: { adminCaption: typeof c.caption === 'string' && c.caption.length > 0 ? c.caption : null },
+        })
+      ))
+      return NextResponse.json({ updated: rows.length })
     }
 
     const { ids, marked, tags, addTags, removeTags, caption } = body

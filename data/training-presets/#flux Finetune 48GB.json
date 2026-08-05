@@ -1,0 +1,37 @@
+{
+    "backup_after": 10,
+    "base_model_name": "black-forest-labs/FLUX.1-dev",
+    "batch_size": 2,
+    "learning_rate": 0.000008,
+    "model_type": "FLUX_DEV_1",
+    "output_model_destination": "models/finetune.safetensors",
+    "output_model_format": "SAFETENSORS",
+    "resolution": "768",
+    "transformer": {
+        "train": true,
+        "weight_dtype": "BFLOAT_16"
+    },
+    "text_encoder": {
+        "train": false,
+        "weight_dtype": "BFLOAT_16"
+    },
+    "text_encoder_2": {
+        "train": false,
+        "weight_dtype": "NFLOAT_4"
+    },
+    "training_method": "FINE_TUNE",
+    "optimizer": {
+        "optimizer": "ADAFACTOR",
+        "relative_step": false,
+        "scale_parameter": false,
+        "warmup_init": false,
+        "stochastic_rounding": true
+    },
+    "vae": {
+        "weight_dtype": "FLOAT_32"
+    },
+    "train_dtype": "BFLOAT_16",
+    "gradient_checkpointing": "ON",
+    "timestep_distribution": "LOGIT_NORMAL",
+    "dynamic_timestep_shifting": false
+}

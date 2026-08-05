@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { FolderOpen } from "lucide-react"
+import { SilverRimOverlay } from "./SilverRimOverlay"
 
 // The "My Generations" home card — instead of admin-uploaded media it shows a live
 // carousel of the signed-in user's most recent generations ("featured"), crossfading
@@ -63,13 +64,16 @@ export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect
           />
         ))
       ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/[0.08] via-transparent to-fuchsia-500/[0.08] flex items-center justify-center">
+        <div className="absolute inset-0 bg-gradient-to-br from-white/[0.05] via-transparent to-black/50 flex items-center justify-center">
           <FolderOpen size={26} className="text-white/25" />
         </div>
       )}
 
       {/* Legibility scrim */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
+
+      {/* Animated silver rim */}
+      <SilverRimOverlay />
 
       {/* Label */}
       <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2">

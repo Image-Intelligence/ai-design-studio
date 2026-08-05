@@ -5,9 +5,12 @@ import { checkAuth } from '@/lib/admin-auth'
 const VIDEO_RE = /\.(mp4|webm|mov|avi|mkv)$/i
 
 
-// GET — list all buckets with image counts and direct preview URLs (no proxy)
+// GET — list all buckets with image counts and direct preview URLs (no proxy).
+// ?fast=1 skips the per-bucket preview queries (one findMany total) so the
+// catalog renders instantly; callers hydrate previews with a follow-up full GET.
 export async function GET(req: Request) {
   if (!checkAuth(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const fast = new URL(req.url).searchParams.get('fast') === '1'
 
   const buckets = await prisma.datasetBucket.findMany({
     orderBy: { createdAt: 'asc' },
@@ -16,18 +19,21 @@ export async function GET(req: Request) {
 
   // Fetch up to 4 preview URLs per bucket concurrently (avoids slow N+1 serial queries)
   const previewMap = new Map<number, string[]>()
-  if (buckets.length > 0) {
+  if (!fast && buckets.length > 0) {
     await Promise.all(buckets.map(async b => {
       const rows = await prisma.datasetBucketImage.findMany({
         where: { bucketId: b.id },
-        select: { image: { select: { imageUrl: true } } },
+        select: { imageId: true, image: { select: { imageUrl: true } } },
         orderBy: { imageId: 'asc' },
         take: 8,
       })
+      // Serve the 400px thumb endpoint, NOT the full originals — 4 full-size
+      // decodes per card across a screen of cards blew iPad Safari's memory
+      // and force-restarted the tab
       const urls = rows
-        .map(r => r.image.imageUrl)
-        .filter(url => !VIDEO_RE.test(url))
+        .filter(r => !VIDEO_RE.test(r.image.imageUrl))
         .slice(0, 4)
+        .map(r => `/api/admin/dataset/thumb/${r.imageId}`)
       previewMap.set(b.id, urls)
     }))
   }

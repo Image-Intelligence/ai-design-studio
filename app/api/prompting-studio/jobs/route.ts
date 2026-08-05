@@ -15,6 +15,15 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
     const source = searchParams.get('source') // 'canvas' | 'main-scanner' | null
+    // Explicitly tracked queue ids (the client's live placeholders): these are
+    // returned regardless of the 2-hour settled window OR the source filter, so
+    // a tracked tile can ALWAYS learn its job's fate — no more forever-spinners
+    // when a job predates the window or was created without a source tag.
+    const trackedIds = (searchParams.get('ids') ?? '')
+      .split(',')
+      .map(s => parseInt(s))
+      .filter(n => Number.isInteger(n) && n > 0)
+      .slice(0, 50)
 
     const cookieStore = await cookies()
     const token = cookieStore.get('session')?.value
@@ -73,6 +82,7 @@ export async function GET(request: Request) {
             status: { in: ['completed', 'failed'] },
             updatedAt: { gte: since },
           },
+          ...(trackedIds.length > 0 ? [{ id: { in: trackedIds } }] : []),
         ],
       },
       orderBy: { createdAt: 'asc' },
@@ -82,7 +92,10 @@ export async function GET(request: Request) {
     // Canvas jobs are identified by slotId or source='canvas'.
     // Main-scanner jobs include: explicitly tagged, OR jobs with falRequestId that
     // lack canvas markers (NB2/Kling/GPT-Image-2 from submit routes cross-device).
+    const trackedIdSet = new Set(trackedIds)
     const jobs = allJobs.filter(j => {
+      // Explicitly tracked ids always pass — the client is showing a tile for them
+      if (trackedIdSet.has(j.id)) return true
       const params = j.parameters as any
       const isCanvasJob = params?.slotId != null || params?.source === 'canvas'
       if (source === 'main-scanner') {

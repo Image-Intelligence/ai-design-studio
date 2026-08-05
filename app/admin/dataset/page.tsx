@@ -1,6 +1,5 @@
-﻿"use client"
+"use client"
 
-import NextImage from "next/image"
 import { useState, useEffect, useCallback, useRef, useMemo, memo, useDeferredValue } from "react"
 import {
   Database, Download, ChevronLeft, ChevronRight, Search,
@@ -14,8 +13,13 @@ import {
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { MultiFilterSelect } from "@/components/MultiFilterSelect"
 import { ReferencePanel } from "./ReferencePanel"
+import { SiteLogoBox } from "@/components/SitePageHeader"
 
 const UPLOADS_BUCKET_NAME = '__uploads__'
+
+// Portal design system: animated silver rim (masked band) for popup chrome
+const SILVER_RIM_CONIC =
+  "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))"
 
 // ─── Custom dropdowns ─────────────────────────────────────────────────────────
 
@@ -1011,6 +1015,30 @@ function savePrefs(key: string, data: Record<string, any>) {
   try { localStorage.setItem(key, JSON.stringify(data)) } catch {}
 }
 
+// ─── Masonry "Rows" packing (mirrors portal-v2 feed) ─────────────────────────
+// Estimate a tile's relative height from its stored aspect ratio ("2:3" /
+// "1024x1536" → height per unit column width) so columns balance BEFORE the
+// images load and tiles don't move as they fill in.
+const arHeightWeight = (ar?: string | null): number => {
+  if (!ar || ar === "auto") return 1
+  const [w, h] = ar.replace(/x/i, ":").split(":").map(parseFloat)
+  return w > 0 && h > 0 ? h / w : 1
+}
+// Deterministic shortest-column packing: each item goes to the currently
+// shortest column, so the first row fills left-to-right and appending new
+// items never moves existing ones.
+function distributeMasonry<T extends { weight: number }>(items: T[], n: number): T[][] {
+  const cols: T[][] = Array.from({ length: n }, () => [])
+  const heights = new Array(n).fill(0)
+  for (const item of items) {
+    let min = 0
+    for (let i = 1; i < n; i++) if (heights[i] < heights[min]) min = i
+    cols[min].push(item)
+    heights[min] += item.weight
+  }
+  return cols
+}
+
 function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChange }: {
   selected:     Set<number>
   imageUrlById: Record<number, string>
@@ -1300,14 +1328,14 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-md bg-cyan-500/15 flex items-center justify-center">
-              <Sparkles size={12} className="text-cyan-400" />
+            <div className="w-6 h-6 rounded-md bg-white/[0.06] border border-white/[0.12] flex items-center justify-center">
+              <Sparkles size={12} className="text-slate-200" />
             </div>
             <div>
-              <p className="text-xs font-semibold text-white leading-none">Auto Fill</p>
+              <p className="text-xs font-black tracking-tight leading-none text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">Auto Fill</p>
               <p className="text-[10px] mt-0.5 leading-none">
                 {activeCount > 0 || queuedCount > 0
-                  ? <span className="text-cyan-500">
+                  ? <span className="text-emerald-400/80">
                       {activeCount > 0 ? `${activeCount} active` : ''}
                       {activeCount > 0 && queuedCount > 0 ? ' · ' : ''}
                       {queuedCount > 0 ? `${queuedCount} queued` : ''}
@@ -1435,8 +1463,8 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
           {/* Mode */}
           <div className="flex gap-1.5">
             {([
-              { id: 'caption', label: 'Caption',     active: 'bg-violet-500/15 border-violet-500/30 text-violet-300' },
-              { id: 'tags',    label: 'Tags',         active: 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300' },
+              { id: 'caption', label: 'Caption',      active: 'bg-white/[0.12] border-white/30 text-white' },
+              { id: 'tags',    label: 'Tags',         active: 'bg-white/[0.12] border-white/30 text-white' },
               { id: 'flux',    label: 'FLUX Caption', active: 'bg-amber-500/15 border-amber-500/30 text-amber-300' },
             ] as const).map(m => (
               <button key={m.id} onClick={() => setMode(m.id)}
@@ -1452,14 +1480,14 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
             {([{ key: 'flash', label: 'Flash Lite' }, { key: 'pro', label: 'Pro' }] as const).map(m => (
               <button key={m.key} onClick={() => setModel(m.key)}
                 className={`flex-1 py-1.5 rounded-lg border text-[11px] transition-all
-                  ${model === m.key ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300' : 'bg-white/[0.03] border-white/[0.07] text-slate-500 hover:text-white'}`}>
+                  ${model === m.key ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/[0.03] border-white/[0.07] text-slate-500 hover:text-white'}`}>
                 {m.label}
               </button>
             ))}
             {mode !== 'flux' && ([{ key: false, label: 'Basic' }, { key: true, label: 'Advanced' }] as const).map(m => (
               <button key={String(m.key)} onClick={() => setAdvanced(m.key)}
                 className={`flex-1 py-1.5 rounded-lg border text-[11px] transition-all
-                  ${advanced === m.key ? 'bg-violet-500/15 border-violet-500/30 text-violet-300' : 'bg-white/[0.03] border-white/[0.07] text-slate-500 hover:text-white'}`}>
+                  ${advanced === m.key ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/[0.03] border-white/[0.07] text-slate-500 hover:text-white'}`}>
                 {m.label}
               </button>
             ))}
@@ -1476,7 +1504,7 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
               <span key={tag} className={`flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full border
                 ${mode === 'flux' && i === 0
                   ? 'bg-amber-500/15 border-amber-500/30 text-amber-300'
-                  : 'bg-violet-500/10 border-violet-500/20 text-violet-300'}`}>
+                  : 'bg-white/[0.06] border-white/15 text-slate-200'}`}>
                 {mode === 'flux' && i === 0 && <span className="text-[8px] mr-0.5 opacity-60">⚡</span>}
                 {tag}
                 <button onClick={() => setContextTags(prev => prev.filter(t => t !== tag))} className="text-current opacity-50 hover:opacity-100 ml-0.5">×</button>
@@ -1513,8 +1541,8 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
           {/* Overwrite toggle */}
           <div className="flex items-center gap-2">
             <button onClick={() => setOverwrite(v => !v)}
-              className={`w-7 h-3.5 rounded-full transition-colors relative shrink-0 ${overwrite ? 'bg-cyan-500' : 'bg-white/[0.1]'}`}>
-              <span className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full bg-white transition-transform ${overwrite ? 'translate-x-3.5' : 'translate-x-0'}`} />
+              className={`w-7 h-3.5 rounded-full transition-colors relative shrink-0 ${overwrite ? 'bg-white/80' : 'bg-white/[0.1]'}`}>
+              <span className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full transition-transform ${overwrite ? 'translate-x-3.5 bg-[#05080f]' : 'translate-x-0 bg-white'}`} />
             </button>
             <span className="text-[10px] text-slate-600">Overwrite existing</span>
           </div>
@@ -1523,8 +1551,11 @@ function AutoFillPanel({ selected, imageUrlById, onClose, onItemSaved, onJobChan
           <button
             onClick={addToQueue}
             disabled={count === 0}
-            className="w-full py-2 rounded-lg bg-gradient-to-r from-cyan-500/20 to-violet-500/20 border border-cyan-500/20 text-white text-xs font-semibold hover:from-cyan-500/30 hover:to-violet-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="relative overflow-hidden w-full py-2 rounded-lg bg-white/10 border border-white/25 text-white text-xs font-bold hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
+            {count > 0 && (
+              <span className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none" style={{ animation: 'sheen-sweep 2.6s infinite' }} />
+            )}
             {count === 0 ? 'Select images on the right →' : `Add to Queue (${count} images)`}
           </button>
         </div>
@@ -1724,7 +1755,7 @@ function PageNav({ pagination, page, loading, setPage, className = "" }: {
 
 // ─── Image card ───────────────────────────────────────────────────────────────
 
-const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect, onOpen, onToggleMark, index }: {
+const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect, onOpen, onToggleMark, index, layout = "grid", showInfo = true }: {
   img: ImageRecord
   selected: boolean
   selectMode: boolean
@@ -1732,6 +1763,9 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
   onOpen: (img: ImageRecord) => void
   onToggleMark: (id: number, current: boolean) => void
   index: number
+  // grid = uniform squares (classic); masonry = natural aspect, portal-style
+  layout?: "grid" | "masonry"
+  showInfo?: boolean
 }) {
   const [imgError, setImgError] = useState(false)
   const isVideo = img.imageUrl?.match(/\.(mp4|webm|mov)$/i)
@@ -1754,21 +1788,20 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
             : "border-white/[0.07] hover:border-white/20"
         } bg-white/[0.03]`}
     >
-      <div className="relative aspect-square bg-white/[0.03]">
+      <div className={`relative ${layout === "masonry" ? "" : "aspect-square"} bg-white/[0.03]`}>
         {isVideo ? (
           <>
             {img.videoMetadata?.thumbnailUrl ? (
-              <NextImage
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
                 src={img.videoMetadata.thumbnailUrl}
                 alt=""
-                fill
-                sizes="(max-width: 768px) 33vw, (max-width: 1280px) 25vw, 20vw"
-                className="object-cover"
                 loading={priority ? 'eager' : 'lazy'}
-                priority={priority}
+                decoding="async"
+                className={layout === "masonry" ? "w-full h-auto block" : "absolute inset-0 w-full h-full object-cover"}
               />
             ) : (
-              <div className="absolute inset-0 flex items-center justify-center bg-violet-950/30">
+              <div className={`${layout === "masonry" ? "aspect-video" : "absolute inset-0"} flex items-center justify-center bg-violet-950/30`}>
                 <Sparkles size={24} className="text-violet-400" />
               </div>
             )}
@@ -1783,15 +1816,17 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
             <ImageIcon size={20} className="text-slate-700" />
           </div>
         ) : (
-          <NextImage
-            src={img.imageUrl}
+          // The grid used to feed multi-MB ORIGINALS through the Next image
+          // optimizer, which choked at scale (half the tiles never loaded).
+          // The 400px webp thumb route is cached and loads like the portal feed.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/api/admin/dataset/thumb/${img.id}`}
             alt=""
-            fill
-            sizes="(max-width: 768px) 33vw, (max-width: 1280px) 25vw, 20vw"
-            className="object-cover"
-            onError={() => setImgError(true)}
             loading={priority ? 'eager' : 'lazy'}
-            priority={priority}
+            decoding="async"
+            onError={() => setImgError(true)}
+            className={layout === "masonry" ? "w-full h-auto block" : "absolute inset-0 w-full h-full object-cover"}
           />
         )}
 
@@ -1839,7 +1874,8 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
         )}
       </div>
 
-      {/* Metadata row — hidden on mobile, visible on sm+ */}
+      {/* Metadata row — hidden on mobile, visible on sm+, toggleable via Feed settings */}
+      {showInfo && (
       <div className="hidden sm:block px-2 py-1.5 space-y-1">
         <p className="text-[10px] text-slate-400 leading-snug line-clamp-2">{img.prompt}</p>
 
@@ -1875,6 +1911,7 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
         </div>
         <p className="text-[9px] text-slate-700 truncate">{img.user.email}</p>
       </div>
+      )}
     </div>
   )
 }, (prev, next) =>
@@ -1884,7 +1921,9 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
   prev.index         === next.index         &&
   prev.onSelect      === next.onSelect      &&
   prev.onOpen        === next.onOpen        &&
-  prev.onToggleMark  === next.onToggleMark
+  prev.onToggleMark  === next.onToggleMark  &&
+  prev.layout        === next.layout        &&
+  prev.showInfo      === next.showInfo
 )
 
 // ─── Main page ────────────────────────────────────────────────────────────────
@@ -1985,6 +2024,13 @@ export default function DatasetPage() {
     return saved
   })
   const [cols,         setCols]         = useState<number>(() => _p.cols           ?? 4)
+  // Feed layout: grid (classic uniform squares) or masonry (natural aspect,
+  // portal-style); the info footer under each tile is independently toggleable
+  const [feedLayout,   setFeedLayout]   = useState<"grid" | "masonry">(() => _p.feedLayout === "masonry" ? "masonry" : "grid")
+  // Masonry packing: "rows" (JS shortest-column, fills left-to-right, stable) or
+  // "flow" (CSS columns, packs top-to-bottom down each column) — same as portal-v2
+  const [feedMasonryMode, setFeedMasonryMode] = useState<"rows" | "flow">(() => _p.feedMasonryMode === "flow" ? "flow" : "rows")
+  const [feedShowInfo, setFeedShowInfo] = useState<boolean>(() => _p.feedShowInfo ?? true)
   const [recentBucketIds, setRecentBucketIds] = useState<number[]>(() => _p.recentBucketIds ?? [])
   const [page,         setPage]         = useState<number>(() => _p.page          ?? 1)
   const [filtersOpen,  setFiltersOpen]  = useState<boolean>(() => _p.filtersOpen  ?? false)
@@ -1992,6 +2038,8 @@ export default function DatasetPage() {
   const [viewMode,     setViewMode]     = useState<"generation" | "reference">(() => _p.viewMode === "reference" ? "reference" : "generation")
 
   const searchTimer         = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Facets fetched once per session (global data, expensive queries)
+  const facetsLoadedRef     = useRef(false)
   const isMountedRef        = useRef(false)
   const bucketStatsAbortRef = useRef<AbortController | null>(null)
   const fetchAbortRef       = useRef<AbortController | null>(null)
@@ -2090,10 +2138,12 @@ export default function DatasetPage() {
       search, models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag,
       tagFilter, userFilters, excludeSel, mediaType, markedOnly, sort, pageSize, page,
       bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode,
+      feedLayout, feedMasonryMode, feedShowInfo,
     })
   }, [search, models, aspectRatios, qualities, hasRefs, hasRating, hasCaption, hasTag,
       tagFilter, userFilters, excludeSel, mediaType, markedOnly, sort, pageSize, page,
-      bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode])
+      bucketFilter, filtersOpen, autoFillOpen, folderPath, cols, recentBucketIds, viewMode,
+      feedLayout, feedMasonryMode, feedShowInfo])
 
   // ── Search debounce ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2152,8 +2202,12 @@ export default function DatasetPage() {
     fetchAbortRef.current = ctrl
 
     setLoading(true); setError(""); setSelected(new Set())
+    // Hung requests previously spun the loader forever — abort after 30s
+    const timeoutId = setTimeout(() => ctrl.abort(), 30_000)
     try {
       const params = new URLSearchParams({ page: String(page), limit: String(pageSize), sort })
+      // Facets are global + heavy — fetch once per session, not per click
+      if (!facetsLoadedRef.current) params.set('facets', '1')
       models.forEach(m => params.append('model', m))
       aspectRatios.forEach(a => params.append('aspectRatio', a))
       qualities.forEach(q => params.append('quality', q))
@@ -2171,13 +2225,18 @@ export default function DatasetPage() {
       const res  = await fetch(`/api/admin/dataset?${params}`, { headers: authHeaders(), signal: ctrl.signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      setImages(data.images); setPagination(data.pagination); setFacets(data.facets)
-      setOverallStats(data.overallStats ?? null)
+      setImages(data.images); setPagination(data.pagination)
+      if (data.facets) { setFacets(data.facets); facetsLoadedRef.current = true }
+      if (data.overallStats) setOverallStats(data.overallStats)
       setLoading(false)
     } catch (e: any) {
-      if (ctrl.signal.aborted) return // silently drop — a newer fetch is already running
-      setError(e.message)
+      // Superseded by a newer fetch → drop silently. Our own timeout abort →
+      // surface it (the old swallow-all left the spinner stuck forever).
+      if (ctrl.signal.aborted && fetchAbortRef.current !== ctrl) return
+      setError(ctrl.signal.aborted ? 'Request timed out — change a filter or refresh to retry' : e.message)
       setLoading(false)
+    } finally {
+      clearTimeout(timeoutId)
     }
   }, [isAuthenticated, viewMode, page, pageSize, sort, models, aspectRatios, qualities, userFilters, excludeSel, buckets, folders, hasRefs, hasRating, hasCaption, hasTag, tagFilter, mediaType, bucketFilter, markedOnly, debouncedSearch])
 
@@ -2523,12 +2582,12 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
 
   // ── Auth gate (after all hooks) ───────────────────────────────────────────────
   if (!sessionChecked) return (
-    <div className="min-h-screen bg-[#09090f] flex items-center justify-center">
+    <div className="min-h-screen bg-[#05080f] flex items-center justify-center">
       <Loader2 size={20} className="text-slate-600 animate-spin" />
     </div>
   )
   if (!isAuthenticated) return (
-    <div className="min-h-screen bg-[#09090f] flex items-center justify-center p-6">
+    <div className="min-h-screen bg-[#05080f] flex items-center justify-center p-6">
       <div className="w-full max-w-sm rounded-2xl border border-white/[0.08] bg-white/[0.02] p-6 text-center">
         <div className="w-10 h-10 mx-auto mb-3 rounded-xl bg-cyan-500/15 border border-cyan-500/25 flex items-center justify-center">
           <Database size={16} className="text-cyan-400" />
@@ -2564,7 +2623,7 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
   )
 
   return (
-    <div className="min-h-screen bg-[#09090f] text-white flex w-full">
+    <div className="min-h-screen bg-[#05080f] text-white flex w-full">
 
       {/* ── Menu backdrop — closes any open context menu on tap/click outside ── */}
       {(bucketMenuId !== null || folderMenuId !== null) && (
@@ -2652,32 +2711,82 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
         />
       )}
 
-      {/* ── Header ── */}
-      <div className="sticky top-0 z-30 w-full bg-[#09090f]/90 backdrop-blur border-b border-white/[0.06]">
+      {/* ── Header — site design: synced logo, gradient title, silver chrome ── */}
+      <div className="sticky top-0 z-30 w-full bg-[#070b14]/90 backdrop-blur border-b border-white/[0.08]">
 
-        {/* Title row */}
-        <div className="px-3 py-2 flex items-center gap-2">
+        {/* ONE merged taskbar row: back · logo+title · scrollable actions · stats · refresh */}
+        <div className="px-3 py-2 flex items-center gap-2.5">
           <button onClick={() => window.location.href = '/admin'}
             className="shrink-0 p-1.5 rounded-lg hover:bg-white/[0.06] text-slate-500 hover:text-white transition-colors">
             <ArrowLeft size={16} />
           </button>
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <div className="w-6 h-6 shrink-0 rounded-lg bg-cyan-500/15 flex items-center justify-center">
-              <Database size={12} className="text-cyan-400" />
-            </div>
+          <div className="flex items-center gap-2.5 min-w-0 shrink-0">
+            <SiteLogoBox size={28} rounded={9} />
             <div className="min-w-0">
-              <h1 className="text-sm font-bold text-white leading-none">Dataset</h1>
-              <p className="text-[10px] text-slate-600 leading-none mt-0.5 truncate">
+              <h1 className="text-sm font-black tracking-tight leading-none text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">Dataset</h1>
+              <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-600 leading-none mt-1 truncate">
                 {pagination ? `${pagination.total.toLocaleString()} records` : "Loading…"}
               </p>
             </div>
           </div>
+
+          {/* Actions — scrollable segment between the title and the stats */}
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-hide px-1">
+          {/* Feed mode: generation records vs user reference libraries */}
+          <div className="flex items-center rounded-lg border border-white/[0.08] overflow-hidden shrink-0">
+            <button onClick={() => setViewMode("generation")}
+              className={`px-2.5 py-1.5 text-[11px] font-medium transition-colors ${viewMode === "generation" ? 'bg-white/[0.12] text-white' : 'text-slate-500 hover:text-white'}`}>
+              Generation
+            </button>
+            <button onClick={() => setViewMode("reference")}
+              className={`px-2.5 py-1.5 text-[11px] font-medium border-l border-white/[0.08] transition-colors ${viewMode === "reference" ? 'bg-white/[0.12] text-white' : 'text-slate-500 hover:text-white'}`}>
+              Reference
+            </button>
+          </div>
+          {/* Feed settings — columns, page size + all filters live in the popup */}
+          <button onClick={() => setFiltersOpen(v => !v)}
+            className={`relative shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium overflow-hidden transition-all
+              ${filtersOpen || hasActiveFilters ? "bg-white/[0.12] border-white/30 text-white" : "bg-white/[0.03] border-white/[0.08] text-slate-400 hover:text-white"}`}>
+            {(filtersOpen || hasActiveFilters) && (
+              <span className="absolute inset-y-0 left-0 w-1/2 bg-gradient-to-r from-transparent via-white/[0.15] to-transparent pointer-events-none" style={{ animation: 'sheen-sweep 2.6s infinite' }} />
+            )}
+            <SlidersHorizontal size={11} /> Feed{hasActiveFilters ? " •" : ""}
+          </button>
+          {viewMode === "generation" && (
+            <>
+              <button onClick={() => { setSelectMode(v => !v); setSelected(new Set()) }}
+                className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                  ${selectMode ? "bg-white/[0.12] border-white/30 text-white" : "bg-white/[0.03] border-white/[0.08] text-slate-400 hover:text-white"}`}>
+                {selectMode ? <><CheckSquare size={11} /> Selecting</> : <><MousePointer2 size={11} /> Select</>}
+              </button>
+              <button onClick={() => setAutoFillOpen(v => !v)}
+                className={`relative shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                  ${autoFillOpen || hasRunningJob ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/[0.03] border-white/[0.08] text-slate-400 hover:text-white'}`}>
+                <Sparkles size={11} /> Auto Fill
+                {hasRunningJob && !autoFillOpen && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                )}
+              </button>
+              {uploadsBucketId && (
+                <button onClick={() => { setUploadModalOpen(true); setBucketFilter(String(uploadsBucketId)) }}
+                  className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.08] text-slate-400 text-[11px] hover:text-white hover:border-white/20 transition-all">
+                  <UploadCloud size={11} /> Upload
+                </button>
+              )}
+              <button onClick={handleExport} disabled={selected.size === 0}
+                className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] hover:bg-emerald-500/15 transition-all disabled:opacity-30 disabled:cursor-not-allowed">
+                <Download size={11} /> Export{selected.size > 0 ? ` (${selected.size})` : ""}
+              </button>
+            </>
+          )}
+          </div>{/* end scrollable actions */}
+
           {overallStats && (
-            <div className="hidden sm:flex items-center gap-3 px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.07] text-[11px]">
+            <div className="hidden md:flex shrink-0 items-center gap-3 px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.08] text-[11px]">
               <span className="text-[9px] text-slate-600 font-mono uppercase tracking-wider">overall</span>
               <span className="text-emerald-400/80">{overallStats.marked.toLocaleString()} marked</span>
-              <span className="text-cyan-400/70">{overallStats.tagged.toLocaleString()} tagged</span>
-              <span className="text-violet-400/70">{overallStats.captioned.toLocaleString()} captioned</span>
+              <span className="text-slate-300">{overallStats.tagged.toLocaleString()} tagged</span>
+              <span className="text-slate-400">{overallStats.captioned.toLocaleString()} captioned</span>
             </div>
           )}
           <button onClick={fetchData} className="shrink-0 p-1.5 rounded-lg hover:bg-white/[0.06] text-slate-500 hover:text-white transition-colors">
@@ -2685,77 +2794,86 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
           </button>
         </div>
 
-        {/* Action buttons — flex-wrap so they never overflow on any screen */}
-        <div className="border-t border-white/[0.04] px-3 py-1.5 flex flex-wrap gap-1.5">
-          {/* Feed mode: generation records vs user reference libraries */}
-          <div className="flex items-center rounded-lg border border-white/[0.07] overflow-hidden">
-            <button onClick={() => setViewMode("generation")}
-              className={`px-2.5 py-1.5 text-[11px] transition-colors ${viewMode === "generation" ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-white'}`}>
-              Generation
-            </button>
-            <button onClick={() => setViewMode("reference")}
-              className={`px-2.5 py-1.5 text-[11px] border-l border-white/[0.07] transition-colors ${viewMode === "reference" ? 'bg-violet-500/15 text-violet-300' : 'text-slate-500 hover:text-white'}`}>
-              Reference
-            </button>
-          </div>
-          {viewMode === "generation" && (
-            <div className="flex items-center rounded-lg border border-white/[0.07] overflow-hidden">
-              {[8, 12, 24, 48, 96].map(n => (
-                <button key={n} onClick={() => setPageSize(n)}
-                  className={`px-2 py-1.5 text-[11px] transition-colors ${pageSize === n ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-white'}`}>
-                  {n}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center rounded-lg border border-white/[0.07] overflow-hidden">
-            <span className="px-1.5 py-1.5 border-r border-white/[0.07] flex items-center">
-              <Layers size={9} className="text-slate-600" />
-            </span>
-            {[1,2,3,4,5,6].map(n => (
-              <button key={n} onClick={() => setCols(n)}
-                className={`px-2 py-1.5 text-[11px] transition-colors ${cols === n ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-white'}`}>
-                {n}
-              </button>
-            ))}
-          </div>
-          {viewMode === "generation" && (
-            <>
-              <button onClick={() => { setSelectMode(v => !v); setSelected(new Set()) }}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-                  ${selectMode ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-300" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white"}`}>
-                {selectMode ? <><CheckSquare size={11} /> Selecting</> : <><MousePointer2 size={11} /> Select</>}
-              </button>
-              <button onClick={() => setFiltersOpen(v => !v)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-                  ${filtersOpen || hasActiveFilters ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300" : "bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white"}`}>
-                <SlidersHorizontal size={11} /> Filters{hasActiveFilters ? " •" : ""}
-              </button>
-              <button onClick={() => setAutoFillOpen(v => !v)}
-                className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-                  ${autoFillOpen || hasRunningJob ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300' : 'bg-white/[0.03] border-white/[0.07] text-slate-400 hover:text-white'}`}>
-                <Sparkles size={11} /> Auto Fill
-                {hasRunningJob && !autoFillOpen && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
+        {/* Feed settings popup — columns, page size + all filters (portal-style) */}
+        {filtersOpen && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setFiltersOpen(false)} />
+            <div className="absolute inset-x-2 top-full mt-1.5 z-50">
+              <div className="relative isolate max-w-3xl mx-auto rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl p-4 space-y-3">
+                {/* Animated silver rim */}
+                <div
+                  className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none"
+                  style={{
+                    padding: '1.5px',
+                    WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                    WebkitMaskComposite: 'xor',
+                    mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                    maskComposite: 'exclude',
+                  } as React.CSSProperties}
+                >
+                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin" style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-400">Feed Settings</p>
+                  <button onClick={() => setFiltersOpen(false)} className="text-slate-500 hover:text-white transition-colors"><X size={13} /></button>
+                </div>
+                {/* Columns */}
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600 w-16 shrink-0">Columns</span>
+                  <div className="flex items-center rounded-lg border border-white/[0.08] overflow-hidden">
+                    {[1, 2, 3, 4, 5, 6].map(n => (
+                      <button key={n} onClick={() => setCols(n)}
+                        className={`px-2.5 py-1.5 text-[11px] transition-colors ${cols === n ? 'bg-white/[0.12] text-white' : 'text-slate-500 hover:text-white'}`}>{n}</button>
+                    ))}
+                  </div>
+                </div>
+                {/* Page size */}
+                {viewMode === "generation" && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600 w-16 shrink-0">Per page</span>
+                    {/* Multiples of 12 → full rows at both 4 and 6 columns. 240/480 are
+                        heavy (amber, portal convention) — lots of thumbs at once. */}
+                    <div className="flex items-center rounded-lg border border-white/[0.08] overflow-hidden">
+                      {[12, 24, 48, 120, 240, 480].map(n => {
+                        const heavy = n >= 240
+                        return (
+                          <button key={n} onClick={() => setPageSize(n)}
+                            className={`px-2.5 py-1.5 text-[11px] transition-colors ${
+                              pageSize === n
+                                ? heavy ? 'bg-amber-500/20 text-amber-300' : 'bg-white/[0.12] text-white'
+                                : heavy ? 'text-amber-600/70 hover:text-amber-300' : 'text-slate-500 hover:text-white'}`}>{n}</button>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )}
-              </button>
-              {uploadsBucketId && (
-                <button onClick={() => { setUploadModalOpen(true); setBucketFilter(String(uploadsBucketId)) }}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[11px] hover:bg-violet-500/15 transition-all">
-                  <UploadCloud size={11} /> Upload
-                </button>
-              )}
-              <button onClick={handleExport} disabled={selected.size === 0}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] hover:bg-emerald-500/15 transition-all disabled:opacity-30 disabled:cursor-not-allowed">
-                <Download size={11} /> Export{selected.size > 0 ? ` (${selected.size})` : ""}
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Filter bar */}
-        {viewMode === "generation" && filtersOpen && (
-          <div className="w-full border-t border-white/[0.06] px-3 py-3 max-w-7xl mx-auto space-y-2.5">
+                {/* Layout — classic grid vs portal-style masonry */}
+                {viewMode === "generation" && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600 w-16 shrink-0">Layout</span>
+                    <div className="flex items-center rounded-lg border border-white/[0.08] overflow-hidden">
+                      {(["grid", "masonry"] as const).map(l => (
+                        <button key={l} onClick={() => setFeedLayout(l)}
+                          className={`px-2.5 py-1.5 text-[11px] capitalize transition-colors ${feedLayout === l ? 'bg-white/[0.12] text-white' : 'text-slate-500 hover:text-white'}`}>{l}</button>
+                      ))}
+                    </div>
+                    {feedLayout === "masonry" && (
+                      <div className="flex items-center rounded-lg border border-white/[0.08] overflow-hidden">
+                        {(["rows", "flow"] as const).map(m => (
+                          <button key={m} onClick={() => setFeedMasonryMode(m)}
+                            title={m === "rows" ? "Fills left-to-right, tiles never jump" : "CSS columns — packs top-to-bottom"}
+                            className={`px-2.5 py-1.5 text-[11px] capitalize transition-colors ${feedMasonryMode === m ? 'bg-white/[0.12] text-white' : 'text-slate-500 hover:text-white'}`}>{m}</button>
+                        ))}
+                      </div>
+                    )}
+                    <button onClick={() => setFeedShowInfo(v => !v)}
+                      className={`px-2.5 py-1.5 rounded-lg border text-[11px] transition-colors ${feedShowInfo ? 'bg-white/[0.12] border-white/30 text-white' : 'bg-white/[0.03] border-white/[0.08] text-slate-500 hover:text-white'}`}>
+                      Caption &amp; info
+                    </button>
+                  </div>
+                )}
+                {viewMode === "generation" && (<div className="border-t border-white/[0.06] pt-3 space-y-2.5">
+                <p className="text-[9px] font-mono uppercase tracking-wider text-slate-600">Filters</p>
             {/* Row 1 */}
             <div className="flex flex-wrap gap-2 items-center">
               <div className="relative w-full sm:w-52">
@@ -2801,7 +2919,10 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
                 </button>
               )}
             </div>
-          </div>
+                </div>)}
+              </div>
+            </div>
+          </>
         )}
 
         {/* Bulk action bar — only in select mode */}
@@ -3387,20 +3508,73 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
               <PageNav pagination={pagination} page={page} loading={loading} setPage={setPage} className="mb-4" />
             )}
 
-            <div className={`grid gap-2 ${{1:'grid-cols-1',2:'grid-cols-2',3:'grid-cols-3',4:'grid-cols-4',5:'grid-cols-5',6:'grid-cols-6'}[cols] ?? 'grid-cols-4'}`}>
-              {deferredImages.map((img, i) => (
-                <ImageCard
-                  key={img.id}
-                  img={img}
-                  index={i}
-                  selected={selected.has(img.id)}
-                  selectMode={selectMode}
-                  onSelect={toggleSelect}
-                  onOpen={setDetailImg}
-                  onToggleMark={handleCardToggleMark}
-                />
-              ))}
-            </div>
+            {feedLayout === "masonry" && feedMasonryMode === "rows" ? (
+              /* Masonry "Rows": JS shortest-column packing — fills left-to-right,
+                 balanced by stored aspect ratio so tiles don't jump as images load */
+              <div className="flex gap-2 items-start">
+                {distributeMasonry(
+                  deferredImages.map((img, i) => ({
+                    img, i,
+                    // Info footer adds a roughly constant strip below each tile
+                    weight: arHeightWeight(img.aspectRatio) + (feedShowInfo ? 0.35 : 0),
+                  })),
+                  cols,
+                ).map((col, ci) => (
+                  <div key={ci} className="flex-1 min-w-0 space-y-2">
+                    {col.map(({ img, i }) => (
+                      <ImageCard
+                        key={img.id}
+                        img={img}
+                        index={i}
+                        selected={selected.has(img.id)}
+                        selectMode={selectMode}
+                        onSelect={toggleSelect}
+                        onOpen={setDetailImg}
+                        onToggleMark={handleCardToggleMark}
+                        layout="masonry"
+                        showInfo={feedShowInfo}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : feedLayout === "masonry" ? (
+              /* Masonry "Flow": CSS columns, packs top-to-bottom down each column */
+              <div className={`${{1:'columns-1',2:'columns-2',3:'columns-3',4:'columns-4',5:'columns-5',6:'columns-6'}[cols] ?? 'columns-4'}`} style={{ columnGap: '0.5rem' }}>
+                {deferredImages.map((img, i) => (
+                  <div key={img.id} className="mb-2 break-inside-avoid">
+                    <ImageCard
+                      img={img}
+                      index={i}
+                      selected={selected.has(img.id)}
+                      selectMode={selectMode}
+                      onSelect={toggleSelect}
+                      onOpen={setDetailImg}
+                      onToggleMark={handleCardToggleMark}
+                      layout="masonry"
+                      showInfo={feedShowInfo}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={`grid gap-2 ${{1:'grid-cols-1',2:'grid-cols-2',3:'grid-cols-3',4:'grid-cols-4',5:'grid-cols-5',6:'grid-cols-6'}[cols] ?? 'grid-cols-4'}`}>
+                {deferredImages.map((img, i) => (
+                  <ImageCard
+                    key={img.id}
+                    img={img}
+                    index={i}
+                    selected={selected.has(img.id)}
+                    selectMode={selectMode}
+                    onSelect={toggleSelect}
+                    onOpen={setDetailImg}
+                    onToggleMark={handleCardToggleMark}
+                    layout="grid"
+                    showInfo={feedShowInfo}
+                  />
+                ))}
+              </div>
+            )}
 
             {pagination && pagination.totalPages > 1 && (
               <PageNav pagination={pagination} page={page} loading={loading} setPage={setPage} className="mt-6" />

@@ -1,6 +1,7 @@
-import { NextResponse } from 'next/server'
+﻿import { NextResponse } from 'next/server'
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { checkAdminRequest } from '@/lib/admin-check'
 
 const RUNPOD_API = 'https://api.runpod.ai/v2'
 
@@ -30,6 +31,7 @@ interface RunPodStatus {
 }
 
 export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { searchParams } = new URL(req.url)
   const jobId = searchParams.get('job_id')

@@ -3,43 +3,44 @@
 import { useState, useEffect } from "react"
 import { Input } from "@/components/ui/input"
 import {
-  Terminal, MessageSquare, Wrench, Image as ImageIcon, Sparkles, Tag,
+  MessageSquare, Wrench, Image as ImageIcon, Sparkles, Tag,
   Users, CreditCard, ListOrdered, FlaskConical, Home, LayoutDashboard,
   LogOut, ChevronRight, ShieldOff, Loader2, Shield, FileText, HardDrive, Database, Brain, ClipboardCheck, PackageOpen, Telescope
 } from "lucide-react"
+import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 
 const TOOL_PAGES = [
   {
     group: "People",
     items: [
-      { name: "Users",             description: "Accounts, subs & transactions", href: "/admin/users",         icon: Users,         color: "bg-purple-500/15 text-purple-400",   border: "hover:border-purple-500/30" },
-      { name: "Dev Tier",          description: "Dev subscriptions & analytics",  href: "/admin/dev-tier",      icon: CreditCard,    color: "bg-emerald-500/15 text-emerald-400", border: "hover:border-emerald-500/30" },
-      { name: "Promotions",        description: "Discount codes & free tickets",  href: "/admin/promotions",    icon: Tag,           color: "bg-green-500/15 text-green-400",     border: "hover:border-green-500/30" },
-      { name: "Feedback",          description: "User feedback & echo stream",    href: "/admin/feedback",      icon: MessageSquare, color: "bg-fuchsia-500/15 text-fuchsia-400", border: "hover:border-fuchsia-500/30" },
+      { name: "Users",              description: "Accounts, subs & transactions",         href: "/admin/users",          icon: Users },
+      { name: "Dev Tier",           description: "Dev subscriptions & analytics",         href: "/admin/dev-tier",       icon: CreditCard },
+      { name: "Promotions",         description: "Discount codes & free tickets",         href: "/admin/promotions",     icon: Tag },
+      { name: "Feedback",           description: "User feedback & echo stream",           href: "/admin/feedback",       icon: MessageSquare },
     ]
   },
   {
     group: "Content",
     items: [
-      { name: "News & Notifications", description: "Articles, notifications & pages", href: "/admin/news",     icon: FileText,      color: "bg-fuchsia-500/15 text-fuchsia-400", border: "hover:border-fuchsia-500/30" },
-      { name: "Images",            description: "Generated images & carousel",    href: "/admin/images",        icon: ImageIcon,     color: "bg-pink-500/15 text-pink-400",       border: "hover:border-pink-500/30" },
-      { name: "Scanner",           description: "Admin scanner & testing tools",  href: "/admin/scanner",       icon: Sparkles,      color: "bg-violet-500/15 text-violet-400",   border: "hover:border-violet-500/30" },
-      { name: "Dataset",            description: "Browse & curate training data",     href: "/admin/dataset",      icon: Database,     color: "bg-cyan-500/15 text-cyan-400",       border: "hover:border-cyan-500/30" },
-      { name: "Dataset Prep",      description: "Build export templates & datasets",  href: "/admin/dataset-prep", icon: PackageOpen,  color: "bg-teal-500/15 text-teal-400",       border: "hover:border-teal-500/30" },
-      { name: "OneTrainer",        description: "Fine-tune models with OneTrainer",    href: "/admin/onetrainer",    icon: Brain,       color: "bg-indigo-500/15 text-indigo-400",   border: "hover:border-indigo-500/30" },
-      { name: "Upscaler Training", description: "Train ESRGAN / DRCT upscalers",       href: "/admin/upscaler",      icon: Telescope,   color: "bg-sky-500/15 text-sky-400",         border: "hover:border-sky-500/30" },
-      { name: "Prototype",         description: "Experimental features",          href: "/admin/prototype",     icon: FlaskConical,  color: "bg-amber-500/15 text-amber-400",     border: "hover:border-amber-500/30" },
+      { name: "News & Notifications", description: "Articles, notifications & pages",     href: "/admin/news",           icon: FileText },
+      { name: "Images",             description: "Generated images & carousel",           href: "/admin/images",         icon: ImageIcon },
+      { name: "Scanner",            description: "Admin scanner & testing tools",         href: "/admin/scanner",        icon: Sparkles },
+      { name: "Dataset",            description: "Browse & curate training data",         href: "/admin/dataset",        icon: Database },
+      { name: "Dataset Prep",       description: "Build export templates & datasets",     href: "/admin/dataset-prep",   icon: PackageOpen },
+      { name: "OneTrainer",         description: "Fine-tune models with OneTrainer",      href: "/admin/onetrainer",     icon: Brain },
+      { name: "Upscaler Training",  description: "Train ESRGAN / DRCT upscalers",         href: "/admin/upscaler",       icon: Telescope },
+      { name: "Prototype",          description: "Experimental features",                 href: "/admin/prototype",      icon: FlaskConical },
     ]
   },
   {
     group: "System",
     items: [
-      { name: "Queue",             description: "Generation queue & concurrency", href: "/admin/queue",         icon: ListOrdered,   color: "bg-blue-500/15 text-blue-400",       border: "hover:border-blue-500/30" },
-      { name: "Maintenance",       description: "Feature & model toggles",        href: "/admin/maintenance",   icon: Wrench,        color: "bg-orange-500/15 text-orange-400",   border: "hover:border-orange-500/30" },
-      { name: "Admins",            description: "Admin accounts & permissions",   href: "/admin/accounts",        icon: Shield,          color: "bg-cyan-500/15 text-cyan-400",       border: "hover:border-cyan-500/30" },
-      { name: "Audit Accounts",   description: "Merchant auditor bypass accounts", href: "/admin/audit-accounts", icon: ClipboardCheck,  color: "bg-amber-500/15 text-amber-400",     border: "hover:border-amber-500/30" },
-      { name: "R2 Storage",         description: "Upload checkpoints, models & datasets", href: "/admin/r2-storage", icon: HardDrive,   color: "bg-orange-500/15 text-orange-400",   border: "hover:border-orange-500/30" },
-      { name: "Storage",           description: "R2 migration & Vercel Blob cleanup", href: "/admin/storage",    icon: HardDrive,     color: "bg-orange-500/15 text-orange-400",   border: "hover:border-orange-500/30" },
+      { name: "Queue",              description: "Generation queue & concurrency",        href: "/admin/queue",          icon: ListOrdered },
+      { name: "Maintenance",        description: "Feature & model toggles",               href: "/admin/maintenance",    icon: Wrench },
+      { name: "Admins",             description: "Admin accounts & permissions",          href: "/admin/accounts",       icon: Shield },
+      { name: "Audit Accounts",     description: "Merchant auditor bypass accounts",      href: "/admin/audit-accounts", icon: ClipboardCheck },
+      { name: "R2 Storage",         description: "Upload checkpoints, models & datasets", href: "/admin/r2-storage",     icon: HardDrive },
+      { name: "Storage",            description: "R2 migration & Vercel Blob cleanup",    href: "/admin/storage",        icon: HardDrive },
     ]
   },
 ]
@@ -48,6 +49,24 @@ const NAV_LINKS = [
   { name: "Portal V2", href: "/admin/portal-v2", icon: Home },
   { name: "Dashboard",  href: "/dashboard",       icon: LayoutDashboard },
 ]
+
+// Silver ambience shared by every state of this page
+function AdminBackdrop() {
+  return (
+    <div aria-hidden className="fixed inset-0 pointer-events-none overflow-hidden">
+      <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 50% -10%, rgba(148,163,184,0.10), transparent 60%)" }} />
+      <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 15% 110%, rgba(226,232,240,0.05), transparent 45%)" }} />
+      {/* one slow band of silver light drifting across the page */}
+      <div
+        className="absolute inset-y-0 left-0 w-1/2"
+        style={{
+          background: "linear-gradient(100deg, transparent, rgba(226,232,240,0.03), rgba(248,250,252,0.06), rgba(226,232,240,0.03), transparent)",
+          animation: "sheen-sweep 11s ease-in-out infinite",
+        }}
+      />
+    </div>
+  )
+}
 
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -121,7 +140,8 @@ export default function AdminPage() {
   // Loading
   if (!sessionChecked) {
     return (
-      <div className="min-h-screen bg-[#09090f] flex items-center justify-center">
+      <div className="min-h-screen bg-[#05080f] flex items-center justify-center">
+        <AdminBackdrop />
         <Loader2 size={20} className="text-slate-600 animate-spin" />
       </div>
     )
@@ -130,8 +150,9 @@ export default function AdminPage() {
   // Signed in but not an admin account
   if (sessionChecked && isAdminAccount === false && sessionEmail) {
     return (
-      <div className="min-h-screen bg-[#09090f] flex items-center justify-center p-6">
-        <div className="w-full max-w-sm text-center">
+      <div className="min-h-screen bg-[#05080f] flex items-center justify-center p-6">
+        <AdminBackdrop />
+        <div className="relative w-full max-w-sm text-center">
           <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
             <ShieldOff size={22} className="text-red-400" />
           </div>
@@ -153,20 +174,20 @@ export default function AdminPage() {
   // Not signed in at all
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#09090f] flex items-center justify-center p-6">
-        <div className="w-full max-w-sm">
-          <div className="text-center mb-8">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-fuchsia-500/20 border border-white/10 flex items-center justify-center mx-auto mb-4">
-              <Terminal size={22} className="text-cyan-400" />
+      <div className="min-h-screen bg-[#05080f] flex items-center justify-center p-6">
+        <AdminBackdrop />
+        <div className="relative w-full max-w-sm">
+          <div className="mb-8">
+            <SiteBrandHero />
+            <div className="text-center mt-6">
+              <p className="text-[11px] font-mono uppercase tracking-[0.3em] text-slate-400">Admin Console</p>
+              {sessionEmail && isAdminAccount && (
+                <p className="text-xs text-emerald-400/70 mt-2">Signed in as {sessionEmail}</p>
+              )}
+              {!sessionEmail && (
+                <p className="text-xs text-amber-400/60 mt-2">You must be signed in with an admin account</p>
+              )}
             </div>
-            <h1 className="text-xl font-bold text-white">Admin Access</h1>
-            <p className="text-sm text-slate-500 mt-1">Authorized personnel only</p>
-            {sessionEmail && isAdminAccount && (
-              <p className="text-xs text-emerald-400/70 mt-2">Signed in as {sessionEmail}</p>
-            )}
-            {!sessionEmail && (
-              <p className="text-xs text-amber-400/60 mt-2">You must be signed in with an admin account</p>
-            )}
           </div>
           <form onSubmit={handleLogin} className="space-y-3">
             <Input
@@ -174,14 +195,15 @@ export default function AdminPage() {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="bg-white/[0.04] border-white/10 text-white placeholder:text-slate-600 focus:border-cyan-500/50 h-11"
+              className="bg-white/[0.04] border-white/10 text-white placeholder:text-slate-600 focus:border-white/40 h-11"
               autoFocus
             />
             {error && <p className="text-xs text-red-400">{error}</p>}
             <button
               type="submit"
-              className="w-full h-11 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-black text-sm font-bold hover:opacity-90 transition-opacity"
+              className="relative overflow-hidden w-full h-11 rounded-xl bg-white/10 border border-white/25 text-white text-sm font-bold hover:bg-white/15 transition-all"
             >
+              <span className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none" style={{ animation: 'sheen-sweep 2.6s infinite' }} />
               Authenticate
             </button>
           </form>
@@ -191,25 +213,22 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#09090f] relative">
-      {/* Subtle ambient glow */}
-      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-cyan-500/[0.04] rounded-full blur-3xl pointer-events-none" />
+    <div className="min-h-screen bg-[#05080f] relative">
+      <AdminBackdrop />
 
       <div className="relative z-10 max-w-3xl mx-auto px-5 py-8">
 
-        {/* Header */}
+        {/* Header — synced logo inside the animated silver rim */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500/20 to-fuchsia-500/20 border border-white/10 flex items-center justify-center">
-              <Terminal size={16} className="text-cyan-400" />
-            </div>
+            <SiteLogoBox size={38} rounded={12} />
             <div>
-              <h1 className="text-lg font-bold text-white leading-none">Admin Panel</h1>
-              {sessionEmail ? (
-                <p className="text-[11px] text-emerald-400/60 mt-0.5">{sessionEmail}</p>
-              ) : (
-                <p className="text-[11px] text-slate-600 mt-0.5">Control center</p>
-              )}
+              <h1 className="text-lg font-black tracking-tight leading-none text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">
+                Admin Panel
+              </h1>
+              <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-slate-500 mt-1">
+                Control Center{sessionEmail ? <span className="text-emerald-400/60 normal-case tracking-normal font-sans"> · {sessionEmail}</span> : null}
+              </p>
             </div>
           </div>
           <button
@@ -225,7 +244,7 @@ export default function AdminPage() {
         <div className="space-y-6">
           {TOOL_PAGES.map((group) => (
             <div key={group.group}>
-              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2.5 px-0.5">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2.5 px-0.5">
                 {group.group}
               </p>
               <div className="grid grid-cols-2 gap-2">
@@ -233,16 +252,18 @@ export default function AdminPage() {
                   <button
                     key={item.name}
                     onClick={() => window.location.href = item.href}
-                    className={`group flex items-center gap-3 p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.07] ${item.border} hover:bg-white/[0.06] transition-all text-left`}
+                    className="group relative overflow-hidden flex items-center gap-3 p-3.5 rounded-xl bg-[#0a101d]/80 border border-white/[0.08] hover:border-white/25 hover:bg-white/[0.05] transition-all text-left"
                   >
-                    <div className={`w-8 h-8 rounded-lg ${item.color} flex items-center justify-center shrink-0`}>
+                    {/* sheen sweep on hover */}
+                    <span className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.09] to-transparent pointer-events-none opacity-0 group-hover:opacity-100" style={{ animation: 'sheen-sweep 2.4s infinite' }} />
+                    <div className="w-8 h-8 rounded-lg bg-white/[0.06] border border-white/[0.12] text-slate-200 group-hover:text-white group-hover:border-white/30 flex items-center justify-center shrink-0 transition-colors">
                       <item.icon size={15} />
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-white leading-none">{item.name}</p>
                       <p className="text-[11px] text-slate-500 mt-0.5 leading-snug truncate">{item.description}</p>
                     </div>
-                    <ChevronRight size={13} className="text-slate-700 group-hover:text-slate-500 shrink-0 transition-colors" />
+                    <ChevronRight size={13} className="text-slate-700 group-hover:text-slate-400 shrink-0 transition-colors" />
                   </button>
                 ))}
               </div>
@@ -256,7 +277,7 @@ export default function AdminPage() {
             <button
               key={link.name}
               onClick={() => window.location.href = link.href}
-              className="flex items-center gap-2 py-2 px-4 rounded-lg bg-white/[0.03] border border-white/[0.07] hover:bg-white/[0.06] hover:border-white/15 transition-all text-sm text-slate-400 hover:text-white"
+              className="relative overflow-hidden flex items-center gap-2 py-2 px-4 rounded-lg bg-white/[0.04] border border-white/[0.1] hover:bg-white/[0.08] hover:border-white/25 transition-all text-sm text-slate-400 hover:text-white"
             >
               <link.icon size={13} />
               {link.name}

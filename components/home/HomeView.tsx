@@ -24,9 +24,9 @@ function Section({ icon, title, subtitle, children }: { icon?: ReactNode; title:
   return (
     <section className="mb-8">
       <div className="flex items-center gap-2 mb-3">
-        {icon && <span className="text-cyan-400">{icon}</span>}
-        <h2 className="text-base font-black tracking-tight text-white">{title}</h2>
-        {subtitle && <span className="text-[11px] text-slate-600">{subtitle}</span>}
+        {icon && <span className="text-slate-300">{icon}</span>}
+        <h2 className="text-base font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">{title}</h2>
+        {subtitle && <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-600">{subtitle}</span>}
       </div>
       {children}
     </section>

@@ -54,7 +54,11 @@ export async function GET() {
         modelType: r.modelType,
         error: r.errorMessage || 'Generation failed',
         falRequestId: r.falRequestId,
+        // Full run settings from the queue row's parameters — the feed shows
+        // them in the failed popup and Re-generate reuses them verbatim
         aspectRatio: r.parameters?.aspectRatio || r.parameters?.size || null,
+        quality: r.parameters?.quality || null,
+        referenceImageUrls: Array.isArray(r.parameters?.referenceImageUrls) ? r.parameters.referenceImageUrls : [],
         createdAt: r.createdAt,
       })),
     })
@@ -102,7 +106,7 @@ export async function POST(request: NextRequest) {
     const user = await requireUser()
     if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
-    const { prompt, modelId, modelType, error } = await request.json()
+    const { prompt, modelId, modelType, error, aspectRatio, quality, referenceImageUrls } = await request.json()
     if (!prompt || !modelId || (modelType !== 'image' && modelType !== 'video')) {
       return NextResponse.json({ error: 'Invalid payload' }, { status: 400 })
     }
@@ -113,7 +117,15 @@ export async function POST(request: NextRequest) {
         modelId: String(modelId).slice(0, 100),
         modelType,
         prompt: String(prompt).slice(0, 5000),
-        parameters: { source: 'client-failure' },
+        parameters: {
+          source: 'client-failure',
+          // Keep the run's settings so restored tiles show them + can retry
+          ...(typeof aspectRatio === 'string' ? { aspectRatio: aspectRatio.slice(0, 20) } : {}),
+          ...(typeof quality === 'string' ? { quality: quality.slice(0, 20) } : {}),
+          ...(Array.isArray(referenceImageUrls)
+            ? { referenceImageUrls: referenceImageUrls.filter((u: unknown) => typeof u === 'string' && (u as string).startsWith('https://')).slice(0, 10) }
+            : {}),
+        },
         status: 'failed',
         ticketCost: 0,
         errorMessage: String(error || 'Generation failed').slice(0, 2000),

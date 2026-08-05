@@ -919,6 +919,38 @@ model UserRefFolder {
   @@index([parentId])
 }
 
+// OneTrainer saved dataset compositions — applied via out-of-band DDL
+// (add-training-presets-table.js); routes use raw SQL, no client regen needed
+model TrainingDatasetPreset {
+  id        Int      @id @default(autoincrement())
+  name      String
+  data      String   // JSON: { defaultSource, images: [{id, override, customText}] }
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Server-side background dataset builds (accessed via raw SQL — added out-of-band)
+model DatasetBuildJob {
+  id            Int       @id @default(autoincrement())
+  status        String    @default("running") // running | completed | failed
+  name          String    @default("dataset")
+  maxDim        Int       @default(0)
+  itemsJson     String    // [{id, url, caption}]
+  progressDone  Int       @default(0)
+  progressTotal Int       @default(0)
+  progressBytes BigInt    @default(0)
+  phase         String    @default("fetching")
+  resultKey     String?
+  resultCount   Int?
+  resultSkipped Int?
+  resultSizeMb  Float?
+  truncated     Boolean   @default(false)
+  error         String?
+  consumedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
 model UserReference {
   id        Int       @id @default(autoincrement())
   userId    Int
