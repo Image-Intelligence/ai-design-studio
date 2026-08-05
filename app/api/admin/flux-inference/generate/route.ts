@@ -252,7 +252,10 @@ export async function POST(req: Request) {
     const res = await fetch(`${RUNPOD_API}/${endpointId}/run`, {
       method:  'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ input: payload }),
+      // executionTimeout OVERRIDES the endpoint's default (600s!) per job —
+      // 8K pipeline chains run 15-40+ min and were being killed mid-ESRGAN
+      // ("job timed out after 1 retries" at exactly ~603s execution)
+      body:    JSON.stringify({ input: payload, policy: { executionTimeout: 2 * 60 * 60 * 1000 } }),
     })
     if (!res.ok) {
       const err = await res.text()

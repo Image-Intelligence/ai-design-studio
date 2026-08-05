@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-08-v78'
+HANDLER_VERSION = '2026-08-08-v79'
 
 import importlib
 
@@ -832,7 +832,11 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
     img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).float().unsqueeze(0)  # CPU
 
     h, w   = img_t.shape[2], img_t.shape[3]
-    TILE   = 512
+    # Adaptive tile size: large inputs use 1024px tiles — 4× fewer model
+    # launches + host↔device copies than 512px tiles, which turns the 8K
+    # same-size polish passes from ~200 tiles into ~50. Per-tile VRAM stays
+    # small (buffers live on CPU), so bigger tiles are pure speedup.
+    TILE   = 1024 if max(h, w) >= 3000 else 512
     PAD    = 32
     out_h  = h * model_scale
     out_w  = w * model_scale

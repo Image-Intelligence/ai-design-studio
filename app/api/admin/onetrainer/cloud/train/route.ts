@@ -133,7 +133,9 @@ export async function POST(req: Request) {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ input }),
+    // Long training runs must never die to the endpoint's default execution
+    // timeout (600s) — override per job: 24h ceiling
+    body: JSON.stringify({ input, policy: { executionTimeout: 24 * 60 * 60 * 1000 } }),
   })
 
   if (!res.ok) {
