@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-07-v76'
+HANDLER_VERSION = '2026-08-08-v77'
 
 import importlib
 
@@ -507,24 +507,42 @@ def _adetailer_fix_faces(pipe_i2i, image_pil, prompt: str, strength: float,
         py2 = min(float(H), y2 + bh * PADDING)
         rw, rh = int(px2 - px1), int(py2 - py1)
 
-        # Crop → aspect-preserved render size (long side ≤ MAX_RENDER, /64)
+        # Crop → aspect-preserved render size (long side ≤ MAX_RENDER, /64).
+        # OOM-resilient: after a 4K pipeline PyTorch can be holding nearly the
+        # whole card, and the 1024px render needs ~1.1GB headroom the 512px one
+        # didn't. Cascade 1024 → 768 → 512, freeing cache between attempts —
+        # a finished 4K generation must never die on its final face pass.
         face_crop = output.crop((int(px1), int(py1), int(px2), int(py2)))
-        _scale = min(1.0, MAX_RENDER / max(rw, rh, 1))
-        tw = max(256, int(round(rw * _scale / 64)) * 64)
-        th = max(256, int(round(rh * _scale / 64)) * 64)
-        face_resized = face_crop.resize((tw, th), Image.LANCZOS)
-
         gen = torch.Generator('cuda').manual_seed(int(seed) + 100 + i) if seed is not None else None
-        fixed_resized = pipe_i2i(
-            prompt=prompt,
-            image=face_resized,
-            strength=strength,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
-            generator=gen,
-            width=tw,
-            height=th,
-        ).images[0]
+        size_candidates = []
+        for _cap in (MAX_RENDER, 768, 512):
+            _s = min(1.0, _cap / max(rw, rh, 1))
+            _tw = max(256, int(round(rw * _s / 64)) * 64)
+            _th = max(256, int(round(rh * _s / 64)) * 64)
+            if (_tw, _th) not in size_candidates:
+                size_candidates.append((_tw, _th))
+        fixed_resized = None
+        tw = th = 0
+        for tw, th in size_candidates:
+            try:
+                face_resized = face_crop.resize((tw, th), Image.LANCZOS)
+                fixed_resized = pipe_i2i(
+                    prompt=prompt,
+                    image=face_resized,
+                    strength=strength,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=gen,
+                    width=tw,
+                    height=th,
+                ).images[0]
+                break
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                logs.append(f'[adetailer] OOM at {tw}×{th} — retrying smaller...')
+        if fixed_resized is None:
+            logs.append(f'[adetailer] Face {i+1}/{len(boxes)}: skipped (OOM at every size).')
+            continue
 
         # Resize fixed face back to original region size
         fixed_back = fixed_resized.resize((rw, rh), Image.LANCZOS)
@@ -2140,8 +2158,16 @@ def _handle_inference(job_id: str, inp: dict) -> dict:
             logs.append(f'[pipeline] All {_n_steps} steps complete — final: {image.width}×{image.height}')
             _flush_logs(r2, bucket, job_id, logs)
 
-        # 6d. Optional ADetailer face fix
+        # 6d. Optional ADetailer face fix — free cached VRAM first: after a big
+        # pipeline the allocator holds most of the card, and the (v76) higher-
+        # res face render needs real headroom
         if adetailer and pipe_i2i is not None:
+            try:
+                import gc as _gc_ad
+                _gc_ad.collect()
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
             logs.append(f'[inference] ADetailer — strength={adetailer_strength}...')
             _flush_logs(r2, bucket, job_id, logs)
             image = _adetailer_fix_faces(pipe_i2i, image, prompt, adetailer_strength, steps, guidance, seed, logs)
