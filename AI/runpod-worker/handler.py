@@ -50,7 +50,7 @@ except ModuleNotFoundError:
     sys.modules['torchvision.transforms.functional_tensor'] = _compat
     del _tvf, _compat, _attr
 
-HANDLER_VERSION = '2026-08-08-v77'
+HANDLER_VERSION = '2026-08-08-v78'
 
 import importlib
 
@@ -820,16 +820,23 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
         logs.append(f'[esrgan] Padded to even dims: {_ew}×{_eh}')
         print(f'[esrgan] Padded odd-dim input to {_ew}×{_eh}', flush=True)
 
+    # VRAM-CONSTANT TILING: the full input AND the full output stay on CPU —
+    # only individual tiles ever touch the GPU. The old version kept both on
+    # the GPU; at 8K with a 4× model the output buffer alone was ~10.3GB
+    # (26224×32768×3 float32) on a card flux already mostly owns → the
+    # intermittent "CUDA out of memory" that killed 8K pipeline steps.
+    # 50GB worker RAM holds the CPU buffers easily; the per-tile PCIe copies
+    # cost ~1-2s total across 200+ tiles.
     img = np.array(image_pil, dtype=np.float32)  # HWC, RGB, 0-255
     img /= 255.0
-    img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).float().unsqueeze(0).cuda()
+    img_t = torch.from_numpy(np.transpose(img, (2, 0, 1))).float().unsqueeze(0)  # CPU
 
     h, w   = img_t.shape[2], img_t.shape[3]
     TILE   = 512
     PAD    = 32
     out_h  = h * model_scale
     out_w  = w * model_scale
-    output = torch.zeros(1, 3, out_h, out_w, dtype=torch.float32, device='cuda')
+    output = torch.zeros(1, 3, out_h, out_w, dtype=torch.float32)  # CPU accumulator
 
     tiles_x = math.ceil(w / TILE)
     tiles_y = math.ceil(h / TILE)
@@ -841,15 +848,16 @@ def _esrgan_upscale(image_pil, model_name: str, outscale: float, logs: list):
             y1 = ty * TILE;  y2 = min(y1 + TILE, h)
             x1p = max(x1 - PAD, 0);  x2p = min(x2 + PAD, w)
             y1p = max(y1 - PAD, 0);  y2p = min(y2 + PAD, h)
-            tile_in = img_t[:, :, y1p:y2p, x1p:x2p]
+            tile_in = img_t[:, :, y1p:y2p, x1p:x2p].cuda()
             with torch.no_grad():
                 tile_out = model(tile_in)
             ox = (x1 - x1p) * model_scale;  tw = (x2 - x1) * model_scale
             oy = (y1 - y1p) * model_scale;  th = (y2 - y1) * model_scale
             output[:, :, y1*model_scale:y2*model_scale,
-                         x1*model_scale:x2*model_scale] = tile_out[:, :, oy:oy+th, ox:ox+tw]
+                         x1*model_scale:x2*model_scale] = tile_out[:, :, oy:oy+th, ox:ox+tw].cpu()
+            del tile_in, tile_out
 
-    out = output.squeeze().cpu().clamp_(0, 1).numpy()
+    out = output.squeeze().clamp_(0, 1).numpy()
     out = np.transpose(out, (1, 2, 0))          # CHW → HWC
     _stats = f'min={out.min():.4f} max={out.max():.4f} mean={out.mean():.4f} nans={int(np.isnan(out).sum())}'
     logs.append(f'[esrgan] Output stats: {_stats}')
