@@ -9,6 +9,8 @@ export const REF_LIMIT_ADMIN = 1000
 
 export async function getUserRefLimit(userId: number, email: string): Promise<number> {
   if (isAdminEmail(email)) return REF_LIMIT_ADMIN
+  // Audit/reviewer accounts (@audit.pp, e.g. CCBill compliance) test as Dev Tier
+  if (email.endsWith('@audit.pp')) return REF_LIMIT_DEV
   const sub = await prisma.subscription.findFirst({
     where: {
       userId,

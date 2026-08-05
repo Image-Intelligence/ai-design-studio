@@ -24,6 +24,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    // Audit/reviewer accounts (created via /admin/audit-accounts, email
+    // <name>@audit.pp — e.g. the CCBill compliance reviewer) get the full Dev
+    // Tier experience so they can evaluate everything a paying user can use.
+    // They have NO admin access — AdminAccount gating is entirely separate.
+    const isAuditAccount = (user.email ?? '').endsWith('@audit.pp')
+
     // Check for active prompt-studio-dev subscription — includes cancelled subs still within billing period
     const now = new Date()
     const subscription = await prisma.subscription.findFirst({
@@ -54,7 +60,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      hasPromptStudioDev: !!subscription,
+      hasPromptStudioDev: !!subscription || isAuditAccount,
       isGrandfathered,
       subscription: subscription ? {
         tier: subscription.tier,

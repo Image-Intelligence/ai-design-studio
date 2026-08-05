@@ -18,6 +18,8 @@ export async function getUserConcurrencyLimit(userId: number): Promise<number> {
   ])
   if (!user) return 2
   if (OWNER_EMAILS.includes(user.email)) return 999
+  // Audit/reviewer accounts (@audit.pp, e.g. CCBill compliance) test as Dev Tier
+  if (user.email.endsWith('@audit.pp')) return 6
   return sub ? 6 : 2
 }
 
