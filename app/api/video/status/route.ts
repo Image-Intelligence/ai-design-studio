@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma';
 import { fal } from "@/lib/fal-client";
 import { uploadToR2 } from '@/lib/r2';
 import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth';
+import { jsonPrivate } from '@/lib/api-json'
 
 
 fal.config({
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
         where: { id: internalUserId },
         select: { id: true, email: true },
       })
-      if (!found) return NextResponse.json({ error: 'Unknown user' }, { status: 400 })
+      if (!found) return jsonPrivate({ error: 'Unknown user' }, { status: 400 })
       user = found
     } else {
       const resolved = await resolveRequestUser(request);
@@ -60,7 +61,7 @@ export async function POST(request: NextRequest) {
     } = await request.json();
 
     if (!requestId || !falEndpoint) {
-      return NextResponse.json({ error: 'Missing requestId or falEndpoint' }, { status: 400 });
+      return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 });
     }
 
     // Check FAL queue status
@@ -93,14 +94,14 @@ export async function POST(request: NextRequest) {
           // job 'processing' forever, still holding a concurrency slot.
           const { releaseQueueSlot } = await import('@/lib/admin-queue-helpers')
           await releaseQueueSlot(requestId, true, reason).catch(() => {})
-          return NextResponse.json({ status: 'failed', error: reason });
+          return jsonPrivate({ status: 'failed', error: reason });
         }
         throw err
       }
 
       const falVideoUrl = result.data?.video?.url;
       if (!falVideoUrl) {
-        return NextResponse.json({ status: 'failed', error: 'No video URL in result' });
+        return jsonPrivate({ status: 'failed', error: 'No video URL in result' });
       }
 
       const actualPrompt = result.data?.actual_prompt || prompt;
@@ -112,7 +113,7 @@ export async function POST(request: NextRequest) {
       })
       if (existingVideo) {
         console.log(`↩ Video already saved [${requestId}] returning existing record ${existingVideo.id}`)
-        return NextResponse.json({
+        return jsonPrivate({
           status: 'completed',
           videoUrl: existingVideo.imageUrl,
           thumbnailUrl: existingVideo.imageUrl,
@@ -175,7 +176,7 @@ export async function POST(request: NextRequest) {
       const { releaseQueueSlot } = await import('@/lib/admin-queue-helpers')
       await releaseQueueSlot(requestId, false).catch(() => {})
 
-      return NextResponse.json({
+      return jsonPrivate({
         status: 'completed',
         videoUrl: permanentVideoUrl,
         thumbnailUrl: thumbnailUrl || permanentVideoUrl,
@@ -186,15 +187,15 @@ export async function POST(request: NextRequest) {
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
       const { releaseQueueSlot } = await import('@/lib/admin-queue-helpers')
       await releaseQueueSlot(requestId, true, 'Video generation failed on FAL processing servers').catch(() => {})
-      return NextResponse.json({ status: 'failed', error: 'Video generation failed on FAL processing servers' });
+      return jsonPrivate({ status: 'failed', error: 'Video generation failed on FAL processing servers' });
     } else {
       // IN_QUEUE or IN_PROGRESS
-      return NextResponse.json({ status: 'in_progress', falStatus: status.status });
+      return jsonPrivate({ status: 'in_progress', falStatus: status.status });
     }
 
   } catch (error: any) {
     console.error('Video status check error:', error);
     // Return in_progress on transient errors so the client keeps polling
-    return NextResponse.json({ status: 'in_progress', error: error.message });
+    return jsonPrivate({ status: 'in_progress', error: error.message });
   }
 }

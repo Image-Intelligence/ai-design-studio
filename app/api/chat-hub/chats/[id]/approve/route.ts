@@ -20,6 +20,7 @@ import { sanitizeSkillIds } from '@/lib/chat-hub-skills'
 import { isChatCancelRequested, clearChatCancel } from '@/lib/chat-hub-cancel'
 import { getPlaybook } from '@/lib/chat-hub-playbooks'
 import { loadInstagramCreds, publishImage, publishReel } from '@/lib/chat-hub-instagram'
+import { jsonPrivate } from '@/lib/api-json'
 
 export const maxDuration = 300
 
@@ -46,14 +47,14 @@ function sanitizeRoutes(raw: unknown): RoutingMap {
 // NDJSON events; the client appends them to the SAME assistant bubble.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireChatHubAdmin()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
   const chatId = parseInt((await params).id)
-  if (isNaN(chatId)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
+  if (isNaN(chatId)) return jsonPrivate({ error: 'Invalid id' }, { status: 400 })
 
   const body = await req.json().catch(() => ({}))
   const messageId = typeof body.messageId === 'number' ? body.messageId : NaN
-  if (isNaN(messageId)) return NextResponse.json({ error: 'Invalid messageId' }, { status: 400 })
+  if (isNaN(messageId)) return jsonPrivate({ error: 'Invalid messageId' }, { status: 400 })
   const approvals = new Map<string, boolean>(
     Array.isArray(body.approvals)
       ? body.approvals
@@ -107,7 +108,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       project: { select: { memory: true } },
     },
   })
-  if (!chat) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!chat) return jsonPrivate({ error: 'Not found' }, { status: 404 })
   const agentMode = sanitizeAgentMode(chat.agentMode)
   const skillIds = sanitizeSkillIds(chat.skills)
   const skillSet: SkillSet = skillIds === null ? null : new Set(skillIds)
@@ -121,11 +122,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const row = await prisma.chatMessage.findFirst({
     where: { id: messageId, chatId, role: 'assistant' },
   })
-  if (!row) return NextResponse.json({ error: 'Message not found' }, { status: 404 })
+  if (!row) return jsonPrivate({ error: 'Message not found' }, { status: 404 })
   const meta = (row.metadata ?? {}) as Record<string, any>
   const pendingApproval = meta.pendingApproval as { calls: PendingCall[]; round: number } | undefined
   if (!pendingApproval?.calls?.length) {
-    return NextResponse.json({ error: 'Nothing awaiting approval on this message' }, { status: 400 })
+    return jsonPrivate({ error: 'Nothing awaiting approval on this message' }, { status: 400 })
   }
   if ((pendingApproval.round ?? 1) > MAX_APPROVAL_ROUNDS) {
     // Don't leave the user stuck with an un-runnable, un-deniable bar: cancel
@@ -136,7 +137,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       where: { id: row.id },
       data: { metadata: JSON.parse(JSON.stringify({ ...meta, agentSteps: steps, pendingApproval: null })) },
     }).catch(() => {})
-    return NextResponse.json({
+    return jsonPrivate({
       error: `This reply hit the ${MAX_APPROVAL_ROUNDS}-round safety limit — its pending requests were cancelled. Send a new message to continue the work in a fresh reply.`,
     }, { status: 400 })
   }
@@ -147,7 +148,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // they cannot act on.
   const modelSpec = getChatModelForUser(chat.model, prefs.customModels)
     ?? getChatModelForUser(DEFAULT_CHAT_MODEL, prefs.customModels)
-  if (!modelSpec) return NextResponse.json({ error: 'Chat model no longer available' }, { status: 400 })
+  if (!modelSpec) return jsonPrivate({ error: 'Chat model no longer available' }, { status: 400 })
   const userKeys = await loadUserKeys(user.id)
   const bodyRoutes = sanitizeRoutes(body.routes)
   // Same fallback as the send route: a caller without a routing UI still gets
@@ -155,7 +156,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const routes = Object.keys(bodyRoutes).length > 0 ? bodyRoutes : prefs.routing
   const resolved = resolveChatModel(modelSpec, routes, userKeys)
   if (typeof resolved === 'object' && resolved !== null && 'error' in resolved) {
-    return NextResponse.json({ error: resolved.error }, { status: 500 })
+    return jsonPrivate({ error: resolved.error }, { status: 500 })
   }
 
   const roster = buildRoster({
@@ -703,6 +704,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     })
   } catch (error) {
     console.error('chat-hub approve error:', error)
-    return NextResponse.json({ error: 'Continuation failed' }, { status: 500 })
+    return jsonPrivate({ error: 'Continuation failed' }, { status: 500 })
   }
 }

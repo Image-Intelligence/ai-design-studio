@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { authenticateApiKey, invalidKeyResponse, requireScopes } from '@/lib/api-key-auth'
 import { checkIsAdmin } from '@/lib/admin-check'
+import { jsonPrivate } from '@/lib/api-json'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
   const denied = requireScopes(auth, 'dataset:read')
   if (denied) return denied
   if (!(await checkIsAdmin(auth.user.email))) {
-    return NextResponse.json({ error: 'Admin only', code: 'ADMIN_ONLY' }, { status: 403 })
+    return jsonPrivate({ error: 'Admin only', code: 'ADMIN_ONLY' }, { status: 403 })
   }
 
   const folders = await prisma.datasetBucketFolder.findMany({ orderBy: { createdAt: 'asc' } })
@@ -35,7 +36,7 @@ export async function GET(request: Request) {
     }))
   }
 
-  return NextResponse.json(
+  return jsonPrivate(
     { folders: folders.map(f => ({ ...f, previewUrls: previewMap.get(f.id) ?? [] })) },
     { headers: { 'Cache-Control': 'no-store' } },
   )

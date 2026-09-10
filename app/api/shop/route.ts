@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { jsonPrivate } from '@/lib/api-json'
 
 
 // GET: Fetch all active products
@@ -9,10 +10,10 @@ export async function GET() {
       where: { isActive: true },
       orderBy: { createdAt: 'desc' },
     });
-    return NextResponse.json(products);
+    return jsonPrivate(products);
   } catch (error) {
     console.error("GET products error:", error);
-    return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to fetch products' }, { status: 500 });
   }
 }
 
@@ -34,10 +35,10 @@ export async function POST(request: Request) {
         isSlotActive: body.isSlotActive ?? false,
       },
     });
-    return NextResponse.json(newProduct);
+    return jsonPrivate(newProduct);
   } catch (error) {
     console.error("POST product error:", error);
-    return NextResponse.json({ error: 'Failed to create product' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to create product' }, { status: 500 });
   }
 }
 
@@ -60,10 +61,10 @@ export async function PUT(request: Request) {
         isSlotActive: body.isSlotActive,
       },
     });
-    return NextResponse.json(updatedProduct);
+    return jsonPrivate(updatedProduct);
   } catch (error) {
     console.error("PUT product error:", error);
-    return NextResponse.json({ error: 'Failed to update product' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to update product' }, { status: 500 });
   }
 }
 
@@ -74,16 +75,16 @@ export async function DELETE(request: Request) {
     const id = searchParams.get('id');
     
     if (!id) {
-      return NextResponse.json({ error: 'Product ID required' }, { status: 400 });
+      return jsonPrivate({ error: 'Product ID required' }, { status: 400 });
     }
 
     await prisma.product.delete({
       where: { id: parseInt(id) },
     });
     
-    return NextResponse.json({ success: true });
+    return jsonPrivate({ success: true });
   } catch (error) {
     console.error("DELETE product error:", error);
-    return NextResponse.json({ error: 'Failed to delete product' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to delete product' }, { status: 500 });
   }
 }

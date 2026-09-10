@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { jsonPrivate } from '@/lib/api-json'
 
 
 export async function POST(req: NextRequest) {
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest) {
     } = await req.json();
 
     if (!userId || !prompt || !model) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Missing required fields' },
         { status: 400 }
       );
@@ -51,13 +52,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       trainingId: trainingData.id,
     });
   } catch (error) {
     console.error('Failed to save training data:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to save training data' },
       { status: 500 }
     );
@@ -96,14 +97,14 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       data: trainingData,
       count: trainingData.length,
     });
   } catch (error) {
     console.error('Failed to fetch training data:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to fetch training data' },
       { status: 500 }
     );

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { checkAuth } from '@/lib/admin-auth'
+import { jsonPrivate } from '@/lib/api-json'
 
 
 // GET: Fetch galleries
@@ -22,10 +23,10 @@ export async function GET(request: Request) {
       });
 
       if (!gallery) {
-        return NextResponse.json({ error: 'Gallery not found' }, { status: 404 });
+        return jsonPrivate({ error: 'Gallery not found' }, { status: 404 });
       }
 
-      return NextResponse.json(gallery);
+      return jsonPrivate(gallery);
     }
 
     // Get all galleries or featured only
@@ -44,24 +45,24 @@ export async function GET(request: Request) {
       orderBy: { createdAt: 'desc' }
     });
 
-    return NextResponse.json(galleries);
+    return jsonPrivate(galleries);
 
   } catch (error) {
     console.error('GET galleries error:', error);
-    return NextResponse.json({ error: 'Failed to fetch galleries' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to fetch galleries' }, { status: 500 });
   }
 }
 
 // POST: Create new gallery
 export async function POST(request: Request) {
-  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!checkAuth(request)) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json();
 
     const { title, description, coverImageUrl, price, isFeatured, loreIntro, loreOutro, accessType, images } = body;
 
     if (!title || !description || !coverImageUrl || price === undefined) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+      return jsonPrivate({ error: 'Missing required fields' }, { status: 400 });
     }
 
     const gallery = await prisma.gallery.create({
@@ -87,23 +88,23 @@ export async function POST(request: Request) {
       }
     });
 
-    return NextResponse.json(gallery);
+    return jsonPrivate(gallery);
 
   } catch (error) {
     console.error('POST gallery error:', error);
-    return NextResponse.json({ error: 'Failed to create gallery' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to create gallery' }, { status: 500 });
   }
 }
 
 // PUT: Update gallery
 export async function PUT(request: Request) {
-  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!checkAuth(request)) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json();
     const { id, title, description, coverImageUrl, price, isActive, isFeatured, loreIntro, loreOutro, accessType, images } = body;
 
     if (!id) {
-      return NextResponse.json({ error: 'Gallery ID required' }, { status: 400 });
+      return jsonPrivate({ error: 'Gallery ID required' }, { status: 400 });
     }
 
     // If images are provided, delete existing ones and create new ones
@@ -145,23 +146,23 @@ export async function PUT(request: Request) {
       }
     });
 
-    return NextResponse.json(gallery);
+    return jsonPrivate(gallery);
 
   } catch (error) {
     console.error('PUT gallery error:', error);
-    return NextResponse.json({ error: 'Failed to update gallery' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to update gallery' }, { status: 500 });
   }
 }
 
 // DELETE: Delete gallery
 export async function DELETE(request: Request) {
-  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!checkAuth(request)) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
 
     if (!id) {
-      return NextResponse.json({ error: 'Gallery ID required' }, { status: 400 });
+      return jsonPrivate({ error: 'Gallery ID required' }, { status: 400 });
     }
 
     // Images will be cascade deleted due to schema
@@ -169,10 +170,10 @@ export async function DELETE(request: Request) {
       where: { id: parseInt(id) }
     });
 
-    return NextResponse.json({ success: true });
+    return jsonPrivate({ success: true });
 
   } catch (error) {
     console.error('DELETE gallery error:', error);
-    return NextResponse.json({ error: 'Failed to delete gallery' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to delete gallery' }, { status: 500 });
   }
 }

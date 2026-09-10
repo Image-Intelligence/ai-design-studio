@@ -10,6 +10,7 @@ import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { isGenerationBlocked } from '@/lib/generation-guard';
 import { enforceContentFilter } from '@/lib/content-filter'
+import { jsonPrivate } from '@/lib/api-json'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -29,16 +30,16 @@ export async function POST(req: NextRequest) {
     const cookieStore = await cookies()
     const token = cookieStore.get('session')?.value
     if (!token) {
-      return NextResponse.json({ success: false, error: 'Not authenticated' }, { status: 401 });
+      return jsonPrivate({ success: false, error: 'Not authenticated' }, { status: 401 });
     }
     const sessionUser = await getUserFromSession(token)
     if (!sessionUser) {
-      return NextResponse.json({ success: false, error: 'Invalid session' }, { status: 401 });
+      return jsonPrivate({ success: false, error: 'Invalid session' }, { status: 401 });
     }
     userId = sessionUser.id
 
     if (await isGenerationBlocked(sessionUser.email)) {
-      return NextResponse.json({ success: false, error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
+      return jsonPrivate({ success: false, error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
     const body = await req.json();
@@ -115,7 +116,7 @@ export async function POST(req: NextRequest) {
       const { checkUserConcurrency } = await import('@/lib/user-concurrency')
       const { allowed, activeCount, limit } = await checkUserConcurrency(userId)
       if (!allowed) {
-        return NextResponse.json(
+        return jsonPrivate(
           { success: false, error: `Too many generations in progress (${activeCount}/${limit}). Wait for one to finish.` },
           { status: 429 }
         )
@@ -129,7 +130,7 @@ export async function POST(req: NextRequest) {
     // CCBill content filter — must pass BEFORE any charge or provider submit
     {
       const _cf = await enforceContentFilter(prompt, sessionUser.email)
-      if (!_cf.ok) return NextResponse.json({ error: _cf.reason }, { status: 400 })
+      if (!_cf.ok) return jsonPrivate({ error: _cf.reason }, { status: 400 })
     }
     console.log('🔒 Attempting to reserve tickets...');
     {
@@ -137,7 +138,7 @@ export async function POST(req: NextRequest) {
       const reserveResult = await reserveGenerationTickets(userId, sessionUser.email!, ticketCost)
       if (!reserveResult.ok) {
         console.log(`❌ Insufficient tickets. Need ${reserveResult.need}, have ${reserveResult.have}`);
-        return NextResponse.json(
+        return jsonPrivate(
           { success: false, error: `Insufficient tickets. Need ${reserveResult.need}, you have ${reserveResult.have}.` },
           { status: 400 }
         )
@@ -189,7 +190,7 @@ export async function POST(req: NextRequest) {
       if (geminiScanners.has(model)) {
         const { checkIsAdmin } = await import('@/lib/admin-check')
         if (!(await checkIsAdmin(sessionUser.email))) {
-          return NextResponse.json({ success: false, error: 'This model is not available' }, { status: 403 })
+          return jsonPrivate({ success: false, error: 'This model is not available' }, { status: 403 })
         }
       }
     }
@@ -206,7 +207,7 @@ export async function POST(req: NextRequest) {
 
     // Only require prompt
     if (!prompt || !prompt.trim()) {
-      return NextResponse.json(
+      return jsonPrivate(
         { success: false, error: 'Prompt is required' },
         { status: 400 }
       );
@@ -283,7 +284,7 @@ export async function POST(req: NextRequest) {
           });
         } catch (e) { console.error('⚠️ Failed to update job with falRequestId (non-fatal):', e); }
       }
-      return NextResponse.json({ success: true, jobId, queued: true });
+      return jsonPrivate({ success: true, jobId, queued: true });
 
     } else if (actualModel === 'nano-banana') {
       console.log('🍌🍌 Calling NanoBanana Cluster...');
@@ -383,7 +384,7 @@ export async function POST(req: NextRequest) {
           });
         } catch (e) { console.error('⚠️ Failed to update job with falRequestId (non-fatal):', e); }
       }
-      return NextResponse.json({ success: true, jobId, queued: true });
+      return jsonPrivate({ success: true, jobId, queued: true });
 
     } else if (actualModel === 'flux-2') {
       console.log('🌊 Calling FLUX 2...');
@@ -483,7 +484,7 @@ export async function POST(req: NextRequest) {
           });
         } catch (e) { console.error('⚠️ Failed to update job with falRequestId (non-fatal):', e); }
       }
-      return NextResponse.json({ success: true, jobId, queued: true });
+      return jsonPrivate({ success: true, jobId, queued: true });
 
     } else if (actualModel === 'gemini-3-pro-image-preview') {
       console.log('💎 Calling Gemini 3 Pro Image...');
@@ -726,14 +727,14 @@ export async function POST(req: NextRequest) {
       console.log('✅ Gemini Flash 2.5 generation complete');
 
     } else {
-      return NextResponse.json(
+      return jsonPrivate(
         { success: false, error: 'Invalid model' },
         { status: 400 }
       );
     }
 
     if (!imageUrl) {
-      return NextResponse.json(
+      return jsonPrivate(
         { success: false, error: 'No image generated' },
         { status: 500 }
       );
@@ -849,7 +850,7 @@ export async function POST(req: NextRequest) {
 
     // Return format based on single or multi-image
     if (allBlobUrls.length > 1) {
-      return NextResponse.json({
+      return jsonPrivate({
         success: true,
         imageUrl: primaryBlobUrl,
         images: allBlobUrls.map(url => ({ url })),
@@ -858,7 +859,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       imageUrl: primaryBlobUrl,
       referenceImageUrls: permanentReferenceUrls,
@@ -907,7 +908,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json(
+    return jsonPrivate(
       {
         success: false,
         error: isSensitiveContent ? 'Sensitive content detected - request blocked' : (error.message || 'Generation failed'),

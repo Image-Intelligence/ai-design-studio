@@ -17,6 +17,7 @@ import {
   resolveFalImageModelSpec,
   falImageModelIsPromptless,
 } from '@/lib/fal-image-models'
+import { jsonPrivate } from '@/lib/api-json'
 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
@@ -80,7 +81,7 @@ export async function POST(request: Request) {
 
     // Check maintenance — admins and audit accounts bypass
     if (await isGenerationBlocked(user.email?.toLowerCase())) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Multiverse Scanner is offline for maintenance' },
         { status: 503 }
       )
@@ -144,7 +145,7 @@ export async function POST(request: Request) {
     if (ADMIN_ONLY_IMAGE_MODELS.has(model)) {
       const { checkIsAdmin } = await import('@/lib/admin-check')
       if (!(await checkIsAdmin(user.email))) {
-        return NextResponse.json({ error: 'This model is not available' }, { status: 403 })
+        return jsonPrivate({ error: 'This model is not available' }, { status: 403 })
       }
     }
 
@@ -164,7 +165,7 @@ export async function POST(request: Request) {
     // CCBill content filter — must pass BEFORE any charge or provider submit
     {
       const _cf = await enforceContentFilter(prompt, user.email)
-      if (!_cf.ok) return NextResponse.json({ error: _cf.reason }, { status: 400 })
+      if (!_cf.ok) return jsonPrivate({ error: _cf.reason }, { status: 400 })
     }
     const skipTickets = adminMode && isAdminUser
 
@@ -174,7 +175,7 @@ export async function POST(request: Request) {
 
     // Upscaler models don't require a prompt
     if (model !== 'clarity-upscaler' && model !== 'aura-sr' && model !== 'esrgan' && model !== 'drct' && model !== 'supir' && !falImageModelIsPromptless(model) && (!prompt || prompt.trim().length === 0)) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Universe coordinates required' },
         { status: 400 }
       )
@@ -183,28 +184,28 @@ export async function POST(request: Request) {
     // Validate model exists and is available
     const selectedModel = getModelById(model)
     if (!selectedModel || !selectedModel.isAvailable) {
-      return NextResponse.json({ 
+      return jsonPrivate({ 
         error: `Model ${model} is not available. Please select a different model.` 
       }, { status: 400 })
     }
 
     // Check per-model maintenance status
     if (model === 'nano-banana' && systemState?.nanoBananaMaintenance) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'NanoBanana is currently offline. Please try NanoBanana Pro or SeeDream 4.5 instead.' },
         { status: 503 }
       )
     }
     
     if (model === 'nano-banana-pro' && systemState?.nanoBananaProMaintenance) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'NanoBanana Pro is currently offline. Please try NanoBanana or SeeDream 4.5 instead.' },
         { status: 503 }
       )
     }
 
     if (model === 'seedream-4.5' && systemState?.seedreamMaintenance) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'SeeDream 4.5 is currently offline. Please try NanoBanana or NanoBanana Pro instead.' },
         { status: 503 }
       )
@@ -227,7 +228,7 @@ export async function POST(request: Request) {
     if (!adminMode) {
       const { allowed, activeCount, limit } = await checkUserConcurrency(user.id)
       if (!allowed) {
-        return NextResponse.json(
+        return jsonPrivate(
           { error: `Too many generations in progress (${activeCount}/${limit}). Wait for one to finish.` },
           { status: 429 }
         )
@@ -245,7 +246,7 @@ export async function POST(request: Request) {
     const reservedSafe = Math.max(0, ticketRecord?.reserved ?? 0)
     const effectiveBalance = (ticketRecord?.balance ?? 0) - reservedSafe
     if (!skipTickets && effectiveBalance < ticketCost) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: `Insufficient tickets. Need ${ticketCost} ticket(s), but you have ${effectiveBalance}.` },
         { status: 402 }
       )
@@ -282,14 +283,14 @@ export async function POST(request: Request) {
         // ── Clarity Upscaler ─────────────────────────────────────────────────
         if (model === 'clarity-upscaler') {
           if (!upscaleImageUrl) {
-            return NextResponse.json({ error: 'upscaleImageUrl is required for clarity-upscaler' }, { status: 400 })
+            return jsonPrivate({ error: 'upscaleImageUrl is required for clarity-upscaler' }, { status: 400 })
           }
           const upscalePrompt = (prompt || 'masterpiece, best quality, highres').trim()
 
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
             if (!reserveResult.ok) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
                 { status: 402 }
               )
@@ -391,7 +392,7 @@ export async function POST(request: Request) {
           ])
 
           console.log(`[clarity-upscaler] ${upscaleFactor}x submitted, request_id=${request_id}`)
-          return NextResponse.json({
+          return jsonPrivate({
             success: true,
             queued: true,
             queueId: queueEntry.id,
@@ -405,13 +406,13 @@ export async function POST(request: Request) {
         // ── AuraSR ──────────────────────────────────────────────────────────────
         if (model === 'aura-sr') {
           if (!upscaleImageUrl) {
-            return NextResponse.json({ error: 'upscaleImageUrl is required for aura-sr' }, { status: 400 })
+            return jsonPrivate({ error: 'upscaleImageUrl is required for aura-sr' }, { status: 400 })
           }
 
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, 1)
             if (!reserveResult.ok) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
                 { status: 402 }
               )
@@ -480,7 +481,7 @@ export async function POST(request: Request) {
           ])
 
           console.log(`[aura-sr] ${upscaleFactor}x checkpoint=${auraSrCheckpoint} submitted, request_id=${request_id}`)
-          return NextResponse.json({
+          return jsonPrivate({
             success: true,
             queued: true,
             queueId: queueEntry.id,
@@ -494,13 +495,13 @@ export async function POST(request: Request) {
         // ── ESRGAN ──────────────────────────────────────────────────────────────
         if (model === 'esrgan') {
           if (!upscaleImageUrl) {
-            return NextResponse.json({ error: 'upscaleImageUrl is required for esrgan' }, { status: 400 })
+            return jsonPrivate({ error: 'upscaleImageUrl is required for esrgan' }, { status: 400 })
           }
 
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, 1)
             if (!reserveResult.ok) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
                 { status: 402 }
               )
@@ -571,7 +572,7 @@ export async function POST(request: Request) {
           ])
 
           console.log(`[esrgan] ${upscaleFactor}x model=${esrganModel} submitted, request_id=${request_id}`)
-          return NextResponse.json({
+          return jsonPrivate({
             success: true,
             queued: true,
             queueId: queueEntry.id,
@@ -585,7 +586,7 @@ export async function POST(request: Request) {
         // ── DRCT Super-Resolution ───────────────────────────────────────────────
         if (model === 'drct') {
           if (!upscaleImageUrl) {
-            return NextResponse.json({ error: 'upscaleImageUrl is required for drct' }, { status: 400 })
+            return jsonPrivate({ error: 'upscaleImageUrl is required for drct' }, { status: 400 })
           }
 
           const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
@@ -619,7 +620,7 @@ export async function POST(request: Request) {
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, drctTicketCost)
             if (!reserveResult.ok) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${drctTicketCost} ticket(s) for this output size, but you have ${reserveResult.have}.` },
                 { status: 402 }
               )
@@ -667,7 +668,7 @@ export async function POST(request: Request) {
           ])
 
           console.log(`[drct] ${upscaleFactor}x submitted (${drctTicketCost} tickets), request_id=${request_id}`)
-          return NextResponse.json({
+          return jsonPrivate({
             success: true,
             queued: true,
             queueId: queueEntry.id,
@@ -681,14 +682,14 @@ export async function POST(request: Request) {
         // ── SUPIR (Replicate) ──────────────────────────────────────────────────
         if (model === 'supir') {
           if (!upscaleImageUrl) {
-            return NextResponse.json({ error: 'upscaleImageUrl is required for supir' }, { status: 400 })
+            return jsonPrivate({ error: 'upscaleImageUrl is required for supir' }, { status: 400 })
           }
 
           const supirCost = 8
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, supirCost)
             if (!reserveResult.ok) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${supirCost}, have ${reserveResult.have}.` },
                 { status: 402 }
               )
@@ -726,9 +727,9 @@ export async function POST(request: Request) {
             const errText = await predRes.text()
             if (!skipTickets) await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
             if (predRes.status === 429) {
-              return NextResponse.json({ error: 'SUPIR is rate limited — only 1 prediction at a time on your Replicate plan. Add credit to your Replicate account to increase the limit.' }, { status: 429 })
+              return jsonPrivate({ error: 'SUPIR is rate limited — only 1 prediction at a time on your Replicate plan. Add credit to your Replicate account to increase the limit.' }, { status: 429 })
             }
-            return NextResponse.json({ error: `SUPIR error: ${errText.slice(0, 120)}` }, { status: 500 })
+            return jsonPrivate({ error: `SUPIR error: ${errText.slice(0, 120)}` }, { status: 500 })
           }
           const prediction = await predRes.json()
 
@@ -807,7 +808,7 @@ export async function POST(request: Request) {
           })
 
           console.log(`[supir] ${upscaleFactor}x prediction=${prediction.id} queued`)
-          return NextResponse.json({
+          return jsonPrivate({
             success: true,
             queued: true,
             queueId: queueEntry.id,
@@ -883,7 +884,7 @@ export async function POST(request: Request) {
             modelEndpoint = built.endpoint
             newFalInput = built.input
           } catch (buildErr: any) {
-            return NextResponse.json(
+            return jsonPrivate(
               { error: buildErr?.message || `Invalid input for ${model}` },
               { status: 400 }
             )
@@ -908,7 +909,7 @@ export async function POST(request: Request) {
 
         // Check if regular NanoBanana is trying to use reference images (not supported)
         if (model === 'nano-banana' && referenceImages && referenceImages.length > 0) {
-          return NextResponse.json({
+          return jsonPrivate({
             error: 'NanoBanana does not support reference images. Please use NanoBanana Pro or SeeDream 4.5 for reference image features.'
           }, { status: 400 })
         }
@@ -1135,7 +1136,7 @@ export async function POST(request: Request) {
                 AND (balance - COALESCE(reserved, 0)) >= ${ticketCost}
             `
             if (affected === 0) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${ticketCost} ticket(s) to complete this generation.` },
                 { status: 402 }
               )
@@ -1145,7 +1146,7 @@ export async function POST(request: Request) {
           }
 
           console.log('=== FAL.AI SYNC GENERATION COMPLETE ===')
-          return NextResponse.json({ imageUrl: syncUrl, newBalance, modelUsed: selectedModel.displayName })
+          return jsonPrivate({ imageUrl: syncUrl, newBalance, modelUsed: selectedModel.displayName })
 
         } else {
           // ─── ASYNC SUBMIT TO FAL.AI (main portal queue flow) ─────────
@@ -1157,7 +1158,7 @@ export async function POST(request: Request) {
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
             if (!reserveResult.ok) {
-              return NextResponse.json(
+              return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
                 { status: 402 }
               )
@@ -1209,7 +1210,7 @@ export async function POST(request: Request) {
               `[global-limit] At capacity (${globalLimit.currentActive}/${globalLimit.maxConcurrent}) — job #${queueEntry.id} queued`
             )
 
-            return NextResponse.json({
+            return jsonPrivate({
               success: true,
               queued: true,
               queueId: queueEntry.id,
@@ -1294,7 +1295,7 @@ export async function POST(request: Request) {
           console.log(`Queue entry created: #${queueEntry.id}`)
           console.log('=== FAL.AI JOB SUBMITTED — AWAITING WEBHOOK ===')
 
-          return NextResponse.json({
+          return jsonPrivate({
             success: true,
             queued: true,
             queueId: queueEntry.id,
@@ -1317,7 +1318,7 @@ export async function POST(request: Request) {
             data: { reserved: { decrement: ticketCost } }
           }).catch(e => console.error('Failed to release reservation on error:', e))
         }
-        return NextResponse.json(
+        return jsonPrivate(
           { error: `FAL.ai submission failed: ${error.message}` },
           { status: 500 }
         )
@@ -1331,7 +1332,7 @@ export async function POST(request: Request) {
       // Check if Gemini API is configured
       if (!GEMINI_API_KEY) {
         console.error('Gemini API key not configured')
-        return NextResponse.json(
+        return jsonPrivate(
           { error: 'Multiverse Scanner not configured. Contact administrator.' },
           { status: 500 }
         )
@@ -1403,12 +1404,12 @@ export async function POST(request: Request) {
             ? 'Flash Scanner v2.5 (2000/day available!) or SeeDream 4.5' 
             : 'Pro Scanner v3 or SeeDream 4.5'
           
-          return NextResponse.json({ 
+          return jsonPrivate({ 
             error: `Daily quota exceeded for ${selectedModel.displayName}. This model has reached its ${selectedModel.rateLimit.rpd} requests/day limit. Try switching to ${otherModel} or wait until tomorrow when quotas reset.` 
           }, { status: 429 })
         }
         
-        return NextResponse.json(
+        return jsonPrivate(
           { 
             error: `Generation failed: ${response.status}`,
             details: errorText.substring(0, 300)
@@ -1430,7 +1431,7 @@ export async function POST(request: Request) {
           prompt: prompt.substring(0, 100)
         })
         
-        return NextResponse.json({
+        return jsonPrivate({
           error: 'Sensitive content detected. Ticket not charged. Try another prompt or use SeeDream 4.5 / NanoBanana Pro for less restrictive generation.',
           blocked: true
         }, { status: 400 })
@@ -1439,7 +1440,7 @@ export async function POST(request: Request) {
       // Extract image from response
       if (!result.candidates || result.candidates.length === 0) {
         console.error('No candidates in response:', result)
-        return NextResponse.json(
+        return jsonPrivate(
           { error: 'No image generated' },
           { status: 500 }
         )
@@ -1460,14 +1461,14 @@ export async function POST(request: Request) {
         
         // Specific handling for different block reasons
         if (finishReason === 'SAFETY' || finishReason === 'IMAGE_SAFETY' || finishReason === 'IMAGE_OTHER') {
-          return NextResponse.json({
+          return jsonPrivate({
             error: 'Sensitive content detected. Ticket not charged. Try another prompt or use SeeDream 4.5 / NanoBanana Pro for less restrictive generation.',
             blocked: true
           }, { status: 400 })
         }
         
         // Other finish reasons
-        return NextResponse.json({
+        return jsonPrivate({
           error: `Generation blocked: ${finishReason}. Ticket not charged. Try rephrasing your prompt.`,
           blocked: true
         }, { status: 400 })
@@ -1475,7 +1476,7 @@ export async function POST(request: Request) {
       
       if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
         console.error('No content parts in candidate:', candidate)
-        return NextResponse.json(
+        return jsonPrivate(
           { error: 'Invalid response structure' },
           { status: 500 }
         )
@@ -1505,7 +1506,7 @@ export async function POST(request: Request) {
         )
         
         if (isSensitiveRefusal) {
-          return NextResponse.json(
+          return jsonPrivate(
             { 
               error: 'Sensitive content detected. Ticket not charged. Try another prompt or use SeeDream 4.5 / NanoBanana Pro for less restrictive generation.',
               blocked: true
@@ -1515,7 +1516,7 @@ export async function POST(request: Request) {
         }
         
         // Generic error for other text responses
-        return NextResponse.json(
+        return jsonPrivate(
           { error: 'Model returned text instead of image. Try a different prompt or remove reference images.' },
           { status: 500 }
         )
@@ -1628,7 +1629,7 @@ export async function POST(request: Request) {
     const ticketsActuallyUsed = skipTickets ? 0 : ticketCost
 
     if (isMultiImage) {
-      return NextResponse.json({
+      return jsonPrivate({
         success: true,
         images: uploadedImages, // Array of {url, id}
         imageUrl: uploadedImages[0].url, // Backwards compat
@@ -1640,7 +1641,7 @@ export async function POST(request: Request) {
         ticketsUsed: ticketsActuallyUsed,
       })
     } else {
-      return NextResponse.json({
+      return jsonPrivate({
         success: true,
         imageUrl: uploadedImages[0].url,
         imageId: uploadedImages[0].id,
@@ -1657,7 +1658,7 @@ export async function POST(request: Request) {
     console.error('Error:', error)
     console.error('Stack:', error.stack)
 
-    return NextResponse.json(
+    return jsonPrivate(
       {
         error: 'Universe scan failed. Please try again.',
         details: process.env.NODE_ENV === 'development' ? error.message : undefined

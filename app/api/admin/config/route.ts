@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { checkAuth } from '@/lib/admin-auth'
+import { jsonPrivate } from '@/lib/api-json'
 
 
 // GET - Fetch current admin configuration
@@ -13,13 +14,13 @@ export async function GET() {
       const newConfig = await prisma.systemState.create({
         data: {}
       })
-      return NextResponse.json(newConfig)
+      return jsonPrivate(newConfig)
     }
 
-    return NextResponse.json(config)
+    return jsonPrivate(config)
   } catch (error) {
     console.error('Error fetching config:', error)
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to fetch config' },
       { status: 500 }
     )
@@ -31,7 +32,7 @@ export async function GET() {
 // GET stays open (many public pages read maintenance flags), but mutations
 // were previously unauthenticated — anyone could flip maintenance/shop state.
 export async function POST(request: Request) {
-  if (!checkAuth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!checkAuth(request)) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   try {
     const body = await request.json()
 
@@ -55,10 +56,10 @@ export async function POST(request: Request) {
     }
 
     console.log('Config updated:', config)
-    return NextResponse.json(config)
+    return jsonPrivate(config)
   } catch (error) {
     console.error('Error updating config:', error)
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to update config' },
       { status: 500 }
     )

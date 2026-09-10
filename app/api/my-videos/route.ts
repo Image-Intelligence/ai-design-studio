@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
+import { jsonPrivate } from '@/lib/api-json'
 
 
 export async function GET(request: Request) {
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
     const token = cookieStore.get('session')?.value;
 
     if (!token) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Not authenticated' },
         { status: 401 }
       );
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
 
     const user = await getUserFromSession(token);
     if (!user) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Invalid session' },
         { status: 401 }
       );
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
       take: limit
     });
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       videos: videos.map(vid => {
         const metadata = vid.videoMetadata as any;
@@ -80,7 +81,7 @@ export async function GET(request: Request) {
 
   } catch (error: any) {
     console.error('Error fetching generated videos:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to fetch videos' },
       { status: 500 }
     );

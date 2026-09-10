@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma';
 import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { uploadToR2, uploadPublicAsset } from '@/lib/r2';
+import { jsonPrivate } from '@/lib/api-json'
 
 
 const MAX_IMAGES_PER_SIDE = 5;
@@ -14,7 +15,7 @@ export async function GET(req: NextRequest) {
     const token = cookieStore.get('session')?.value;
 
     if (!token) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Not authenticated' },
         { status: 401 }
       );
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
 
     const user = await getUserFromSession(token);
     if (!user) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Invalid session' },
         { status: 401 }
       );
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
     const leftCount = carouselImages.filter(c => c.side === 'left').length;
     const rightCount = carouselImages.filter(c => c.side === 'right').length;
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       images: carouselImages,
       counts: {
@@ -54,7 +55,7 @@ export async function GET(req: NextRequest) {
 
   } catch (error: any) {
     console.error('Error fetching carousel:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: error.message || 'Failed to fetch carousel images' },
       { status: 500 }
     );
@@ -68,7 +69,7 @@ export async function POST(req: NextRequest) {
     const token = cookieStore.get('session')?.value;
 
     if (!token) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Not authenticated' },
         { status: 401 }
       );
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
 
     const user = await getUserFromSession(token);
     if (!user) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Invalid session' },
         { status: 401 }
       );
@@ -88,14 +89,14 @@ export async function POST(req: NextRequest) {
     const position = parseInt(formData.get('position') as string) || 0;
 
     if (!file || !side) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Image file and side are required' },
         { status: 400 }
       );
     }
 
     if (side !== 'left' && side !== 'right') {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Side must be "left" or "right"' },
         { status: 400 }
       );
@@ -111,7 +112,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (existingCount >= MAX_IMAGES_PER_SIDE) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: `Maximum ${MAX_IMAGES_PER_SIDE} images allowed per side. Delete some images first.` },
         { status: 400 }
       );
@@ -134,14 +135,14 @@ export async function POST(req: NextRequest) {
 
     console.log(`✅ Carousel image uploaded: User ${user.id}, ${side} side`);
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       image: carouselImage
     });
 
   } catch (error: any) {
     console.error('Error uploading carousel image:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: error.message || 'Failed to upload image' },
       { status: 500 }
     );
@@ -155,7 +156,7 @@ export async function PUT(req: NextRequest) {
     const token = cookieStore.get('session')?.value;
 
     if (!token) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Not authenticated' },
         { status: 401 }
       );
@@ -163,7 +164,7 @@ export async function PUT(req: NextRequest) {
 
     const user = await getUserFromSession(token);
     if (!user) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Invalid session' },
         { status: 401 }
       );
@@ -173,7 +174,7 @@ export async function PUT(req: NextRequest) {
     const { id, position } = body;
 
     if (!id) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Image id is required' },
         { status: 400 }
       );
@@ -188,7 +189,7 @@ export async function PUT(req: NextRequest) {
     });
 
     if (!existing) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Image not found or not owned by you' },
         { status: 404 }
       );
@@ -199,14 +200,14 @@ export async function PUT(req: NextRequest) {
       data: { position: parseInt(position) }
     });
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       image: updated
     });
 
   } catch (error: any) {
     console.error('Error updating carousel image:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: error.message || 'Failed to update image' },
       { status: 500 }
     );
@@ -220,7 +221,7 @@ export async function DELETE(req: NextRequest) {
     const token = cookieStore.get('session')?.value;
 
     if (!token) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Not authenticated' },
         { status: 401 }
       );
@@ -228,7 +229,7 @@ export async function DELETE(req: NextRequest) {
 
     const user = await getUserFromSession(token);
     if (!user) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Invalid session' },
         { status: 401 }
       );
@@ -238,7 +239,7 @@ export async function DELETE(req: NextRequest) {
     const id = searchParams.get('id');
 
     if (!id) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Image id is required' },
         { status: 400 }
       );
@@ -253,7 +254,7 @@ export async function DELETE(req: NextRequest) {
     });
 
     if (!existing) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Image not found or not owned by you' },
         { status: 404 }
       );
@@ -265,11 +266,11 @@ export async function DELETE(req: NextRequest) {
 
     console.log(`✅ Carousel image deleted: User ${user.id}, ID ${id}`);
 
-    return NextResponse.json({ success: true });
+    return jsonPrivate({ success: true });
 
   } catch (error: any) {
     console.error('Error deleting carousel image:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: error.message || 'Failed to delete image' },
       { status: 500 }
     );

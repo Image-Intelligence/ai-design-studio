@@ -7,6 +7,7 @@ import {
 } from '@/lib/chat-hub-models'
 import { buildFalCall, generateWithGeminiApi, persistChatGeneration } from '@/lib/chat-hub-create'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { jsonPrivate } from '@/lib/api-json'
 
 export const maxDuration = 300
 
@@ -19,22 +20,22 @@ fal.config({ credentials: process.env.FAL_KEY })
 // the result as an assistant message whose imageUrls carry the generated media.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireChatHubAdmin()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
   const chatId = parseInt((await params).id)
-  if (isNaN(chatId)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
+  if (isNaN(chatId)) return jsonPrivate({ error: 'Invalid id' }, { status: 400 })
 
   const body = await req.json().catch(() => ({}))
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
   const createModelId = typeof body.createModelId === 'string' ? body.createModelId : ''
-  if (!prompt) return NextResponse.json({ error: 'Prompt is empty' }, { status: 400 })
+  if (!prompt) return jsonPrivate({ error: 'Prompt is empty' }, { status: 400 })
   const spec = getCreateModel(createModelId)
-  if (!spec) return NextResponse.json({ error: 'Unknown create model' }, { status: 400 })
+  if (!spec) return jsonPrivate({ error: 'Unknown create model' }, { status: 400 })
   if (spec.disabled) {
-    return NextResponse.json({ error: `${spec.label} is not available in chat yet — ${spec.disabled}` }, { status: 400 })
+    return jsonPrivate({ error: `${spec.label} is not available in chat yet — ${spec.disabled}` }, { status: 400 })
   }
   if (!spec.geminiApi && !process.env.FAL_KEY) {
-    return NextResponse.json({ error: 'FAL_KEY is not configured' }, { status: 500 })
+    return jsonPrivate({ error: 'FAL_KEY is not configured' }, { status: 500 })
   }
 
   const settings = resolveCreateSettings(spec, body.settings)
@@ -48,19 +49,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     : []
 
   const call = spec.geminiApi ? null : buildFalCall(createModelId, prompt, refs, settings)
-  if (call && 'error' in call) return NextResponse.json({ error: call.error }, { status: 400 })
+  if (call && 'error' in call) return jsonPrivate({ error: call.error }, { status: 400 })
 
   const chat = await prisma.chat.findFirst({
     where: { id: chatId, userId: user.id },
     select: { id: true, title: true },
   })
-  if (!chat) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!chat) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
   // Same ticket charging as the scanners (admin emails bypass inside the gate).
   // Charged before submission; refunded if the generation fails.
   const ticketResult = await deductGenerationTickets(user.id, user.email, ticketCost)
   if (!ticketResult.ok) {
-    return NextResponse.json(
+    return jsonPrivate(
       { error: `Insufficient tickets — ${spec.label} costs ${ticketCost}, you have ${ticketResult.have}` },
       { status: 402 },
     )
@@ -78,7 +79,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const r = await generateWithGeminiApi(spec.geminiApi, prompt, refs, settings)
       if ('error' in r) {
         await refundGenerationTickets(user.id, user.email, ticketCost)
-        return NextResponse.json({ error: r.error }, { status: 502 })
+        return jsonPrivate({ error: r.error }, { status: 502 })
       }
       mediaUrl = r.url
       endpointUsed = spec.geminiApi
@@ -90,7 +91,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     if (!mediaUrl) {
       await refundGenerationTickets(user.id, user.email, ticketCost)
-      return NextResponse.json({ error: 'The model returned no media' }, { status: 502 })
+      return jsonPrivate({ error: 'The model returned no media' }, { status: 502 })
     }
 
     // Sync to the user's main session feed (re-hosts images on R2)
@@ -111,11 +112,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       },
     })
     await prisma.chat.update({ where: { id: chatId }, data: { updatedAt: new Date() } })
-    return NextResponse.json({ url: mediaUrl })
+    return jsonPrivate({ url: mediaUrl })
   } catch (err: any) {
     console.error('chat-hub create error:', err)
     await refundGenerationTickets(user.id, user.email, ticketCost)
-    return NextResponse.json(
+    return jsonPrivate(
       { error: `Generation failed: ${String(err?.message || err).slice(0, 200)}` },
       { status: 502 },
     )

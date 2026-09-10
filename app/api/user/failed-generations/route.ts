@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { jsonPrivate } from '@/lib/api-json'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,7 +26,7 @@ async function requireUser() {
 export async function GET() {
   try {
     const user = await requireUser()
-    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    if (!user) return jsonPrivate({ error: 'Not authenticated' }, { status: 401 })
 
     const rows = await prisma.$queryRaw<
       {
@@ -45,7 +46,7 @@ export async function GET() {
       ORDER BY "createdAt" DESC
       LIMIT 200`
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       fails: rows.map(r => ({
         id: r.id,
@@ -72,7 +73,7 @@ export async function GET() {
     })
   } catch (e: any) {
     console.error('failed-generations GET error:', e)
-    return NextResponse.json({ error: 'Failed to load' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to load' }, { status: 500 })
   }
 }
 
@@ -80,13 +81,13 @@ export async function GET() {
 export async function PATCH(request: NextRequest) {
   try {
     const user = await requireUser()
-    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    if (!user) return jsonPrivate({ error: 'Not authenticated' }, { status: 401 })
 
     const body = await request.json()
     const ids: number[] = Array.isArray(body.ids) ? body.ids.filter((n: any) => Number.isInteger(n)) : []
     const falIds: string[] = Array.isArray(body.falRequestIds) ? body.falRequestIds.filter((s: any) => typeof s === 'string' && s.length < 200) : []
     if (ids.length === 0 && falIds.length === 0) {
-      return NextResponse.json({ error: 'Nothing to dismiss' }, { status: 400 })
+      return jsonPrivate({ error: 'Nothing to dismiss' }, { status: 400 })
     }
 
     let dismissed = 0
@@ -100,10 +101,10 @@ export async function PATCH(request: NextRequest) {
         UPDATE "GenerationQueue" SET "dismissedAt" = NOW()
         WHERE "userId" = ${user.id} AND "falRequestId" IN (${Prisma.join(falIds)}) AND "dismissedAt" IS NULL`
     }
-    return NextResponse.json({ success: true, dismissed })
+    return jsonPrivate({ success: true, dismissed })
   } catch (e: any) {
     console.error('failed-generations PATCH error:', e)
-    return NextResponse.json({ error: 'Failed to dismiss' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to dismiss' }, { status: 500 })
   }
 }
 
@@ -112,11 +113,11 @@ export async function PATCH(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser()
-    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    if (!user) return jsonPrivate({ error: 'Not authenticated' }, { status: 401 })
 
     const { prompt, modelId, modelType, error, aspectRatio, quality, referenceImageUrls, queuedAt, falRequestId } = await request.json()
     if (!prompt || !modelId || (modelType !== 'image' && modelType !== 'video')) {
-      return NextResponse.json({ error: 'Invalid payload' }, { status: 400 })
+      return jsonPrivate({ error: 'Invalid payload' }, { status: 400 })
     }
 
     // Idempotency: repeat reports of the same dead job (client retries, stale
@@ -127,7 +128,7 @@ export async function POST(request: NextRequest) {
         where: { userId: user.id, falRequestId, status: 'failed' },
         select: { id: true },
       })
-      if (existing) return NextResponse.json({ success: true, id: existing.id, deduped: true })
+      if (existing) return jsonPrivate({ success: true, id: existing.id, deduped: true })
     }
 
     // createdAt = when the generation was QUEUED, not when the failure was
@@ -163,9 +164,9 @@ export async function POST(request: NextRequest) {
       },
       select: { id: true },
     })
-    return NextResponse.json({ success: true, id: row.id })
+    return jsonPrivate({ success: true, id: row.id })
   } catch (e: any) {
     console.error('failed-generations POST error:', e)
-    return NextResponse.json({ error: 'Failed to save' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to save' }, { status: 500 })
   }
 }

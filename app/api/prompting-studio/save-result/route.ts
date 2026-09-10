@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { jsonPrivate } from '@/lib/api-json'
 
 
 export async function POST(req: NextRequest) {
@@ -16,7 +17,7 @@ export async function POST(req: NextRequest) {
     } = await req.json();
 
     if (!celebrityName || !results || results.length === 0) {
-      return NextResponse.json(
+      return jsonPrivate(
         { error: 'Missing required fields' },
         { status: 400 }
       );
@@ -48,14 +49,14 @@ export async function POST(req: NextRequest) {
       )
     );
 
-    return NextResponse.json({
+    return jsonPrivate({
       success: true,
       testId: promptTest.id,
       resultCount: testResults.length,
     });
   } catch (error) {
     console.error('Failed to save test results:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to save results' },
       { status: 500 }
     );
@@ -77,7 +78,7 @@ export async function GET(req: NextRequest) {
         take: 10,
       });
 
-      return NextResponse.json({ success: true, tests });
+      return jsonPrivate({ success: true, tests });
     }
 
     // Get recent tests
@@ -94,10 +95,10 @@ export async function GET(req: NextRequest) {
       take: 20,
     });
 
-    return NextResponse.json({ success: true, tests: recentTests });
+    return jsonPrivate({ success: true, tests: recentTests });
   } catch (error) {
     console.error('Failed to fetch test results:', error);
-    return NextResponse.json(
+    return jsonPrivate(
       { error: 'Failed to fetch results' },
       { status: 500 }
     );
