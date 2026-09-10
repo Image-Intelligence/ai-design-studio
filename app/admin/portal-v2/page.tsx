@@ -17,6 +17,7 @@ import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import { gptImage25Size } from "@/lib/fal-image-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -118,6 +119,10 @@ interface ImageModelConfig {
 
 const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   // ── Frontier additions (ADMIN ONLY while under test) ──
+  // ChatGPT Images 2.5 — ONE entry for both renderers; sunburst/flare is a
+  // switch in the prompt bar, and the edit endpoint is chosen automatically
+  // when references are attached (see lib/fal-image-models.ts).
+  { id: "gpt-image-2.5",        apiId: "gpt-image-2.5",            name: "ChatGPT Images 2.5",  aspectRatios: ["auto", "21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "qwen-image-3",         apiId: "qwen-image-3",             name: "Qwen Image 3",        aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 6, isFal: true, maxImages: 4 },
   { id: "reve-2.1",             apiId: "reve-2.1",                 name: "Reve 2.1",            aspectRatios: ["auto", "21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "mai-image-2.5-pro",    apiId: "mai-image-2.5-pro",        name: "MAI Image 2.5 Pro",   aspectRatios: ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
@@ -138,6 +143,9 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   // single-source upscaler one; the generic Refs chip is off (maxReferenceImages 0)
   // so there is exactly one place to attach them.
   { id: "google-virtual-try-on", apiId: "google-virtual-try-on",   name: "Virtual Try-On",      aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4, isUpscaler: true, isTryOn: true },
+  // SeedVR2 — one source image, no prompt; the shared upscaler controls
+  // (source picker + factor) drive it, same as the Topaz suite.
+  { id: "seedvr2-upscale",      apiId: "seedvr2-upscale",          name: "SeedVR2 Upscale",     aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   // Topaz image suite — all take one source image
   { id: "topaz-img-upscale-precision",  apiId: "topaz-img-upscale-precision",  name: "Topaz Upscale · Precision",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "topaz-img-upscale-creative",   apiId: "topaz-img-upscale-creative",   name: "Topaz Upscale · Creative",   aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
@@ -1016,8 +1024,10 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "pro-scanner-v3":      "$$$",
   "nano-banana-pro":     "$$$",
   "gpt-image-2":         "$$",
+  "gpt-image-2.5":       "$$$",
   "z-image-base":        "$$",
   "z-image-turbo":       "$",
+  "seedvr2-upscale":     "$",
   "clarity-upscaler":    "$$",
   "aura-sr":             "$",
   "esrgan":              "$",
@@ -1153,6 +1163,9 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
 ]
 const ADMIN_IMAGE_MODEL_GROUPS = [
+  // The picker renders THESE groups, not IMAGE_MODEL_CONFIGS — a model missing
+  // from here simply never appears, however complete its config is.
+  { label: "OpenAI",    type: "text to image · edit",       accent: "text-green-400", dot: "bg-green-400", items: ["ChatGPT Images 2.5"] },
   { label: "Alibaba",   type: "text to image · edit",       accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3"] },
   { label: "Reve",      type: "text to image · edit",       accent: "text-pink-400",  dot: "bg-pink-400",  items: ["Reve 2.1"] },
   { label: "Microsoft", type: "text to image · edit",       accent: "text-sky-400",   dot: "bg-sky-400",   items: ["MAI Image 2.5 Pro"] },
@@ -1167,7 +1180,7 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "Pixelcut",  type: "product photography",        accent: "text-rose-400",  dot: "bg-rose-400",  items: ["Pixelcut Product Photo"] },
   { label: "Topaz",     type: "upscale · restore · adjust", accent: "text-lime-400",  dot: "bg-lime-400",  items: ["Topaz Image"] },
-  { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
+  { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["SeedVR2 Upscale", "Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
   { label: "RunPod",    type: "local · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
@@ -1738,6 +1751,7 @@ const MODEL_BLURBS: Record<string, string> = {
   "Topaz Denoise":             "Cleans grain and sensor noise",
   "Topaz Restore":             "Repairs old, damaged photos",
   "Topaz Upscale · Transparent": "Upscales and keeps transparency",
+  "SeedVR2 Upscale":           "Faithful detail recovery, 1-10x",
   "Clarity Upscaler":          "Creative upscale, adds detail",
   "AuraSR":                    "Fast 4x upscale",
   "ESRGAN":                    "Classic dependable upscaler",
@@ -2439,6 +2453,91 @@ function refTileThumb(url: string, w: 128 | 256 = 256): string {
   // w must be one of Next's configured image sizes and q must be 75 — Vercel's
   // optimizer 400s anything else (verified against prod)
   return url.startsWith("https://") ? `/_next/image?url=${encodeURIComponent(url)}&w=${w}&q=75` : url
+}
+
+/**
+ * How wide the Refs panel is.
+ *
+ * Compact was 320px, which left the Total and Active counters in the header
+ * clipped by the panel edge — "ACTIVE 0/14 img · 0/3 vid" needs real room, and
+ * a counter you cannot read is worse than no counter. The value is written
+ * once because it is needed both to position the panel and to size it, and
+ * the two had to agree.
+ */
+function refsPanelWidth(wide: boolean): number {
+  return wide ? 640 : 384
+}
+
+/**
+ * Everything a finished-but-still-slotted generation is known by.
+ *
+ * A slot in "done" state renders its own image at the top of the feed. The
+ * paginated body list was only ever filtered against freshImages, so once a
+ * generation was handed to its slot INSTEAD of being prepended, nothing
+ * stopped the same row rendering a second time as a body tile — the slot's
+ * copy and the feed's copy, side by side.
+ *
+ * Matching on id AND url because the two can disagree: a slot may hold the
+ * provider's URL while the saved row holds the R2 re-host.
+ */
+/**
+ * The stored object a media URL points at, ignoring which host served it.
+ *
+ * "https://pub-abc.r2.dev/u/1/x.png" and a later re-host of the same object
+ * are the same picture; comparing whole URLs says they are not. Falls back to
+ * the input for anything that is not a URL (a bare key, a blob:, a data:).
+ */
+function mediaPathKey(urlOrKey: string): string {
+  if (!urlOrKey) return ""
+  try { return new URL(urlOrKey).pathname.replace(/^\/+/, "") } catch { return urlOrKey.replace(/^\/+/, "") }
+}
+
+function slotHeldKeys(slots: PendingSlot[]): { ids: Set<number>; urls: Set<string>; keys: Set<string> } {
+  const ids = new Set<number>()
+  const urls = new Set<string>()
+  const keys = new Set<string>()
+  for (const s of slots) {
+    if (s.status !== "done" || !s.doneImage) continue
+    if (typeof s.doneImage.id === "number") ids.add(s.doneImage.id)
+    if (s.doneImage.imageUrl) urls.add(s.doneImage.imageUrl)
+    /*
+     * And the object PATH, which is the identity that survives the rest
+     * changing.
+     *
+     * The nano-banana path builds its finished item from the status route,
+     * which returns a temporary id whenever the row could not be saved, so id
+     * alone misses. The URL can differ by host between what the slot holds and
+     * what the feed returns, so url alone misses too. The path is the same
+     * object either way. (GeneratedImage has no r2Key column, so this is
+     * derived from the URL rather than read from the row.)
+     */
+    if (s.doneImage.r2Key) keys.add(mediaPathKey(s.doneImage.r2Key))
+    if (s.doneImage.imageUrl) keys.add(mediaPathKey(s.doneImage.imageUrl))
+  }
+  return { ids, urls, keys }
+}
+
+/**
+ * The SeedVR2 settings worth showing on a finished or in-flight upscale.
+ *
+ * The seed leads because it is the one value that makes a run repeatable, and
+ * it is the only one you cannot infer by looking at the picture. Returned as
+ * plain label/value pairs so the pending popup and the info panel render the
+ * same list from the same source rather than each building their own.
+ */
+function seedvrChips(vm: Record<string, any> | null | undefined): { label: string; value: string }[] {
+  if (!vm) return []
+  const out: { label: string; value: string }[] = []
+  const mode = typeof vm.seedvrMode === "string" ? vm.seedvrMode : undefined
+  if (mode === "target" || (!mode && vm.seedvrTarget)) {
+    if (vm.seedvrTarget && vm.seedvrTarget !== "default") out.push({ label: "target", value: String(vm.seedvrTarget) })
+  } else if (typeof vm.seedvrFactor === "number") {
+    out.push({ label: "factor", value: `${vm.seedvrFactor}\u00d7` })
+  }
+  if (vm.seedvrSeed != null) out.push({ label: "seed", value: String(vm.seedvrSeed) })
+  if (typeof vm.seedvrNoise === "number") out.push({ label: "noise", value: vm.seedvrNoise.toFixed(3) })
+  if (typeof vm.seedvrFormat === "string") out.push({ label: "format", value: vm.seedvrFormat })
+  return out
 }
 
 /**
@@ -3402,6 +3501,25 @@ const adminPasswordHeaders = (): Record<string, string> => {
 }
 
 const isVideoUrl = (url: string) => /\.(mp4|webm|mov|avi|mkv)($|\?|#)/i.test(url)
+
+/**
+ * Is this feed row a video?
+ *
+ * NOT "does it have videoMetadata". That column is a general-purpose bag: an
+ * image row uses it for the LoRA it was made with, its flux settings, the GPT
+ * renderer — all things that have nothing to do with video. Treating its mere
+ * presence as "this is a video" renders the picture through <video src="x.png">,
+ * which decodes nothing and leaves an empty tile.
+ *
+ * These are the same three tests the server applies when it splits the feed
+ * into images and videos (see the type filter in /api/my-images): an explicit
+ * isVideo flag, a video model, or a video file extension.
+ */
+function isVideoItem(img: { imageUrl?: string; model?: string; videoMetadata?: Record<string, any> | null }): boolean {
+  if (img.videoMetadata?.isVideo === true) return true
+  if (img.model && VIDEO_MODELS.includes(img.model)) return true
+  return isVideoUrl(img.imageUrl || "")
+}
 
 interface AdminFeedFacets {
   models:    { value: string; count: number }[]
@@ -5787,7 +5905,7 @@ function RefDropdown({
   /** Set when the consumer counts CLIPS separately from stills (Movie Studio). */
   modelMaxVideos?: number
   // Raw files — page-level helper compresses, uploads to R2 and creates account rows
-  onUploadFiles: (files: File[], folderId: number | null) => Promise<{ added: number; failed: number; limitHit: boolean }>
+  onUploadFiles: (files: File[], folderId: number | null) => Promise<{ added: number; failed: number; limitHit: boolean; reason?: string | null }>
   /** Register already-uploaded assets (meshes) as library rows. */
   onUploadUrls?: (items: { url: string }[], folderId: number | null) => Promise<unknown>
   onDelete: (id: string) => void
@@ -5907,15 +6025,15 @@ function RefDropdown({
    * 2D or 3D. The library holds both now, and they are not browsable together:
    * a mesh has no thumbnail worth putting in a picture grid, and a photograph
    * is noise when you are looking for a model to remesh. The reference library
-   * has no kind column and cannot get one without a migration, so \u2014 as with
-   * video refs \u2014 the file extension is the marker.
+   * has no kind column and cannot get one without a migration, so — as with
+   * video refs — the file extension is the marker.
    */
   const [kindFilter, setKindFilter] = useState<"2d" | "3d">("2d")
   const meshUploadRef = useRef<HTMLInputElement>(null)
   const [meshUploading, setMeshUploading] = useState(false)
   const activeCount = disabled ? 0 : activeIds.filter((id) => library.some((img) => img.id === id)).length
   // Movie Studio takes the user's own clips as well as stills, and they are
-  // different budgets \u2014 a shared "3/16" said nothing about which was full.
+  // different budgets — a shared "3/16" said nothing about which was full.
   // The library has no kind column, so the file extension is the marker.
   const splitRefs = typeof modelMaxVideos === "number"
   const activeVideos = !splitRefs || disabled ? 0 : activeIds.filter((id) => {
@@ -6002,7 +6120,7 @@ function RefDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const z = cssZoomOf(buttonRef.current!)
-      const panelW = Math.min((wide ? 640 : 320) * z, window.innerWidth - 16)
+      const panelW = Math.min(refsPanelWidth(wide) * z, window.innerWidth - 16)
       setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
   }, [open, wide])
@@ -6023,7 +6141,15 @@ function RefDropdown({
       // Compress + upload to R2 + create account rows happens in the page helper
       const result = await onUploadFiles(toProcess, currentFolderId)
       if (result.limitHit) setUploadError("Library limit reached — some images were not added")
-      else if (result.failed > 0) setUploadError(`${result.failed} image${result.failed === 1 ? "" : "s"} failed to upload`)
+      else if (result.failed > 0) {
+        setUploadError(
+          result.reason
+            // The upload itself worked; the library write did not. Say which,
+            // because the two have completely different causes.
+            ? `${result.failed} image${result.failed === 1 ? "" : "s"} uploaded but ${result.reason}`
+            : `${result.failed} image${result.failed === 1 ? "" : "s"} failed to upload`,
+        )
+      }
     } catch (err) {
       console.error("Ref upload failed:", err)
       setUploadError("Upload failed — check your connection and try again")
@@ -6099,7 +6225,7 @@ function RefDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(wide ? 640 : 320, (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(refsPanelWidth(wide), (window.innerWidth - 16) / menuPos.z) }}>
           {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
             <div className="flex items-center gap-2.5">
@@ -6122,7 +6248,7 @@ function RefDropdown({
                   <button
                     key={k}
                     onClick={() => setKindFilter(k)}
-                    title={k === "3d" ? "3D assets \u2014 meshes, rigs and printables" : "Images and clips"}
+                    title={k === "3d" ? "3D assets — meshes, rigs and printables" : "Images and clips"}
                     className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider transition-colors ${
                       kindFilter === k ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
                     }`}
@@ -6177,12 +6303,14 @@ function RefDropdown({
               />
             </div>
             <div className="flex items-center gap-2">
-              {/* Stacked Total / Active pills */}
-              <div className="flex flex-col gap-1">
+              {/* Stacked Total / Active pills. shrink-0 so the counters keep
+                  their width and the header's left side gives way instead —
+                  they were the first thing to be squeezed off the edge. */}
+              <div className="flex flex-col gap-1 shrink-0">
                 {/* Library slots pill */}
                 <div className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-md border border-white/10 bg-black/60" title="Total images saved in your library">
                   <span className="text-[10px] text-slate-500 uppercase tracking-wide font-medium">Total</span>
-                  <span className={`text-xs font-mono font-bold ${library.length >= libraryLimit ? "text-amber-400" : "text-slate-300"}`}>
+                  <span className={`text-xs font-mono font-bold whitespace-nowrap ${library.length >= libraryLimit ? "text-amber-400" : "text-slate-300"}`}>
                     {library.length}/{libraryLimit}
                   </span>
                 </div>
@@ -6201,7 +6329,7 @@ function RefDropdown({
                       : "Images currently sent with your generation"
                 }>
                   <span className="text-[10px] text-slate-500 uppercase tracking-wide font-medium">Active</span>
-                  <span className={`text-xs font-mono font-bold ${atLimit ? "text-amber-400" : activeCount > 0 ? "text-white" : "text-slate-500"}`}>
+                  <span className={`text-xs font-mono font-bold whitespace-nowrap ${atLimit ? "text-amber-400" : activeCount > 0 ? "text-white" : "text-slate-500"}`}>
                     {splitRefs ? (
                       <>
                         {activeImages}/{modelMaxRefs}<span className="text-slate-500 font-normal"> img</span>
@@ -7777,6 +7905,30 @@ function fluxVariantPrior(meta?: Record<string, unknown> | null): number {
   if (meta.fluxNegativePrompt) mult *= 1.8 // true CFG = two passes per step
   return mult
 }
+/**
+ * Compare two feed keys the way a person reads them.
+ *
+ * Slot ids are `slot-<seq>-<index>` where seq comes from a monotonic counter,
+ * so the numbers in the key ARE the queue order. Comparing them as text is
+ * not: "slot-10-9" sorts before "slot-2-1", which is why a batch of 27 laid
+ * itself out 1, 10, 11 … 19, 2, 20 rather than 1, 2, 3. Digits are compared as
+ * numbers, everything else as text.
+ */
+function naturalKeyCompare(a: string, b: string): number {
+  const ap = a.match(/\d+|\D+/g) ?? [a]
+  const bp = b.match(/\d+|\D+/g) ?? [b]
+  for (let i = 0; i < Math.min(ap.length, bp.length); i++) {
+    const x = ap[i], y = bp[i]
+    if (/^\d/.test(x) && /^\d/.test(y)) {
+      const d = Number(x) - Number(y)
+      if (d !== 0) return d
+    } else if (x !== y) {
+      return x < y ? -1 : 1
+    }
+  }
+  return ap.length - bp.length
+}
+
 // Slot ids embed their creation timestamp (slot-<ts>-n / flux-<ts> / …)
 const slotStartMs = (slotId: string): number | null => {
   const m = slotId.match(/(?:^|-)(\d{13})(?:-|$)/)
@@ -8307,10 +8459,25 @@ function PendingDetailModal({
                   <FluxSettingsGroups vm={videoMetadata as Record<string, any>} />
                 </div>
               </div>
-            ) : (aspectRatio || quality) && (
+            ) : (aspectRatio || quality || typeof videoMetadata?.gptVariant === "string"
+                 || seedvrChips(videoMetadata as Record<string, any> | undefined).length > 0) && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Settings</p>
                 <div className="flex flex-wrap gap-1.5">
+                  {/* Which GPT Image 2.5 renderer this one is running on. The
+                      slot carries it from launch, so it is answerable while the
+                      generation is still in flight — which is the only moment
+                      it is genuinely uncertain. */}
+                  {typeof videoMetadata?.gptVariant === "string" && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-200 text-[11px] font-mono capitalize">
+                      {String(videoMetadata.gptVariant)}
+                    </span>
+                  )}
+                  {seedvrChips(videoMetadata as Record<string, any> | undefined).map(c => (
+                    <span key={c.label} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/30 text-cyan-200 text-[11px] font-mono">
+                      <span className="text-cyan-300/50">{c.label}</span>{c.value}
+                    </span>
+                  ))}
                   {aspectRatio && (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                       {aspectRatio}
@@ -8836,6 +9003,8 @@ function ImageDetailModal({
 
   const modelName = getModelDisplayName(image.model)
   const siteLogo = useSiteLogoCached()
+  /** Per-model run details recorded at save time (renderer, LoRA, upscale…). */
+  const vm = (image.videoMetadata ?? {}) as Record<string, any>
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
   const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality)
@@ -9063,6 +9232,34 @@ function ImageDetailModal({
                 </p>
               </div>
             )}
+            {/* Which renderer ran — GPT Image 2.5 ships as two sibling
+                endpoints, so "the model" alone does not identify the run. */}
+            {typeof vm?.gptVariant === "string" && (
+              <div>
+                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Renderer</p>
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-200 text-[11px] font-mono capitalize">
+                  {vm.gptVariant}
+                  {typeof vm?.gptQuality === "string" && (
+                    <span className="text-amber-300/50">· {vm.gptQuality}</span>
+                  )}
+                </span>
+              </div>
+            )}
+            {/* SeedVR2 — the seed is the reason this block exists: it is what
+                makes a given upscale repeatable, and it is invisible in the
+                image itself. */}
+            {seedvrChips(vm).length > 0 && (
+              <div>
+                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Upscale</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {seedvrChips(vm).map(c => (
+                    <span key={c.label} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/30 text-cyan-200 text-[11px] font-mono">
+                      <span className="text-cyan-300/50">{c.label}</span>{c.value}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
             {showSettings && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Settings</p>
@@ -9147,6 +9344,9 @@ function ImageDetailModal({
                     )
                   ) : (
                     <>
+                      {/* NOT the renderer: it has its own labelled block above,
+                          and showing it here as well named the same thing twice
+                          in one panel. */}
                       {image.aspectRatio && (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                           {image.aspectRatio}
@@ -10065,7 +10265,12 @@ function ImageGrid({
     // freshImages under a TEMPORARY id while the DB row it was saved to has a
     // real one, so an id-only check rendered the same picture twice.
     const freshUrls = new Set(freshImages.map(i => i.imageUrl).filter(Boolean))
-    const dbFiltered = images.filter(img => !freshIds.has(img.id) && !freshUrls.has(img.imageUrl))
+    // A generation still held by its own "done" slot is already on screen.
+    const held = slotHeldKeys(pendingSlots)
+    const dbFiltered = images.filter(img =>
+      !freshIds.has(img.id) && !freshUrls.has(img.imageUrl)
+      && !held.ids.has(img.id) && !held.urls.has(img.imageUrl)
+      && !(img.imageUrl && held.keys.has(mediaPathKey(img.imageUrl))))
     // Fails paginate WITH the images: only merge errors newer than the oldest
     // loaded image while more pages remain — older errors reveal themselves as
     // the user scrolls, instead of stacking into a wall at the bottom that
@@ -10080,8 +10285,11 @@ function ImageGrid({
       const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0
       return bTime - aTime
     })
-    onNavListChange([...freshImages, ...merged])
-  }, [images, freshImages, savedFails, onNavListChange, adminFilters, showHidden])
+    const heldImages = pendingSlots
+      .filter(s => s.status === "done" && s.doneImage)
+      .map(s => s.doneImage!)
+    onNavListChange([...heldImages, ...freshImages, ...merged])
+  }, [images, freshImages, savedFails, pendingSlots, onNavListChange, adminFilters, showHidden])
 
   if (!signedIn) {
     return <FeedSignInPrompt />
@@ -10127,8 +10335,15 @@ function ImageGrid({
         // of tile — spinner, finished image, error — holds the position of the
         // moment its generation was QUEUED, regardless of model or how long it
         // ran. Matches the DB, whose rows are backdated to queue time too.
-        const headNodes: { weight: number; node: ReactNode; key: string; presetCol?: number; t?: number }[] = []
-        const nodes: { weight: number; node: ReactNode; key?: string }[] = []
+        // dbId: the saved row a head tile is showing, when that is not already
+        // in the key. A finished slot renders under its OWN slot id, so without
+        // this the persisted head layout could not record it — and on the next
+        // load the generation reappeared in the BODY while the tiles still
+        // generating stayed in the head strip, which floated them above work
+        // that had been queued before them.
+        const headNodes: { weight: number; node: ReactNode; key: string; presetCol?: number; t?: number; dbId?: number }[] = []
+        // t: queue time, so the flat layouts can order head and body together.
+        const nodes: { weight: number; node: ReactNode; key?: string; t?: number }[] = []
         const rowsMode = fullSize && fullSizeLayout === "masonry" && masonryMode === "rows"
 
         // Pending + fresh (top of feed) — only in the normal (non-admin, non-hidden) view
@@ -10141,6 +10356,7 @@ function ImageGrid({
               headNodes.push({
                 weight: arHeightWeight(img.aspectRatio),
                 key: slot.slotId,
+                dbId: typeof img.id === "number" && img.id > 0 ? img.id : undefined,
                 t: slot.queuedAtMs ?? (img.createdAt ? Date.parse(img.createdAt) : undefined),
                 node: (
                   <GridImage key={slot.slotId} src={img.imageUrl} alt={img.prompt}
@@ -10185,11 +10401,27 @@ function ImageGrid({
           // A finished generation is already on screen inside its own "done"
           // slot — skip the freshImages copy of it, or the same picture renders
           // twice (and the duplicate is what used to shove the layout around).
-          const slotHeldUrls = new Set(
-            pendingSlots.filter(s => s.status === "done" && s.doneImage)
-              .map(s => s.doneImage!.imageUrl))
+          /*
+           * Match on EVERY identity a finished generation can arrive under.
+           *
+           * The completion path both marks the slot done AND prepends the
+           * image, so the copy in freshImages has to be suppressed. Matching
+           * on the URL alone was not enough: once the server refresh returns
+           * the same generation re-hosted on R2 its URL no longer equals the
+           * fal URL the slot is holding, the filter misses, and the picture
+           * renders twice. The row id and the R2 key survive that re-host.
+           */
+          const slotHeld = { urls: new Set<string>(), ids: new Set<number>(), keys: new Set<string>() }
+          for (const s of pendingSlots) {
+            if (s.status !== "done" || !s.doneImage) continue
+            if (s.doneImage.imageUrl) slotHeld.urls.add(s.doneImage.imageUrl)
+            if (typeof s.doneImage.id === "number") slotHeld.ids.add(s.doneImage.id)
+            if (s.doneImage.r2Key) slotHeld.keys.add(s.doneImage.r2Key)
+          }
           freshImages.forEach((img) => {
-            if (img.imageUrl && slotHeldUrls.has(img.imageUrl)) return
+            if (img.imageUrl && slotHeld.urls.has(img.imageUrl)) return
+            if (typeof img.id === "number" && slotHeld.ids.has(img.id)) return
+            if (img.r2Key && slotHeld.keys.has(img.r2Key)) return
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
@@ -10200,9 +10432,9 @@ function ImageGrid({
           headNodes.sort((a, b) => {
             const d = (b.t ?? Infinity) - (a.t ?? Infinity)
             // A batch queued in one press shares a timestamp to the
-            // millisecond, so a pure time sort left their order to chance
-            // and the feed reshuffled on every render. The key is stable.
-            return d !== 0 ? d : String(a.key).localeCompare(String(b.key))
+            // millisecond, so the tiebreak decides its entire layout. It has
+            // to read the ids numerically — see naturalKeyCompare.
+            return d !== 0 ? d : naturalKeyCompare(String(a.key), String(b.key))
           })
         }
 
@@ -10211,7 +10443,7 @@ function ImageGrid({
           images.forEach((img) => nodes.push({
             weight: arHeightWeight(img.aspectRatio),
             key: `af-${img.id}`,
-            node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)} adminThumb silverRim={tileBorders} />,
+            node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} adminThumb silverRim={tileBorders} />,
           }))
         } else if (showHidden) {
           // Hidden view: exactly the API results (user's hidden items)
@@ -10226,7 +10458,13 @@ function ImageGrid({
           const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
           // See the nav-list effect: URL match kills the temp-id/real-id double
           const freshUrls = new Set(freshImages.map(i => i.imageUrl).filter(Boolean))
-          const dbFiltered = images.filter(img => !freshIds.has(img.id) && !freshUrls.has(img.imageUrl))
+          // Same rule as the head: a slot showing its finished image owns that
+          // generation, so the body must not draw it again.
+          const held = slotHeldKeys(pendingSlots)
+          const dbFiltered = images.filter(img =>
+            !freshIds.has(img.id) && !freshUrls.has(img.imageUrl)
+            && !held.ids.has(img.id) && !held.urls.has(img.imageUrl)
+            && !(img.imageUrl && held.keys.has(mediaPathKey(img.imageUrl))))
           // Same pagination gate as the nav-list effect (see comment there)
           const failFrontier = hasMoreRef.current && images.length > 0
             ? Math.min(...images.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
@@ -10254,22 +10492,64 @@ function ImageGrid({
           const newestBody = merged.find(m => !layoutCols.has(m.id))
           const cutoffT = newestBody?.createdAt ? new Date(newestBody.createdAt).getTime() : -Infinity
           const restoredById = new Map<number, { weight: number; node: ReactNode; key: string; presetCol?: number; t?: number }>()
+          /*
+           * THE INVARIANT: nothing in the body may be newer than anything in
+           * the head strip.
+           *
+           * The strip always renders above the body, so the two lists can only
+           * read as one feed if the strip is a PREFIX of queue order. A tile
+           * still generating lives in the strip by necessity; a generation that
+           * finished before it was queued therefore has to be up there too, or
+           * refreshing appears to shove the in-flight tiles to the top.
+           *
+           * The saved column layout normally puts them back, but it is a cache
+           * — it can be stale, evicted, or judged obsolete. This does not
+           * depend on it: anything newer than the oldest strip tile joins the
+           * strip, and the final sort below puts the whole thing in queue order.
+           */
+          const headFloor = headNodes.reduce(
+            (min, h) => Math.min(min, h.t ?? Infinity), Infinity)
+          const forcedHead: Array<{ weight: number; node: ReactNode; key: string; presetCol?: number; t?: number }> = []
           merged.forEach((img) => {
             const node = img.failed
               ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} onDismiss={onDismissFail ? () => onDismissFail(img) : undefined} />
               // isVideo: without it a video renders through <img src="...mp4">,
               // which cannot decode — that is the broken metallic placeholder.
-              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)} silverRim={tileBorders} />
-            if (layoutCols.has(img.id) && (img.createdAt ? new Date(img.createdAt).getTime() : 0) >= cutoffT) {
-              restoredById.set(img.id, { weight: arHeightWeight(img.aspectRatio), node, key: `db-${img.id}`, presetCol: layoutCols.get(img.id), t: img.createdAt ? Date.parse(img.createdAt) : undefined })
+              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} silverRim={tileBorders} />
+            const imgT = img.createdAt ? new Date(img.createdAt).getTime() : 0
+            if (layoutCols.has(img.id) && imgT >= cutoffT) {
+              restoredById.set(img.id, { weight: arHeightWeight(img.aspectRatio), node, key: `db-${img.id}`, presetCol: layoutCols.get(img.id), t: imgT })
+            } else if (rowsMode && imgT > headFloor) {
+              // Newer than a tile that is still generating: it belongs above it.
+              forcedHead.push({ weight: arHeightWeight(img.aspectRatio), node, key: `db-${img.id}`, t: imgT })
             } else {
-              nodes.push({ weight: arHeightWeight(img.aspectRatio), node, key: img.failed ? `sf-${img.id}` : `db-${img.id}` })
+              nodes.push({ weight: arHeightWeight(img.aspectRatio), node, key: img.failed ? `sf-${img.id}` : `db-${img.id}`, t: img.createdAt ? Date.parse(img.createdAt) : undefined })
             }
           })
+          /*
+           * ONE ENTRY PER ROW.
+           *
+           * These nodes are keyed `db-<id>`, so emitting the same id twice puts
+           * two children with one key into the masonry — React's "Encountered
+           * two children with the same key", and tiles duplicated or dropped
+           * at its discretion.
+           *
+           * The saved layout is a localStorage cache and can legitimately hold
+           * a row twice: it is written from whatever was in the head strip, and
+           * for one render a generation can be there under two identities (its
+           * own finished slot, plus the saved row the feed refetched). Rather
+           * than trusting the cache to be clean — including caches already
+           * written by an older build — the guard is here, where the nodes are
+           * actually emitted.
+           */
+          const seenLayoutIds = new Set<number>()
           for (const e of layout) {
+            if (seenLayoutIds.has(e.id)) continue
+            seenLayoutIds.add(e.id)
             const r = restoredById.get(e.id)
             if (r) headNodes.push(r)
           }
+          headNodes.push(...forcedHead)
           // FINAL ordering pass, after restored entries joined: strict queue
           // time, newest first. DB rows are backdated to queue time on save,
           // so live tiles and reloaded tiles sort identically — a page refresh
@@ -10277,9 +10557,9 @@ function ImageGrid({
           headNodes.sort((a, b) => {
             const d = (b.t ?? Infinity) - (a.t ?? Infinity)
             // A batch queued in one press shares a timestamp to the
-            // millisecond, so a pure time sort left their order to chance
-            // and the feed reshuffled on every render. The key is stable.
-            return d !== 0 ? d : String(a.key).localeCompare(String(b.key))
+            // millisecond, so the tiebreak decides its entire layout. It has
+            // to read the ids numerically — see naturalKeyCompare.
+            return d !== 0 ? d : naturalKeyCompare(String(a.key), String(b.key))
           })
         }
 
@@ -10305,9 +10585,18 @@ function ImageGrid({
           if (!adminFilters && !showHidden) {
             try {
               const next: Array<{ id: number; col: number }> = []
+              const seenNextIds = new Set<number>()
               headNodes.forEach((h, i) => {
+                // A finished slot knows its row id directly; everything else
+                // carries it in the key.
                 const m = /^(?:fresh|db)-(\d+)$/.exec(h.key)
-                if (m) next.push({ id: Number(m[1]), col: i % n })
+                const id = h.dbId ?? (m ? Number(m[1]) : null)
+                // First position wins. Recording a row twice is what seeded the
+                // duplicate-key crash on the NEXT load, long after the tiles
+                // that caused it were gone.
+                if (id == null || seenNextIds.has(id)) return
+                seenNextIds.add(id)
+                next.push({ id, col: i % n })
               })
               if (next.length > 0 || images.length > 0) {
                 const nextIds = new Set(next.map(e => e.id))
@@ -10321,11 +10610,27 @@ function ImageGrid({
           return <FeedMasonry head={headNodes} body={nodes} n={n} />
         }
 
+        /*
+         * Grid and Flow have no packing to protect, so the head/body split is
+         * only an implementation detail there — and letting it survive into the
+         * output means every pending tile renders above every saved one, no
+         * matter when each was queued. Ordering the two together restores the
+         * single rule: position is queue time, and nothing else.
+         *
+         * Rows keeps its pinned strip (that split is load-bearing: it is what
+         * stops a new tile repacking the whole masonry), and the strip stays
+         * correct because finished tiles rejoin it by saved column.
+         */
+        const flatNodes = [...headNodes, ...nodes].sort((a, b) => {
+          const d = (b.t ?? Infinity) - (a.t ?? Infinity)
+          return d !== 0 ? d : naturalKeyCompare(String(a.key ?? ""), String(b.key ?? ""))
+        })
+
         // Masonry "Flow": CSS multi-column — packs top-to-bottom down each column.
         if (fullSize && fullSizeLayout === "masonry") {
           return (
             <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? "columns-2 sm:columns-4" : "columns-2 sm:columns-4"} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
-              {[...headNodes, ...nodes].map(it => it.node)}
+              {flatNodes.map(it => it.node)}
             </div>
           )
         }
@@ -10333,7 +10638,7 @@ function ImageGrid({
         // Grid / normal
         return (
           <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
-            {[...headNodes, ...nodes].map(it => it.node)}
+            {flatNodes.map(it => it.node)}
           </div>
         )
       })()}
@@ -15071,7 +15376,7 @@ function CustomFluxPanel({
   onAddPending:      (slot: PendingSlot) => void
   onUpdatePending:   (slotId: string, update: Partial<PendingSlot>) => void
   onRemovePending:   (slotId: string) => void
-  onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[], videoMetadata?: Record<string, unknown>) => void
+  onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[], videoMetadata?: Record<string, unknown>) => void
   onPrependImage:    (img: ImageItem) => void
   activeRefImages?:  RefImage[]
   // Reference plumbing — upload straight from the prompt box, deactivate from
@@ -18141,7 +18446,7 @@ function PromptBox({
   onLoadPreset: (urls: string[]) => void
   onUploadRef: (items: RefImage[]) => void
   onStartPolling: (slotId: string, queueId: number, prompt: string) => void
-  onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl?: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[]) => void
+  onStartNb2Polling: (requestId: string, falEndpoint: string, slotIds: string[], prompt: string, outputFormat: string, aspectRatio: string, statusUrl: string, quality?: string, ticketCost?: number, referenceImageUrls?: string[]) => void
   onCancelNb2Polling: (requestId: string) => void
   onTicketsChanged?: (newBalance: number) => void
   onDeductTickets?: (amount: number) => void
@@ -18193,6 +18498,15 @@ function PromptBox({
   // Batch submission progress (admin batch mode)
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null)
   const [seedreamSafetyChecker, setSeedreamSafetyChecker] = useState(false)
+  /**
+   * GPT Image 2.5 renderer. Sunburst and flare are the same model behind two
+   * fal endpoints, so they are one entry in the picker and a switch here.
+   * Defaults to sunburst, which is the endpoint fal lists first.
+   */
+  const [gptVariant, setGptVariant] = useState<"sunburst" | "flare">("sunburst")
+  // Bria FIBO style. 'none' is the plain prompt; the rest travel as a
+  // structured_prompt (see lib/fal-image-models.ts).
+  const [briaStyle, setBriaStyle] = useState<"none" | "photoreal" | "illustration" | "cinematic">("none")
   const [wanSafetyChecker, setWanSafetyChecker] = useState(false)
   const [fluxDevSafetyChecker, setFluxDevSafetyChecker] = useState(false)
   // SeeDream 5.0 Pro + Recraft v4.1: admins toggle (default off), non-admins forced ON (CCBill)
@@ -18389,6 +18703,24 @@ function PromptBox({
   const [selectedRefId, setSelectedRefId] = useState<string | null>(null)
   const upscaleFileInputRef = useRef<HTMLInputElement>(null)
   const [upscaleFactor, setUpscaleFactor] = useState<2 | 4>(2)
+  /*
+   * SeedVR2 settings, shaped by the endpoint rather than by the 2%s/4%s control
+   * the older upscalers share: this model takes a continuous 1-10 factor, or a
+   * target resolution instead, plus noise and seed. Squeezing that into two
+   * preset buttons would hide most of the model.
+   */
+  const [seedvrMode, setSeedvrMode]         = useState<"default" | "factor" | "target">("factor")
+  const [seedvrFactor, setSeedvrFactor]     = useState(2)
+  const [seedvrTarget, setSeedvrTarget]     = useState<"default" | "720p" | "1080p" | "1440p" | "2160p">("1080p")
+  // "" = random. A blank seed is minted CLIENT-side at submit rather than left
+  // to fal, so the value is known, recorded and reproducible — fal's own random
+  // only comes back inside the result, which this app never reads directly.
+  const [seedvrSeed, setSeedvrSeed]         = useState("")
+  const [seedvrNoise, setSeedvrNoise]       = useState(0.1)
+  const [seedvrFormat, setSeedvrFormat]     = useState<"png" | "jpg" | "webp">("png")
+  // Closed by default: it is a dialog now, and one that opened itself the
+  // moment you picked the model would be in the way, not helpful.
+  const [seedvrConfigOpen, setSeedvrConfigOpen] = useState(false)
   const [upscaleCreativity, setUpscaleCreativity] = useState(0.35)
   const [upscaleResemblance, setUpscaleResemblance] = useState(0.6)
   const [upscaleGuidance, setUpscaleGuidance] = useState(4)
@@ -18806,8 +19138,20 @@ function PromptBox({
     "local-realesrgan", "local-neosr",
   ])
   const usesFactorPricing = LEGACY_FACTOR_UPSCALERS.has(model.id)
+  /*
+   * SeedVR2 bills per OUTPUT megapixel, and its factor squares the output: 10x
+   * over a 4 MP source is 400 MP, roughly $0.40 — two hundred times the cost of
+   * the same run at 1x. A flat price would be a straight loss at the top of the
+   * range, so the tier follows the factor.
+   */
+  const seedvrTicketCost =
+    seedvrMode === "target" ? (seedvrTarget === "2160p" ? 3 : 2)
+    : seedvrMode === "default" ? 2
+    : seedvrFactor <= 2 ? 2 : seedvrFactor <= 4 ? 4 : seedvrFactor <= 6 ? 8 : 16
   const upscaleTicketCost = (model.id === "aura-sr" || model.id === "esrgan" || model.id === "drct") ? 1 : (upscaleFactor === 4 ? 26 : 7)
-  const ticketCost = model.isUpscaler && !model.isTryOn && usesFactorPricing
+  const ticketCost = model.id === "seedvr2-upscale"
+    ? seedvrTicketCost
+    : model.isUpscaler && !model.isTryOn && usesFactorPricing
     ? upscaleTicketCost
     : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
@@ -18960,8 +19304,38 @@ function PromptBox({
     if (model.isUpscaler) {
       const upscalePrompt = prompt.trim() || "masterpiece, best quality, highres"
       const slotId = `slot-${Date.now()}-0`
-      const pendingLabel = model.id === "aura-sr" ? `${upscaleFactor}x AuraSR` : model.id === "esrgan" ? `${upscaleFactor}x ESRGAN` : model.id === "drct" ? `${upscaleFactor}x DRCT` : model.id === "supir" ? `${upscaleFactor}x SUPIR` : `${upscaleFactor}x upscale`
-      onAddPending({ slotId, status: "loading", prompt: pendingLabel, modelId: model.apiId, aspectRatio: "auto", quality: `${upscaleFactor}x` as Quality })
+      /*
+       * Settle the seed HERE, before submitting.
+       *
+       * Leaving it blank lets fal pick one, but fal only reports its choice
+       * inside the result payload — which reaches production's webhook, not
+       * this app. The seed would then be unknowable and the run unrepeatable.
+       * Minting it client-side means "random" still means random, and the
+       * number is recorded on the job either way.
+       */
+      const seedvrSeedForRun = seedvrSeed.trim() === ""
+        ? Math.floor(Math.random() * 2147483647)
+        : Math.max(0, Math.min(2147483647, Math.floor(Number(seedvrSeed) || 0)))
+      const seedvrLabel =
+        seedvrMode === "target" ? `SeedVR2 — ${seedvrTarget === "default" ? "default" : seedvrTarget}`
+        : seedvrMode === "default" ? "SeedVR2"
+        : `${seedvrFactor}× SeedVR2`
+      const pendingLabel = model.id === "seedvr2-upscale" ? seedvrLabel
+        : model.id === "aura-sr" ? `${upscaleFactor}x AuraSR` : model.id === "esrgan" ? `${upscaleFactor}x ESRGAN` : model.id === "drct" ? `${upscaleFactor}x DRCT` : model.id === "supir" ? `${upscaleFactor}x SUPIR` : `${upscaleFactor}x upscale`
+      onAddPending({
+        slotId, status: "loading", prompt: pendingLabel, modelId: model.apiId, aspectRatio: "auto",
+        quality: (model.id === "seedvr2-upscale"
+          ? (seedvrMode === "target" ? seedvrTarget : seedvrMode === "default" ? "auto" : `${seedvrFactor}x`)
+          : `${upscaleFactor}x`) as Quality,
+        // The slot carries the settings from launch, so pressing the tile
+        // answers "what did I run this at" while it is still running.
+        ...(model.id === "seedvr2-upscale"
+          ? { videoMetadata: {
+              seedvrMode, seedvrFactor, seedvrTarget, seedvrNoise,
+              seedvrFormat, seedvrSeed: seedvrSeedForRun,
+            } }
+          : {}),
+      })
       try {
         const res = await fetch("/api/generate", {
           signal: AbortSignal.timeout(90_000),
@@ -18986,7 +19360,16 @@ function PromptBox({
                   ? { esrganModel, esrganFace, esrganOutputFormat }
                   : model.id === "supir"
                     ? { supirModelName, supirSteps, supirUseLlava, supirCfg, supirColorFix, supirNegPrompt }
-                    : {} // drct: no extra params
+                    : model.id === "seedvr2-upscale"
+                      ? {
+                          seedvrUpscaleMode: seedvrMode,
+                          seedvrUpscaleFactor: seedvrFactor,
+                          seedvrTargetResolution: seedvrTarget,
+                          seedvrNoiseScale: seedvrNoise,
+                          seedvrOutputFormat: seedvrFormat,
+                          seedvrSeed: seedvrSeedForRun,
+                        }
+                      : {} // drct: no extra params
             ),
           }),
         })
@@ -19015,7 +19398,15 @@ function PromptBox({
     // concurrently, and clock-based ids collide within a millisecond — which
     // would produce duplicate React keys and slots that overwrite each other.
     const slotIds = Array.from({ length: count }, (_, i) => `slot-${nextTempFeedId()}-${i}`)
-    slotIds.forEach(sid => onAddPending({ slotId: sid, status: "loading", prompt: currentPrompt, modelId: model.apiId, aspectRatio, quality, referenceImageUrls: permanentRefUrls }))
+    slotIds.forEach(sid => onAddPending({
+      slotId: sid, status: "loading", prompt: currentPrompt, modelId: model.apiId,
+      aspectRatio, quality, referenceImageUrls: permanentRefUrls,
+      // Carried on the slot so the tile can name the renderer while it is
+      // still generating — the saved row does not exist yet, and with two
+      // renderers running side by side "which one is this?" is the whole
+      // question you want answered at that moment.
+      ...(model.id === "gpt-image-2.5" ? { videoMetadata: { gptVariant } } : {}),
+    }))
     const slotId = slotIds[0] // alias for single-image paths
 
     // Free the Generate button NOW — the batch's slots exist and the rest of
@@ -19650,7 +20041,7 @@ function PromptBox({
               signal: AbortSignal.timeout(90_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -19667,7 +20058,7 @@ function PromptBox({
           signal: AbortSignal.timeout(90_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -19722,7 +20113,7 @@ function PromptBox({
         //
         // This path used to enqueue and return, leaving the tab with nothing
         // on screen: the only thing that ever produced tiles was the 10s
-        // recovery poll, and that poll ignores rows without a fal request id \u2014
+        // recovery poll, and that poll ignores rows without a fal request id —
         // which every freshly queued batch is. So 69 batches showed a handful
         // of cards that trickled in as the promoter submitted them, and a
         // reload was the fastest way to see the rest. The server now hands
@@ -20840,6 +21231,158 @@ function PromptBox({
             </div>
           )}
 
+          {/* SeedVR2 settings — a dialog, not an expanding panel.
+              Inline it was taller than an iPad in landscape and swallowed most
+              of the screen in portrait, pushing the prompt bar and the feed off
+              the bottom. The trigger stays a one-line summary; the controls
+              live in a centred dialog that closes when you are done. */}
+          {model.id === "seedvr2-upscale" && (
+            <div className="border-t border-white/[0.06] px-4 py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">SeedVR2</span>
+              <button onClick={() => setSeedvrConfigOpen(true)}
+                className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-slate-400 hover:text-white hover:border-white/20 transition-all">
+                <SlidersHorizontal size={9} className="shrink-0" />
+                <span className="truncate">
+                  {seedvrMode === "factor" ? `${seedvrFactor.toFixed(1)}\u00d7`
+                    : seedvrMode === "target" ? (seedvrTarget === "default" ? "target" : seedvrTarget)
+                    : "default"}
+                  {" \u00b7 seed "}{seedvrSeed.trim() === "" ? "random" : seedvrSeed}
+                  {" \u00b7 n:"}{seedvrNoise.toFixed(3)}
+                  {" \u00b7 "}{seedvrFormat}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {model.id === "seedvr2-upscale" && seedvrConfigOpen && createPortal(
+            <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+              onClick={() => setSeedvrConfigOpen(false)}>
+              <div className="w-full max-w-md rounded-2xl bg-[#0f0f1a] border border-white/[0.1] shadow-2xl flex flex-col max-h-[85vh]"
+                onClick={e => e.stopPropagation()}>
+
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.07] shrink-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-white">SeedVR2</p>
+                    <span className="px-1.5 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[9px] font-bold uppercase tracking-wider">Upscale</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => {
+                        setSeedvrMode("factor"); setSeedvrFactor(2); setSeedvrTarget("1080p")
+                        setSeedvrSeed(""); setSeedvrNoise(0.1); setSeedvrFormat("png")
+                      }}
+                      className="px-2 py-1 rounded text-[10px] font-mono text-slate-600 hover:text-slate-300 transition-colors">reset</button>
+                    <button onClick={() => setSeedvrConfigOpen(false)}
+                      className="p-1 rounded hover:bg-white/[0.06] text-slate-600 hover:text-slate-300 transition-colors">
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+                  {/* Mode decides WHICH sizing control below is live. */}
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Mode</p>
+                    <div className="flex rounded-md overflow-hidden border border-white/10 w-full">
+                      {(["default", "factor", "target"] as const).map(m => (
+                        <button key={m} onClick={() => setSeedvrMode(m)}
+                          className={`flex-1 px-3 py-1.5 text-[11px] font-mono transition-colors ${seedvrMode === m ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-600 leading-relaxed">
+                      {seedvrMode === "factor" ? "Multiplies the source dimensions."
+                        : seedvrMode === "target" ? "Scales to a fixed resolution instead of a multiple."
+                        : "Sends neither, and takes the model's own default (factor, 2\u00d7)."}
+                    </p>
+                  </div>
+
+                  {/* 1-10 in tenths, the endpoint's own range. */}
+                  <div className={`space-y-1.5 ${seedvrMode === "factor" ? "" : "opacity-35"}`}>
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Factor</p>
+                      <span className="text-[11px] font-mono text-white tabular-nums">{seedvrFactor.toFixed(1)}\u00d7</span>
+                    </div>
+                    <input type="range" min="1" max="10" step="0.1" value={seedvrFactor}
+                      disabled={seedvrMode !== "factor"}
+                      onChange={e => setSeedvrFactor(parseFloat(e.target.value))}
+                      className="w-full accent-white cursor-pointer h-0.5 disabled:cursor-not-allowed" />
+                  </div>
+
+                  <div className={`space-y-1.5 ${seedvrMode === "target" ? "" : "opacity-35"}`}>
+                    <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Target Resolution</p>
+                    <select value={seedvrTarget} disabled={seedvrMode !== "target"}
+                      onChange={e => setSeedvrTarget(e.target.value as typeof seedvrTarget)}
+                      className="w-full px-2 py-1.5 rounded-md bg-slate-950 border border-white/10 text-[11px] text-white focus:outline-none focus:border-white/30 disabled:cursor-not-allowed">
+                      {(["default", "720p", "1080p", "1440p", "2160p"] as const).map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Blank = random; the number is minted at submit so the run
+                      stays reproducible. */}
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Seed</p>
+                    <div className="flex items-center gap-2">
+                      <input type="text" inputMode="numeric" value={seedvrSeed}
+                        onChange={e => setSeedvrSeed(e.target.value.replace(/[^0-9]/g, ""))}
+                        placeholder="random"
+                        className="flex-1 min-w-0 px-2 py-1.5 rounded-md bg-slate-950 border border-white/10 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-white/30 tabular-nums" />
+                      <button onClick={() => setSeedvrSeed(String(Math.floor(Math.random() * 2147483647)))}
+                        className="shrink-0 px-2.5 py-1.5 rounded-md border border-white/10 text-[10px] font-mono text-slate-500 hover:text-white hover:border-white/20 transition-all">
+                        roll
+                      </button>
+                      {seedvrSeed !== "" && (
+                        <button onClick={() => setSeedvrSeed("")}
+                          className="shrink-0 px-2.5 py-1.5 rounded-md border border-white/10 text-[10px] font-mono text-slate-500 hover:text-white hover:border-white/20 transition-all">
+                          clear
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-600 leading-relaxed">
+                      Left blank a seed is rolled for you at submit, so the run is still repeatable \u2014
+                      it is recorded on the tile either way.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Noise Scale</p>
+                      <span className="text-[11px] font-mono text-white tabular-nums">{seedvrNoise.toFixed(3)}</span>
+                    </div>
+                    <input type="range" min="0" max="1" step="0.001" value={seedvrNoise}
+                      onChange={e => setSeedvrNoise(parseFloat(e.target.value))}
+                      className="w-full accent-white cursor-pointer h-0.5" />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Output Format</p>
+                    <div className="flex rounded-md overflow-hidden border border-white/10 w-full">
+                      {(["png", "jpg", "webp"] as const).map(f => (
+                        <button key={f} onClick={() => setSeedvrFormat(f)}
+                          className={`flex-1 px-3 py-1.5 text-[11px] font-mono transition-colors ${seedvrFormat === f ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                          {f}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-5 py-3 border-t border-white/[0.07] shrink-0 flex items-center justify-between">
+                  <span className="text-[10px] font-mono text-slate-600">
+                    {seedvrMode === "factor" && seedvrFactor > 4 ? "large factor \u00b7 costs more" : "\u00a0"}
+                  </span>
+                  <button onClick={() => setSeedvrConfigOpen(false)}
+                    className="px-4 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-[11px] font-mono text-white transition-all">
+                    Done
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
+
           {/* Clarity Upscaler config — collapsible */}
           {model.id === "clarity-upscaler" && (
             <div className="border-t border-white/[0.06]">
@@ -20987,8 +21530,10 @@ function PromptBox({
               </>
             )}
 
-            {/* Upscale factor toggle — upscaler only */}
-            {model.isUpscaler && !model.isTryOn && (
+            {/* Upscale factor toggle — upscaler only. NOT SeedVR2: its factor
+                is continuous 1-10 and lives in its own settings block, so a
+                2x/4x pair here would silently disagree with what it sends. */}
+            {model.isUpscaler && !model.isTryOn && model.id !== "seedvr2-upscale" && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
                 <div className="flex items-center rounded-md overflow-hidden border border-white/10 shrink-0">
@@ -21421,6 +21966,71 @@ function PromptBox({
                 </button>
               </>
             )}
+
+            {/* Renderer switch — ChatGPT Images 2.5 only */}
+            {model.id === "bria-fibo" && (
+              <>
+                <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
+                <select
+                  value={briaStyle}
+                  onChange={e => setBriaStyle(e.target.value as typeof briaStyle)}
+                  title="FIBO style. Anything but 'none' sends a structured prompt."
+                  className="shrink-0 px-2 py-1 rounded-md bg-slate-950 border border-white/10 text-[11px] text-white focus:outline-none focus:border-white/30"
+                >
+                  {(["none", "photoreal", "illustration", "cinematic"] as const).map(v => (
+                    <option key={v} value={v}>{v === "none" ? "no style" : v}</option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            {model.id === "gpt-image-2.5" && (
+              <>
+                <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
+                <div className="flex items-center rounded-md border border-white/10 overflow-hidden shrink-0">
+                  {(["sunburst", "flare"] as const).map(v => (
+                    <button
+                      key={v}
+                      onClick={() => setGptVariant(v)}
+                      title={v === "sunburst"
+                        ? "Sunburst — OpenAI's default renderer for GPT Image 2.5"
+                        : "Flare — the alternate renderer; same model, different look"}
+                      className={`px-2 py-1 text-[11px] capitalize transition-all ${
+                        gptVariant === v
+                          ? "bg-amber-500/20 text-amber-200"
+                          : "text-slate-500 hover:text-slate-200"
+                      }`}
+                    >
+                      {v}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* What this ratio + tier will ACTUALLY produce.
+                The endpoint caps total pixels at 8,294,400 — exactly UHD's
+                pixel count — so only 16:9 reaches a 3840 long edge. Every
+                other shape spends the same budget differently, and a square
+                lands at 2880. Showing the number means the "4K" label never
+                has to carry that on its own. */}
+            {model.id === "gpt-image-2.5" && (() => {
+              const px = gptImage25Size(aspectRatio, quality)
+              return (
+                <>
+                  <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
+                  <span
+                    title={`Requested ${quality.toUpperCase()} at ${aspectRatio} — this endpoint allows at most 8,294,400 pixels (3840x2160), so each shape spends that budget differently`}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 bg-white/[0.03] text-[11px] font-mono text-slate-400 shrink-0 tabular-nums"
+                  >
+                    {px.width}&times;{px.height}
+                    <span className="text-slate-600">
+                      {(px.width * px.height / 1e6).toFixed(1)}MP
+                    </span>
+                  </span>
+                </>
+              )
+            })()}
 
             {/* Safety Checker toggle — SeeDream 4.5, WAN 2.7 Pro, FLUX 1 Dev */}
             {(model.id === "seedream-4.5" || model.id === "wan-2.7-pro" || model.id === "flux-1-dev") && (() => {
@@ -26401,6 +27011,8 @@ export default function PortalV2Page() {
 
   // Polling is keyed by queueId so the same DB job can never be double-polled
   const pollingIntervals = useRef<Record<number, ReturnType<typeof setInterval>>>({})
+  /** How many times a finished job has looked for its image and not found it yet. */
+  const claimAttempts = useRef<Record<number, number>>({})
   const completedQueueIds = useRef<Set<number>>(new Set())
   useEffect(() => () => { Object.values(pollingIntervals.current).forEach(clearInterval) }, [])
   // NB2 polling keyed by requestId (not DB-backed) — same pattern as videoPollingIntervals
@@ -26419,7 +27031,11 @@ export default function PortalV2Page() {
     prompt: string,
     outputFormat: string,
     aspectRatio: string,
-    statusUrl: string = "/api/admin/nb2-status",
+    // REQUIRED, deliberately not defaulted: this route does not just report
+    // on a job, it saves the finished result. A default sent every caller
+    // that forgot one to nano-banana, which saved a second copy of a job
+    // another mechanism had already saved. Name the model's own route.
+    statusUrl: string,
     quality?: string,
     ticketCost: number = 0,
     referenceImageUrls: string[] = [],
@@ -26710,6 +27326,19 @@ export default function PortalV2Page() {
         const res = await fetch(`/api/admin/queue-job-status?id=${queueJobId}`)
         const data = await res.json()
         if (data.status === 'processing' && data.falRequestId && data.falEndpoint) {
+          /*
+           * A status URL is required, never defaulted.
+           *
+           * startNb2SlotPolling defaults to the nano-banana route, and that
+           * route harvests, re-hosts and SAVES the finished job rather than
+           * just reporting on it. Handing it a job that some other mechanism
+           * (a fal webhook) is already saving produces two rows and two R2
+           * objects for one generation. A slot that was queued through a
+           * status-polled model recorded its own URL when it was queued; a
+           * slot without one belongs to a webhook-settled model and is
+           * finished by the queue poller and the reconcile pass instead.
+           */
+          if (!slot.nb2StatusUrl) return
           clearInterval(interval)
           delete queuePollingIntervals.current[queueJobId]
           // Promote: update slot with FAL request info so future restores work
@@ -26850,14 +27479,100 @@ export default function PortalV2Page() {
         const job = data.jobs?.find((j: any) => j.id === queueId)
         if (!job) return
         if (job.status === "completed") {
+          if (completedQueueIds.current.has(queueId)) {
+            clearInterval(interval)
+            delete pollingIntervals.current[queueId]
+            return
+          }
+
+          /*
+           * Claim THIS job's image, not whichever is newest.
+           *
+           * This used to fetch `limit=1` and take images[0]. With several jobs
+           * finishing within a few seconds of each other, two pollers both
+           * read the same newest row and both prepended it — one picture
+           * rendered twice while another never appeared at all. Matching on
+           * the fal request id is exact.
+           */
+          const imgRes = await fetch("/api/my-images?page=1&limit=20&type=image")
+          const imgData = await imgRes.json()
+          const list: any[] = imgData?.images ?? []
+
+          /*
+           * Two keys, because one of them is not available yet.
+           *
+           * falRequestId is the exact answer, but the row is written by the fal
+           * webhook — which is delivered to APP_URL, i.e. PRODUCTION — so until
+           * that deploy ships, every locally-observed row has it as null.
+           *
+           * The webhook also backdates the image to its queue row's timestamp
+           * (`createdAt: queueItem.createdAt`), so the two match to the
+           * millisecond. Verified against every completed job in the database.
+           * That works with the webhook as deployed today.
+           */
+          /*
+           * Best key first: the completed queue row records the ids of the
+           * rows it wrote. That is exact, it is written by the same handler
+           * that saved the image, and unlike falRequestId it is already
+           * present on every job this account has run.
+           */
+          const ownIds: number[] = Array.isArray((job.parameters as any)?.completedImageIds)
+            ? (job.parameters as any).completedImageIds.filter((n: any) => typeof n === "number")
+            : []
+          const jobMs = job.createdAt ? Date.parse(job.createdAt) : NaN
+          const claimed =
+            (ownIds.length > 0 && list.find(i => ownIds.includes(i.id)))
+            || (job.falRequestId && list.find(i => i.falRequestId && i.falRequestId === job.falRequestId))
+            || (Number.isFinite(jobMs) && list.find(i => Date.parse(i.createdAt) === jobMs))
+            || undefined
+
+          /*
+           * The webhook marks the job completed and writes the image in the
+           * same handler, so a poll can land between the two. Giving up here
+           * would blank the tile for a result that is a second away; try again
+           * on the next tick instead, and only stop hunting after ~30s.
+           */
+          if (!claimed) {
+            claimAttempts.current[queueId] = (claimAttempts.current[queueId] ?? 0) + 1
+            if (claimAttempts.current[queueId] < 10) return
+          }
+
           clearInterval(interval)
           delete pollingIntervals.current[queueId]
-          if (completedQueueIds.current.has(queueId)) return
           completedQueueIds.current.add(queueId)
-          const imgRes = await fetch("/api/my-images?page=1&limit=1&type=image")
-          const imgData = await imgRes.json()
-          if (imgData.success && imgData.images?.[0]) handlePrependImage(imgData.images[0])
-          handleRemovePending(slotId)
+
+          /*
+           * Attach the renderer from the QUEUE ROW.
+           *
+           * The saved image gets this from the fal webhook — but the webhook
+           * is delivered to APP_URL, which is production, so on localhost the
+           * row is written by deployed code and comes back without it. The
+           * queue row is written by THIS server and records the endpoint that
+           * actually ran, so the panel can be right either way.
+           */
+          const endpoint = String((job.parameters as any)?.falEndpoint ?? "")
+          if (claimed && endpoint.includes("/gpt-image-2.5/")) {
+            claimed.videoMetadata = {
+              ...(claimed.videoMetadata ?? {}),
+              gptVariant: endpoint.includes("/flare/") ? "flare" : "sunburst",
+              gptQuality: (job.parameters as any)?.falQuality ?? undefined,
+              gptImageSize: (job.parameters as any)?.falImageSize ?? undefined,
+            }
+          }
+
+          if (claimed) {
+            /*
+             * Fill the slot IN PLACE rather than prepending a copy and
+             * deleting the card. The slot is what holds this generation's
+             * position in the feed — destroy it and the tile is rebuilt from
+             * the fresh image, which sorts by when it finished rather than
+             * when it was queued, and nothing is left to suppress the
+             * duplicate.
+             */
+            handleUpdatePending(slotId, { status: "done", doneImage: claimed })
+          } else {
+            handleRemovePending(slotId)
+          }
           const uid = userRef.current?.id
           if (uid) {
             const ticketRes = await fetch(`/api/user/tickets?userId=${uid}`)
@@ -27019,6 +27734,12 @@ export default function PortalV2Page() {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [startNb2SlotPolling])
 
+  // Which renderer a ChatGPT Images 2.5 endpoint names, or null.
+  const gptVariantFromEndpoint = (ep?: string): string | null =>
+    typeof ep === "string" && ep.includes("/gpt-image-2.5/")
+      ? (ep.includes("/flare/") ? "flare" : "sunburst")
+      : null
+
   const MODEL_STATUS_URLS: Record<string, string> = {
     "nano-banana-pro-2": "/api/admin/nb2-status",
     "kling-v3-image":    "/api/admin/kling-image-status",
@@ -27077,7 +27798,7 @@ export default function PortalV2Page() {
         // ONE image fetch for the whole pass.
         //
         // Each settled job used to fetch its own image, so a batch draining 20
-        // rows between two polls fired 20 requests and 20 prepends \u2014 the feed
+        // rows between two polls fired 20 requests and 20 prepends — the feed
         // visibly reshuffling on every one. /api/my-images takes a comma list,
         // so the finished work of an entire pass arrives in a single response
         // and lands in one render.
@@ -27101,9 +27822,43 @@ export default function PortalV2Page() {
           } catch {}
         }
 
+        /*
+         * The same pass, keyed on the ids the job recorded.
+         *
+         * falRequestId is only on the image row for models whose result is
+         * saved by the status route; a job settled by the fal WEBHOOK saves
+         * the row without it, so the lookup above comes back empty and this
+         * pass would clear the tile having harvested nothing — which is
+         * exactly what happened to every ChatGPT Images 2.5 job. The queue
+         * row's completedImageIds is written by that same webhook and is
+         * exact, so it covers the case the request id cannot.
+         */
+        const jobOwnIds = (j: any): number[] =>
+          Array.isArray(j?.parameters?.completedImageIds)
+            ? j.parameters.completedImageIds.filter((n: any) => typeof n === "number")
+            : []
+        const fetchedById = new Map<number, any>()
+        const wantIds = Array.from(new Set(
+          settled.filter((j: any) => j.status === "completed")
+            .flatMap(jobOwnIds)
+        )).slice(0, 60)
+        if (wantIds.length > 0) {
+          try {
+            const byIdRes = await fetch(`/api/my-images?ids=${wantIds.join(",")}`)
+            const byIdData = await byIdRes.json()
+            if (byIdData.success) for (const img of (byIdData.images || [])) fetchedById.set(img.id, img)
+          } catch {}
+        }
+
         for (const j of settled) {
+          // A slot already in "done" state was settled by its own poller and is
+          // rendering its image in queue position. It is finished work, not a
+          // stuck spinner — reconciling it again would tear the tile out of
+          // its slot and re-enter it at the top of the feed, which is the exact
+          // reshuffle the locked queue order exists to prevent.
           const matching = pendingSlotsRef.current.filter(s =>
-            (j.falRequestId && s.nb2RequestId === j.falRequestId) || s.queueJobId === j.id || s.queueId === j.id)
+            s.status !== "done" &&
+            ((j.falRequestId && s.nb2RequestId === j.falRequestId) || s.queueJobId === j.id || s.queueId === j.id))
           if (matching.length === 0) continue
           // Kill any zombie pollers still attached to this job
           if (j.falRequestId && nb2PollingIntervals.current[j.falRequestId]) {
@@ -27119,25 +27874,46 @@ export default function PortalV2Page() {
           // Completed — pull the finished image(s) and swap them in
           if (j.falRequestId) {
             if (doneIds.has(j.falRequestId)) { matching.forEach(s => handleRemovePending(s.slotId)); continue }
-            doneIds.add(j.falRequestId)
             // 40 was too small the moment batches existed: 69 request ids
             // overflow it, the oldest fall out, and a job that already settled
-            // is treated as new again on the next pass \u2014 which is the tile
+            // is treated as new again on the next pass — which is the tile
             // that vanishes and comes back.
             try { localStorage.setItem("pv2-nb2-done", JSON.stringify(Array.from(doneIds).slice(-400))) } catch {}
-            for (const img of (fetchedByReq.get(j.falRequestId) ?? [])) {
-              handlePrependImage({
-                id: img.id,
-                imageUrl: img.imageUrl,
-                prompt: img.prompt,
-                model: img.model,
-                createdAt: img.createdAt,
-                referenceImageUrls: img.referenceImageUrls ?? [],
-                aspectRatio: img.aspectRatio ?? undefined,
-                quality: img.quality ?? undefined,
-              })
-            }
-            matching.forEach(s => handleRemovePending(s.slotId))
+            const harvested = (
+              (fetchedByReq.get(j.falRequestId) ?? []).length > 0
+                ? fetchedByReq.get(j.falRequestId)!
+                : jobOwnIds(j).map(id => fetchedById.get(id)).filter(Boolean)
+            ).map((img: any) => ({
+              id: img.id,
+              imageUrl: img.imageUrl,
+              prompt: img.prompt,
+              model: img.model,
+              createdAt: img.createdAt,
+              referenceImageUrls: img.referenceImageUrls ?? [],
+              aspectRatio: img.aspectRatio ?? undefined,
+              quality: img.quality ?? undefined,
+            }))
+            // Fill in place, exactly as startPolling does. Both paths now leave
+            // the feed in the same state, so it no longer matters which one gets
+            // there first — the tile stays where it was queued either way.
+            /*
+             * Nothing found is NOT the same as nothing to find. The webhook
+             * marks the job completed and writes the row in one handler, so a
+             * pass can land between the two; clearing the tile there loses a
+             * picture that is a second away. Leave it spinning and try again
+             * on the next pass instead, and only record the job as handled
+             * once something was actually harvested.
+             */
+            if (harvested.length === 0) continue
+            doneIds.add(j.falRequestId)
+            try { localStorage.setItem("pv2-nb2-done", JSON.stringify(Array.from(doneIds).slice(-400))) } catch {}
+            matching.forEach((s, i) => {
+              if (harvested[i]) handleUpdatePending(s.slotId, { status: "done", doneImage: harvested[i] })
+              else handleRemovePending(s.slotId)
+            })
+            // More images than slots waiting for them (a batch whose other tiles
+            // are already gone) — those still belong at the head of the feed.
+            harvested.slice(matching.length).forEach(img => handlePrependImage(img))
           } else {
             // Queue-row-only job (no FAL request id) — pull the newest few images
             // so parallel completions in the same poll don't lose all but one
@@ -27155,8 +27931,8 @@ export default function PortalV2Page() {
         // RE-ARM DEAD POLLERS.
         //
         // Every nb2 tile is resolved by its OWN interval polling fal. If that
-        // interval dies \u2014 it hit its poll ceiling, an error killed it, a
-        // re-render dropped it \u2014 nothing else harvests the result: the DB row
+        // interval dies — it hit its poll ceiling, an error killed it, a
+        // re-render dropped it — nothing else harvests the result: the DB row
         // stays 'processing' because our webhook never fires for it, so the
         // reconcile below has nothing to react to and the tile spins forever.
         // Reloading the page fixed it only because that re-armed the pollers.
@@ -27167,9 +27943,12 @@ export default function PortalV2Page() {
           if (nb2PollingIntervals.current[slot.nb2RequestId]) continue
           const endpoint = slot.nb2FalEndpoint
           if (!endpoint) continue
+          // No recorded status route = not a status-polled model. See above:
+          // defaulting to the nano-banana route SAVES a duplicate row.
+          if (!slot.nb2StatusUrl) continue
           startNb2SlotPolling(
             slot.nb2RequestId, endpoint, [slot.slotId], slot.prompt ?? "", "png",
-            slot.nb2AspectRatio || "auto", slot.nb2StatusUrl || "/api/admin/nb2-status",
+            slot.nb2AspectRatio || "auto", slot.nb2StatusUrl,
             slot.nb2Quality, slot.nb2TicketCost ?? 0, slot.referenceImageUrls || [],
           )
         }
@@ -27178,7 +27957,7 @@ export default function PortalV2Page() {
         const nb2DbJobs = inFlight.filter((j: any) => j.falRequestId)
         // Rows that are QUEUED but not yet submitted have no fal request id.
         // They were skipped entirely, so a batch of 69 drew nothing until the
-        // promoter had worked through them one at a time \u2014 and a reload was
+        // promoter had worked through them one at a time — and a reload was
         // the only way to see where the run had got to.
         const waitingDbJobs = inFlight.filter((j: any) => !j.falRequestId)
         if (nb2DbJobs.length === 0 && waitingDbJobs.length === 0) return
@@ -27197,7 +27976,7 @@ export default function PortalV2Page() {
         // learns its queue id and fal request id when the POST returns. If a
         // poll lands in that gap the tile is not yet linked to anything, the
         // tracked-id checks below all miss, and this adopts the same job a
-        // second time \u2014 which is how sixteen generations became twenty-four
+        // second time — which is how sixteen generations became twenty-four
         // tiles. A job this tab started is linked within seconds, so anything
         // younger than the grace window is left alone; work from another
         // device is older than that by the time it is worth showing.
@@ -27216,17 +27995,34 @@ export default function PortalV2Page() {
 
         // A tile placed for a queued row has no poller of its own, because
         // there was nothing to poll yet. The moment its row is promoted and
-        // gains a request id, attach one \u2014 otherwise the card sits spinning
+        // gains a request id, attach one — otherwise the card sits spinning
         // until the 10s reconcile happens to catch it settled.
         for (const j of nb2DbJobs) {
           if (doneNb2Ids.has(j.falRequestId) || recoveredJobsRef.current.has(j.falRequestId)) continue
           const waiting = currentSlots.find(sl =>
             (sl.queueId === j.id || sl.queueJobId === j.id) && !sl.nb2RequestId)
           if (!waiting) continue
+          /*
+           * ONLY models with a dedicated status route may be polled this way.
+           *
+           * This used to fall back to the nano-banana route for anything not
+           * in the map, which is not a harmless default: that route does not
+           * merely REPORT on a job, it harvests the finished result, re-hosts
+           * it to R2 and writes its own GeneratedImage row — labelled
+           * nano-banana-pro-2, whatever actually ran. For a webhook-settled
+           * model like ChatGPT Images 2.5 the webhook is already saving the
+           * real row, so every generation was stored twice, under two model
+           * names, from two uploads. That is the duplicate in the feed.
+           *
+           * A model with no dedicated status route is settled by its webhook
+           * and picked up by the reconcile pass above, which matches each job
+           * to its own image. Leaving it alone is the correct behaviour.
+           */
+          const statusUrl = MODEL_STATUS_URLS[j.modelId]
+          if (!statusUrl) continue
           recoveredJobsRef.current.add(j.falRequestId)
           const params = j.parameters as any
           const endpoint = params?.falEndpoint || params?.falInput?.endpoint
-          const statusUrl = MODEL_STATUS_URLS[j.modelId] || "/api/admin/nb2-status"
           handleUpdatePending(waiting.slotId, { nb2RequestId: j.falRequestId, nb2FalEndpoint: endpoint, nb2StatusUrl: statusUrl })
           if (endpoint) {
             startNb2SlotPolling(
@@ -27237,7 +28033,7 @@ export default function PortalV2Page() {
           }
         }
 
-        // Cards for queued work this tab has not seen \u2014 a batch started on
+        // Cards for queued work this tab has not seen — a batch started on
         // another device, or this one after a reload. No poller: there is no
         // request id yet, and the loop above attaches one when there is.
         for (const j of waitingDbJobs) {
@@ -27265,22 +28061,45 @@ export default function PortalV2Page() {
           // commits, so two poll passes in the same tick both read it as
           // empty. A ref Set updates immediately and closes that window.
           if (recoveredJobsRef.current.has(j.falRequestId)) continue
-          recoveredJobsRef.current.add(j.falRequestId)
           const params = j.parameters as any
+          // Same rule as above: no dedicated status route means this job is
+          // settled by its webhook, so adopt it as a plain queue-tracked tile
+          // and let the reconcile pass fill it. Polling it as nano-banana
+          // would save a second copy of somebody else's generation.
+          if (!MODEL_STATUS_URLS[j.modelId]) {
+            recoveredJobsRef.current.add(j.falRequestId)
+            handleAddPending({
+              slotId: `db-${j.id}`,
+              status: "loading",
+              prompt: j.prompt,
+              queueId: j.id,
+              modelId: j.modelId,
+              aspectRatio: params?.aspectRatio,
+              quality: params?.quality,
+              referenceImageUrls: params?.permanentReferenceUrls || params?.referenceImageUrls || [],
+              // So an adopted tile can still name its renderer.
+              ...(gptVariantFromEndpoint(params?.falEndpoint)
+                ? { videoMetadata: { gptVariant: gptVariantFromEndpoint(params?.falEndpoint) } }
+                : {}),
+            } as PendingSlot)
+            continue
+          }
+          recoveredJobsRef.current.add(j.falRequestId)
           const newSlot: PendingSlot = {
             slotId:         `db-${j.id}-${j.falRequestId.slice(-6)}`,
             status:         "loading",
             prompt:         j.prompt,
             nb2RequestId:   j.falRequestId,
             nb2FalEndpoint: params?.falEndpoint || params?.falInput?.endpoint,
-            nb2StatusUrl:   MODEL_STATUS_URLS[j.modelId] || "/api/admin/nb2-status",
+            nb2StatusUrl:   MODEL_STATUS_URLS[j.modelId],
             nb2AspectRatio: params?.size || params?.aspectRatio || params?.nb2AspectRatio,
             nb2Quality:     params?.quality || params?.nb2Quality,
             nb2TicketCost:  j.ticketCost ?? 0,
             referenceImageUrls: params?.permanentReferenceUrls || [],
           }
           handleAddPending(newSlot)
-          startNb2SlotPolling(j.falRequestId, newSlot.nb2FalEndpoint!, [newSlot.slotId], j.prompt, "png", newSlot.nb2AspectRatio || "auto", newSlot.nb2StatusUrl, newSlot.nb2Quality, newSlot.nb2TicketCost ?? 0, newSlot.referenceImageUrls || [])
+          // Non-null: the loop skipped every model without a route (above).
+          startNb2SlotPolling(j.falRequestId, newSlot.nb2FalEndpoint!, [newSlot.slotId], j.prompt, "png", newSlot.nb2AspectRatio || "auto", newSlot.nb2StatusUrl!, newSlot.nb2Quality, newSlot.nb2TicketCost ?? 0, newSlot.referenceImageUrls || [])
         }
       } catch {} finally { pollBusy = false }
     }
@@ -27307,7 +28126,7 @@ export default function PortalV2Page() {
     inputs: (File | { url: string })[],
     folderId: number | null,
     opts?: { autoActivate?: boolean; activateAll?: boolean }
-  ): Promise<{ added: number; failed: number; limitHit: boolean }> => {
+  ): Promise<{ added: number; failed: number; limitHit: boolean; reason?: string | null }> => {
     const slots = Math.max(0, refLibraryLimit - refLibraryRef.current.length)
     const toProcess = inputs.slice(0, slots)
     const limitHitEarly = inputs.length > toProcess.length
@@ -27347,6 +28166,17 @@ export default function PortalV2Page() {
     // Create account rows in chunks so a mid-batch tab close loses at most one chunk
     const createdItems: RefImage[] = []
     let limitHit = limitHitEarly
+    /*
+     * Why a chunk failed, not just that it did.
+     *
+     * This used to `continue` past a bad response, so a whole chunk of 25
+     * disappearing surfaced only as "25 images failed to upload" — with the
+     * files already safely in R2 and no hint that the DB write was the part
+     * that broke. Carrying the reason up is the difference between a bug
+     * report and a shrug.
+     */
+    let failReason: string | null = null
+    let rowFailures = 0
     for (let i = 0; i < urls.length; i += 25) {
       const chunk = urls.slice(i, i + 25)
       try {
@@ -27356,14 +28186,24 @@ export default function PortalV2Page() {
           body: JSON.stringify({ items: chunk.map(u => ({ url: u, folderId })) }),
         })
         if (res.status === 409) { limitHit = true; break }
-        if (!res.ok) continue
+        if (!res.ok) {
+          rowFailures += chunk.length
+          if (!failReason) {
+            const body = await res.json().catch(() => null)
+            failReason = `saving to your library failed (${res.status}${body?.error ? `: ${body.error}` : ""})`
+          }
+          continue
+        }
         const data = await res.json()
         for (const row of data.references || []) {
           createdItems.push({ id: String(row.id), url: row.url, folderId: row.folderId ?? null })
         }
         if (typeof data.limit === "number") setRefLimit(data.limit)
-      } catch {
-        // network failure — R2 files for this chunk stay orphaned (acceptable)
+      } catch (err) {
+        rowFailures += chunk.length
+        // The files are uploaded; only the rows are missing. Recoverable with
+        // scripts/recover-orphan-refs.mjs rather than lost.
+        if (!failReason) failReason = `saving to your library failed (${String((err as Error)?.message ?? "network error")})`
       }
     }
     setRefUploadProgress(null)
@@ -27381,7 +28221,7 @@ export default function PortalV2Page() {
         })
       }
     }
-    return { added: createdItems.length, failed: failed + (urls.length - createdItems.length), limitHit }
+    return { added: createdItems.length, failed: failed + (urls.length - createdItems.length), limitHit, reason: failReason }
   }, [refLibraryLimit, selectedModel.maxReferenceImages])
 
   // Dropdown upload (raw files, into the currently open folder)
@@ -27838,8 +28678,24 @@ export default function PortalV2Page() {
           // stale slots from interrupted sessions were re-polling long-expired
           // jobs on every load, failing one by one — a steady drip of new
           // error cards while the user wasn't generating anything at all.
+          //
+          // AND DROP SLOTS THAT ALREADY FINISHED. A "done" slot is a finished
+          // generation being rendered from memory, and after a reload the
+          // database is rendering that same generation too — the feed backdates
+          // every row to its queue time, so it lands in exactly the position
+          // the slot was holding. Restoring the slot therefore adds nothing but
+          // a second copy of the picture, which is the duplicate that survived
+          // every attempt to filter it: the two copies are not always
+          // recognisable as the same row (a re-host changes the URL, the nb2
+          // path assigns a temporary id), so the only reliable fix is to not
+          // create the second copy at all.
+          //
+          // Slots still LOADING are the opposite case and are kept: their work
+          // may not be in the database yet, and they are what the pollers and
+          // the 10s reconciliation pass reattach to.
           const cutoff = Date.now() - 3 * 3600 * 1000
           const slots = (JSON.parse(stored) as PendingSlot[])
+            .filter(s => s.status !== "done")
             .filter(s => s.queueId != null || s.queueJobId != null || !!s.nb2RequestId)
             .filter(s => s.queuedAtMs != null && s.queuedAtMs > cutoff)
           setPendingSlots(slots)
@@ -28237,17 +29093,19 @@ export default function PortalV2Page() {
                 .filter(s => s.status === "loading" && s.queueId != null && !inFlightIds.has(s.queueId) && allDbJobIds.has(s.queueId))
                 .map(s => s.slotId)
             )
-            if (completedQueueSlotIds.size > 0) {
-              try {
-                const recentRes = await fetch(`/api/my-images?page=1&limit=${completedQueueSlotIds.size}&type=image`)
-                const recentData = await recentRes.json()
-                if (recentData.success && recentData.images?.length > 0) {
-                  recentData.images.forEach((img: any) =>
-                    handlePrependImage({ id: img.id, imageUrl: img.imageUrl, prompt: img.prompt, model: img.model })
-                  )
-                }
-              } catch {}
-            }
+            //
+            // These slots finished while the page was closed. Their images are
+            // in the database, and the feed's own load has just fetched the
+            // newest page — so they are already on screen, in queue order.
+            //
+            // This used to fetch "the newest N images" and prepend all of them,
+            // which is wrong twice over: newest-N is not the same set as these
+            // slots' results, and prepending a row the feed is already showing
+            // is how one generation ends up rendered twice after a refresh.
+            // Anything genuinely missing is picked up by the 10s reconciliation
+            // pass, which matches each job to ITS image and fills the slot in
+            // place. (The set itself is still used below, to decide which
+            // slots need queue polling reattached.)
 
             // Local nb2 slots from localStorage (same device, across refreshes)
             const allLocalNb2Slots = currentSlots.filter(s => s.nb2RequestId && !doneNb2Ids.has(s.nb2RequestId))
@@ -28275,19 +29133,10 @@ export default function PortalV2Page() {
               s => !completedDbByRequestId.has(s.nb2RequestId!) && !nb2SlotsDeadOrExpired.some(d => d.slotId === s.slotId)
             )
 
-            // For slots that finished while the app was closed, fetch their images and prepend them
-            if (nb2SlotsCompletedWhileClosed.length > 0) {
-              try {
-                const requestIds = nb2SlotsCompletedWhileClosed.map(s => s.nb2RequestId!).join(',')
-                const completedRes = await fetch(`/api/my-images?falRequestIds=${encodeURIComponent(requestIds)}`)
-                const completedData = await completedRes.json()
-                if (completedData.success && completedData.images?.length > 0) {
-                  completedData.images.forEach((img: any) =>
-                    handlePrependImage({ id: img.id, imageUrl: img.imageUrl, prompt: img.prompt, model: img.model })
-                  )
-                }
-              } catch {}
-            }
+            // Slots that finished while the app was closed are saved rows too,
+            // and the feed load already carries them — see the note above. They
+            // are still purged from localStorage below so they stop being
+            // tracked; only the duplicate prepend is gone.
 
             // Purge completed + dead/expired slots from localStorage and mark as done
             const toPurge = [...nb2SlotsCompletedWhileClosed, ...nb2SlotsDeadOrExpired]
@@ -28309,6 +29158,10 @@ export default function PortalV2Page() {
             // Cross-device nb2 tiles: DB jobs with falRequestId not already in local slots
             const crossDeviceNb2Slots: PendingSlot[] = nb2DbJobs
               .filter((j: any) => !localNb2RequestIds.has(j.falRequestId))
+              // See the note in the 10s pass: a model with no dedicated status
+              // route must not be polled through the nano-banana one, which
+              // would save a duplicate of the row its webhook already wrote.
+              .filter((j: any) => !!MODEL_STATUS_URLS[j.modelId])
               .map((j: any) => {
                 const params = j.parameters as any
                 return {
@@ -28317,7 +29170,7 @@ export default function PortalV2Page() {
                   prompt:         j.prompt,
                   nb2RequestId:   j.falRequestId,
                   nb2FalEndpoint: params?.falEndpoint || params?.falInput?.endpoint,
-                  nb2StatusUrl:   MODEL_STATUS_URLS[j.modelId] || "/api/admin/nb2-status",
+                  nb2StatusUrl:   MODEL_STATUS_URLS[j.modelId],
                   nb2AspectRatio: params?.size || params?.aspectRatio || params?.nb2AspectRatio,
                   nb2Quality:     params?.quality || params?.nb2Quality,
                   nb2TicketCost:  j.ticketCost ?? 0,
@@ -28354,6 +29207,10 @@ export default function PortalV2Page() {
             })
             nb2Groups.forEach((slots, requestId) => {
               const first = slots[0]
+              // A restored slot with no recorded status route belongs to a
+              // webhook-settled model; polling it through the nano-banana
+              // route would save a duplicate of a row that already exists.
+              if (!first.nb2StatusUrl) return
               startNb2SlotPolling(requestId, first.nb2FalEndpoint!, slots.map(s => s.slotId), first.prompt, first.nb2OutputFormat || 'png', first.nb2AspectRatio || 'auto', first.nb2StatusUrl, first.nb2Quality, first.nb2TicketCost ?? 0, first.referenceImageUrls || [], first.videoMetadata)
             })
           }
@@ -28489,7 +29346,7 @@ export default function PortalV2Page() {
             : EMPTY_PENDING
       }
       // NOT freshImages: those are the image scanner's in-session items. Handed
-      // to a film's feeds they were prepended to BOTH columns \u2014 stills
+      // to a film's feeds they were prepended to BOTH columns — stills
       // appearing under Videos, and the same generation repeated several times.
       // A film's work reaches these feeds from the database, like everything else.
       freshImages={EMPTY_FRESH}
@@ -28713,7 +29570,7 @@ export default function PortalV2Page() {
             <div className="relative flex-none min-w-[90px] sm:flex-1">
               <button
                 onClick={() => setFramesOpen(true)}
-                title="Extract frames from a video \u2014 auto-ranked by sharpness (admin only)"
+                title="Extract frames from a video — auto-ranked by sharpness (admin only)"
                 className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
                   framesOpen ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
               >
@@ -28726,7 +29583,7 @@ export default function PortalV2Page() {
             <div className="relative flex-none min-w-[110px] sm:flex-1">
               <button
                 onClick={() => { setScannerMode("employees"); setOpenDropdown(null) }}
-                title="Employees \u2014 specialists with a workspace built for one job (admin only)"
+                title="Employees — specialists with a workspace built for one job (admin only)"
                 className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
                   scannerMode === "employees" ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
               >
@@ -28739,7 +29596,7 @@ export default function PortalV2Page() {
             <div className="relative flex-none min-w-[110px] sm:flex-1">
               <button
                 onClick={() => { setScannerMode("threed"); setOpenDropdown(null) }}
-                title="3D Studio \u2014 meshes, scenes and rigs from the fal 3D suite (admin only)"
+                title="3D Studio — meshes, scenes and rigs from the fal 3D suite (admin only)"
                 className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
                   scannerMode === "threed" ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
               >

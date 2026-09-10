@@ -1087,7 +1087,16 @@ export function ThreeDStudioWorkspace({
                 // same pixels, but it moves the way the scene was built.
                 <ParallaxViewer key={selected.id} layers={selected.layers} />
               ) : view ? (
-                <ModelViewer key={view} src={view} poster={selected?.preview ?? undefined} spin={spin} />
+                /* Deliberately NO key. Keying on the url made React destroy the
+                   <model-viewer> and build a new one for every model you
+                   clicked, and each one owns its own WebGL context. Browsers
+                   keep only ~8-16 alive and do not reclaim discarded ones
+                   promptly, so after a few switches the new element was refused
+                   a context and drew a black rectangle — the first model
+                   always worked, every one after it did not. Reusing the
+                   element and letting model-viewer swap its own src keeps one
+                   context for the life of the page. */
+                <ModelViewer src={view} poster={selected?.preview ?? undefined} spin={spin} />
               ) : splatShowable && splat ? (
                 <SplatViewer key={splat} src={splat} onFail={markSplatFailed} />
               ) : splat && splatSize === undefined ? (
@@ -1544,6 +1553,23 @@ function ParallaxViewer({
   }, [])
 
   /*
+   * Dragging here must look around the scene, not scroll the page.
+   *
+   * `touch-action: none` on the frame is what actually claims the gesture,
+   * and it is enough on its own in a current browser. The native listener
+   * below is the belt to that brace: React registers touchmove PASSIVELY on
+   * the root, so calling preventDefault() from an onTouchMove prop is
+   * silently ignored — a non-passive listener is the only way to reach it.
+   */
+  useEffect(() => {
+    const el = frameRef.current
+    if (!el) return
+    const claim = (e: TouchEvent) => e.preventDefault()
+    el.addEventListener('touchmove', claim, { passive: false })
+    return () => el.removeEventListener('touchmove', claim)
+  }, [])
+
+  /*
    * On a tablet there is no pointer to follow, so the device's own tilt drives
    * it instead — which is the more natural gesture for looking into a scene
    * anyway. iOS demands an explicit permission call for motion events, and
@@ -1569,14 +1595,15 @@ function ParallaxViewer({
   return (
     <div
       ref={frameRef}
-      onMouseMove={e => { setEngaged(true); track(e.clientX, e.clientY) }}
-      onMouseLeave={() => { setEngaged(false); setAim({ x: 0, y: 0 }) }}
-      onTouchMove={e => {
-        const t = e.touches[0]
-        if (t) { setEngaged(true); track(t.clientX, t.clientY) }
-      }}
-      onTouchEnd={() => setAim({ x: 0, y: 0 })}
-      className={`relative h-full w-full overflow-hidden ${className}`}
+      /* One handler for mouse, pen and finger. A mouse reports movement on
+         hover; a finger only while it is down, which is the behaviour each
+         one should have anyway. */
+      onPointerMove={e => { setEngaged(true); track(e.clientX, e.clientY) }}
+      onPointerLeave={() => { setEngaged(false); setAim({ x: 0, y: 0 }) }}
+      onPointerUp={() => { setEngaged(false); setAim({ x: 0, y: 0 }) }}
+      onPointerCancel={() => { setEngaged(false); setAim({ x: 0, y: 0 }) }}
+      style={{ touchAction: 'none' }}
+      className={`relative h-full w-full overflow-hidden overscroll-contain select-none ${className}`}
     >
       {layers.map(layer => (
         // eslint-disable-next-line @next/next/no-img-element
@@ -1600,7 +1627,7 @@ function ParallaxViewer({
       ))}
 
       <span className="pointer-events-none absolute bottom-2 left-2 z-20 rounded bg-black/70 px-2 py-1 text-[9px] text-slate-400">
-        {layers.length} layers · move to look around
+        {layers.length} layers · drag to look around
       </span>
     </div>
   )
@@ -1630,7 +1657,12 @@ function SplatViewer({ src, onFail }: { src: string; onFail: () => void }) {
 
   useEffect(() => {
     let cancelled = false
-    let viewer: { dispose?: () => void; start?: () => void; addSplatScene?: (u: string, o: unknown) => Promise<void> } | null = null
+    let viewer: {
+      dispose?: () => unknown
+      start?: () => void
+      stop?: () => void
+      addSplatScene?: (u: string, o: unknown) => Promise<void>
+    } | null = null
     /*
      * The renderer gets its OWN node, created outside React.
      *
@@ -1642,11 +1674,13 @@ function SplatViewer({ src, onFail }: { src: string; onFail: () => void }) {
      * taken. Giving it a node React has never heard of removes the conflict
      * entirely rather than trying to sequence the two teardowns.
      */
-    const host = hostRef.current
     const mount = document.createElement("div")
     mount.style.width = "100%"
     mount.style.height = "100%"
-    host?.appendChild(mount)
+    // Orbiting a splat is a drag, and a drag that also scrolls the page is
+    // unusable on a tablet.
+    mount.style.touchAction = "none"
+    hostRef.current?.appendChild(mount)
 
     void (async () => {
       try {
@@ -1663,7 +1697,6 @@ function SplatViewer({ src, onFail }: { src: string; onFail: () => void }) {
           sharedMemoryForWorkers: false,
           dynamicScene: false,
           antialiased: true,
-
         })
         await viewer!.addSplatScene!(src, {
           progressiveLoad: true,
@@ -1673,18 +1706,37 @@ function SplatViewer({ src, onFail }: { src: string; onFail: () => void }) {
         viewer!.start!()
         setReady(true)
       } catch (err) {
-        console.error("[splat viewer]", err)
-        if (!cancelled) onFail()
+        // A rejection after unmount is the teardown, not a failure to render.
+        if (!cancelled) {
+          console.error("[splat viewer]", err)
+          onFail()
+        }
       }
     })()
 
     return () => {
       cancelled = true
-      try { viewer?.dispose?.() } catch { /* already torn down */ }
-      // Ours to remove, and only if the renderer has not already done it.
+
+      /*
+       * Order matters, and dispose() is ASYNC.
+       *
+       * Detaching first means the renderer's teardown runs against a subtree
+       * it still owns, instead of racing React for nodes React has already
+       * removed. And dispose() returns a promise: a rejection from it escapes
+       * try/catch entirely and lands in the dev overlay as a bare
+       * "NotFoundError ... removeChild" with no stack to trace. That is the
+       * error switching off a splat produced, and only a .catch() on the
+       * returned promise can silence it.
+       *
+       * Strict Mode makes this a certainty rather than a race — it mounts,
+       * tears down and remounts every effect in development.
+       */
+      try { viewer?.stop?.() } catch { /* never started */ }
+      try { mount.remove() } catch { /* already detached */ }
       try {
-        if (mount.parentNode === host) host?.removeChild(mount)
-      } catch { /* nothing left to detach */ }
+        void Promise.resolve(viewer?.dispose?.()).catch(() => { /* teardown, nothing to salvage */ })
+      } catch { /* dispose threw synchronously */ }
+      viewer = null
     }
   }, [src, onFail])
 
@@ -1714,23 +1766,89 @@ function SplatViewer({ src, onFail }: { src: string; onFail: () => void }) {
  * upgrades itself once the script lands, so the tag can be rendered before it
  * is defined.
  */
+const MODEL_VIEWER_CDN = "https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"
+
 function ModelViewer({ src, poster, spin = true }: { src: string; poster?: string; spin?: boolean }) {
   const [ready, setReady] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [contextLost, setContextLost] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  /*
+   * A lost WebGL context is silent: the canvas simply stops drawing and the
+   * panel goes black, which is indistinguishable from a model that failed to
+   * load. Saying so turns a mystery into a reload.
+   */
+  useEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const onLost = () => setContextLost(true)
+    el.addEventListener("webglcontextlost", onLost, true)
+    return () => el.removeEventListener("webglcontextlost", onLost, true)
+  }, [ready])
+
+  // A new model in the same element is a fresh chance to draw.
+  useEffect(() => { setContextLost(false) }, [src])
 
   useEffect(() => {
-    if (customElements.get("model-viewer")) { setReady(true); return }
-    const existing = document.querySelector<HTMLScriptElement>("script[data-model-viewer]")
-    if (existing) {
-      existing.addEventListener("load", () => setReady(true))
-      return
+    let cancelled = false
+
+    /*
+     * Wait for the ELEMENT to be defined, not for the script to download.
+     *
+     * This used to resolve on the script tag's `load` event, which is the
+     * wrong signal twice over. model-viewer is an ES module that pulls in its
+     * own dependencies, so `load` fires while <model-viewer> is still an
+     * unknown element — React then renders a tag the browser does not know,
+     * which lays out at 100% x 100% with a black background and draws
+     * absolutely nothing. And when the script was already in the DOM from a
+     * previous mount, attaching a fresh `load` listener to it caught an event
+     * that had already fired, so the spinner ran for ever.
+     *
+     * customElements.whenDefined answers the actual question and resolves
+     * whether the element was defined an hour ago or is still on its way.
+     */
+    void customElements.whenDefined("model-viewer").then(() => {
+      if (!cancelled) setReady(true)
+    })
+
+    if (!document.querySelector("script[data-model-viewer]")) {
+      const s = document.createElement("script")
+      s.type = "module"
+      s.dataset.modelViewer = "1"
+      s.src = MODEL_VIEWER_CDN
+      s.onerror = () => { if (!cancelled) setFailed(true) }
+      document.head.appendChild(s)
     }
-    const s = document.createElement("script")
-    s.type = "module"
-    s.dataset.modelViewer = "1"
-    s.src = "https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"
-    s.onload = () => setReady(true)
-    document.head.appendChild(s)
+
+    // A CDN that never answers should say so rather than spin silently.
+    const giveUp = setTimeout(() => {
+      if (!cancelled && !customElements.get("model-viewer")) setFailed(true)
+    }, 20_000)
+
+    return () => { cancelled = true; clearTimeout(giveUp) }
   }, [])
+
+  if (failed && !ready) {
+    return (
+      <div className="flex max-w-[300px] flex-col items-center gap-2 px-6 text-center">
+        <AlertTriangle size={18} className="text-amber-400" />
+        <span className="text-[12px] font-semibold text-slate-200">The 3D viewer could not load</span>
+        <span className="text-[10px] leading-snug text-slate-500">
+          It is fetched from unpkg the first time it is needed; if that request was
+          blocked the model cannot be shown. Reload the page to try again.
+        </span>
+        <a
+          href={src}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/[0.06] px-2.5 py-1 text-[10px] text-slate-200 transition-colors hover:border-red-400/40 hover:text-white"
+        >
+          <Download size={10} /> Download the model
+        </a>
+      </div>
+    )
+  }
 
   if (!ready) {
     return (
@@ -1743,18 +1861,39 @@ function ModelViewer({ src, poster, spin = true }: { src: string; poster?: strin
 
   // auto-rotate is presence-based, so it has to be ABSENT rather than false
   // when the turntable is off — hence the spread instead of an attribute.
+  //
+  // touch-action is "none" rather than "pan-y": inside the stage, dragging
+  // should turn the model. pan-y meant a vertical drag scrolled the page out
+  // from under it instead.
+  //
+  // loading="eager" because model-viewer otherwise defers the fetch until the
+  // element nears the viewport, and this one sits inside a nested flex panel
+  // where that heuristic is not worth trusting. The user clicked this model.
   return (
-    // @ts-expect-error — a custom element, not a React intrinsic
-    <model-viewer
-      src={src}
-      poster={poster}
-      camera-controls
-      {...(spin ? { "auto-rotate": true } : {})}
-      touch-action="pan-y"
-      shadow-intensity="1"
-      exposure="1"
-      style={{ width: "100%", height: "100%", backgroundColor: "#000" }}
-    />
+    <div ref={boxRef} className="relative h-full w-full">
+      {/* @ts-expect-error — a custom element, not a React intrinsic */}
+      <model-viewer
+        src={src}
+        poster={poster}
+        camera-controls
+        {...(spin ? { "auto-rotate": true } : {})}
+        touch-action="none"
+        loading="eager"
+        reveal="auto"
+        shadow-intensity="1"
+        exposure="1"
+        style={{ width: "100%", height: "100%", backgroundColor: "#000" }}
+      />
+      {contextLost && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/80 px-6 text-center">
+          <AlertTriangle size={18} className="text-amber-400" />
+          <span className="text-[12px] font-semibold text-slate-200">The 3D context was lost</span>
+          <span className="text-[10px] leading-snug text-slate-500">
+            The browser dropped this viewer&apos;s WebGL context. Reload the page to get it back.
+          </span>
+        </div>
+      )}
+    </div>
   )
 }
 

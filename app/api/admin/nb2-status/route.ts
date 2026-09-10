@@ -27,6 +27,36 @@ export async function POST(req: Request) {
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
 
     if (status.status === 'COMPLETED') {
+      /*
+       * IDEMPOTENCY FIRST — before fetching the result, before re-hosting.
+       *
+       * This check used to sit AFTER the download-and-upload loop, so every
+       * repeat poll of an already-finished job re-fetched each image from fal,
+       * re-uploaded it to R2, and only then discovered the rows already
+       * existed and threw all of it away. That is the whole reason a poll of a
+       * completed job measured 12-16 seconds. Repeat polls are not rare: a
+       * page reload re-arms a poller for every job it restores.
+       *
+       * One indexed lookup answers the same question for nothing.
+       */
+      try {
+        const existing = await prisma.generatedImage.findMany({
+          where: { falRequestId: requestId },
+          select: { id: true, imageUrl: true },
+          orderBy: { id: 'asc' },
+        })
+        if (existing.length > 0) {
+          // The slot may still be held if an earlier poll died mid-flight.
+          await releaseQueueSlot(requestId, false)
+          return NextResponse.json({
+            status: 'completed',
+            images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
+          })
+        }
+      } catch {
+        // falRequestId column may not exist yet — fall through and do the work
+      }
+
       const result = await fal.queue.result<any>(falEndpoint, { requestId })
       const falImages: { url: string; width?: number; height?: number }[] = result.data?.images || []
 
@@ -36,45 +66,28 @@ export async function POST(req: Request) {
       }
 
       const format = outputFormat || 'png'
-      const hostedImages: { url: string; width?: number; height?: number }[] = []
-      for (let i = 0; i < falImages.length; i++) {
-        const falImg = falImages[i]
+      // In parallel: a multi-image result was paying for each download and
+      // upload end to end, and the poll is already the slow part of the loop.
+      type Hosted = { url: string; width?: number; height?: number }
+      const hosted: (Hosted | null)[] = await Promise.all(falImages.map(async (falImg, i): Promise<Hosted | null> => {
         try {
           const res = await fetch(falImg.url)
-          if (!res.ok) continue
+          if (!res.ok) return null
           const buffer = Buffer.from(await res.arrayBuffer())
           const ext = format === 'jpeg' ? 'jpg' : format
           const filename = `nb2-${Date.now()}-${i}.${ext}`
           const url = await uploadToR2(filename, buffer, `image/${format === 'jpeg' ? 'jpeg' : format}`)
-          hostedImages.push({ url, width: falImg.width, height: falImg.height })
+          return { url, width: falImg.width, height: falImg.height }
         } catch (e) {
           console.error(`nb2-status: failed to re-host image ${i}:`, e)
+          return null
         }
-      }
+      }))
+      const hostedImages = hosted.filter((h): h is Hosted => h !== null)
 
       if (hostedImages.length === 0) {
         await releaseQueueSlot(requestId, true, 'Failed to download generated images')
         return NextResponse.json({ status: 'failed', error: 'Failed to download generated images' })
-      }
-
-      // Idempotency: if we already saved images for this requestId, return them without
-      // re-uploading or re-inserting. This prevents duplicate DB records when the client
-      // re-polls a job whose "completed" response was lost (e.g. iOS app kill mid-response).
-      try {
-        const existing = await prisma.generatedImage.findMany({
-          where: { falRequestId: requestId },
-          select: { id: true, imageUrl: true },
-          orderBy: { id: 'asc' },
-        })
-        if (existing.length > 0) {
-          console.log(`↩ NanoBanana 2 already saved [${requestId}] returning ${existing.length} existing record(s)`)
-          return NextResponse.json({
-            status: 'completed',
-            images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
-          })
-        }
-      } catch {
-        // falRequestId column may not exist yet — skip idempotency check
       }
 
       // Save to DB and capture real IDs so the client can display without re-fetching

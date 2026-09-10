@@ -53,9 +53,86 @@ export function CharacterStudioWorkspace({
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState("")
   const [error, setError] = useState<string | null>(null)
+  /**
+   * The run is paused on a question, and these are the calls awaiting an
+   * answer. Without this the board could reach "Waiting for you" and simply
+   * stay there for ever — the status said the employee needed a decision and
+   * offered no way to give one.
+   */
+  const [approvals, setApprovals] = useState<{ toolCallId: string; label: string }[]>([])
+  const [pausedMessageId, setPausedMessageId] = useState<number | null>(null)
+  const [answering, setAnswering] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sigRef = useRef("")
+  /** Set once the account's saved workspace has been read, so the debounced
+   *  save below cannot overwrite it with the empty initial state. */
+  const loadedRef = useRef(false)
+  const chatIdRef = useRef<number | null>(null)
+  useEffect(() => { chatIdRef.current = chatId }, [chatId])
+
+  /*
+   * The workspace belongs to the ACCOUNT, not to the tab.
+   *
+   * Everything here used to be plain component state, so a refresh emptied the
+   * brief, reset the sheets and — worst — lost the id of the project that was
+   * mid-run, orphaning work that was still going. It lives in
+   * portalPreferences, the same Json column the film studio uses, so it
+   * follows the account to any device and survives a reload.
+   */
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const r = await fetch("/api/user/preferences", { cache: "no-store" })
+        const d = await r.json().catch(() => null)
+        const cfg = d?.preferences?.characterStudio
+        if (!cancelled && cfg && typeof cfg === "object") {
+          if (typeof cfg.brief === "string") setBrief(cfg.brief)
+          if (Array.isArray(cfg.picked) && cfg.picked.length) setPicked(cfg.picked.filter((x: unknown) => typeof x === "string"))
+          if (typeof cfg.quality === "string") setQuality(cfg.quality)
+          if (typeof cfg.aspect === "string") setAspect(cfg.aspect)
+          const active = Number(cfg.activeProject ?? 0)
+          if (active > 0 && !chatIdRef.current) setChatId(active)
+        }
+      } catch { /* an unreadable preference is not worth blocking the page */ }
+
+      /*
+       * No remembered project — reopen the most recent one.
+       *
+       * The preference only starts being written from now on, so projects
+       * created before it existed would otherwise be unreachable: still
+       * running, possibly paused on a question, with no way back into them.
+       * The list is account-scoped, so this reopens the right one on any
+       * device. "New" in the board header closes it.
+       */
+      if (!cancelled && !chatIdRef.current) {
+        try {
+          const r = await fetch("/api/employees/characters", { cache: "no-store" })
+          const d = await r.json().catch(() => null)
+          const newest = Array.isArray(d?.projects) ? d.projects[0] : null
+          if (!cancelled && newest?.id) setChatId(Number(newest.id))
+        } catch { /* nothing to resume */ }
+      }
+      if (!cancelled) loadedRef.current = true
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Debounced so typing a brief does not write on every keystroke.
+  useEffect(() => {
+    if (!loadedRef.current) return
+    const t = setTimeout(() => {
+      void fetch("/api/user/preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterStudio: { brief, picked, quality, aspect, activeProject: chatId ?? 0 },
+        }),
+      }).catch(() => {})
+    }, 600)
+    return () => clearTimeout(t)
+  }, [brief, picked, quality, aspect, chatId])
 
   const addFiles = useCallback(async (files: File[]) => {
     const room = MAX_REFS - refs.length
@@ -97,6 +174,13 @@ export function CharacterStudioWorkspace({
       : "",
     )
 
+    // Carry the paused call out of the poll so the UI can answer it.
+    setPausedMessageId(pending.length ? (last?.id ?? null) : null)
+    setApprovals(pending.map((c: any) => ({
+      toolCallId: String(c.toolCallId ?? c.id ?? ""),
+      label: String(c.toolName ?? c.name ?? "this step"),
+    })).filter((c: { toolCallId: string }) => c.toolCallId))
+
     // Only reload the feed when the project actually produced something new
     let made = 0
     for (const m of rows) made += Array.isArray(m?.imageUrls) ? m.imageUrls.length : 0
@@ -112,6 +196,35 @@ export function CharacterStudioWorkspace({
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [chatId, readChat])
 
+  /** Answer whatever the run paused on, then let the poll pick it up. */
+  const respond = useCallback(async (approved: boolean) => {
+    const id = chatIdRef.current
+    if (!id || pausedMessageId === null || approvals.length === 0 || answering) return
+    setAnswering(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/chat-hub/chats/${id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messageId: pausedMessageId,
+          approvals: approvals.map(a => ({ toolCallId: a.toolCallId, approved })),
+        }),
+      })
+      // The response streams the continued run; draining it is what keeps the
+      // run alive, exactly as the initial send does.
+      const reader = res.body?.getReader()
+      if (reader) { for (;;) { const { done } = await reader.read(); if (done) break } }
+      setApprovals([])
+      setPausedMessageId(null)
+    } catch (e: any) {
+      setError(String(e?.message || e))
+    } finally {
+      setAnswering(false)
+      void readChat(id)
+    }
+  }, [approvals, pausedMessageId, answering, readChat])
+
   const start = async () => {
     if (busy) return
     if (!brief.trim() && refs.length === 0) return
@@ -126,6 +239,9 @@ export function CharacterStudioWorkspace({
       })
       if (!mk.ok) throw new Error("Could not start the project")
       const { project } = await mk.json()
+      // A contract mismatch here used to surface as "Cannot read properties of
+      // undefined", which says nothing about what actually went wrong.
+      if (!project?.id) throw new Error("The server did not return a project")
       const sheets = SHEETS.filter(s => picked.includes(s.id)).map(s => `${s.label} (${s.hint})`)
 
       const res = await fetch(`/api/chat-hub/chats/${project.id}/send`, {
@@ -257,7 +373,57 @@ export function CharacterStudioWorkspace({
               <UsersRound size={12} className="text-cyan-400" />
               <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">The board</span>
               {status && <span className="ml-auto text-[10px] text-slate-500">{status}</span>}
+              {started && (
+                // A project restored from the account can be mid-run, finished
+                // or wedged, and without this there was no way to leave one and
+                // begin another — the bench stays disabled while a project is
+                // open, so a stuck project locked the whole workspace.
+                <button
+                  onClick={() => {
+                    setChatId(null); setApprovals([]); setPausedMessageId(null)
+                    setBusy(false); setStatus(""); setError(null); sigRef.current = ""
+                  }}
+                  title="Close this project and start a new one"
+                  className={`${status ? "" : "ml-auto "}text-[10px] text-slate-500 hover:text-white transition-colors`}
+                >
+                  New
+                </button>
+              )}
             </div>
+
+            {approvals.length > 0 && (
+              /*
+               * "Waiting for you" used to be a dead end: the status said the
+               * employee needed a decision and the workspace offered no way to
+               * give one, so the run sat paused for ever.
+               */
+              <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/[0.07] px-3 py-2">
+                <p className="text-[11px] font-semibold text-amber-100">
+                  The employee is waiting on you
+                </p>
+                <p className="mt-0.5 text-[10px] leading-snug text-amber-200/70">
+                  {approvals.length === 1
+                    ? `It wants to run ${approvals[0].label}.`
+                    : `It wants to run ${approvals.length} steps: ${approvals.map(a => a.label).join(", ")}.`}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={() => void respond(true)}
+                    disabled={answering}
+                    className="flex-1 rounded-lg border border-emerald-500/40 bg-emerald-500/15 py-1.5 text-[11px] font-semibold text-emerald-100 transition-colors hover:bg-emerald-500/25 disabled:opacity-50"
+                  >
+                    {answering ? "Sending…" : "Go ahead"}
+                  </button>
+                  <button
+                    onClick={() => void respond(false)}
+                    disabled={answering}
+                    className="rounded-lg border border-white/15 px-3 py-1.5 text-[11px] text-slate-300 transition-colors hover:border-white/30 hover:text-white disabled:opacity-50"
+                  >
+                    Not that
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex-1 min-h-0 overflow-y-auto p-4">
               {!started ? (
                 <div className="h-full flex flex-col items-center justify-center gap-3 text-center">

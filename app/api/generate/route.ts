@@ -1251,6 +1251,26 @@ export async function POST(request: Request) {
                 referenceImageUrls: permanentReferenceUrls,
                 loraUrl: loraUrl || null,
                 loraName: loraName || null,
+                // What was ACTUALLY sent, so the info panel reports the run
+                // rather than the request. For families served by sibling
+                // endpoints (GPT Image 2.5's sunburst/flare) the endpoint is
+                // the only honest record of which one ran, and the resolved
+                // size is what the image really came out at — the requested
+                // quality tier is not.
+                falEndpoint: modelEndpoint,
+                falImageSize: (inputParams as any)?.image_size ?? null,
+                falQuality: (inputParams as any)?.quality ?? null,
+                // Settings the feed reports back later. Recorded from the
+                // BUILT input rather than the request body, so what the panel
+                // shows is what the model was actually given — and recorded
+                // here rather than left to the fal webhook, because that is
+                // delivered to production and never runs during local work.
+                falSeed: (inputParams as any)?.seed ?? null,
+                falUpscaleMode: (inputParams as any)?.upscale_mode ?? null,
+                falUpscaleFactor: (inputParams as any)?.upscale_factor ?? null,
+                falTargetResolution: (inputParams as any)?.target_resolution ?? null,
+                falNoiseScale: (inputParams as any)?.noise_scale ?? null,
+                falOutputFormat: (inputParams as any)?.output_format ?? null,
               },
               status: 'processing',
               ticketCost: skipTickets ? 0 : ticketCost,

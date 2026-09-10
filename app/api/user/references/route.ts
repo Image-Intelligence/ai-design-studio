@@ -97,14 +97,38 @@ export async function POST(req: Request) {
       if (count + clean.length > limit) {
         throw Object.assign(new Error('limit'), { code: 'REF_LIMIT', count, limit })
       }
-      const rows = []
-      for (const c of clean) {
-        rows.push(await tx.userReference.create({
-          data: { userId: user.id, url: c.url, folderId: c.folderId },
-          select: { id: true, url: true, folderId: true, createdAt: true },
-        }))
-      }
-      return rows
+      /*
+       * ONE round trip, not one per row.
+       *
+       * This used to loop `create` over the batch, and the client sends
+       * batches of 25. Each create is a separate round trip through Accelerate
+       * — measured at ~2.1s for 25 against an idle database, inside an
+       * interactive transaction whose default timeout is 5s. Under a real
+       * upload (four files uploading concurrently, the server already busy)
+       * that margin disappears, the transaction times out, and because it is a
+       * transaction the WHOLE chunk of 25 rolls back at once. That is the
+       * "25 of 27 failed" shape exactly: one chunk of 25 lost, the trailing
+       * chunk of 2 fast enough to survive.
+       *
+       * createManyAndReturn does it in a single statement.
+       */
+      return tx.userReference.createManyAndReturn({
+        data: clean.map(c => ({ userId: user.id, url: c.url, folderId: c.folderId })),
+        select: { id: true, url: true, folderId: true, createdAt: true },
+      })
+    }, {
+      /*
+       * Headroom on top of the single-statement insert: the advisory lock can
+       * legitimately make one batch wait for another batch of the same user.
+       *
+       * 15s is the ceiling — Accelerate REJECTS anything higher with P6005
+       * ("interactive transactions ... are limited to a max timeout of
+       * 15000ms"), which fails the request outright rather than degrading. The
+       * default is 5s, which is what the old 25-round-trip loop was running
+       * out of.
+       */
+      timeout: 15_000,
+      maxWait: 5_000,
     })
 
     return jsonPrivate({ references: created, limit })

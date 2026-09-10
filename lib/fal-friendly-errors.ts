@@ -49,6 +49,23 @@ export function friendlyFalError(raw: string, model?: string): string {
     return 'The model rejected this request with a bare 422 — usually an input image its content checker or decoder refused. Try a different reference image.'
   }
 
+  /*
+   * A provider-side 5xx. fal's own infrastructure failed the job — nothing
+   * about the prompt or the images caused it, and nothing the user changes
+   * will avoid it. Measured on a 27-job batch: two jobs ran 147s and 455s at
+   * fal before coming back 500, while the other 25 averaged 40s. Saying
+   * "Unexpected status code: 500" invites someone to rewrite a prompt that
+   * was never the problem.
+   */
+  // A number alone is not enough: "duration must be 500ms" and "aspect ratio
+  // 500px wide" both contain one. Either a 5xx code sits next to status/error
+  // wording, or the phrase names the fault outright.
+  if (/\b5\d{2}\b/.test(d)
+    ? (d.includes('status code') || d.includes('error') || d.includes('gateway') || d.includes('unavailable'))
+    : /internal server error|bad gateway|service unavailable|gateway time-?out/.test(d)) {
+    return 'fal\'s servers failed this one on their side — not your prompt or your images. Retrying usually works.'
+  }
+
   return raw
 }
 

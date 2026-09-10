@@ -29,20 +29,48 @@ export type ChatHubModel = {
 
 export const CHAT_HUB_MODELS: ChatHubModel[] = [
   // Anthropic's native API uses dashes where the gateway uses dots
-  { id: 'anthropic/claude-fable-5',      directId: 'claude-fable-5',           label: 'Claude Fable 5',   provider: 'Anthropic', maxImages: 20, strengths: 'top-tier reasoning, coding, nuanced writing' },
-  { id: 'anthropic/claude-sonnet-5',     directId: 'claude-sonnet-5',          label: 'Claude Sonnet 5',  provider: 'Anthropic', maxImages: 20, strengths: 'strong all-rounder: reasoning, coding, long context' },
-  { id: 'anthropic/claude-opus-4.8',     directId: 'claude-opus-4-8',          label: 'Claude Opus 4.8',  provider: 'Anthropic', maxImages: 20, strengths: 'deep analysis and careful long-form work' },
+  /*
+   * Refreshed 2026-09-08 against https://ai-gateway.vercel.sh/v1/models — the
+   * gateway is what actually serves these, so it is the only list worth
+   * trusting. Newest flagship first: CHAT_HUB_MODELS[0] is DEFAULT_CHAT_MODEL,
+   * and Opus 5 ($5/$25 per M) is both newer and cheaper than the Fable 5 it
+   * replaces at the top ($10/$50).
+   *
+   * Superseded entries are kept ONLY where existing chats still reference them
+   * — this list doubles as the send route's allowlist, so deleting an id in
+   * use would break those conversations.
+   */
+
+  // ── Anthropic ───────────────────────────────────────────────────────────
+  { id: 'anthropic/claude-opus-5',       directId: 'claude-opus-5',            label: 'Claude Opus 5',    provider: 'Anthropic', maxImages: 20, strengths: 'newest Opus — a step change over 4.8 for agentic work, coding and long-form analysis' },
+  { id: 'anthropic/claude-opus-5-fast',  directId: 'claude-opus-5-fast',       label: 'Claude Opus 5 Fast', provider: 'Anthropic', maxImages: 20, strengths: 'same model as Opus 5 with lower latency, at twice the price' },
+  { id: 'anthropic/claude-fable-5.1',    directId: 'claude-fable-5-1',         label: 'Claude Fable 5.1', provider: 'Anthropic', maxImages: 20, strengths: 'long-running agentic coding and research — holds instructions across a whole session' },
+  { id: 'anthropic/claude-sonnet-5',     directId: 'claude-sonnet-5',          label: 'Claude Sonnet 5',  provider: 'Anthropic', maxImages: 20, strengths: 'strong all-rounder at a fifth of Opus pricing' },
   { id: 'anthropic/claude-haiku-4.5',    directId: 'claude-haiku-4-5',         label: 'Claude Haiku 4.5', provider: 'Anthropic', maxImages: 20, strengths: 'fast and cheap for simple subtasks' },
-  { id: 'openai/gpt-5.5',                directId: 'gpt-5.5',                  label: 'GPT-5.5',          provider: 'OpenAI',    maxImages: 10, strengths: 'strong general reasoning and structured output' },
-  { id: 'openai/gpt-5.5-pro',            directId: 'gpt-5.5-pro',              label: 'GPT-5.5 Pro',      provider: 'OpenAI',    maxImages: 10, strengths: 'slow but very thorough problem solving' },
-  { id: 'openai/gpt-5.4-mini',           directId: 'gpt-5.4-mini',             label: 'GPT-5.4 Mini',     provider: 'OpenAI',    maxImages: 10, strengths: 'fast and cheap for drafts and summaries' },
+  // Superseded — retained because existing chats are pinned to them.
+  { id: 'anthropic/claude-fable-5',      directId: 'claude-fable-5',           label: 'Claude Fable 5',   provider: 'Anthropic', maxImages: 20, strengths: 'previous Fable generation — superseded by 5.1' },
+  { id: 'anthropic/claude-opus-4.8',     directId: 'claude-opus-4-8',          label: 'Claude Opus 4.8',  provider: 'Anthropic', maxImages: 20, strengths: 'previous Opus generation — superseded by Opus 5' },
+
+  // ── OpenAI ──────────────────────────────────────────────────────────────
+  { id: 'openai/gpt-6-astra',            directId: 'gpt-6-astra',              label: 'GPT-6 Astra',      provider: 'OpenAI',    maxImages: 10, strengths: "OpenAI's most capable — complex reasoning, coding, computer use, research" },
+  { id: 'openai/gpt-6-astra-fast',       directId: 'gpt-6-astra-fast',         label: 'GPT-6 Astra Fast', provider: 'OpenAI',    maxImages: 10, strengths: 'Astra with lower latency, at twice the price' },
+  { id: 'openai/gpt-5.6-sol',            directId: 'gpt-5.6-sol',              label: 'GPT-5.6 Sol',      provider: 'OpenAI',    maxImages: 10, strengths: 'flagship of the 5.6 line — built for long-horizon agentic work' },
+  { id: 'openai/gpt-5.6-terra',          directId: 'gpt-5.6-terra',            label: 'GPT-5.6 Terra',    provider: 'OpenAI',    maxImages: 10, strengths: 'balanced everyday model — last generation\u2019s performance at half the cost' },
+  { id: 'openai/gpt-5.6-luna',           directId: 'gpt-5.6-luna',             label: 'GPT-5.6 Luna',     provider: 'OpenAI',    maxImages: 10, strengths: 'cheapest of the series by a wide margin — drafts, summaries, bulk subtasks' },
+
+  // ── Google ──────────────────────────────────────────────────────────────
+  { id: 'google/gemini-3.8-flash',       directId: 'gemini-3.8-flash',         label: 'Gemini 3.8 Flash', provider: 'Google',    maxImages: 16, strengths: 'newest Flash — Pro-level agentic ability at Flash pricing' },
+  { id: 'google/gemini-3.7-flash',       directId: 'gemini-3.7-flash',         label: 'Gemini 3.7 Flash', provider: 'Google',    maxImages: 16, strengths: 'fast, cheap and strong at tool calling — what the employees run on' },
   { id: 'google/gemini-3.1-pro-preview', directId: 'gemini-3.1-pro-preview',   label: 'Gemini 3.1 Pro',   provider: 'Google',    maxImages: 16, strengths: 'strong reasoning, huge context, good vision' },
-  { id: 'google/gemini-3.5-flash',       directId: 'gemini-3.5-flash',         label: 'Gemini 3.5 Flash', provider: 'Google',    maxImages: 16, strengths: 'very fast, cheap, good vision — great for parallel research' },
+  { id: 'google/gemini-3.5-flash',       directId: 'gemini-3.5-flash',         label: 'Gemini 3.5 Flash', provider: 'Google',    maxImages: 16, strengths: 'previous Flash generation — kept for chats pinned to it' },
   { id: 'google/gemini-3.5-flash-lite',  directId: 'gemini-3.5-flash-lite',    label: 'Gemini 3.5 Flash Lite', provider: 'Google', maxImages: 16, strengths: 'cheapest Google model — quick lookups and simple subtasks' },
-  { id: 'google/gemini-3.6-flash',       directId: 'gemini-3.6-flash',         label: 'Gemini 3.6 Flash', provider: 'Google',    maxImages: 16, strengths: 'fast with improved tool use over 3.5' },
-  { id: 'google/gemini-3.7-flash',       directId: 'gemini-3.7-flash',         label: 'Gemini 3.7 Flash', provider: 'Google',    maxImages: 16, strengths: 'newest flash — strongest agentic/tool-calling of the Flash line, great for employees' },
-  { id: 'xai/grok-4.5',                  directId: 'grok-4.5',                 label: 'Grok 4.5',         provider: 'xAI',       maxImages: 8, strengths: 'strong reasoning, current-events knowledge' },
-  { id: 'xai/grok-4.1-fast-reasoning',   directId: 'grok-4.1-fast-reasoning',  label: 'Grok 4.1 Fast',    provider: 'xAI',       maxImages: 8, strengths: 'fast reasoning at low cost' },
+
+  // ── xAI ─────────────────────────────────────────────────────────────────
+  // NOT on the Vercel gateway (checked 2026-09-08: zero xai/* entries), so
+  // these only run on the 'direct' route with your own XAI_API_KEY in Chat
+  // Settings. Left in place because that route still works.
+  { id: 'xai/grok-4.5',                  directId: 'grok-4.5',                 label: 'Grok 4.5',         provider: 'xAI',       maxImages: 8, strengths: 'strong reasoning, current-events knowledge — needs your own xAI key' },
+  { id: 'xai/grok-4.1-fast-reasoning',   directId: 'grok-4.1-fast-reasoning',  label: 'Grok 4.1 Fast',    provider: 'xAI',       maxImages: 8, strengths: 'fast reasoning at low cost — needs your own xAI key' },
 ]
 
 export const CHAT_HUB_PROVIDERS: ChatHubProvider[] = ['Anthropic', 'OpenAI', 'Google', 'xAI']

@@ -605,6 +605,18 @@ export const BUILT_IN_EMPLOYEES: Employee[] = [
 // ── Cost estimator (clearly approximate) ────────────────────────────────────
 // USD per 1M tokens (input / output) — rough public rates for display only.
 const MODEL_RATES: Record<string, { in: number; out: number }> = {
+  // Rates below were read off the Vercel gateway's own model list on
+  // 2026-09-08 (per-token, converted to per-million), so the readout matches
+  // what the gateway actually bills rather than a remembered price sheet.
+  'anthropic/claude-opus-5':       { in: 5,    out: 25 },
+  'anthropic/claude-opus-5-fast':  { in: 10,   out: 50 },
+  'anthropic/claude-fable-5.1':    { in: 10,   out: 50 },
+  'openai/gpt-6-astra':            { in: 10,   out: 50 },
+  'openai/gpt-6-astra-fast':       { in: 20,   out: 100 },
+  'openai/gpt-5.6-sol':            { in: 2,    out: 10 },
+  'openai/gpt-5.6-terra':          { in: 2,    out: 12 },
+  'openai/gpt-5.6-luna':           { in: 0.2,  out: 1.2 },
+  'google/gemini-3.8-flash':       { in: 0.75, out: 3.75 },
   'anthropic/claude-fable-5':      { in: 15,   out: 75 },
   'anthropic/claude-sonnet-5':     { in: 3,    out: 15 },
   'anthropic/claude-opus-4.8':     { in: 10,   out: 40 },

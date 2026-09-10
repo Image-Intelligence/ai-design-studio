@@ -68,6 +68,47 @@ export async function GET(request: Request) {
       ? { OR: [{ model: { in: VIDEO_MODELS } }, isVideoJson, ...isVideoFile] }
       : {}
 
+    /*
+     * Fast path: fetch an exact set of rows by id.
+     *
+     * A completed queue row records the ids of the images it produced
+     * (`parameters.completedImageIds`), which is the only job-to-image link
+     * that is exact, present today, and independent of the fal webhook. A
+     * client holding a finished job can therefore ask for precisely its own
+     * results instead of guessing from "the newest few".
+     */
+    const idsParam = searchParams.get('ids')
+    if (idsParam) {
+      const wanted = idsParam.split(',').map(v => parseInt(v.trim(), 10))
+        .filter(n => Number.isFinite(n)).slice(0, 60)
+      if (wanted.length === 0) return jsonPrivate({ success: true, images: [] })
+      const rows = await prisma.generatedImage.findMany({
+        // userId scoped: an id from another account must not resolve.
+        where: { userId: user.id, isDeleted: false, id: { in: wanted } },
+        orderBy: { createdAt: 'desc' },
+      })
+      const byIdMapped = rows.map(img => ({
+        id: img.id,
+        prompt: img.prompt,
+        imageUrl: img.imageUrl,
+        thumbnailUrl: img.thumbnailUrl || null,
+        model: img.model,
+        referenceImageUrls: img.referenceImageUrls || [],
+        createdAt: img.createdAt,
+        expiresAt: img.expiresAt,
+        quality: img.quality || null,
+        aspectRatio: img.aspectRatio || null,
+        videoMetadata: img.videoMetadata || null,
+        loraUrl: (img.videoMetadata as any)?.loraUrl || null,
+        loraName: (img.videoMetadata as any)?.loraName || null,
+        falRequestId: img.falRequestId || null,
+        folderId: img.folderId ?? null,
+      }))
+      await attachGptRenderer(byIdMapped, user.id)
+      await attachSeedvrSettings(byIdMapped, user.id)
+      return jsonPrivate({ success: true, images: byIdMapped })
+    }
+
     // Fast path: fetch by specific FAL request IDs (used by iOS restore to detect completed-while-closed jobs)
     if (falRequestIdsParam) {
       const ids = falRequestIdsParam.split(',').map(s => s.trim()).filter(Boolean)
@@ -75,9 +116,7 @@ export async function GET(request: Request) {
         where: { userId: user.id, isDeleted: false, falRequestId: { in: ids } },
         orderBy: { createdAt: 'desc' },
       })
-      return jsonPrivate({
-        success: true,
-        images: images.map(img => ({
+      const byReqMapped = images.map(img => ({
           id: img.id,
           prompt: img.prompt,
           imageUrl: img.imageUrl,
@@ -92,8 +131,10 @@ export async function GET(request: Request) {
           loraName: (img.videoMetadata as any)?.loraName || null,
           falRequestId: img.falRequestId || null,
           folderId: img.folderId ?? null,
-        })),
-      })
+      }))
+      await attachGptRenderer(byReqMapped, user.id)
+      await attachSeedvrSettings(byReqMapped, user.id)
+      return jsonPrivate({ success: true, images: byReqMapped })
     }
 
     // ?models=a,b,c → only these model ids (the Feed dropdown's per-model
@@ -125,11 +166,23 @@ export async function GET(request: Request) {
         }
       : {}
 
-    // Dataset uploads are GeneratedImage rows too (model '__upload__'), but they
-    // are TRAINING DATA, not generations. A single 260-image dataset upload
-    // buried the user's actual generations ~11 pages deep in this time-sorted
-    // feed. Exclude them here — they stay fully browsable on /admin/dataset.
-    const uploadWhere = { model: { not: '__upload__' } }
+    // Two kinds of GeneratedImage row are not feed material.
+    //
+    // Dataset uploads (model '__upload__') are TRAINING DATA, not generations.
+    // A single 260-image dataset upload buried the user's actual generations
+    // ~11 pages deep in this time-sorted feed. They stay fully browsable on
+    // /admin/dataset.
+    //
+    // 3D assets (model '3d:<id>') are MESHES. Their imageUrl points at a .glb
+    // or .ply, which an <img> cannot draw, so every one of them rendered as an
+    // empty tile in the picture feed. They have their own library in the 3D
+    // Studio, which knows how to display them.
+    const uploadWhere = {
+      AND: [
+        { model: { not: '__upload__' } },
+        { NOT: { model: { startsWith: '3d:' } } },
+      ],
+    }
 
     // AND-combine instead of spreading: the type filter, upload filter and the
     // cursor predicate all use model/OR/AND keys that a plain spread would
@@ -152,6 +205,8 @@ export async function GET(request: Request) {
       imageUrl: img.imageUrl,
       thumbnailUrl: img.thumbnailUrl || null, // pre-generated CDN thumb, when available
       model: img.model,
+      // Lets a client match a finished job to ITS image instead of guessing.
+      falRequestId: img.falRequestId || null,
       referenceImageUrls: img.referenceImageUrls || [],
       createdAt: img.createdAt,
       expiresAt: img.expiresAt,
@@ -162,6 +217,9 @@ export async function GET(request: Request) {
       loraName: (img.videoMetadata as any)?.loraName || null,
       folderId: img.folderId ?? null,
     }))
+
+    await attachGptRenderer(mapped, user.id)
+    await attachSeedvrSettings(mapped, user.id)
 
     // Cursor mode: no expensive total count; "more" = we filled a full page. Also
     // hand back the next cursor so the client doesn't have to reconstruct it.
@@ -296,5 +354,115 @@ export async function DELETE(request: Request) {
   } catch (error: any) {
     console.error('Error deleting images:', error)
     return jsonPrivate({ error: 'Failed to delete images' }, { status: 500 })
+  }
+}
+
+/**
+ * Fill in which GPT Image 2.5 renderer produced an image.
+ *
+ * The image row learns this from the fal webhook — but fal delivers webhooks
+ * to APP_URL, which is production, so a row written while you were testing
+ * locally comes back with videoMetadata null and the sunburst/flare answer
+ * lost on every refresh. It is also simply absent from every row generated
+ * before the webhook started recording it.
+ *
+ * The queue row does know: it was written by the server that submitted the
+ * job, and it stores the exact endpoint that ran. The webhook backdates the
+ * image to `queueItem.createdAt`, so the two share a timestamp to the
+ * millisecond — an exact join key that works today, with no deploy and no
+ * backfill. falRequestId is preferred where it exists; the timestamp is the
+ * fallback that covers everything else.
+ *
+ * Runs only when a GPT image is actually missing the field, so the normal
+ * feed costs nothing.
+ */
+async function attachSeedvrSettings(mapped: any[], userId: number) {
+  /*
+   * Same mechanism as attachGptRenderer: the queue row knows what the run was
+   * given, the image row does not (the webhook that would record it runs in
+   * production). The seed matters most — an upscale is only repeatable if you
+   * can read the number it used.
+   */
+  const needing = mapped.filter(m =>
+    typeof m.model === 'string' && m.model === 'seedvr2-upscale' &&
+    !(m.videoMetadata && (m.videoMetadata as any).seedvrSeed != null))
+  if (needing.length === 0) return
+
+  try {
+    const rows = await prisma.generationQueue.findMany({
+      where: {
+        userId,
+        modelId: 'seedvr2-upscale',
+        createdAt: { in: needing.map(m => m.createdAt) },
+      },
+      select: { falRequestId: true, createdAt: true, parameters: true },
+    })
+    if (rows.length === 0) return
+    const byReq = new Map<string, any>()
+    const byMs = new Map<number, any>()
+    for (const r of rows) {
+      if (r.falRequestId) byReq.set(r.falRequestId, r)
+      byMs.set(r.createdAt.getTime(), r)
+    }
+    for (const m of needing) {
+      const row = (m.falRequestId && byReq.get(m.falRequestId))
+        || byMs.get(new Date(m.createdAt).getTime())
+      if (!row) continue
+      const p = (row.parameters as any) ?? {}
+      m.videoMetadata = {
+        ...(m.videoMetadata ?? {}),
+        ...(p.falSeed != null ? { seedvrSeed: p.falSeed } : {}),
+        ...(p.falUpscaleMode ? { seedvrMode: p.falUpscaleMode } : {}),
+        ...(p.falUpscaleFactor != null ? { seedvrFactor: p.falUpscaleFactor } : {}),
+        ...(p.falTargetResolution ? { seedvrTarget: p.falTargetResolution } : {}),
+        ...(p.falNoiseScale != null ? { seedvrNoise: p.falNoiseScale } : {}),
+        ...(p.falOutputFormat ? { seedvrFormat: p.falOutputFormat } : {}),
+      }
+    }
+  } catch {
+    // Cosmetic enrichment — never fail the feed over it.
+  }
+}
+
+async function attachGptRenderer(mapped: any[], userId: number) {
+  const needing = mapped.filter(m =>
+    typeof m.model === 'string' && m.model.includes('gpt-image-2.5') &&
+    !(m.videoMetadata && (m.videoMetadata as any).gptVariant))
+  if (needing.length === 0) return
+
+  try {
+    const rows = await prisma.generationQueue.findMany({
+      where: {
+        userId,
+        modelId: { contains: 'gpt-image-2.5' },
+        createdAt: { in: needing.map(m => m.createdAt) },
+      },
+      select: { falRequestId: true, createdAt: true, parameters: true },
+    })
+    if (rows.length === 0) return
+
+    const byReq = new Map<string, any>()
+    const byMs = new Map<number, any>()
+    for (const r of rows) {
+      if (r.falRequestId) byReq.set(r.falRequestId, r)
+      byMs.set(r.createdAt.getTime(), r)
+    }
+
+    for (const m of needing) {
+      const row = (m.falRequestId && byReq.get(m.falRequestId))
+        || byMs.get(new Date(m.createdAt).getTime())
+      if (!row) continue
+      const params = (row.parameters as any) ?? {}
+      const endpoint = String(params.falEndpoint ?? '')
+      if (!endpoint.includes('/gpt-image-2.5/')) continue
+      m.videoMetadata = {
+        ...(m.videoMetadata ?? {}),
+        gptVariant: endpoint.includes('/flare/') ? 'flare' : 'sunburst',
+        ...(params.falQuality ? { gptQuality: params.falQuality } : {}),
+        ...(params.falImageSize ? { gptImageSize: params.falImageSize } : {}),
+      }
+    }
+  } catch {
+    // Cosmetic enrichment — never fail the feed over it.
   }
 }

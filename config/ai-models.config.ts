@@ -265,6 +265,35 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  // CHATGPT IMAGES 2.5 — openai/gpt-image-2.5/{sunburst,flare}/{text-to-image,edit}
+  // One entry, two renderers. The renderer is a switch in the prompt bar and
+  // the edit endpoint is picked automatically when references are attached.
+  // ADMIN ONLY while under test (FAL_IMAGE_MODEL_IDS feeds that gate).
+  {
+    id: 'gpt-image-2.5',
+    name: 'openai/gpt-image-2.5',
+    displayName: 'ChatGPT Images 2.5',
+    description: 'OpenAI GPT Image 2.5 via FAL — sunburst or flare renderer, text-to-image and editing',
+    ticketCost: 3,
+    category: 'premium',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  {
+    id: 'gpt-image-2.5-edit',
+    name: 'openai/gpt-image-2.5/edit',
+    displayName: 'ChatGPT Images 2.5 Edit',
+    description: 'GPT Image 2.5 multi-reference editing — resolved automatically, not shown in the picker',
+    ticketCost: 3,
+    category: 'premium',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+
   // ═══════════════════════════════════════════════════════════════════════════
   // 2026-08 FAL IMAGE BATCH — ADMIN ONLY while under test.
   // Gate lives in app/api/generate/route.ts (ADMIN_ONLY_IMAGE_MODELS).
@@ -541,6 +570,22 @@ export const AI_MODELS: AIModel[] = [
     category: 'standard',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'balanced',
+    isAvailable: true,
+    provider: 'fal'
+  },
+
+  // SeedVR2 upscaler
+  {
+    id: 'seedvr2-upscale',
+    name: 'fal-ai/seedvr/upscale/image',
+    displayName: 'SeedVR2 Upscale',
+    description: 'SeedVR2 image upscaler — 1-10× or a target resolution',
+    // fal bills $0.001 per OUTPUT megapixel: a 4× pass over a 4 MP source is
+    // 64 MP, about $0.064. Two tickets covers the worst realistic run.
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'ultra',
     isAvailable: true,
     provider: 'fal'
   },

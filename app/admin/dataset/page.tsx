@@ -1939,6 +1939,26 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
   showInfo?: boolean
 }) {
   const [imgError, setImgError] = useState(false)
+  /**
+   * Thumbnails are MADE on first request, and a video poster costs seconds of
+   * ffmpeg. When a bucket of them opens at once the server queues the work and
+   * answers the overflow with 503 + Retry-After — so a tile that fails the
+   * first time has usually been told "not yet", not "never". Giving up on one
+   * error is what left a bucket showing broken tiles for ever, because the
+   * request that failed never got far enough to save its thumbnail either.
+   */
+  const [thumbAttempt, setThumbAttempt] = useState(0)
+  const [thumbReload, setThumbReload] = useState(0)
+
+  useEffect(() => {
+    if (thumbAttempt === 0) return
+    if (thumbAttempt > 3) { setImgError(true); return }
+    // Backing off spreads the retries out rather than instantly re-forming the
+    // queue that just turned us away.
+    const wait = Math.min(1500 * 2 ** (thumbAttempt - 1), 12_000)
+    const t = setTimeout(() => setThumbReload(n => n + 1), wait)
+    return () => clearTimeout(t)
+  }, [thumbAttempt])
   const isVideo = img.imageUrl?.match(/\.(mp4|webm|mov)$/i)
   const priority = index < 6
 
@@ -1992,11 +2012,17 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
           // The 400px webp thumb route is cached and loads like the portal feed.
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={`/api/admin/dataset/thumb/${img.id}`}
+            /* The counter is a cache-buster: a retry has to be a NEW request,
+               and the browser will happily re-serve its own failed response. */
+            /* The counter is a cache-buster: a retry has to be a NEW request,
+               and the browser will happily re-serve its own failed response. */
+            src={thumbReload === 0
+              ? `/api/admin/dataset/thumb/${img.id}`
+              : `/api/admin/dataset/thumb/${img.id}?retry=${thumbReload}`}
             alt=""
             loading={priority ? 'eager' : 'lazy'}
             decoding="async"
-            onError={() => setImgError(true)}
+            onError={() => setThumbAttempt(n => n + 1)}
             className={layout === "masonry" ? "w-full h-auto block" : "absolute inset-0 w-full h-full object-cover"}
           />
         )}

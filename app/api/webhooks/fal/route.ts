@@ -250,12 +250,26 @@ export async function POST(request: Request) {
               prompt: params?.savePrompt || queueItem.prompt,
               imageUrl: url,
               model: queueItem.modelId,
+              // Which fal job produced this. Without it the client had no way
+              // to tell its own result from anyone else's and fell back to
+              // "whatever is newest", which is how two jobs finishing together
+              // both claimed the same image.
+              falRequestId: queueItem.falRequestId,
               ticketCost: isAdminMode ? 0 : ticketCostForThisImage,
               referenceImageUrls: (params?.referenceImageUrls as string[]) || [],
               quality: (params?.quality as string) || null,
               aspectRatio: (params?.aspectRatio as string) || null,
               videoMetadata: params?.loraUrl
                 ? { loraUrl: params.loraUrl, loraName: params.loraName ?? undefined }
+                : queueItem.modelId === 'gpt-image-2.5'
+                  ? {
+                      // Derived from the endpoint that ran, not from what the
+                      // client asked for — those can differ, and the panel
+                      // should show what happened.
+                      gptVariant: String(params?.falEndpoint ?? '').includes('/flare/') ? 'flare' : 'sunburst',
+                      gptQuality: params?.falQuality ?? undefined,
+                      gptImageSize: params?.falImageSize ?? undefined,
+                    }
                 : queueItem.modelId === 'clarity-upscaler'
                   ? {
                       upscaleFactor: params?.upscaleFactor,

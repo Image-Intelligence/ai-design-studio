@@ -147,8 +147,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     },
     select: { id: true, title: true, updatedAt: true },
   })
+  // "project", not "film". This route was copied from the films route and kept
+  // its key, while GET already returns { projects } and the only caller reads
+  // { project } — so `project` came back undefined, `project.id` threw, and
+  // "Build the board" appeared to do nothing at all.
   return jsonPrivate({
-    film: { ...chat, filmUrl: null, shotsSubmitted: 0, shotsLanded: 0, awaitingUser: false },
+    project: { ...chat, filmUrl: null, shotsSubmitted: 0, shotsLanded: 0, awaitingUser: false },
   })
 }
 

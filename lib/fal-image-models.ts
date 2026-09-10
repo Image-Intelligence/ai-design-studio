@@ -37,6 +37,13 @@ export interface FalImageModelSpec {
   id: string
   /** fal endpoint id passed to fal.queue.submit(). */
   endpoint: string
+  /**
+   * Endpoint chosen per request, for families that ship the SAME model under
+   * several sibling endpoints. GPT Image 2.5 is one model with two renderers
+   * — sunburst and flare — and the portal shows one entry with a variant
+   * switch rather than cluttering the list with near-duplicates.
+   */
+  resolveEndpoint?(ctx: FalImageBuildContext): string
   /** Endpoint cannot run without at least one input image. */
   needsImage: boolean
   /** fal input field the input image(s) land in (null = none). */
@@ -67,6 +74,103 @@ function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallb
   return typeof value === 'string' && (allowed as readonly string[]).includes(value)
     ? (value as T)
     : fallback
+}
+
+/**
+ * Which GPT Image 2.5 renderer to run.
+ *
+ * Anything the client did not explicitly set falls to sunburst, the endpoint
+ * fal lists first and the safer default while this is under test.
+ */
+function gptImage25Variant(ctx: FalImageBuildContext): 'sunburst' | 'flare' {
+  return ctx.options.gptVariant === 'flare' ? 'flare' : 'sunburst'
+}
+
+/*
+ * GPT Image 2.5 size limits, quoted from the endpoint's own schema:
+ *   "Concrete sizes must have both dimensions as multiples of 16, max edge
+ *    3840px, aspect ratio <= 3:1, total pixels between 655,360 and 8,294,400."
+ */
+const GPT25_MIN_PIXELS = 655_360
+const GPT25_MAX_PIXELS = 8_294_400
+const GPT25_MAX_EDGE = 3840
+
+/**
+ * Portal aspect ratio + quality tier to an explicit GPT Image 2.5 size.
+ *
+ * The named presets (`portrait_4_3` and friends) are FIXED small sizes — they
+ * pinned every render to 768x1024 no matter which quality was chosen, which is
+ * why asking for 4K returned 1K. `image_size` also accepts an explicit
+ * {width, height}, and that is the only way to reach the endpoint's real
+ * ceiling, so the tier picks actual dimensions.
+ *
+ * The result is forced inside every documented limit rather than trusted to
+ * land there: an out-of-range size is a paid 422.
+ */
+export function gptImage25Size(aspectRatio: string, quality: string): { width: number; height: number } {
+  /*
+   * Derived from the RATIO ITSELF, not from the shared BASE_DIMS buckets.
+   *
+   * Those buckets are approximations chosen to be multiples of 64 — 16:9 lives
+   * there as 1344x768, which is 1.750, and 3:4 as 896x1152, which is 0.778.
+   * Every other model in this file has to accept that because it takes a
+   * bucketed size. This endpoint takes arbitrary {width,height}, so asking for
+   * 3:4 can actually return 3:4.
+   */
+  const [a, b] = aspectRatio.split(':').map(Number)
+  const ratio = Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0 ? a / b : 1
+
+  // Pixel budget per tier. 4K is the endpoint's own ceiling, so the longest
+  // edge lands as high as the shape allows.
+  const target =
+    quality === '4k' ? GPT25_MAX_PIXELS
+    : quality === '2k' ? 4_194_304   // 2048^2
+    : 1_048_576                      // 1024^2
+
+  // Ratios past 3:1 are refused; pull the wide side in rather than 422.
+  const safeRatio = Math.min(3, Math.max(1 / 3, ratio))
+
+  let h = Math.sqrt(target / safeRatio)
+  let w = h * safeRatio
+
+  const edgeScale = Math.min(1, GPT25_MAX_EDGE / Math.max(w, h))
+  w *= edgeScale
+  h *= edgeScale
+
+  const px = w * h
+  const pixelScale =
+    px > GPT25_MAX_PIXELS ? Math.sqrt(GPT25_MAX_PIXELS / px)
+    : px < GPT25_MIN_PIXELS ? Math.sqrt(GPT25_MIN_PIXELS / px)
+    : 1
+  w *= pixelScale
+  h *= pixelScale
+
+  const snap = (v: number) => Math.max(16, Math.round(v / 16) * 16)
+  w = snap(w)
+  h = snap(h)
+
+  // Snapping can nudge the result back over a ceiling — walk the long edge
+  // down (and the short edge with it) until every limit holds again.
+  while (w * h > GPT25_MAX_PIXELS || Math.max(w, h) > GPT25_MAX_EDGE) {
+    if (w >= h) { w -= 16; h = snap(w / safeRatio) } else { h -= 16; w = snap(h * safeRatio) }
+    if (w <= 16 || h <= 16) break
+  }
+  while (w * h < GPT25_MIN_PIXELS) {
+    if (w >= h) { w += 16; h = snap(w / safeRatio) } else { h += 16; w = snap(h * safeRatio) }
+  }
+  return { width: w, height: h }
+}
+
+/**
+ * Portal quality tier to GPT Image 2.5's rendering effort.
+ *
+ * `xhigh` and `max` exist but cost materially more per image, so 4K maps to
+ * xhigh and `max` is only reachable by asking for it explicitly.
+ */
+function gptImage25Quality(ctx: FalImageBuildContext): string {
+  const explicit = pickEnum(ctx.options.gptQuality, ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const, '' as any)
+  if (explicit) return explicit
+  return ctx.quality === '4k' ? 'xhigh' : ctx.quality === '2k' ? 'high' : 'medium'
 }
 
 /** Clamped number, or `undefined` when the caller didn't supply one. */
@@ -140,6 +244,22 @@ const AR_GROK_T2I = ['2:1', '20:9', '19.5:9', '16:9', '4:3', '3:2', '1:1', '2:3'
 const AR_GROK_EDIT = ['auto', ...AR_GROK_T2I] as const
 const AR_MUSE = ['21:9', '16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16', '9:21'] as const
 const AR_BRIA = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9'] as const
+
+/**
+ * Bria FIBO styles.
+ *
+ * 'none' sends a plain prompt and lets the model decide, which is what the old
+ * 'No Style' preset did. The rest map onto structured_prompt's free-text style
+ * fields, so this list is a convenience, not a limit — the endpoint will take
+ * any wording, and more entries can be added here without touching the schema.
+ */
+const BRIA_STYLES = ['none', 'photoreal', 'illustration', 'cinematic'] as const
+const BRIA_STYLE_FIELDS: Record<string, { artistic_style?: string; style_medium?: string }> = {
+  none:         {},
+  photoreal:    { artistic_style: 'photorealistic', style_medium: 'photography' },
+  illustration: { artistic_style: 'illustration', style_medium: 'digital illustration' },
+  cinematic:    { artistic_style: 'cinematic', style_medium: 'film still' },
+}
 const AR_NB2 = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9'] as const
 const AR_NB2_LITE = ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'] as const
 
@@ -151,6 +271,11 @@ const TOPAZ_SHARPEN_MODELS = ['Standard', 'Strong', 'Lens Blur V2', 'Motion Blur
 const TOPAZ_DENOISE_MODELS = ['Normal', 'Strong', 'Extreme', 'Denoise Max'] as const
 const TOPAZ_RESTORE_MODELS = ['Recover 3', 'Dust-Scratch V2'] as const
 const TOPAZ_SUBJECT_DETECTION = ['All', 'Foreground', 'Background'] as const
+// 'default' is ours, not fal's: it means send nothing and take their default.
+const SEEDVR_UPSCALE_MODES = ['default', 'factor', 'target'] as const
+const SEEDVR_TARGET_RESOLUTIONS = ['default', '720p', '1080p', '1440p', '2160p'] as const
+const SEEDVR_OUTPUT_FORMATS = ['png', 'jpg', 'webp'] as const
+
 const TOPAZ_OUTPUT_FORMATS = ['jpeg', 'png'] as const
 
 /** Shared knobs for the simple single-image Topaz endpoints. */
@@ -169,6 +294,79 @@ function topazSimple<T extends string>(models: readonly T[], fallback: T) {
 
 export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
   // ── Qwen Image 3 ───────────────────────────────────────────────────────────
+  /*
+   * ChatGPT Images 2.5 (OpenAI, via fal).
+   *
+   * Ships as FOUR endpoints: two renderers (sunburst, flare) x two modes
+   * (text-to-image, edit). Verified against the live schemas on 2026-09-08 —
+   * all four take an identical input shape.
+   *
+   * The portal exposes ONE model. The renderer is a switch in the prompt bar
+   * (they are the same model, so two list entries would be noise), and the
+   * mode follows whether references are attached, exactly as NanoBanana does.
+   *
+   * image_size here is an ENUM, not the {width,height} object most of this
+   * file's models take — passing a size object 422s.
+   */
+  'gpt-image-2.5': {
+    id: 'gpt-image-2.5',
+    editVariant: 'gpt-image-2.5-edit',
+    promptMin: 1,
+    promptMax: 32000,
+    endpoint: 'openai/gpt-image-2.5/sunburst/text-to-image',
+    resolveEndpoint: (ctx) =>
+      gptImage25Variant(ctx) === 'flare'
+        ? 'openai/gpt-image-2.5/flare/text-to-image'
+        : 'openai/gpt-image-2.5/sunburst/text-to-image',
+    needsImage: false,
+    imageParam: null,
+    maxInputImages: 0,
+    promptRequired: true,
+    aspectRatios: null,
+    usesImageSize: false,
+    notes: 'Renderer: sunburst (default) or flare.',
+    build: (ctx) =>
+      compact({
+        prompt: ctx.prompt,
+        image_size: gptImage25Size(ctx.aspectRatio, ctx.quality),
+        quality: gptImage25Quality(ctx),
+        background: pickEnum(ctx.options.gptBackground, ['auto', 'transparent', 'opaque'] as const, 'auto'),
+        output_format: pickEnum(ctx.options.gptOutputFormat, ['png', 'jpeg', 'webp'] as const, 'png'),
+        num_images: 1,
+      }),
+  },
+  'gpt-image-2.5-edit': {
+    id: 'gpt-image-2.5-edit',
+    promptMin: 1,
+    promptMax: 32000,
+    endpoint: 'openai/gpt-image-2.5/sunburst/edit',
+    resolveEndpoint: (ctx) =>
+      gptImage25Variant(ctx) === 'flare'
+        ? 'openai/gpt-image-2.5/flare/edit'
+        : 'openai/gpt-image-2.5/sunburst/edit',
+    needsImage: true,
+    imageParam: 'image_urls',
+    // The schema sets no ceiling; ten is the portal's own cap on a paid edit.
+    maxInputImages: 10,
+    promptRequired: true,
+    aspectRatios: null,
+    usesImageSize: false,
+    notes: 'Renderer: sunburst (default) or flare. Edits every attached reference together.',
+    build: (ctx) =>
+      compact({
+        prompt: ctx.prompt,
+        image_urls: ctx.imageUrls,
+        // "auto" keeps the source shape, which is what an edit almost always
+        // wants; an explicit portal ratio still wins.
+        image_size: ctx.aspectRatio && ctx.aspectRatio !== 'auto'
+          ? gptImage25Size(ctx.aspectRatio, ctx.quality)
+          : 'auto',
+        quality: gptImage25Quality(ctx),
+        background: pickEnum(ctx.options.gptBackground, ['auto', 'transparent', 'opaque'] as const, 'auto'),
+        output_format: pickEnum(ctx.options.gptOutputFormat, ['png', 'jpeg', 'webp'] as const, 'png'),
+        num_images: 1,
+      }),
+  },
   'qwen-image-3': {
     id: 'qwen-image-3',
     editVariant: 'qwen-image-3-edit',
@@ -392,15 +590,35 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     promptRequired: true,
     aspectRatios: [...AR_BRIA],
     usesImageSize: false,
-    notes: 'resolution is 1MP|4MP; style_preset No Style|Photoreal',
-    build: (ctx) =>
-      compact({
-        prompt: ctx.prompt,
+    notes: 'resolution is 1MP|4MP. Style lives in structured_prompt, not style_preset.',
+    build: (ctx) => {
+      /*
+       * Style, after Bria retired style_preset.
+       *
+       * FIBO 1.5 replaced the two-value preset with `structured_prompt`, a JSON
+       * prompt whose fields include artistic_style and style_medium. That is a
+       * superset of what the preset did — any style is expressible, not one of
+       * two — but it is a different channel, so the two prompt forms are not
+       * mixed here: a styled run puts the user's text in short_description and
+       * sends no flat prompt, which leaves no question about precedence.
+       */
+      const style = pickEnum(ctx.options.briaStyle, BRIA_STYLES, 'none')
+      const styled = style !== 'none'
+      return compact({
+        ...(styled
+          ? {
+              structured_prompt: compact({
+                short_description: ctx.prompt,
+                artistic_style: BRIA_STYLE_FIELDS[style].artistic_style,
+                style_medium: BRIA_STYLE_FIELDS[style].style_medium,
+              }),
+            }
+          : { prompt: ctx.prompt }),
         aspect_ratio: pickEnum(ctx.aspectRatio, AR_BRIA, '1:1'),
         resolution: ctx.quality === '1k' ? '1MP' : '4MP',
-        style_preset: pickEnum(ctx.options.briaStylePreset, ['No Style', 'Photoreal'] as const, 'No Style'),
         seed: int(ctx.options.briaSeed, 0, 2_147_483_647),
-      }),
+      })
+    },
   },
   'bria-fibo-edit': {
     id: 'bria-fibo-edit',
@@ -611,7 +829,57 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     }),
   },
 
-  // ── Topaz image suite ──────────────────────────────────────────────────────
+  // —— SeedVR2 ————————————————————————
+  //
+  // Verified against the live Input schema on 2026-09-09: image_url is the only
+  // required field; upscale_mode decides whether upscale_factor (1-10) or
+  // target_resolution is honoured, and the other is ignored, so only the
+  // relevant one is sent. Billed per OUTPUT megapixel, which means the factor
+  // is the price: 4× of a 4 MP source is sixteen times the cost of 1×.
+  'seedvr2-upscale': {
+    id: 'seedvr2-upscale',
+    endpoint: 'fal-ai/seedvr/upscale/image',
+    needsImage: true,
+    imageParam: 'image_url',
+    maxInputImages: 1,
+    promptRequired: false,
+    aspectRatios: null,
+    usesImageSize: false,
+    notes: 'SeedVR2 upscaler. Output is `image` (singular), not `images`.',
+    build: (ctx) => {
+      /*
+       * upscale_mode decides WHICH sizing field the model reads, so only the
+       * relevant one is sent — passing both is not an error, but the queue row
+       * is what the info panel reports later, and it should not claim a target
+       * resolution on a run that went by factor. 'default' means send neither
+       * and take fal's own (factor, 2x), matching the Default option in fal's
+       * own form.
+       */
+      const mode = pickEnum(ctx.options.seedvrUpscaleMode, SEEDVR_UPSCALE_MODES, 'default')
+      const target = pickEnum(ctx.options.seedvrTargetResolution, SEEDVR_TARGET_RESOLUTIONS, 'default')
+      const sizing =
+        mode === 'factor'
+          ? { upscale_mode: 'factor', upscale_factor: num(ctx.options.seedvrUpscaleFactor, 1, 10) ?? 2 }
+          : mode === 'target'
+            ? { upscale_mode: 'target', ...(target === 'default' ? {} : { target_resolution: target }) }
+            : {}
+      return compact({
+        image_url: ctx.imageUrls[0],
+        ...sizing,
+        // fal defaults to jpg; an upscaler that re-compresses its own output
+        // undoes part of what it was asked to do.
+        output_format: pickEnum(ctx.options.seedvrOutputFormat, SEEDVR_OUTPUT_FORMATS, 'png'),
+        noise_scale: num(ctx.options.seedvrNoiseScale, 0, 1),
+        seed: int(ctx.options.seedvrSeed, 0, 2147483647),
+        // sync_mode is deliberately never sent. It returns the image as a
+        // base64 data URI instead of a URL, which cannot work here: these jobs
+        // are queued and delivered by webhook, and an upscale is exactly the
+        // kind of output too large to survive a callback body.
+      })
+    },
+  },
+
+  // —— Topaz image suite ——————————————————————————
   'topaz-img-upscale-precision': {
     id: 'topaz-img-upscale-precision',
     endpoint: 'topaz/upscale/image/precision',
@@ -854,5 +1122,5 @@ export function buildFalImageInput(
     prompt,
     imageUrls: ctx.imageUrls.slice(0, spec.maxInputImages),
   })
-  return { endpoint: spec.endpoint, input }
+  return { endpoint: spec.resolveEndpoint?.(ctx) ?? spec.endpoint, input }
 }
