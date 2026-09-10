@@ -36,6 +36,11 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
       { hostname: 'pub-de315f4652054008be5f90bf09919f80.r2.dev' },
+      // The media Worker: every private URL is rewritten onto this host
+      // once signing is on, and next/image refuses an unlisted host.
+      { hostname: 'prompt-protocol-media.promptandprotocol.workers.dev' },
+      // The public bucket (logo, home cards, carousel).
+      { hostname: 'pub-738a6d61c61a473595356856a86615a1.r2.dev' },
       { hostname: 'fal.media' },
       { hostname: '*.fal.media' },
       { hostname: 'storage.googleapis.com' },

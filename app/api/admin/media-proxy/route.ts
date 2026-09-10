@@ -13,7 +13,13 @@ import { NextResponse } from 'next/server'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const ALLOWED_HOSTS = ['pub-de315f4652054008be5f90bf09919f80.r2.dev']
+const ALLOWED_HOSTS = [
+  'pub-de315f4652054008be5f90bf09919f80.r2.dev',
+  // Signed media comes through the Worker; public assets have their
+  // own bucket now - see MEDIA-PRIVACY.md.
+  'prompt-protocol-media.promptandprotocol.workers.dev',
+  'pub-738a6d61c61a473595356856a86615a1.r2.dev',
+]
 
 export async function GET(req: Request) {
   const url = new URL(req.url).searchParams.get('url') || ''

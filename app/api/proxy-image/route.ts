@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server'
 
 const ALLOWED_HOSTS = [
   'pub-de315f4652054008be5f90bf09919f80.r2.dev',
+  // Signed media comes through the Worker, and the public assets
+  // moved to their own bucket - see MEDIA-PRIVACY.md.
+  'prompt-protocol-media.promptandprotocol.workers.dev',
+  'pub-738a6d61c61a473595356856a86615a1.r2.dev',
   'blob.vercel-storage.com',
   'fal.media',
   'storage.googleapis.com',
