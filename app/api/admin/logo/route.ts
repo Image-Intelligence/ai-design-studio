@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { uploadToR2, uploadPublicAsset, deleteFromR2 } from '@/lib/r2'
+import { jsonPrivate } from '@/lib/api-json'
 
 // Site logo upload. ADMIN ONLY. The client frames the image in the crop modal,
 // then POSTs a PNG data URL here (PNG keeps logo transparency). Stored on public
@@ -27,17 +28,17 @@ const MAX_BYTES = 8 * 1024 * 1024 // 8MB decoded
 export async function POST(req: Request) {
   try {
     const admin = await getAdminUser()
-    if (!admin) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+    if (!admin) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
 
     const body = await req.json().catch(() => null)
     const dataUrl: string = typeof body?.image === 'string' ? body.image : ''
     const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/)
-    if (!match) return NextResponse.json({ error: 'Invalid image data' }, { status: 400 })
+    if (!match) return jsonPrivate({ error: 'Invalid image data' }, { status: 400 })
 
     const contentType = match[1]
     const buffer = Buffer.from(match[2], 'base64')
-    if (buffer.length === 0) return NextResponse.json({ error: 'Empty image' }, { status: 400 })
-    if (buffer.length > MAX_BYTES) return NextResponse.json({ error: 'Image too large' }, { status: 413 })
+    if (buffer.length === 0) return jsonPrivate({ error: 'Empty image' }, { status: 400 })
+    if (buffer.length > MAX_BYTES) return jsonPrivate({ error: 'Image too large' }, { status: 413 })
 
     const ext = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/webp' ? 'webp' : 'png'
     const key = `branding/logo-${randomUUID()}.${ext}`
@@ -52,10 +53,10 @@ export async function POST(req: Request) {
     }
     if (prev && prev !== logoUrl) deleteFromR2(prev).catch(() => {})
 
-    return NextResponse.json({ logoUrl })
+    return jsonPrivate({ logoUrl })
   } catch (error) {
     console.error('logo POST error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    return jsonPrivate({ error: 'Server error' }, { status: 500 })
   }
 }
 
@@ -63,16 +64,16 @@ export async function POST(req: Request) {
 export async function DELETE() {
   try {
     const admin = await getAdminUser()
-    if (!admin) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+    if (!admin) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
 
     const existing = await prisma.systemState.findFirst()
     if (existing?.logoUrl) {
       deleteFromR2(existing.logoUrl).catch(() => {})
       await prisma.systemState.update({ where: { id: existing.id }, data: { logoUrl: null } })
     }
-    return NextResponse.json({ ok: true })
+    return jsonPrivate({ ok: true })
   } catch (error) {
     console.error('logo DELETE error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    return jsonPrivate({ error: 'Server error' }, { status: 500 })
   }
 }

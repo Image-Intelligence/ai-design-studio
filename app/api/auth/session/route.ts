@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { jsonPrivate } from '@/lib/api-json'
 
 export async function GET(request: Request) {
   try {
@@ -8,13 +9,13 @@ export async function GET(request: Request) {
     const token = cookieStore.get('session')?.value
 
     if (!token) {
-      return NextResponse.json({ authenticated: false }, { status: 401 })
+      return jsonPrivate({ authenticated: false }, { status: 401 })
     }
 
     const user = await getUserFromSession(token)
 
     if (!user) {
-      return NextResponse.json({ authenticated: false }, { status: 401 })
+      return jsonPrivate({ authenticated: false }, { status: 401 })
     }
 
     // Ensure user has a Ticket record (for legacy users)
@@ -35,7 +36,7 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({
+    return jsonPrivate({
       authenticated: true,
       // Accounts created before the signup 18+ certification existed have no
       // attestation on record — the portal shows a one-time blocking modal
@@ -51,7 +52,7 @@ export async function GET(request: Request) {
 
   } catch (error: any) {
     console.error('Session check error:', error)
-    return NextResponse.json(
+    return jsonPrivate(
       { authenticated: false, error: 'Internal server error' },
       { status: 500 }
     )

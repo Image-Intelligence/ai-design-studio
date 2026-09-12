@@ -4,6 +4,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { checkAuth } from '@/lib/admin-auth'
+import { jsonPrivate } from '@/lib/api-json'
 
 // GET /api/admin/video-loras — list trained Wan/LTX LoRA runs from R2
 // (training/video-loras/<run>/run.json + final.safetensors). Admin only.
@@ -30,10 +31,10 @@ export async function GET(req: NextRequest) {
     const user = token ? await getUserFromSession(token) : null
     authed = !!user && await checkIsAdmin(user.email)
   }
-  if (!authed) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!authed) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
   if (cache && Date.now() - cache.at < 60_000 && !req.nextUrl.searchParams.has('fresh')) {
-    return NextResponse.json(cache.data)
+    return jsonPrivate(cache.data)
   }
 
   const bucket = process.env.R2_BUCKET_NAME!
@@ -81,5 +82,5 @@ export async function GET(req: NextRequest) {
   runs.sort((a, b) => String((b as { createdAt?: string }).createdAt ?? '').localeCompare(String((a as { createdAt?: string }).createdAt ?? '')))
   const data = { runs }
   cache = { at: Date.now(), data }
-  return NextResponse.json(data)
+  return jsonPrivate(data)
 }

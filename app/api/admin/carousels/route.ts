@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { uploadToR2, deleteFromR2 } from '@/lib/r2'
+import { jsonPrivate } from '@/lib/api-json'
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 
@@ -10,17 +11,17 @@ export async function GET(request: Request) {
     const password = searchParams.get('password')
 
     if (password !== ADMIN_PASSWORD) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const carousels = await prisma.carouselImage.findMany({
       orderBy: [{ side: 'asc' }, { position: 'asc' }]
     })
 
-    return NextResponse.json(carousels)
+    return jsonPrivate(carousels)
   } catch (error) {
     console.error('Error fetching carousels:', error)
-    return NextResponse.json({ error: 'Failed to fetch carousels' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to fetch carousels' }, { status: 500 })
   }
 }
 
@@ -33,11 +34,11 @@ export async function POST(request: Request) {
     const image = formData.get('image') as File
 
     if (password !== ADMIN_PASSWORD) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
     }
 
     if (!image || !side) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+      return jsonPrivate({ error: 'Missing required fields' }, { status: 400 })
     }
 
     // Upload to R2
@@ -59,10 +60,10 @@ export async function POST(request: Request) {
       }
     })
 
-    return NextResponse.json(carousel)
+    return jsonPrivate(carousel)
   } catch (error) {
     console.error('Error uploading carousel image:', error)
-    return NextResponse.json({ error: 'Failed to upload image' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to upload image' }, { status: 500 })
   }
 }
 
@@ -71,7 +72,7 @@ export async function PUT(request: Request) {
     const { password, id, side, position, isActive } = await request.json()
 
     if (password !== ADMIN_PASSWORD) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const carousel = await prisma.carouselImage.update({
@@ -83,10 +84,10 @@ export async function PUT(request: Request) {
       }
     })
 
-    return NextResponse.json(carousel)
+    return jsonPrivate(carousel)
   } catch (error) {
     console.error('Error updating carousel:', error)
-    return NextResponse.json({ error: 'Failed to update carousel' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to update carousel' }, { status: 500 })
   }
 }
 
@@ -97,7 +98,7 @@ export async function DELETE(request: Request) {
     const id = parseInt(searchParams.get('id') || '0')
 
     if (password !== ADMIN_PASSWORD) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
     }
 
     // Get carousel to delete blob
@@ -106,7 +107,7 @@ export async function DELETE(request: Request) {
     })
 
     if (!carousel) {
-      return NextResponse.json({ error: 'Carousel not found' }, { status: 404 })
+      return jsonPrivate({ error: 'Carousel not found' }, { status: 404 })
     }
 
     // Try to delete blob (may not exist)
@@ -121,10 +122,10 @@ export async function DELETE(request: Request) {
       where: { id }
     })
 
-    return NextResponse.json({ success: true })
+    return jsonPrivate({ success: true })
   } catch (error) {
     console.error('Error deleting carousel:', error)
-    return NextResponse.json({ error: 'Failed to delete carousel' }, { status: 500 })
+    return jsonPrivate({ error: 'Failed to delete carousel' }, { status: 500 })
   }
 }
 

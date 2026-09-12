@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { authenticateApiKey, invalidKeyResponse, requireScopes } from '@/lib/api-key-auth'
+import { jsonPrivate } from '@/lib/api-json'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
   const idParam = searchParams.get('id')
   const id = idParam ? parseInt(idParam) : null
   if (idParam && (!Number.isFinite(id) || id! <= 0)) {
-    return NextResponse.json({ error: 'Invalid job id' }, { status: 400 })
+    return jsonPrivate({ error: 'Invalid job id' }, { status: 400 })
   }
 
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
@@ -51,5 +52,5 @@ export async function GET(request: Request) {
     take: 100,
   })
 
-  return NextResponse.json({ jobs }, { headers: { 'Cache-Control': 'no-store' } })
+  return jsonPrivate({ jobs }, { headers: { 'Cache-Control': 'no-store' } })
 }

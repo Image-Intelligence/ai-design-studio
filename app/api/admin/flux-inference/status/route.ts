@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { checkAdminRequest } from '@/lib/admin-check'
+import { jsonPrivate } from '@/lib/api-json'
 
 const RUNPOD_API = 'https://api.runpod.ai/v2'
 
@@ -31,21 +32,21 @@ interface RunPodStatus {
 }
 
 export async function GET(req: Request) {
-  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!await checkAdminRequest(req)) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
   const { searchParams } = new URL(req.url)
   const jobId = searchParams.get('job_id')
-  if (!jobId) return NextResponse.json({ error: 'Missing job_id' }, { status: 400 })
+  if (!jobId) return jsonPrivate({ error: 'Missing job_id' }, { status: 400 })
 
   const endpointId = process.env.RUNPOD_ENDPOINT_ID
   const apiKey     = process.env.RUNPOD_API_KEY
   if (!endpointId || !apiKey)
-    return NextResponse.json({ error: 'RunPod not configured' }, { status: 500 })
+    return jsonPrivate({ error: 'RunPod not configured' }, { status: 500 })
 
   const res = await fetch(`${RUNPOD_API}/${endpointId}/status/${jobId}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
-  if (!res.ok) return NextResponse.json({ error: 'Failed to get RunPod status' }, { status: res.status })
+  if (!res.ok) return jsonPrivate({ error: 'Failed to get RunPod status' }, { status: res.status })
 
   const data = await res.json() as RunPodStatus
   const statusMap: Record<string, string> = {
@@ -73,7 +74,7 @@ export async function GET(req: Request) {
     } catch { /* leave null */ }
   }
 
-  return NextResponse.json({
+  return jsonPrivate({
     status:    rpStatus,
     job_id:    jobId,
     success:   output.success ?? null,

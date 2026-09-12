@@ -5,6 +5,7 @@ import { Loader2, Plus, X, UsersRound, HelpCircle, Check } from "lucide-react"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { Dropdown } from "@/components/employees/Dropdown"
+import { CHAT_IMAGE_MODELS } from "@/lib/chat-image-catalog"
 
 /**
  * Character Design, as a board builder rather than a chat.
@@ -25,10 +26,37 @@ const SHEETS = [
   { id: "closeups", label: "Close studies", hint: "hands, hair, signature detail" },
 ] as const
 
+/**
+ * How the character comes out.
+ *
+ * The workspace only ever built reference SHEETS %s one image holding several
+ * views of the same character. That is the right output for locking a design
+ * and the wrong one for almost everything you do afterwards, so it is a mode
+ * rather than the only behaviour.
+ */
+const MODES = [
+  { id: "sheets", label: "Sheets", hint: "one image, several views of the character" },
+  { id: "singles", label: "Singles", hint: "one character, one look, per image" },
+] as const
+type ModeId = (typeof MODES)[number]["id"]
+
+/**
+ * The image models this employee can actually run.
+ *
+ * Taken from the hub's own catalog rather than a second hand-written list:
+ * the employee generates THROUGH the hub, so a model missing from there is not
+ * selectable no matter what a picker claims. Sorted by maker so the list reads
+ * the way the taskbar's picker does.
+ */
+const IMAGE_MODELS = [...CHAT_IMAGE_MODELS].sort(
+  (a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label),
+)
+
 const MAX_REFS = 8
 
 export function CharacterStudioWorkspace({
   signedIn,
+  isAdmin,
   renderFeed,
   activeRefs,
   onRemoveRef,
@@ -36,7 +64,12 @@ export function CharacterStudioWorkspace({
   onEditRef,
 }: {
   signedIn: boolean
-  renderFeed: (kind: "image" | "video", nonce?: number) => React.ReactNode
+  isAdmin: boolean
+  renderFeed: (
+    kind: "image" | "video",
+    nonce?: number,
+    pending?: { queueId: number; prompt: string; at: number; model: string; aspect?: string; quality?: string; refs?: string[] }[],
+  ) => React.ReactNode
   activeRefs: { id: string; url: string }[]
   onRemoveRef: (id: string) => void
   onUploadRefs: (items: { id: string; url: string }[]) => void
@@ -47,6 +80,38 @@ export function CharacterStudioWorkspace({
   const [picked, setPicked] = useState<string[]>(["turnaround", "expressions", "poses"])
   const [quality, setQuality] = useState("4k")
   const [aspect, setAspect] = useState("1:1")
+  const [mode, setMode] = useState<ModeId>("sheets")
+  const [model, setModel] = useState("nano-banana-pro-2")
+  /** Finished plates by queue id, so the board can show them as they land. */
+  /**
+   * Every character project, as tabs.
+   *
+   * A project is a row in the database, not something this browser tab
+   * remembers, so the same work is there on the next device. Replaces the old
+   * single-project model, where the only way out of a finished or wedged
+   * project was a "New" button that threw it away.
+   */
+  const [projects, setProjects] = useState<
+    { id: number; title: string; awaitingUser?: boolean; shotsSubmitted?: number; shotsLanded?: number; filmUrl?: string | null }[]
+  >([])
+  const [renaming, setRenaming] = useState<{ id: number; text: string } | null>(null)
+  const [confirmClose, setConfirmClose] = useState<number | null>(null)
+  /**
+   * Has THIS project actually started a run?
+   *
+   * The brief used to be locked by `chatId !== null`, which meant a project
+   * restored from the account arrived disabled with nothing to do — the panel
+   * said "Standing by" and refused to be edited. What should lock the brief is
+   * the run having begun, not a project being open.
+   */
+  const [hasRun, setHasRun] = useState(false)
+  const [plateUrls, setPlateUrls] = useState<Record<number, string>>({})
+  /** Plates that died — without these a failed one spins for ever. */
+  const [deadPlates, setDeadPlates] = useState<Record<number, string>>({})
+  /** Plates still rendering. These are the feed's "generating" tiles. */
+  const [pendingPlates, setPendingPlates] = useState<
+    { queueId: number; prompt: string; at: number; model: string; aspect?: string; quality?: string; refs?: string[] }[]
+  >([])
   const [uploading, setUploading] = useState(false)
   const [feedKey, setFeedKey] = useState(0)
   const [chatId, setChatId] = useState<number | null>(null)
@@ -92,26 +157,44 @@ export function CharacterStudioWorkspace({
           if (Array.isArray(cfg.picked) && cfg.picked.length) setPicked(cfg.picked.filter((x: unknown) => typeof x === "string"))
           if (typeof cfg.quality === "string") setQuality(cfg.quality)
           if (typeof cfg.aspect === "string") setAspect(cfg.aspect)
+          if (cfg.mode === "sheets" || cfg.mode === "singles") setMode(cfg.mode)
+          // Only restore a model that still exists and is still allowed: a
+          // remembered id that has since gone admin-only, or been removed,
+          // would otherwise sit in the picker and fail at generation time.
+          if (typeof cfg.model === "string"
+              && IMAGE_MODELS.some(m => m.id === cfg.model && (isAdmin || !m.admin))) {
+            setModel(cfg.model)
+          }
           const active = Number(cfg.activeProject ?? 0)
           if (active > 0 && !chatIdRef.current) setChatId(active)
         }
       } catch { /* an unreadable preference is not worth blocking the page */ }
 
       /*
-       * No remembered project — reopen the most recent one.
+       * The workspace never opens onto nothing.
        *
-       * The preference only starts being written from now on, so projects
-       * created before it existed would otherwise be unreachable: still
-       * running, possibly paused on a question, with no way back into them.
-       * The list is account-scoped, so this reopens the right one on any
-       * device. "New" in the board header closes it.
+       * Reopen whichever project was last active, else the most recent one,
+       * else start a fresh one — so there is always a tab, and a brief you can
+       * actually type into. Projects created before the preference existed
+       * would otherwise be unreachable: still running, possibly paused on a
+       * question, with no way back into them.
        */
       if (!cancelled && !chatIdRef.current) {
         try {
           const r = await fetch("/api/employees/characters", { cache: "no-store" })
           const d = await r.json().catch(() => null)
-          const newest = Array.isArray(d?.projects) ? d.projects[0] : null
-          if (!cancelled && newest?.id) setChatId(Number(newest.id))
+          const list = Array.isArray(d?.projects) ? d.projects : []
+          if (!cancelled && list.length > 0) setChatId(Number(list[0].id))
+          else if (!cancelled) {
+            const mk = await fetch("/api/employees/characters", {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+            })
+            const made = mk.ok ? await mk.json().catch(() => null) : null
+            if (!cancelled && made?.project?.id) {
+              setProjects([made.project])
+              setChatId(Number(made.project.id))
+            }
+          }
         } catch { /* nothing to resume */ }
       }
       if (!cancelled) loadedRef.current = true
@@ -127,12 +210,15 @@ export function CharacterStudioWorkspace({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          characterStudio: { brief, picked, quality, aspect, activeProject: chatId ?? 0 },
+          characterStudio: { brief, picked, quality, aspect, mode, model, activeProject: chatId ?? 0 },
         }),
       }).catch(() => {})
     }, 600)
     return () => clearTimeout(t)
   }, [brief, picked, quality, aspect, chatId])
+
+  const plateSigRef = useRef("")
+  const pendingSigRef = useRef("")
 
   const addFiles = useCallback(async (files: File[]) => {
     const room = MAX_REFS - refs.length
@@ -166,6 +252,7 @@ export function CharacterStudioWorkspace({
     const pending: any[] = meta.pendingApproval?.calls ?? []
     const running = [...steps].reverse().find(s => s.status === "running")
 
+    setHasRun(rows.length > 0)
     setBusy(rows.length > 0 && pending.length === 0 && !!running)
     setStatus(
       pending.length ? "Waiting for you"
@@ -181,10 +268,73 @@ export function CharacterStudioWorkspace({
       label: String(c.toolName ?? c.name ?? "this step"),
     })).filter((c: { toolCallId: string }) => c.toolCallId))
 
+    /*
+     * THE BOARD.
+     *
+     * Every generation this project has made, by queue id, in three states:
+     * landed, died, still rendering. A step carries a queueId (one image) or
+     * queueIds (a batch); the settler later writes shotResults[id] with either
+     * a url or "ERROR:…". Reading all three is what lets a plate appear as a
+     * spinner the moment it is submitted and become the picture in place —
+     * rather than materialising out of nowhere once finished.
+     */
+    const urlById: Record<number, string> = {}
+    const deadById: Record<number, string> = {}
+    const waiting: { queueId: number; prompt: string; at: number; model: string; aspect?: string; quality?: string; refs?: string[] }[] = []
+
+    for (const m of rows) {
+      const at = Date.parse(m?.createdAt ?? "") || Date.now()
+      for (const st of ((m?.metadata?.agentSteps ?? []) as any[])) {
+        const res = (st?.shotResults && typeof st.shotResults === "object") ? st.shotResults : {}
+        for (const [q, v] of Object.entries(res)) {
+          if (typeof v !== "string" || !v) continue
+          if (v.startsWith("ERROR:")) deadById[Number(q)] = v.slice(6).trim() || "Generation failed"
+          else urlById[Number(q)] = v
+        }
+        // A single create_media that finished in the turn.
+        if (typeof st?.queueId === "number" && typeof st?.imageUrl === "string" && st.imageUrl) {
+          urlById[st.queueId] = st.imageUrl
+        }
+        if (st?.status === "error" && typeof st?.queueId === "number") {
+          deadById[st.queueId] = String(st.error || "Generation failed").slice(0, 200)
+        }
+
+        const ids: number[] = Array.isArray(st?.queueIds)
+          ? st.queueIds.filter((n: unknown): n is number => typeof n === "number")
+          : typeof st?.queueId === "number" ? [st.queueId] : []
+        const models = (st?.shotModels && typeof st.shotModels === "object") ? st.shotModels : {}
+        for (const q of ids) {
+          if (urlById[q] || deadById[q]) continue
+          waiting.push({
+            queueId: q,
+            prompt: String(st?.prompt ?? "Character plate"),
+            at,
+            model: String(models[String(q)] ?? st?.model ?? ""),
+            aspect: st?.settings?.aspect,
+            quality: st?.settings?.quality ?? st?.settings?.resolution,
+            refs: Array.isArray(st?.refs) ? st.refs : undefined,
+          })
+        }
+      }
+    }
+    waiting.sort((a, b) => a.queueId - b.queueId)
+
+    const plateSig = Object.keys(urlById).sort().join(",") + "!" + Object.keys(deadById).sort().join(",")
+    if (plateSig !== plateSigRef.current) {
+      plateSigRef.current = plateSig
+      setPlateUrls(urlById)
+      setDeadPlates(deadById)
+    }
+    const waitSig = waiting.map(w => w.queueId).join(",")
+    if (waitSig !== pendingSigRef.current) {
+      pendingSigRef.current = waitSig
+      setPendingPlates(waiting)
+    }
+
     // Only reload the feed when the project actually produced something new
     let made = 0
     for (const m of rows) made += Array.isArray(m?.imageUrls) ? m.imageUrls.length : 0
-    const sig = String(made)
+    const sig = String(made) + ":" + plateSig
     if (sig !== sigRef.current) { sigRef.current = sig; setFeedKey(k => k + 1) }
   }, [])
 
@@ -192,9 +342,78 @@ export function CharacterStudioWorkspace({
     if (!chatId) return
     if (pollRef.current) clearInterval(pollRef.current)
     void readChat(chatId)
-    pollRef.current = setInterval(() => { void readChat(chatId) }, 6000)
+    pollRef.current = setInterval(() => { void readChat(chatId); void loadProjects() }, 6000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [chatId, readChat])
+
+  /** The tab strip's contents. Cheap, and polled with the open project. */
+  const loadProjects = useCallback(async () => {
+    try {
+      const res = await fetch("/api/employees/characters", { cache: "no-store" })
+      if (!res.ok) return
+      const d = await res.json()
+      if (Array.isArray(d.projects)) setProjects(d.projects)
+    } catch { /* the strip is not worth an error banner */ }
+  }, [])
+
+  useEffect(() => { void loadProjects() }, [loadProjects])
+
+  /**
+   * Switch tabs.
+   *
+   * Everything derived from the OLD project is cleared first: leaving plates,
+   * approvals or a status line behind would show one project's work under
+   * another's name until the first poll landed.
+   */
+  const openProject = useCallback((id: number) => {
+    setChatId(id)
+    setPlateUrls({}); setDeadPlates({}); setPendingPlates([])
+    setApprovals([]); setPausedMessageId(null)
+    setStatus(""); setError(null); setBusy(false); setHasRun(false)
+    plateSigRef.current = ""; pendingSigRef.current = ""; sigRef.current = ""
+  }, [])
+
+  const newProject = useCallback(async () => {
+    try {
+      const res = await fetch("/api/employees/characters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      })
+      if (!res.ok) return
+      const { project } = await res.json()
+      if (!project?.id) return
+      setProjects(prev => [project, ...prev])
+      openProject(project.id)
+      // A new tab is a blank brief, not the last one's.
+      setBrief("")
+    } catch { /* ignore */ }
+  }, [openProject])
+
+  const renameProject = useCallback(async (id: number, text: string) => {
+    const clean = text.trim().slice(0, 80)
+    setRenaming(null)
+    if (!clean) return
+    setProjects(prev => prev.map(p => (p.id === id ? { ...p, title: clean } : p)))
+    await fetch("/api/employees/characters", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, title: clean }),
+    }).catch(() => {})
+  }, [])
+
+  const closeProject = useCallback(async (id: number) => {
+    setConfirmClose(null)
+    await fetch(`/api/employees/characters?id=${id}`, { method: "DELETE" }).catch(() => {})
+    setProjects(prev => {
+      const left = prev.filter(p => p.id !== id)
+      if (chatIdRef.current === id) {
+        if (left.length > 0) openProject(left[0].id)
+        else { setChatId(null); setHasRun(false); setPlateUrls({}); setDeadPlates({}); setPendingPlates([]) }
+      }
+      return left
+    })
+  }, [openProject])
 
   /** Answer whatever the run paused on, then let the poll pick it up. */
   const respond = useCallback(async (approved: boolean) => {
@@ -243,6 +462,25 @@ export function CharacterStudioWorkspace({
       // undefined", which says nothing about what actually went wrong.
       if (!project?.id) throw new Error("The server did not return a project")
       const sheets = SHEETS.filter(s => picked.includes(s.id)).map(s => `${s.label} (${s.hint})`)
+      const chosen = IMAGE_MODELS.find(m => m.id === model)
+      /*
+       * The mode is a layout instruction, and it has to be unambiguous.
+       *
+       * "Singles" fails in exactly one way: the model helpfully returns a
+       * contact sheet anyway, because that is what "character design" looks
+       * like in its training data. So the rule is stated as a prohibition with
+       * the failure named, not as a preference.
+       */
+      const modeNote = mode === "singles"
+        ? `[MODE — SINGLES]\n`
+          + `Generate SEPARATE images, ONE per item below. Each image contains exactly ONE `
+          + `view of the character, framed as a finished picture. Do NOT produce a grid, a `
+          + `contact sheet, a collage, a multi-panel layout, or several poses side by side `
+          + `in one frame — that is the other mode. One character, one look, one image.\n`
+        : `[MODE — SHEETS]\n`
+          + `Each item below is ONE image: a reference sheet holding several views of the `
+          + `same character, laid out on a clean neutral ground, consistent scale and light `
+          + `across the views.\n`
 
       const res = await fetch(`/api/chat-hub/chats/${project.id}/send`, {
         method: "POST",
@@ -250,9 +488,13 @@ export function CharacterStudioWorkspace({
         body: JSON.stringify({
           content:
             (brief.trim() || "Design this character from the reference images.")
-            + `\n\n[BOARD REQUESTED]\n${sheets.map(s => `- ${s}`).join("\n") || "- Turnaround"}\n`
+            + `\n\n${modeNote}`
+            + `[BOARD REQUESTED]\n${sheets.map(s => `- ${s}`).join("\n") || "- Turnaround"}\n`
             + `[OUTPUT SETTINGS — the user set these, treat them as fixed]\n`
-            + `Every image: ${quality.toUpperCase()}, ${aspect} aspect.`,
+            + `Every image: ${quality.toUpperCase()}, ${aspect} aspect.\n`
+            + `MODEL: use \`${chosen?.id ?? model}\`${chosen ? ` (${chosen.label})` : ""} for every image in `
+            + `this board. The user picked it; do not substitute. If it cannot do something being `
+            + `asked of it, say which item and why in one line rather than quietly using another.`,
           imageUrls: refs.map(r => r.url),
         }),
       })
@@ -261,17 +503,129 @@ export function CharacterStudioWorkspace({
       const reader = res.body?.getReader()
       if (reader) { for (;;) { const { done } = await reader.read(); if (done) break } }
       setChatId(project.id)
+      setHasRun(true)
+      setProjects(prev => prev.some(p => p.id === project.id) ? prev : [project, ...prev])
       void readChat(project.id)
+      void loadProjects()
     } catch (e: any) {
       setError(String(e?.message || e))
       setBusy(false)
     }
   }
 
-  const started = chatId !== null
+  // See hasRun: a project that has not been run is still editable.
+  const started = hasRun
+
+  /**
+   * One row per plate, whatever state it is in, in queue order.
+   *
+   * Merging the three sources here rather than in the markup is what lets a
+   * tile KEEP its identity as it changes: the same queueId is the React key
+   * whether it is rendering, finished or dead, so the picture replaces the
+   * spinner in place instead of the grid re-shuffling under it.
+   */
+  const plates = (() => {
+    const byId = new Map<number, { queueId: number; url?: string; error?: string }>()
+    for (const pl of pendingPlates) byId.set(pl.queueId, { queueId: pl.queueId })
+    for (const [q, url] of Object.entries(plateUrls)) byId.set(Number(q), { queueId: Number(q), url })
+    for (const [q, err] of Object.entries(deadPlates)) byId.set(Number(q), { queueId: Number(q), error: err })
+    return [...byId.values()].sort((a, b) => a.queueId - b.queueId)
+  })()
+  const settledCount = plates.filter(pl => pl.url || pl.error).length
 
   return (
     <div className="flex-1 flex flex-col gap-3 min-h-0 px-3 sm:px-4 pb-4">
+      {/* ── projects as tabs: each one is a row in the database, so a character
+             is an ongoing project rather than whatever this browser remembers ── */}
+      <div className="shrink-0 -mb-1 flex items-end gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {projects.map(pr => {
+          const open = chatId === pr.id
+          const rendering = (pr.shotsSubmitted ?? 0) > (pr.shotsLanded ?? 0)
+          return (
+            <div
+              key={pr.id}
+              className={`group relative flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 rounded-t-lg border-t border-x text-[11px] shrink-0 max-w-[190px] transition-colors ${
+                open
+                  ? "border-white/15 bg-white/[0.06] text-slate-100"
+                  : "border-white/[0.06] bg-white/[0.02] text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {renaming?.id === pr.id ? (
+                // Tap the title of the OPEN project to rename it in place.
+                <input
+                  autoFocus
+                  value={renaming.text}
+                  onChange={e => setRenaming({ id: pr.id, text: e.target.value })}
+                  onBlur={() => void renameProject(pr.id, renaming.text)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") void renameProject(pr.id, renaming.text)
+                    if (e.key === "Escape") setRenaming(null)
+                  }}
+                  className="w-[150px] bg-black/50 border border-cyan-500/40 rounded px-1.5 py-0.5 text-[11px] text-slate-100 focus:outline-none"
+                />
+              ) : (
+                <button
+                  onClick={() => { if (!open) openProject(pr.id); else setRenaming({ id: pr.id, text: pr.title }) }}
+                  title={open ? "Tap to rename" : pr.title}
+                  className="flex items-center gap-1.5 min-w-0"
+                >
+                  {pr.awaitingUser
+                    ? <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Waiting for you" />
+                    : rendering
+                      ? <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0" title="Rendering" />
+                      : (pr.shotsLanded ?? 0) > 0
+                        ? <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Built" />
+                        : <span className="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0" />}
+                  <span className="truncate">{pr.title}</span>
+                </button>
+              )}
+              <button
+                onClick={() => setConfirmClose(pr.id)}
+                title="Close this project"
+                className="opacity-60 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded text-slate-500 hover:text-white transition-opacity"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          )
+        })}
+        <button
+          onClick={() => void newProject()}
+          title="New character"
+          className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-t-lg border-t border-x border-white/[0.06] bg-white/[0.02] text-[11px] text-slate-500 hover:text-white hover:bg-white/[0.05] transition-colors"
+        >
+          <Plus size={11} />
+        </button>
+      </div>
+
+      {confirmClose !== null && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4" onClick={() => setConfirmClose(null)}>
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+          <div className="relative w-full max-w-[340px] rounded-2xl border border-white/10 bg-[#0e0e18] p-4 overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <SilverRimOverlay />
+            <p className="text-[13px] font-semibold text-white">Close this project?</p>
+            <p className="mt-1 text-[11px] leading-snug text-slate-400">
+              The board goes with it. Everything it generated stays in your feed.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => void closeProject(confirmClose)}
+                className="flex-1 rounded-lg border border-red-500/40 bg-red-500/15 py-1.5 text-[11px] font-semibold text-red-100 hover:bg-red-500/25 transition-colors"
+              >
+                Close it
+              </button>
+              <button
+                onClick={() => setConfirmClose(null)}
+                className="rounded-lg border border-white/15 px-3 py-1.5 text-[11px] text-slate-300 hover:border-white/30 hover:text-white transition-colors"
+              >
+                Keep
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col landscape:flex-row gap-3 min-h-0 flex-1 overflow-hidden">
         <div className="w-full landscape:w-[320px] shrink-0 flex flex-col portrait:flex-row gap-3 min-h-0 portrait:h-[176px]">
           {/* references */}
@@ -324,6 +678,29 @@ export function CharacterStudioWorkspace({
             {/* Site dropdowns, not native selects: iOS renders those as a
                 full-screen system picker over the panel. */}
             <div className="flex gap-1.5 mt-2">
+              {/* WHICH MODEL draws the character. The employee runs through the
+                  hub, so this lists the hub's catalog rather than a second copy
+                  of the taskbar's; admin-only models appear only for admins,
+                  matching the gate the generate route enforces anyway. */}
+              <Dropdown
+                value={model}
+                disabled={started}
+                onChange={setModel}
+                className="flex-1 min-w-0"
+                options={IMAGE_MODELS
+                  .filter(m => isAdmin || !m.admin)
+                  .map(m => ({ value: m.id, label: m.label }))}
+              />
+            </div>
+            <div className="flex gap-1.5 mt-1.5">
+              {/* SHEETS or SINGLES. See MODES. */}
+              <Dropdown
+                value={mode}
+                disabled={started}
+                onChange={v => setMode(v as ModeId)}
+                className="flex-1 min-w-0"
+                options={MODES.map(m => ({ value: m.id, label: m.label }))}
+              />
               <Dropdown
                 value={quality}
                 disabled={started}
@@ -339,6 +716,9 @@ export function CharacterStudioWorkspace({
                 options={["1:1", "4:5", "3:4", "2:3", "16:9"].map(a => ({ value: a, label: a }))}
               />
             </div>
+            <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
+              {MODES.find(m => m.id === mode)?.hint}
+            </p>
             {(() => {
               const ready = (!!brief.trim() || refs.length > 0) && !busy && signedIn && !started
               return (
@@ -373,22 +753,6 @@ export function CharacterStudioWorkspace({
               <UsersRound size={12} className="text-cyan-400" />
               <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">The board</span>
               {status && <span className="ml-auto text-[10px] text-slate-500">{status}</span>}
-              {started && (
-                // A project restored from the account can be mid-run, finished
-                // or wedged, and without this there was no way to leave one and
-                // begin another — the bench stays disabled while a project is
-                // open, so a stuck project locked the whole workspace.
-                <button
-                  onClick={() => {
-                    setChatId(null); setApprovals([]); setPausedMessageId(null)
-                    setBusy(false); setStatus(""); setError(null); sigRef.current = ""
-                  }}
-                  title="Close this project and start a new one"
-                  className={`${status ? "" : "ml-auto "}text-[10px] text-slate-500 hover:text-white transition-colors`}
-                >
-                  New
-                </button>
-              )}
             </div>
 
             {approvals.length > 0 && (
@@ -429,7 +793,7 @@ export function CharacterStudioWorkspace({
                 <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
                   <UsersRound size={20} className="text-slate-600" />
                   <p className="text-[11px] text-slate-500 max-w-sm">
-                    Add references of ONE character, or describe them, then pick the sheets to build.
+                    Add references of ONE character, or describe them, then pick what to build.
                   </p>
                   <div className="flex flex-wrap justify-center gap-1.5 max-w-lg">
                     {SHEETS.map(sh => {
@@ -452,12 +816,56 @@ export function CharacterStudioWorkspace({
                     })}
                   </div>
                 </div>
+              ) : plates.length > 0 ? (
+                /*
+                 * THE BOARD, as the work actually arrives.
+                 *
+                 * Every plate the project has asked for, in the order it was
+                 * queued: a spinner the moment it is submitted, the picture in
+                 * the SAME tile when it lands, an error card if it dies. The
+                 * board used to be a single status line, so a run that was
+                 * making eight images looked identical to one making none.
+                 */
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                    <span>{settledCount} of {plates.length} done</span>
+                    {busy && <Loader2 size={10} className="animate-spin text-cyan-400/70" />}
+                    {status && <span className="ml-auto">{status}</span>}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                    {plates.map(pl => (
+                      <div key={pl.queueId}
+                        className="relative aspect-square rounded-lg overflow-hidden border border-white/10 bg-black/50">
+                        {pl.url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={pl.url} alt="" loading="lazy"
+                            className="absolute inset-0 w-full h-full object-cover" />
+                        ) : pl.error ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 p-2 text-center">
+                            <X size={12} className="text-red-400" />
+                            <span className="text-[9px] leading-tight text-red-200/80 line-clamp-3">{pl.error}</span>
+                          </div>
+                        ) : (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+                            <Loader2 size={14} className="animate-spin text-cyan-400/70" />
+                            <span className="text-[9px] text-slate-500">rendering</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {error && (
+                    <div className="rounded-lg border border-red-500/30 bg-red-500/[0.08] px-2 py-1.5 text-[11px] text-red-200">
+                      {error}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
                   {busy
                     ? <><Loader2 size={18} className="animate-spin text-cyan-400/70" />
                         <span className="text-[11px]">{status}</span>
-                        <span className="text-[10px] text-slate-600">sheets land in the feed below as they finish</span></>
+                        <span className="text-[10px] text-slate-600">plates appear here as they render</span></>
                     : <><HelpCircle size={16} /><span className="text-[11px]">{status || "Standing by"}</span></>}
                   {error && (
                     <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/[0.08] px-2 py-1.5 text-[11px] text-red-200">
@@ -474,9 +882,15 @@ export function CharacterStudioWorkspace({
       <div className="shrink-0 portrait:h-[30vh] landscape:h-[min(38vh,400px)]">
         <div className="relative h-full flex flex-col rounded-2xl silver-edge overflow-hidden">
           <div className="shrink-0 px-3 py-1.5 border-b border-white/5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Sheets</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Feed</span>
+            {pendingPlates.length > 0 && (
+              <span className="ml-2 text-[10px] text-slate-500">{pendingPlates.length} rendering</span>
+            )}
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">{renderFeed("image", feedKey)}</div>
+          {/* The pending list goes in so this employee's work shows as
+              "generating" tiles here too, and settles in place — the same
+              behaviour the Movie Studio's feeds already had. */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">{renderFeed("image", feedKey, pendingPlates)}</div>
         </div>
       </div>
     </div>

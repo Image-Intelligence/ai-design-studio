@@ -59,7 +59,21 @@ if (ref) await shouldFail('the enumerable thumbnail key', `${PREFIX}/ref-thumb/$
 if (MEDIA_HOST && SECRET) {
   console.log('\nThrough the media Worker — a valid signature must work, a bad one must not:')
   if (gen) await shouldWork('correctly signed', signed(gen.imageUrl))
-  if (gen) await shouldFail('signature tampered', signed(gen.imageUrl).replace(/sig=.$/, 'sig=x'))
+  if (gen) {
+    // Flip the LAST character of the signature. The previous version used
+    // /sig=.$/, which needs "sig=" plus exactly one character at end-of-string
+    // — a real signature is 43 chars, so it never matched and this case sent a
+    // perfectly valid URL and called the resulting 200 an exposure.
+    const t = new URL(signed(gen.imageUrl))
+    const sig = t.searchParams.get('sig') || ''
+    t.searchParams.set('sig', sig.slice(0, -1) + (sig.endsWith('A') ? 'B' : 'A'))
+    await shouldFail('signature tampered', t.toString())
+    // And a signature lifted onto a DIFFERENT object: the mac covers the key,
+    // so a valid signature must not be portable.
+    const other = new URL(signed(gen.imageUrl))
+    other.pathname = '/robots.txt'
+    await shouldFail('signature reused elsewhere', other.toString())
+  }
   if (gen) {
     const u = new URL(signed(gen.imageUrl))
     u.searchParams.set('exp', '1000')

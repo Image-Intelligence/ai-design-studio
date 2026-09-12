@@ -11,6 +11,7 @@ import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { uploadToR2, uploadPublicAsset, deleteFromR2 } from '@/lib/r2'
+import { jsonPrivate } from '@/lib/api-json'
 
 const pExecFile = promisify(execFile)
 
@@ -105,10 +106,10 @@ export async function GET() {
     const rows = await prisma.homeCard.findMany({ select: { key: true, mediaUrl: true, mediaType: true } })
     const cards: Record<string, { mediaUrl: string; mediaType: string }> = {}
     for (const r of rows) cards[r.key] = { mediaUrl: r.mediaUrl, mediaType: r.mediaType }
-    return NextResponse.json({ cards }, { headers: { 'Cache-Control': 'no-store' } })
+    return jsonPrivate({ cards }, { headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
     console.error('home-cards GET error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    return jsonPrivate({ error: 'Server error' }, { status: 500 })
   }
 }
 
@@ -118,7 +119,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const admin = await getAdminUser()
-    if (!admin) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+    if (!admin) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
 
     const ctype = req.headers.get('content-type') || ''
 
@@ -127,42 +128,42 @@ export async function POST(req: Request) {
       const form = await req.formData()
       const key = String(form.get('key') || '').trim()
       const file = form.get('file')
-      if (!key) return NextResponse.json({ error: 'key required' }, { status: 400 })
-      if (!(file instanceof File)) return NextResponse.json({ error: 'file required' }, { status: 400 })
+      if (!key) return jsonPrivate({ error: 'key required' }, { status: 400 })
+      if (!(file instanceof File)) return jsonPrivate({ error: 'file required' }, { status: 400 })
       const raw = file.type || ''
       if (!raw.startsWith('image/') && !raw.startsWith('video/')) {
-        return NextResponse.json({ error: 'Only image or video uploads are allowed' }, { status: 400 })
+        return jsonPrivate({ error: 'Only image or video uploads are allowed' }, { status: 400 })
       }
       const isVid = raw.startsWith('video')
       const ct = isVid ? 'video/mp4' : raw
       let buffer: Buffer = Buffer.from(await file.arrayBuffer())
-      if (buffer.length === 0) return NextResponse.json({ error: 'Empty file' }, { status: 400 })
+      if (buffer.length === 0) return jsonPrivate({ error: 'Empty file' }, { status: 400 })
       // Transcode HEVC (and other non-web codecs) → H.264 so it plays in every browser.
       if (isVid) buffer = await ensureH264(buffer)
       const r2Key = `home-cards/${safeKeyOf(key)}-${randomUUID()}.${isVid ? 'mp4' : extFor(ct)}`
       const mediaUrl = await uploadPublicAsset(r2Key, buffer, ct)
       const card = await saveCard(key, mediaUrl, isVid ? 'video' : 'image')
-      return NextResponse.json({ card })
+      return jsonPrivate({ card })
     }
 
     // --- json: base64 framed image ---
     const body = await req.json().catch(() => null)
     const key = typeof body?.key === 'string' ? body.key.trim() : ''
-    if (!key) return NextResponse.json({ error: 'key required' }, { status: 400 })
+    if (!key) return jsonPrivate({ error: 'key required' }, { status: 400 })
     const dataUrl: string = typeof body?.image === 'string' ? body.image : ''
     const m = dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/)
-    if (!m) return NextResponse.json({ error: 'Invalid image data' }, { status: 400 })
+    if (!m) return jsonPrivate({ error: 'Invalid image data' }, { status: 400 })
     const ct = m[1]
     const buffer = Buffer.from(m[2], 'base64')
-    if (buffer.length === 0) return NextResponse.json({ error: 'Empty image' }, { status: 400 })
-    if (buffer.length > 12 * 1024 * 1024) return NextResponse.json({ error: 'Image too large' }, { status: 413 })
+    if (buffer.length === 0) return jsonPrivate({ error: 'Empty image' }, { status: 400 })
+    if (buffer.length > 12 * 1024 * 1024) return jsonPrivate({ error: 'Image too large' }, { status: 413 })
     const r2Key = `home-cards/${safeKeyOf(key)}-${randomUUID()}.${extFor(ct)}`
     const mediaUrl = await uploadPublicAsset(r2Key, buffer, ct)
     const card = await saveCard(key, mediaUrl, 'image')
-    return NextResponse.json({ card })
+    return jsonPrivate({ card })
   } catch (error) {
     console.error('home-cards POST error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    return jsonPrivate({ error: 'Server error' }, { status: 500 })
   }
 }
 
@@ -170,20 +171,20 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const admin = await getAdminUser()
-    if (!admin) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+    if (!admin) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
 
     const { searchParams } = new URL(req.url)
     const key = (searchParams.get('key') || '').trim()
-    if (!key) return NextResponse.json({ error: 'key required' }, { status: 400 })
+    if (!key) return jsonPrivate({ error: 'key required' }, { status: 400 })
 
     const existing = await prisma.homeCard.findUnique({ where: { key } })
     if (existing) {
       deleteFromR2(existing.mediaUrl).catch(() => {})
       await prisma.homeCard.delete({ where: { key } })
     }
-    return NextResponse.json({ ok: true })
+    return jsonPrivate({ ok: true })
   } catch (error) {
     console.error('home-cards DELETE error:', error)
-    return NextResponse.json({ error: 'Server error' }, { status: 500 })
+    return jsonPrivate({ error: 'Server error' }, { status: 500 })
   }
 }

@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { jsonPrivate } from '@/lib/api-json'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
     const { falEndpoint, prompt, aspectRatio, quality, referenceImageUrls, ticketCost, size, queuedAt } = body
 
     if (!requestId || !falEndpoint) {
-      return NextResponse.json({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
+      return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
     }
 
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
 
       if (falImages.length === 0) {
         await releaseQueueSlot(requestId, true, 'No images returned from model')
-        return NextResponse.json({ status: 'failed', error: 'No images returned from model' })
+        return jsonPrivate({ status: 'failed', error: 'No images returned from model' })
       }
 
       const hostedImages: { url: string }[] = []
@@ -70,7 +71,7 @@ export async function POST(req: Request) {
 
       if (hostedImages.length === 0) {
         await releaseQueueSlot(requestId, true, 'Failed to download generated images')
-        return NextResponse.json({ status: 'failed', error: 'Failed to download generated images' })
+        return jsonPrivate({ status: 'failed', error: 'Failed to download generated images' })
       }
 
       // Idempotency: skip if already saved
@@ -82,7 +83,7 @@ export async function POST(req: Request) {
         })
         if (existing.length > 0) {
           console.log(`↩ GPT Image 2 already saved [${requestId}] returning ${existing.length} record(s)`)
-          return NextResponse.json({
+          return jsonPrivate({
             status: 'completed',
             images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
           })
@@ -125,16 +126,16 @@ export async function POST(req: Request) {
 
       await releaseQueueSlot(requestId, false)
       console.log(`✓ GPT Image 2 completed [${requestId}] ${hostedImages.length} image(s)`)
-      return NextResponse.json({
+      return jsonPrivate({
         status: 'completed',
         images: hostedImages.map((img, i) => ({ ...img, dbId: savedIds[i] ?? null })),
       })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
       await releaseQueueSlot(requestId, true, 'Generation failed on FAL servers')
-      return NextResponse.json({ status: 'failed', error: 'Generation failed on FAL servers' })
+      return jsonPrivate({ status: 'failed', error: 'Generation failed on FAL servers' })
     } else {
-      return NextResponse.json({ status: 'in_progress', falStatus: status.status })
+      return jsonPrivate({ status: 'in_progress', falStatus: status.status })
     }
 
   } catch (error: any) {
@@ -143,8 +144,8 @@ export async function POST(req: Request) {
       const { friendlyFalError, extractFalErrorDetail } = await import('@/lib/fal-friendly-errors')
       const detail = friendlyFalError(extractFalErrorDetail(error))
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
-      return NextResponse.json({ status: 'failed', error: `Generation failed: ${detail}` })
+      return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
     }
-    return NextResponse.json({ status: 'in_progress', error: error.message })
+    return jsonPrivate({ status: 'in_progress', error: error.message })
   }
 }

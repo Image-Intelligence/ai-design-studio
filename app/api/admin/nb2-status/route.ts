@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { jsonPrivate } from '@/lib/api-json'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
     requestId = body.requestId
     const { falEndpoint, prompt, outputFormat, aspectRatio, quality, referenceImageUrls, ticketCost, queuedAt, videoMetadata } = body
     if (!requestId || !falEndpoint) {
-      return NextResponse.json({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
+      return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
     }
 
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
         if (existing.length > 0) {
           // The slot may still be held if an earlier poll died mid-flight.
           await releaseQueueSlot(requestId, false)
-          return NextResponse.json({
+          return jsonPrivate({
             status: 'completed',
             images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
           })
@@ -62,7 +63,7 @@ export async function POST(req: Request) {
 
       if (falImages.length === 0) {
         await releaseQueueSlot(requestId, true, 'No images returned from model')
-        return NextResponse.json({ status: 'failed', error: 'No images returned from model' })
+        return jsonPrivate({ status: 'failed', error: 'No images returned from model' })
       }
 
       const format = outputFormat || 'png'
@@ -87,7 +88,7 @@ export async function POST(req: Request) {
 
       if (hostedImages.length === 0) {
         await releaseQueueSlot(requestId, true, 'Failed to download generated images')
-        return NextResponse.json({ status: 'failed', error: 'Failed to download generated images' })
+        return jsonPrivate({ status: 'failed', error: 'Failed to download generated images' })
       }
 
       // Save to DB and capture real IDs so the client can display without re-fetching
@@ -166,16 +167,16 @@ export async function POST(req: Request) {
 
       await releaseQueueSlot(requestId, false)
       console.log(`✓ NanoBanana 2 completed [${requestId}] ${hostedImages.length} image(s)`)
-      return NextResponse.json({
+      return jsonPrivate({
         status: 'completed',
         images: hostedImages.map((img, i) => ({ ...img, dbId: savedIds[i] ?? null })),
       })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
       await releaseQueueSlot(requestId, true, 'Generation failed on FAL servers')
-      return NextResponse.json({ status: 'failed', error: 'Generation failed on FAL servers' })
+      return jsonPrivate({ status: 'failed', error: 'Generation failed on FAL servers' })
     } else {
-      return NextResponse.json({ status: 'in_progress', falStatus: status.status })
+      return jsonPrivate({ status: 'in_progress', falStatus: status.status })
     }
 
   } catch (error: any) {
@@ -185,14 +186,14 @@ export async function POST(req: Request) {
         ? error.body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ')
         : error.body?.message || error.message || 'Unprocessable content'
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
-      return NextResponse.json({ status: 'failed', error: `Generation failed: ${detail}` })
+      return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
     }
     // 404 / job not found — permanent failure (job expired or never registered)
     if (error.status === 404 || /not.found|no.longer.available|expired/i.test(error.message ?? '')) {
       if (requestId) await releaseQueueSlot(requestId, true, 'Generation request expired or not found')
-      return NextResponse.json({ status: 'failed', error: 'Generation request expired or not found' })
+      return jsonPrivate({ status: 'failed', error: 'Generation request expired or not found' })
     }
     // Transient error — keep polling
-    return NextResponse.json({ status: 'in_progress', error: error.message })
+    return jsonPrivate({ status: 'in_progress', error: error.message })
   }
 }

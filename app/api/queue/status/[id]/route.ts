@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { jsonPrivate } from '@/lib/api-json'
 
 // GET - Check status of a queued generation (polled by the frontend)
 export async function GET(
@@ -11,7 +12,7 @@ export async function GET(
     const queueId = parseInt(id);
 
     if (isNaN(queueId)) {
-      return NextResponse.json({ error: 'Invalid queue ID' }, { status: 400 });
+      return jsonPrivate({ error: 'Invalid queue ID' }, { status: 400 });
     }
 
     const item = await prisma.generationQueue.findUnique({
@@ -19,7 +20,7 @@ export async function GET(
     });
 
     if (!item) {
-      return NextResponse.json({ error: 'Queue item not found' }, { status: 404 });
+      return jsonPrivate({ error: 'Queue item not found' }, { status: 404 });
     }
 
     const completedParams = item.parameters as any;
@@ -34,7 +35,7 @@ export async function GET(
             queuedAt: { lte: item.queuedAt }
           }
         });
-        return NextResponse.json({
+        return jsonPrivate({
           status: 'queued',
           position,
           estimatedWait: position * 30,
@@ -42,12 +43,12 @@ export async function GET(
       }
 
       case 'processing':
-        return NextResponse.json({
+        return jsonPrivate({
           status: 'processing',
         });
 
       case 'completed':
-        return NextResponse.json({
+        return jsonPrivate({
           status: 'completed',
           resultUrl: item.resultUrl,
           imageId: item.resultImageId,
@@ -61,22 +62,22 @@ export async function GET(
         });
 
       case 'failed':
-        return NextResponse.json({
+        return jsonPrivate({
           status: 'failed',
           errorMessage: item.errorMessage || 'Generation failed',
         });
 
       case 'cancelled':
-        return NextResponse.json({
+        return jsonPrivate({
           status: 'cancelled',
           errorMessage: 'Generation was cancelled',
         });
 
       default:
-        return NextResponse.json({ status: item.status });
+        return jsonPrivate({ status: item.status });
     }
   } catch (error) {
     console.error('Failed to get queue status:', error);
-    return NextResponse.json({ error: 'Failed to get queue status' }, { status: 500 });
+    return jsonPrivate({ error: 'Failed to get queue status' }, { status: 500 });
   }
 }

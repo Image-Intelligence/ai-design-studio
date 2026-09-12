@@ -29310,6 +29310,29 @@ export default function PortalV2Page() {
   // Employee workspaces render the portal's OWN session feed, not a second
   // feed component: continuous cursor paging, masonry, and every per-user feed
   // setting, identical to the image session feed by construction.
+/**
+ * An employee's in-flight generations, as feed tiles.
+ *
+ * Keyed on the queue id so a tile keeps its identity across polls, and carrying
+ * queuedAtMs so it sorts into the feed by when it was queued rather than
+ * arriving at the top. NOT queueJobId: that pairs with a missing request id to
+ * mean "waiting for a free slot", and these are already at fal rendering.
+ */
+function employeePending(
+  pending: { queueId: number; prompt: string; at: number; model: string; aspect?: string; quality?: string; refs?: string[] }[],
+): PendingSlot[] {
+  return pending.map(p => ({
+    slotId: `emp-${p.queueId}`,
+    status: "loading" as const,
+    prompt: p.prompt,
+    queuedAtMs: p.at,
+    modelId: p.model,
+    aspectRatio: p.aspect,
+    quality: p.quality,
+    referenceImageUrls: p.refs,
+  }))
+}
+
   const renderEmployeeFeed = useCallback((
     kind: "image" | "video",
     nonce = 0,
@@ -29327,8 +29350,13 @@ export default function PortalV2Page() {
       // effect deps — that combination re-fired the effect forever
       // ("Maximum update depth exceeded").
       pendingSlots={
+        // The image feed shows the portal's OWN pending tiles AND any the
+        // employee passes in. It used to ignore the second list entirely, so a
+        // workspace that generates images (Character Design, the Movie
+        // Studio's plates) had no way to show work in flight — its pictures
+        // simply materialised when they were already finished.
         kind === "image"
-          ? pendingSlots
+          ? (pending.length ? [...pendingSlots, ...employeePending(pending)] : pendingSlots)
           : pending.length
             ? pending.map(p => ({
                 slotId: `film-${p.queueId}`,
@@ -29846,6 +29874,7 @@ export default function PortalV2Page() {
           ) : activeEmployee === "character-design" ? (
             <CharacterStudioWorkspace
               signedIn={user !== null}
+              isAdmin={isAdminAccount}
               renderFeed={renderEmployeeFeed}
               activeRefs={refLibrary
                 .filter(img => activeRefIds.includes(img.id))
