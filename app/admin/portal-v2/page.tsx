@@ -12739,6 +12739,15 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     }
   }
 
+  /**
+   * Why the canvas is empty, when it is.
+   *
+   * A failed load used to be silent, so it was indistinguishable from an
+   * image that genuinely loaded blank — nothing to see and nothing to
+   * report. An editor that cannot show you the picture should say so.
+   */
+  const [loadError, setLoadError] = useState<string | null>(null)
+
   // Load image into canvas on mount.
   // HTTPS images (Vercel Blob, R2, etc.) taint the canvas when drawn directly, which causes
   // toDataURL() to throw a SecurityError — silently killing onload before setLoaded(true) runs.
@@ -12747,9 +12756,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     const canvas = canvasRef.current; if (!canvas) return
     let cancelled = false
 
-    const drawToCanvas = (src: string) => {
-      const img = document.createElement('img')
-      img.onload = () => {
+    const drawFrom = (img: HTMLImageElement) => {
         // The load is async — if the editor closed (or swapped images) before it
         // finished, the overlay ref is null and writing to it would crash
         const overlay = overlayRef.current
@@ -12794,19 +12801,48 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
           setHistLen(0)
         }
         setLoaded(true)
-      }
-      img.onerror = () => { if (!cancelled) setLoaded(true) }
-      img.src = src
     }
 
-    if (image.url.startsWith('http')) {
-      // Use the server-side proxy URL directly as img.src.
-      // Same-origin URLs (/api/...) never taint a canvas — no fetch/blob step needed.
-      drawToCanvas(`/api/admin/image-proxy?url=${encodeURIComponent(image.url)}`)
-    } else {
-      // blob: or data: — already same-origin, no taint risk
-      drawToCanvas(image.url)
-    }
+    /** Load one src. `cors` is needed only for cross-origin sources. */
+    const loadImage = (src: string, cors: boolean) => new Promise<HTMLImageElement>((ok, bad) => {
+      const img = document.createElement('img')
+      if (cors) img.crossOrigin = 'anonymous'
+      img.onload = () => ok(img)
+      img.onerror = () => bad(new Error('load failed'))
+      img.src = src
+    })
+
+    void (async () => {
+      if (!image.url.startsWith('http')) {
+        // blob: or data: — already same-origin, no taint risk
+        try { drawFrom(await loadImage(image.url, false)) }
+        catch { if (!cancelled) { setLoadError('Could not load this image'); setLoaded(true) } }
+        return
+      }
+      try {
+        // The proxy first: a same-origin response can never taint the
+        // canvas, which is what lets Save and Apply export it.
+        drawFrom(await loadImage(`/api/admin/image-proxy?url=${encodeURIComponent(image.url)}`, false))
+      } catch {
+        if (cancelled) return
+        /*
+         * THEN THE URL ITSELF.
+         *
+         * The proxy is one more thing between the editor and the picture,
+         * and when it fails there is no reason to give up: the media Worker
+         * serves these with access-control-allow-origin, so a direct
+         * crossOrigin load is drawable and exportable too.
+         */
+        try { drawFrom(await loadImage(image.url, true)) }
+        catch {
+          if (cancelled) return
+          let where = 'its source'
+          try { where = new URL(image.url).hostname } catch {}
+          setLoadError(`Could not load this image from ${where}`)
+          setLoaded(true)
+        }
+      }
+    })()
     return () => { cancelled = true }
   }, [image.url])
 
@@ -14260,6 +14296,21 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
             {/* Solid black under the transparent canvas (multi-layer mode) — the
                 branded wall lives OUTSIDE the artboard, on the workspace pane */}
             {stack?.enabled && <div className="absolute inset-0 -z-10 bg-black rounded-lg" />}
+            {/* An empty canvas with no explanation is the worst version of this
+                failure: it looks identical to an image that legitimately
+                loaded blank. Say what happened and where it was fetched from,
+                so it can be reported without a debugger. */}
+            {loadError && (
+              <div className="absolute inset-0 z-[30] flex flex-col items-center justify-center gap-2 p-6 text-center pointer-events-none">
+                <div className="pointer-events-auto max-w-[300px] rounded-xl border border-red-500/30 bg-[#12060a]/95 px-3 py-2.5">
+                  <p className="text-[11px] font-semibold text-red-200">{loadError}</p>
+                  <p className="mt-1 text-[10px] leading-snug text-red-200/60">
+                    The picture is still safe in your library — the editor could not fetch it.
+                    Close and reopen; if it keeps happening, tell us this message.
+                  </p>
+                </div>
+              </div>
+            )}
             <canvas ref={canvasRef}
               style={{
                 display: 'block',
