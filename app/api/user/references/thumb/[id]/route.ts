@@ -28,6 +28,16 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 const key = (id: number) => `ref-thumb/${id}.webp`
+/*
+ * A FAILURE MUST NOT BE CACHED.
+ *
+ * 410 is cacheable by default (RFC 7231 lists it with 200, 301, 404 and the
+ * rest), and these responses carried no Cache-Control at all. So when the
+ * source was briefly unreachable the browser kept the 410 and stopped asking
+ * — the tile stayed "UNAVAILABLE" long after the route had been fixed and
+ * would have succeeded. Only a successful thumbnail is worth remembering.
+ */
+const NO_STORE = { 'Cache-Control': 'no-store' }
 /** The stored-URL shape signMediaUrl recognises as private media. */
 const PRIVATE_PREFIX = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
 
@@ -37,16 +47,16 @@ export async function GET(
 ) {
   const token = (await cookies()).get('session')?.value
   const user = token ? await getUserFromSession(token) : null
-  if (!user) return new NextResponse('Unauthorized', { status: 401 })
+  if (!user) return new NextResponse('Unauthorized', { status: 401, headers: NO_STORE })
 
   const id = parseInt((await params).id, 10)
-  if (!Number.isFinite(id)) return new NextResponse('Invalid id', { status: 400 })
+  if (!Number.isFinite(id)) return new NextResponse('Invalid id', { status: 400, headers: NO_STORE })
 
   const ref = await prisma.userReference.findFirst({
     where: { id, userId: user.id },
     select: { url: true },
   })
-  if (!ref) return new NextResponse('Not found', { status: 404 })
+  if (!ref) return new NextResponse('Not found', { status: 404, headers: NO_STORE })
 
   // Already made — send the browser to the media Worker with a signed link.
   // Ownership was just checked above; the signature is what carries that
@@ -67,12 +77,12 @@ export async function GET(
   try {
     source = await fetchMedia(ref.url, { signal: AbortSignal.timeout(25_000) })
   } catch {
-    return new NextResponse('Source unreachable', { status: 502 })
+    return new NextResponse('Source unreachable', { status: 502, headers: NO_STORE })
   }
   // 404 here is the dead-reference case: twenty of these still point at a
   // Vercel Blob store that no longer exists. Saying so plainly lets the tile
   // show "unavailable" instead of a browser broken-image glyph.
-  if (!source.ok) return new NextResponse('Source gone', { status: 410 })
+  if (!source.ok) return new NextResponse('Source gone', { status: 410, headers: NO_STORE })
 
   let thumb: Buffer
   try {
@@ -82,7 +92,7 @@ export async function GET(
       .webp({ quality: 72 })
       .toBuffer()
   } catch {
-    return new NextResponse('Not an image', { status: 415 })
+    return new NextResponse('Not an image', { status: 415, headers: NO_STORE })
   }
 
   // Best effort: if the upload fails the tile still paints, and the next view

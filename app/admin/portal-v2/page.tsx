@@ -2679,6 +2679,16 @@ function RefThumb({
 }) {
   const [dead, setDead] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  /*
+   * One retry, past the cache.
+   *
+   * A thumbnail that failed once may only have been CACHED as a failure — 410
+   * and 404 are both cacheable by default, so the browser keeps serving the
+   * old answer and never asks again, and the tile stays "Unavailable" long
+   * after the server would happily produce it. Ask once more with a busting
+   * param before giving up.
+   */
+  const [thumbRetry, setThumbRetry] = useState(false)
 
   if (dead) {
     return (
@@ -2703,11 +2713,11 @@ function RefThumb({
           compile to no class at all. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={refThumbSrc(img)}
+        src={thumbRetry ? `${refThumbSrc(img)}?r=1` : refThumbSrc(img)}
         alt=""
         decoding="async"
         onLoad={() => setLoaded(true)}
-        onError={() => setDead(true)}
+        onError={() => { if (thumbRetry) setDead(true); else setThumbRetry(true) }}
         className={`relative h-full w-full ${fit === "contain" ? "object-contain" : "object-cover"} transition-opacity ${loaded ? "opacity-100" : "opacity-0"} ${className}`}
       />
     </span>
@@ -7705,6 +7715,9 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
    * right amount instead of the height of the bare image.
    */
   const chromeRef = useRef(0)
+  /** Tiles awaiting measurement in the next frame. See reportNat. */
+  const pendingMeasureRef = useRef(new Set<string>())
+  const pendingForceRef = useRef(false)
   const register = (key: string) => (el: HTMLDivElement | null) => {
     if (el) { el.dataset.mkey = key; tileElsRef.current.set(key, el); tileRO.current?.observe(el) }
     else tileElsRef.current.delete(key)
@@ -7730,18 +7743,36 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
      * positions by. Read inside the frame so it is one reflow, after the
      * browser has settled the new box.
      */
+    /*
+     * QUEUE the key, do not race for the frame.
+     *
+     * rafRef holds ONE pending frame so a burst of reports collapses into a
+     * single re-layout. Measuring inside it per-key was wrong: every tile that
+     * reported cancelled the previous tile's frame, so in a feed of twenty
+     * images exactly one — the last — was ever measured, and the rest fell
+     * back to estimate-only heights. That is the overlap on refresh, when they
+     * all load at once from cache.
+     */
+    pendingMeasureRef.current.add(key)
+    if (ratioChanged) pendingForceRef.current = true
     cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
-      const el = tileElsRef.current.get(key)
-      let heightChanged = false
-      if (el) {
+      let changed = pendingForceRef.current
+      pendingForceRef.current = false
+      for (const k of pendingMeasureRef.current) {
+        const el = tileElsRef.current.get(k)
+        if (!el) continue
         const h = el.offsetHeight
-        if (h >= 24) {
-          const prev = heightsRef.current.get(key)
-          if (prev === undefined || Math.abs(prev - h) > 1) { heightsRef.current.set(key, h); heightChanged = true }
-        }
+        if (h < 24) continue
+        const prev = heightsRef.current.get(k)
+        if (prev === undefined || Math.abs(prev - h) > 1) { heightsRef.current.set(k, h); changed = true }
+        // The chrome is the same for every tile; learn it from any real box.
+        const inner = el.firstElementChild as HTMLElement | null
+        const c = inner ? h - inner.offsetHeight : 0
+        if (c > 0 && c < 24 && Math.abs(c - chromeRef.current) > 0.5) chromeRef.current = c
       }
-      if (ratioChanged || heightChanged) force()
+      pendingMeasureRef.current.clear()
+      if (changed) force()
     })
   }, [])
 
