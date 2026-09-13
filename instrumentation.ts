@@ -20,26 +20,17 @@ export async function register() {
   // The edge runtime has its own module instance and none of these paths.
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
 
-  const g = globalThis as typeof globalThis & { __privateMediaFetchPatched?: boolean }
-  if (g.__privateMediaFetchPatched) return
-  g.__privateMediaFetchPatched = true
-
-  const { isPrivateMedia, signMediaUrl, FAL_TTL } = await import('./lib/media-url')
-  const original = globalThis.fetch
-
-  globalThis.fetch = async function patchedFetch(input, init) {
-    try {
-      if (typeof input === 'string' && isPrivateMedia(input)) {
-        input = signMediaUrl(input, FAL_TTL)
-      } else if (input instanceof URL && isPrivateMedia(input.href)) {
-        input = new URL(signMediaUrl(input.href, FAL_TTL))
-      } else if (input instanceof Request && isPrivateMedia(input.url)) {
-        input = new Request(signMediaUrl(input.url, FAL_TTL), input)
-      }
-    } catch {
-      // Signing is an optimisation on the way to the same object; never let it
-      // be the reason a request does not happen at all.
-    }
-    return original(input, init)
-  }
+  /*
+   * The wrapper is a CONVENIENCE for ~140 call sites doing fetch(row.imageUrl),
+   * not a guarantee. It used to guard itself with a boolean on globalThis, so
+   * when Next's dev reloading replaced globalThis.fetch the patch was lost and
+   * the flag still claimed it was applied — every server-side media fetch 401d
+   * locally while production, a fresh process, stayed fine.
+   *
+   * ensureMediaFetchPatched marks the function instead, so it can tell whether
+   * the current fetch is still its own and re-wrap when it is not. Anything
+   * whose correctness actually matters calls fetchMedia() and signs outright.
+   */
+  const { ensureMediaFetchPatched } = await import('./lib/media-fetch')
+  ensureMediaFetchPatched()
 }

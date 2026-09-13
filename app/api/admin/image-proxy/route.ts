@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // Host allowlist prevents SSRF — this proxy previously fetched ANY https:// URL,
 // letting a caller drive the server to reach internal/cloud endpoints. Only our
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'URL host not allowed' }, { status: 403 })
   }
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    const res = await fetchMedia(url, { signal: AbortSignal.timeout(15_000) })
     if (!res.ok) return NextResponse.json({ error: 'Fetch failed' }, { status: res.status })
     const buffer = await res.arrayBuffer()
     return new NextResponse(buffer, {

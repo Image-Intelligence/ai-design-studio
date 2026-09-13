@@ -5,6 +5,7 @@ import { cookies } from 'next/headers'
 import { uploadToR2, objectExists } from '@/lib/r2'
 import { signMediaUrl } from '@/lib/media-url'
 import sharp from 'sharp'
+import { fetchMedia } from '@/lib/media-fetch'
 
 /**
  * A reference's thumbnail — made once, then served by the CDN forever.
@@ -64,7 +65,7 @@ export async function GET(
 
   let source: Response
   try {
-    source = await fetch(ref.url, { signal: AbortSignal.timeout(25_000) })
+    source = await fetchMedia(ref.url, { signal: AbortSignal.timeout(25_000) })
   } catch {
     return new NextResponse('Source unreachable', { status: 502 })
   }
