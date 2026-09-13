@@ -11,7 +11,7 @@ import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { canonicalisePayload } from '@/lib/media-url'
 import {
-  FAL_IMAGE_MODEL_IDS,
+  ADMIN_FAL_IMAGE_MODEL_IDS,
   getFalImageModelSpec,
   buildFalImageInput,
   resolveFalImageModelSpec,
@@ -140,7 +140,8 @@ export async function POST(request: Request) {
       // NB2 has only ever been on the admin scanner. It is in AI_MODELS now so
       // the chat hub can resolve it — this keeps it off the public picker.
       'nano-banana-pro-2',
-      ...FAL_IMAGE_MODEL_IDS,
+      // Only the ones still under test — see PUBLIC_FAL_IMAGE_MODEL_IDS.
+      ...ADMIN_FAL_IMAGE_MODEL_IDS,
     ])
     if (ADMIN_ONLY_IMAGE_MODELS.has(model)) {
       const { checkIsAdmin } = await import('@/lib/admin-check')

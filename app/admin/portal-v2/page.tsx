@@ -1160,18 +1160,40 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Recraft",           type: "text to image",             accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1"] },
   { label: "Wan",               type: "text to image",             accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.7 Pro"] },
   { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 1 Dev", "FLUX 2"] },
-  { label: "OpenAI",            type: "text to image",             accent: "text-green-400",   dot: "bg-green-400",   items: ["ChatGPT Images 2.0"] },
+  { label: "OpenAI",            type: "text to image · edit",      accent: "text-green-400",   dot: "bg-green-400",   items: ["ChatGPT Images 2.0", "ChatGPT Images 2.5"] },
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
+  // Google, distinct from the Gemini row above: Virtual Try-On is a Google
+  // model but not a Gemini one, and filing it under Gemini would be wrong.
+  { label: "Google",            type: "virtual try-on",            accent: "text-emerald-400", dot: "bg-emerald-400", items: ["Virtual Try-On"] },
+]
+
+/**
+ * Sections that are a TOOL first and a maker second.
+ *
+ * An upscaler is chosen because you want an upscale, not because you want a
+ * particular company — so the category is the heading and the makers are
+ * subsections inside it. Filing SeedVR2 under "ByteDance" in the flat company
+ * list would bury it next to SeeDream, which is a different job entirely.
+ */
+const IMAGE_MODEL_SECTIONS = [
+  {
+    label: "Upscalers",
+    note: "enhance & enlarge",
+    accent: "border-cyan-500/25 bg-cyan-500/[0.04]",
+    dot: "bg-cyan-400",
+    groups: [
+      { label: "ByteDance", type: "1-10× · detail recovery", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeedVR2 Upscale"] },
+    ],
+  },
 ]
 const ADMIN_IMAGE_MODEL_GROUPS = [
   // The picker renders THESE groups, not IMAGE_MODEL_CONFIGS — a model missing
   // from here simply never appears, however complete its config is.
-  { label: "OpenAI",    type: "text to image · edit",       accent: "text-green-400", dot: "bg-green-400", items: ["ChatGPT Images 2.5"] },
   { label: "Alibaba",   type: "text to image · edit",       accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3"] },
   { label: "Reve",      type: "text to image · edit",       accent: "text-pink-400",  dot: "bg-pink-400",  items: ["Reve 2.1"] },
   { label: "Microsoft", type: "text to image · edit",       accent: "text-sky-400",   dot: "bg-sky-400",   items: ["MAI Image 2.5 Pro"] },
   { label: "xAI",       type: "text to image · edit",       accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine 2.0"] },
-  { label: "Google",    type: "text to image · try-on",     accent: "text-emerald-400", dot: "bg-emerald-400", items: ["NanoBanana 2 Lite", "Virtual Try-On"] },
+  { label: "Google",    type: "text to image · try-on",     accent: "text-emerald-400", dot: "bg-emerald-400", items: ["NanoBanana 2 Lite"] },
   { label: "Meta",      type: "text to image · edit",       accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Meta Muse"] },
   { label: "Bria",      type: "text to image · edit",       accent: "text-teal-400",  dot: "bg-teal-400",  items: ["Bria Fibo 1.5"] },
   { label: "Ideogram",  type: "text in images",             accent: "text-amber-400", dot: "bg-amber-400", items: ["Ideogram v4"] },
@@ -1181,7 +1203,7 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "Pixelcut",  type: "product photography",        accent: "text-rose-400",  dot: "bg-rose-400",  items: ["Pixelcut Product Photo"] },
   { label: "Topaz",     type: "upscale · restore · adjust", accent: "text-lime-400",  dot: "bg-lime-400",  items: ["Topaz Image"] },
-  { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["SeedVR2 Upscale", "Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
+  { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
   { label: "RunPod",    type: "local · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
@@ -1793,6 +1815,7 @@ function ModelMenuPanel({
   label,
   groups,
   adminGroups,
+  sections,
   onSelect,
   activeItem,
   itemCosts,
@@ -1805,6 +1828,15 @@ function ModelMenuPanel({
   label: string
   groups: { label: string; type: string; accent: string; dot: string; items: string[] }[]
   adminGroups?: { label: string; type: string; accent: string; dot: string; items: string[] }[]
+  /**
+   * Named blocks that contain their OWN company subsections.
+   *
+   * A flat company list cannot say "these six are all upscalers, by six
+   * different makers" — the tool is the category and the maker is the
+   * detail, which is the opposite of how the rest of the picker reads. Same
+   * shape as the admin block, which was already doing exactly this.
+   */
+  sections?: { label: string; note?: string; accent?: string; dot?: string; groups: { label: string; type: string; accent: string; dot: string; items: string[] }[] }[]
   onSelect: (item: string) => void
   activeItem?: string
   itemCosts?: Record<string, "$" | "$$" | "$$$" | "$$$+">
@@ -2023,7 +2055,8 @@ function ModelMenuPanel({
                 {/* Every model, one continuous grid — no per-company rows to
                     leave half empty. The company reads off each tile. */}
                 <div className="grid grid-cols-3 gap-1.5">
-                  {filterGroups(groups).flatMap(g => g.items.map(it => renderCard(it, g.label)))}
+                  {[...filterGroups(groups), ...(sections ?? []).flatMap(sec => filterGroups(sec.groups))]
+                    .flatMap(g => g.items.map(it => renderCard(it, g.label)))}
                 </div>
 
                 {filterGroups(adminGroups).length > 0 && (
@@ -2066,6 +2099,41 @@ function ModelMenuPanel({
              </div>
             ))}
            </div>
+
+            {/* Named sections — a tool category, subdivided by maker */}
+            {(sections ?? []).map(sec => {
+              const subs = filterGroups(sec.groups)
+              if (subs.length === 0) return null
+              return (
+                <div key={sec.label} className={`col-span-2 mt-0.5 rounded-lg border overflow-hidden ${sec.accent ?? "border-white/10 bg-white/[0.02]"}`}>
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-white/[0.07]">
+                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sec.dot ?? "bg-slate-400"}`} />
+                    <span className="text-[9px] font-bold tracking-widest uppercase text-slate-300">{sec.label}</span>
+                    {sec.note && <span className="text-[8px] text-slate-600">· {sec.note}</span>}
+                  </div>
+                  <div className="p-2">
+                    <div className="flex gap-2 items-start">
+                      {splitColumns(subs).map((col, ci) => (
+                        <div key={ci} className="flex-1 min-w-0 space-y-2">
+                          {col.map(sub => (
+                            <div key={sub.label}>
+                              <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
+                                <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sub.label}</span>
+                                <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
+                              </div>
+                              <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
+                                {sub.items.map(renderItem)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
 
             {/* Admin Models — full-width block containing subsections */}
             {filterGroups(adminGroups).length > 0 && (
@@ -2121,6 +2189,7 @@ function GroupedTaskbarDropdown({
   icon: Icon,
   groups,
   adminGroups,
+  sections,
   open,
   onToggle,
   onSelect,
@@ -2135,6 +2204,15 @@ function GroupedTaskbarDropdown({
   icon: React.ElementType
   groups: { label: string; type: string; accent: string; dot: string; items: string[] }[]
   adminGroups?: { label: string; type: string; accent: string; dot: string; items: string[] }[]
+  /**
+   * Named blocks that contain their OWN company subsections.
+   *
+   * A flat company list cannot say "these six are all upscalers, by six
+   * different makers" — the tool is the category and the maker is the
+   * detail, which is the opposite of how the rest of the picker reads. Same
+   * shape as the admin block, which was already doing exactly this.
+   */
+  sections?: { label: string; note?: string; accent?: string; dot?: string; groups: { label: string; type: string; accent: string; dot: string; items: string[] }[] }[]
   open: boolean
   onToggle: () => void
   onSelect?: (item: string) => void
@@ -2200,6 +2278,7 @@ function GroupedTaskbarDropdown({
           <ModelMenuPanel
             label={label}
             groups={groups}
+            sections={sections}
             adminGroups={adminGroups}
             onSelect={(item) => { onSelect?.(item); onToggle() }}
             activeItem={activeItem}
@@ -21573,6 +21652,7 @@ function PromptBox({
                   <ModelMenuPanel
                     label="Image"
                     groups={IMAGE_MODEL_GROUPS}
+                    sections={IMAGE_MODEL_SECTIONS}
                     adminGroups={isAdminAccount ? ADMIN_IMAGE_MODEL_GROUPS : undefined}
                     onSelect={(item) => {
                       const cfg = imageConfigByPickerName(item)
@@ -29580,6 +29660,7 @@ function employeePending(
               label="Image"
               icon={Image}
               groups={IMAGE_MODEL_GROUPS}
+              sections={IMAGE_MODEL_SECTIONS}
               adminGroups={isAdminAccount ? ADMIN_IMAGE_MODEL_GROUPS : undefined}
               open={openDropdown === "image"}
               onToggle={() => toggle("image")}

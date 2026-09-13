@@ -1,5 +1,5 @@
 import { AI_MODELS, getTicketCost } from '@/config/ai-models.config'
-import { FAL_IMAGE_MODEL_IDS, getFalImageModelSpec } from '@/lib/fal-image-models'
+import { ADMIN_FAL_IMAGE_MODEL_IDS, getFalImageModelSpec } from '@/lib/fal-image-models'
 
 // The chat hub's IMAGE catalog, derived from the site's model config rather
 // than hand-listed a second time — the same treatment the video catalog got.
@@ -32,7 +32,8 @@ export const ADMIN_ONLY_IMAGE_MODELS = new Set<string>([
   'gemini-2.5-flash-image', 'gemini-3-pro-image', 'gemini-3-pro-image-preview',
   'flash-scanner-v2.5', 'pro-scanner-v3',
   'nano-banana-pro-2',
-  ...FAL_IMAGE_MODEL_IDS,
+  // Only the ones still under test — see PUBLIC_FAL_IMAGE_MODEL_IDS.
+  ...ADMIN_FAL_IMAGE_MODEL_IDS,
 ])
 
 function groupOf(id: string, name: string): string {

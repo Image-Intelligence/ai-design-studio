@@ -1070,6 +1070,31 @@ function recraftSpec(id: string, endpoint: string): FalImageModelSpec {
 
 export const FAL_IMAGE_MODEL_IDS = Object.keys(FAL_IMAGE_MODELS)
 
+/**
+ * The fal image models that have finished testing and are open to everyone.
+ *
+ * The whole 2026-08 fal batch shipped admin-only while it was under test, by
+ * spreading FAL_IMAGE_MODEL_IDS into the admin gate. Promoting one is
+ * therefore a SUBTRACTION from that gate, and it has to happen in both places
+ * that build it — /api/generate and the chat catalog — or a model is public
+ * in the picker and 403s on submit.
+ *
+ * gpt-image-2.5-edit rides along with gpt-image-2.5: it is the same model's
+ * edit endpoint, chosen automatically when references are attached, so leaving
+ * it gated would make the model public right up until someone attached a
+ * reference.
+ */
+export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
+  'gpt-image-2.5',
+  'gpt-image-2.5-edit',
+  'google-virtual-try-on',
+  'seedvr2-upscale',
+])
+
+/** FAL_IMAGE_MODEL_IDS minus the ones that have been promoted. */
+export const ADMIN_FAL_IMAGE_MODEL_IDS = FAL_IMAGE_MODEL_IDS
+  .filter(id => !PUBLIC_FAL_IMAGE_MODEL_IDS.has(id))
+
 export function getFalImageModelSpec(id: string): FalImageModelSpec | undefined {
   return FAL_IMAGE_MODELS[id]
 }
