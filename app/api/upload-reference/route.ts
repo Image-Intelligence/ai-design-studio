@@ -7,6 +7,7 @@ import { uploadToR2, userKey } from '@/lib/r2';
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
+import { jsonPrivate } from '@/lib/api-json';
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15MB — client compresses to ≤1920px
 
@@ -38,7 +39,18 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     const url = await uploadToR2(userKey(sessionUser.id, filename), buffer, type);
 
-    return NextResponse.json({ url });
+    /*
+     * SIGNED, because this URL is for the client to LOOK at.
+     *
+     * The refs grid renders it through /_next/image, and Next's optimizer uses
+     * its own fetcher rather than the patched globalThis.fetch — so a plain
+     * bucket URL is refused there and the tile reads "UNAVAILABLE".
+     *
+     * Safe to sign because it round-trips through /api/user/references, which
+     * canonicalises its whole body before storing: the database keeps the
+     * plain URL regardless of what the client sends back.
+     */
+    return jsonPrivate({ url });
   } catch (error) {
     console.error('Reference upload error:', error);
     return NextResponse.json(

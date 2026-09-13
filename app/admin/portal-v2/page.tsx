@@ -2527,10 +2527,33 @@ const arHeightWeight = (ar?: string): number => {
 // ~15KB webp instead of the full 1920px original). Ref grids can show 60+ images at
 // once — full originals decode to ~15MB each and blank out iPad Safari. Data URLs
 // (transient, pre-upload) pass through untouched.
+/**
+ * Does this URL carry its own access, or does it need the server's help?
+ *
+ * A signed media URL has the signature in its query string. Anything else on
+ * our bucket is only fetchable by code that can sign, which the browser and
+ * Next's image optimizer both cannot.
+ */
+function isSignedMedia(url: string): boolean {
+  return url.includes("sig=") && url.includes("exp=")
+}
+
 function refTileThumb(url: string, w: 128 | 256 = 256): string {
+  if (!url.startsWith("https://")) return url
+  /*
+   * The optimizer can only fetch what works WITHOUT our server.
+   *
+   * Next's image optimizer uses its own client, not the patched
+   * globalThis.fetch, so a plain bucket URL is refused there — which is what
+   * turned freshly uploaded references into "UNAVAILABLE" tiles. Signed URLs
+   * are fine and keep the resize; everything else goes through the proxy,
+   * which signs server-side. Full size rather than a thumbnail, so it is the
+   * fallback and not the route — but a heavy thumbnail beats a broken one.
+   */
+  if (!isSignedMedia(url)) return mediaSrc(url)
   // w must be one of Next's configured image sizes and q must be 75 — Vercel's
   // optimizer 400s anything else (verified against prod)
-  return url.startsWith("https://") ? `/_next/image?url=${encodeURIComponent(url)}&w=${w}&q=75` : url
+  return `/_next/image?url=${encodeURIComponent(url)}&w=${w}&q=75`
 }
 
 /**
