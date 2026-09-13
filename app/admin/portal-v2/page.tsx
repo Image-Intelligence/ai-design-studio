@@ -7636,6 +7636,11 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
           ?? (e.target as HTMLElement).offsetWidth
           ?? e.contentRect.width
         if (h < 24) continue
+        // border box minus content box = the chrome. Same for every tile.
+        const chrome = h - e.contentRect.height
+        if (chrome >= 0 && chrome < 24 && Math.abs(chrome - chromeRef.current) > 0.5) {
+          chromeRef.current = chrome
+        }
         const prev = heightsRef.current.get(k)
         if (prev === undefined || Math.abs(prev - h) > 1) { heightsRef.current.set(k, h); changed = true }
         // Box-shape inference remains ONLY for tiles without media (error
@@ -7659,8 +7664,27 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
   // the width it was measured at (see place())
   const lastPlacedWRef = useRef(new Map<string, number>())
   useEffect(() => () => { tileRO.current?.disconnect(); cancelAnimationFrame(rafRef.current) }, [])
+  /**
+   * The live element for each tile.
+   *
+   * The ResizeObserver is not enough on its own: it only speaks when a box
+   * CHANGES, and the moment that matters most — the image finishing decode —
+   * often changes nothing about the box. Holding the element lets the decode
+   * report measure it directly.
+   */
+  const tileElsRef = useRef(new Map<string, HTMLElement>())
+  /**
+   * How much taller a tile is than the picture inside it.
+   *
+   * Border and padding, in other words — identical for every tile in a given
+   * feed style, and zero when borders are off. Learned from whichever tile is
+   * measured first so that estimates for the not-yet-measured ones reserve the
+   * right amount instead of the height of the bare image.
+   */
+  const chromeRef = useRef(0)
   const register = (key: string) => (el: HTMLDivElement | null) => {
-    if (el) { el.dataset.mkey = key; tileRO.current?.observe(el) }
+    if (el) { el.dataset.mkey = key; tileElsRef.current.set(key, el); tileRO.current?.observe(el) }
+    else tileElsRef.current.delete(key)
   }
   // DIRECT dimension reports from the tiles themselves (img onLoad /
   // complete-ref) — the authoritative ratio channel. The ResizeObserver path
@@ -7669,12 +7693,33 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
   const reportNat = useCallback((key: string, r: number) => {
     if (!(r > 0.05 && r < 20) || !isFinite(r)) return
     const pr = ratiosRef.current.get(key)
-    if (pr === undefined || Math.abs(pr - r) > 0.02) {
+    const ratioChanged = pr === undefined || Math.abs(pr - r) > 0.02
+    if (ratioChanged) {
       ratiosRef.current.set(key, r)
       rememberTileRatio(key, r)
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = requestAnimationFrame(() => force())
     }
+    /*
+     * Take the height here too.
+     *
+     * This runs when the image has decoded, which is precisely the point the
+     * observer is waiting for and often will not witness. offsetHeight is the
+     * OUTER height — border and padding included — which is what the layout
+     * positions by. Read inside the frame so it is one reflow, after the
+     * browser has settled the new box.
+     */
+    cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(() => {
+      const el = tileElsRef.current.get(key)
+      let heightChanged = false
+      if (el) {
+        const h = el.offsetHeight
+        if (h >= 24) {
+          const prev = heightsRef.current.get(key)
+          if (prev === undefined || Math.abs(prev - h) > 1) { heightsRef.current.set(key, h); heightChanged = true }
+        }
+      }
+      if (ratioChanged || heightChanged) force()
+    })
   }, [])
 
   const colW = width > 0 ? (width - gap * (n - 1)) / n : 0
@@ -7733,7 +7778,7 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
     // Estimate from the width the element is ACTUALLY given (p.w below is
     // rounded), not the fractional column width: rounding up made the real
     // tile a fraction taller than the space reserved for it.
-    const h = Math.max(heightsRef.current.get(key) ?? 0, Math.round(w) / ratio)
+    const h = Math.max(heightsRef.current.get(key) ?? 0, Math.round(w) / ratio + chromeRef.current)
     // Single tiles: fill the topmost hole they fit into first
     if (span === 1 && gaps.length > 0) {
       let gi = -1
