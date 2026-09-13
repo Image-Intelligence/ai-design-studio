@@ -18,6 +18,7 @@ import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudio
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { gptImage25Size } from "@/lib/fal-image-models"
+import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -1598,12 +1599,6 @@ function BrandBackdrop() {
 const SILVER_RIM_CONIC_BRIGHT =
   "conic-gradient(from 0deg, rgba(248,250,252,0.45), #ffffff, #cbd5e1, rgba(248,250,252,0.6), #f1f5f9, #94a3b8, rgba(248,250,252,0.45))"
 
-const PROMPT_MODELS = [
-  { id: "gemini-3-flash",       label: "Gemini 3 Flash" },
-  { id: "gemini-2.0-flash-exp", label: "Gemini 2.0 Flash Exp" },
-  { id: "gemini-3-pro",         label: "Gemini 3 Pro" },
-  { id: "gemini-exp-1206",      label: "Gemini Exp 1206" },
-]
 const SAVED_PROMPTS_KEY = "pv2-saved-prompts"
 const TEXT_STATE_KEY = "pv2-text-state"
 
@@ -6938,7 +6933,16 @@ function TextDropdown({
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
 
   // AI Prompting state
-  const [promptModel, setPromptModel] = useState<string>(PROMPT_MODELS[0].id)
+  const [promptModel, setPromptModel] = useState<string>(DEFAULT_PROMPT_MODEL)
+  /**
+   * Which saved slot the sculptor writes into.
+   *
+   * The result used to appear in a panel of its own that you then had to copy
+   * somewhere — so the thing you were building was never the thing on screen.
+   * Now the slot IS the workspace: an empty one gets a prompt composed from
+   * the inputs, and a full one gets rewritten with the inputs as direction.
+   */
+  const [targetSlot, setTargetSlot] = useState(0)
   const [names, setNames] = useState<string[]>([""])
   const [enhancements, setEnhancements] = useState<string[]>([""])
   const [generatedPrompt, setGeneratedPrompt] = useState<string>("")
@@ -6959,6 +6963,7 @@ function TextDropdown({
     try {
       const s = JSON.parse(localStorage.getItem(TEXT_STATE_KEY) || "{}")
       if (s.promptModel && PROMPT_MODELS.some((m) => m.id === s.promptModel)) setPromptModel(s.promptModel)
+      if (typeof s.targetSlot === "number" && s.targetSlot >= 0 && s.targetSlot < 16) setTargetSlot(s.targetSlot)
       if (Array.isArray(s.names) && s.names.length > 0) setNames(s.names)
       if (Array.isArray(s.enhancements) && s.enhancements.length > 0) setEnhancements(s.enhancements)
       if (s.generatedPrompt) setGeneratedPrompt(s.generatedPrompt)
@@ -6968,9 +6973,9 @@ function TextDropdown({
   // Persist text state (AI prompting) to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(TEXT_STATE_KEY, JSON.stringify({ promptModel, names, enhancements, generatedPrompt }))
+      localStorage.setItem(TEXT_STATE_KEY, JSON.stringify({ promptModel, names, enhancements, generatedPrompt, targetSlot }))
     } catch {}
-  }, [promptModel, names, enhancements, generatedPrompt])
+  }, [promptModel, names, enhancements, generatedPrompt, targetSlot])
 
   // Single effect: first run = restore (localStorage + DB), subsequent runs = save.
   // Using the same pattern as model settings to prevent overwriting stored data with defaults.
@@ -7043,27 +7048,37 @@ function TextDropdown({
     }
   }, [open])
 
-  const isFlash = promptModel === "gemini-3-flash" || promptModel === "gemini-2.0-flash-exp"
+  // Lite models are quick enough that a cooldown would only be in the way.
+  const isFlash = /flash-lite|flash/.test(promptModel)
   const canGenerate = !generating && !cooldownEnd && hasDevAccess
 
   const handleGenerate = async () => {
     if (!canGenerate) return
     const celebrity = names.filter((n) => n.trim()).join(", ")
     const baseStyle = enhancements.filter((e) => e.trim()).join(", ")
-    if (!celebrity && !baseStyle) { setGenError("Enter at least one name or enhancement."); return }
+    const existing = (savedPrompts[targetSlot] ?? "").trim()
+    // With a slot to rewrite, the inputs are optional direction; without one
+    // there is nothing to work from at all.
+    if (!celebrity && !baseStyle && !existing) {
+      setGenError("Enter a name or enhancement, or pick a slot that already has a prompt.")
+      return
+    }
     setGenerating(true)
     setGenError(null)
     try {
       const res = await fetch("/api/prompting-studio/generate-single", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject: celebrity, baseStyle, model: imageModelName, promptModel }),
+        body: JSON.stringify({ subject: celebrity, baseStyle, model: imageModelName, promptModel, existing }),
       })
       const data = await res.json()
       if (!res.ok || data.error) {
         setGenError(data.error || "Generation failed.")
       } else {
-        setGeneratedPrompt(data.prompt || data.result || "")
+        const out = data.prompt || data.result || ""
+        // Straight into the slot. That is the whole point of choosing one.
+        setSavedPrompts(prev => prev.map((v, i) => (i === targetSlot ? out : v)))
+        setGeneratedPrompt(out)
         if (!isFlash) { setCooldownEnd(Date.now() + 10000); setCooldownLeft(10) }
       }
     } catch (err: any) {
@@ -7133,7 +7148,7 @@ function TextDropdown({
                 </div>
               ) : (
                 <>
-                  {/* AI Model */}
+                  {/* AI Model — grouped, cheapest first, default is the cheapest */}
                   <div>
                     <label className="block text-[10px] text-slate-500 mb-1">AI Model</label>
                     <select
@@ -7141,10 +7156,44 @@ function TextDropdown({
                       onChange={(e) => setPromptModel(e.target.value)}
                       className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
                     >
-                      {PROMPT_MODELS.map((m) => (
-                        <option key={m.id} value={m.id}>{m.label}</option>
+                      {PROMPT_MODEL_GROUPS.map(g => (
+                        <optgroup key={g} label={g}>
+                          {PROMPT_MODELS.filter(m => m.group === g).map(m => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}{m.note ? ` \u00b7 ${m.note}` : ""}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
+                  </div>
+
+                  {/*
+                   * WHICH SLOT this works on.
+                   *
+                   * An empty slot gets a prompt composed from the inputs below.
+                   * A slot with a prompt in it gets REWRITTEN, with those inputs
+                   * as the direction for the rewrite. Either way the answer
+                   * lands in the slot rather than in a panel of its own.
+                   */}
+                  <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Write into</label>
+                    <select
+                      value={targetSlot}
+                      onChange={(e) => setTargetSlot(Number(e.target.value))}
+                      className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
+                    >
+                      {savedPrompts.map((v, i) => (
+                        <option key={i} value={i}>
+                          {`Slot ${i + 1} \u00b7 ${v.trim() ? `${v.trim().slice(0, 34)}${v.trim().length > 34 ? "\u2026" : ""}` : "empty"}`}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[10px] leading-snug text-slate-500">
+                      {savedPrompts[targetSlot]?.trim()
+                        ? "This slot has a prompt \u2014 it will be rewritten, using the fields below as direction."
+                        : "This slot is empty \u2014 a new prompt will be written into it from the fields below."}
+                    </p>
                   </div>
 
                   {/* Names */}
@@ -7221,29 +7270,23 @@ function TextDropdown({
                     {generating ? "Generating…" : cooldownEnd ? `Wait ${cooldownLeft}s` : "Generate Prompt"}
                   </button>
 
-                  {/* Output */}
+                  {/*
+                   * No output panel any more: the result is in the slot, which
+                   * is on screen to the right and editable there. A second copy
+                   * here was a thing to reconcile, not a thing to read.
+                   */}
                   {generatedPrompt && (
-                    <div className="space-y-1.5">
-                      <textarea
-                        value={generatedPrompt}
-                        onChange={(e) => setGeneratedPrompt(e.target.value)}
-                        rows={4}
-                        className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-white/30 resize-none leading-relaxed"
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          onClick={handleCopyGenerated}
-                          className="flex-1 py-1 rounded-md border border-white/10 bg-white/5 text-[11px] text-slate-300 hover:text-white hover:bg-white/10 transition-all"
-                        >
-                          {copiedGen ? "Copied!" : "Copy"}
-                        </button>
-                        <button
-                          onClick={handleUseGenerated}
-                          className="flex-1 py-1 rounded-md bg-white/10 hover:bg-white/15 text-[11px] text-white font-medium transition-all"
-                        >
-                          Use →
-                        </button>
-                      </div>
+                    <div className="flex items-center gap-2 rounded-md border border-emerald-500/25 bg-emerald-500/[0.07] px-2 py-1.5">
+                      <Check size={11} className="shrink-0 text-emerald-400" />
+                      <span className="text-[10px] leading-snug text-emerald-100/80">
+                        Written into slot {targetSlot + 1}.
+                      </span>
+                      <button
+                        onClick={handleUseGenerated}
+                        className="ml-auto shrink-0 rounded px-2 py-0.5 text-[10px] font-medium text-emerald-100 hover:bg-emerald-500/20 transition-colors"
+                      >
+                        Use now →
+                      </button>
                     </div>
                   )}
                 </>

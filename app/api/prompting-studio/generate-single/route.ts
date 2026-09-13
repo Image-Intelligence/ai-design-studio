@@ -9,6 +9,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
 import { enforceContentFilter } from '@/lib/content-filter';
+import { resolvePromptModel } from '@/lib/prompt-models';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -23,8 +24,17 @@ export async function POST(req: NextRequest) {
     // `subject` is the field; `celebrity` accepted as a legacy alias from old clients
     const subject: string = String(body.subject ?? body.celebrity ?? '').trim();
     const { baseStyle, promptModel } = body;
+    /*
+     * The prompt already in the target slot, if any.
+     *
+     * Present means REWRITE: the slot's text is the thing being changed and
+     * the inputs are direction for how to change it. Absent means COMPOSE from
+     * the inputs alone. One route, because the difference is a prompt, not a
+     * pipeline.
+     */
+    const existing: string = String(body.existing ?? '').trim();
 
-    if (!subject) {
+    if (!subject && !existing) {
       return NextResponse.json({ error: 'Subject or character name required' }, { status: 400 });
     }
 
@@ -35,17 +45,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: cf.reason }, { status: 400 });
     }
 
-    // Map UI model names to actual Gemini API model names
-    const modelNameMap: Record<string, string> = {
-      'gemini-3-flash': 'gemini-3-flash-preview',
-      'gemini-3-pro': 'gemini-3-pro-preview',
-      'gemini-2.0-flash-exp': 'gemini-2.5-flash', // Fallback to stable 2.5
-      'gemini-exp-1206': 'gemini-2.5-pro' // Fallback to stable 2.5
-    };
-    const selectedModel = promptModel || 'gemini-3-flash';
-    const actualModelName = modelNameMap[selectedModel] || 'gemini-3-flash-preview';
+    /*
+     * The id IS the API's id now.
+     *
+     * There used to be a translation table here mapping four UI names onto
+     * Gemini names, two of which pointed at models that no longer exist and
+     * silently resolved to 2.5 — so picking them changed nothing and reported
+     * nothing. lib/prompt-models.ts is enumerated from the live ListModels
+     * endpoint, and anything not in it falls back explicitly.
+     */
+    const actualModelName = resolvePromptModel(promptModel);
 
-    const systemPrompt = `You are an expert AI image prompt engineer. Generate ONE optimized prompt for the fictional character or subject "${subject}" with the following requirements:
+    const rewritePrompt = `You are an expert AI image prompt engineer. Below is an EXISTING image prompt, and a note on how the user wants it changed. Rewrite the prompt so it incorporates the direction.
+
+EXISTING PROMPT:
+${existing}
+
+DIRECTION FROM THE USER:
+${[subject && `Subject / characters: ${subject}`, baseStyle && `Style and treatment: ${baseStyle}`].filter(Boolean).join('\n') || 'Improve it: sharper, more specific, better image-model tokens.'}
+
+CRITICAL RULES:
+1. This is a REWRITE. Keep what the existing prompt already establishes unless the direction changes it — you are editing, not starting over.
+2. Treat any named person as a FICTIONAL character or original creation — never reference a real person, actor or celebrity.
+3. Keep the high-quality tokens (photorealistic, 4k, detailed) and add any that are missing.
+4. Keep it under 120 words.
+5. NO explicit content.
+
+Respond with ONLY the rewritten prompt text, no commentary, no preamble, no quotes.`;
+
+    const composePrompt = `You are an expert AI image prompt engineer. Generate ONE optimized prompt for the fictional character or subject "${subject}" with the following requirements:
 
 CRITICAL RULES:
 1. The subject must be treated as a FICTIONAL character or original creation — never reference any real person, actor, or celebrity
@@ -56,6 +84,8 @@ CRITICAL RULES:
 6. NO explicit content — focus on artistic/professional qualities
 
 Respond with ONLY the prompt text, no other commentary or formatting.`;
+
+    const systemPrompt = existing ? rewritePrompt : composePrompt;
 
     const aiModel = genAI.getGenerativeModel({
       model: actualModelName,
