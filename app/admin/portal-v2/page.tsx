@@ -3500,6 +3500,27 @@ const adminPasswordHeaders = (): Record<string, string> => {
   return pass ? { "x-admin-password": pass } : {}
 }
 
+/**
+ * A media URL the BROWSER can actually load.
+ *
+ * Private media is only fetchable with a signature, and the signature is added
+ * by the server on the way out of an API route. A URL that reached the client
+ * any OTHER way %s stored inside a layer stack, handed back by an upload,
+ * carried on a chat record %s is a plain bucket URL, and the browser gets a
+ * bare 401 with no explanation.
+ *
+ * The proxy fetches it server-side, where instrumentation.ts signs our own
+ * bucket automatically, and returns it same-origin. That second part matters
+ * independently: a same-origin response cannot taint a canvas, so anything
+ * loaded this way stays exportable by the editor.
+ *
+ * Signed URLs pass through it unharmed, so it is always safe to reach for.
+ */
+function mediaSrc(u: string | null | undefined): string {
+  if (!u) return ""
+  return u.startsWith("http") ? `/api/admin/image-proxy?url=${encodeURIComponent(u)}` : u
+}
+
 const isVideoUrl = (url: string) => /\.(mp4|webm|mov|avi|mkv)($|\?|#)/i.test(url)
 
 /**
@@ -11617,8 +11638,9 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
     for (const l of stack?.layers ?? []) for (const it of l.items) {
       if (layerImgCache.current.has(it.url)) continue
       const im = new window.Image()
-      im.crossOrigin = 'anonymous'
-      im.src = it.url
+      // No crossOrigin: mediaSrc returns a same-origin proxy URL, which
+      // cannot taint the canvas and needs no CORS negotiation.
+      im.src = mediaSrc(it.url)
       layerImgCache.current.set(it.url, im)
     }
   }, [stack])
@@ -12057,7 +12079,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
         im.crossOrigin = 'anonymous'
         im.onload = () => ok(im)
         im.onerror = () => err(new Error('Could not load the layer image'))
-        im.src = item.url
+        im.src = mediaSrc(item.url)
       })
       const natW = img.naturalWidth || 1, natH = img.naturalHeight || 1
       // Cap working resolution so the PNG re-upload fits the route limit
@@ -14363,7 +14385,7 @@ function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, la
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   key={`${l.id}-${it.id}`}
-                  src={it.url}
+                  src={mediaSrc(it.url)}
                   alt=""
                   onLoad={e => { layerImgSizes.current[it.url] = { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight } }}
                   className={`absolute pointer-events-none ${hasRect ? '' : 'inset-0 w-full h-full object-contain'}`}
@@ -25449,7 +25471,7 @@ export default function PortalV2Page() {
       im.crossOrigin = 'anonymous'
       im.onload = () => res(im.naturalWidth ? { w: im.naturalWidth, h: im.naturalHeight } : null)
       im.onerror = () => res(null)
-      im.src = u
+      im.src = mediaSrc(u)
     })
     void Promise.all([loadDims(rec!.image_url!), ...overlays.map(o => loadDims(o.image_url))]).then(([base, ...ovDims]) => {
       if (!base) { setChatMediaLayers(null); setChatMediaItem(item); return }
