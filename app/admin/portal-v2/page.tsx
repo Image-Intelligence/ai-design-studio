@@ -30209,6 +30209,7 @@ function employeePending(
           isAdmin={isAdminAccount}
           signedIn={user !== null}
           imageGroups={IMAGE_MODEL_GROUPS}
+          imageSections={IMAGE_MODEL_SECTIONS}
           adminImageGroups={ADMIN_IMAGE_MODEL_GROUPS}
           videoGroups={VIDEO_MODEL_GROUPS}
           adminVideoGroups={ADMIN_VIDEO_MODEL_GROUPS}
@@ -30218,6 +30219,9 @@ function employeePending(
           onSelectImageModel={handleSelectImageModel}
           onSelectVideoModel={handleSelectVideoModel}
           onGoChat={() => setScannerMode("chat")}
+          onGoEmployee={(id) => { setActiveEmployee(id); setScannerMode("employees") }}
+          onGoThreeD={() => setScannerMode("threed")}
+          onOpenFrames={() => setFramesOpen(true)}
           onCardMediaChange={handleCardMediaChange}
         />
       ) : scannerMode === "chat" && isAdminAccount ? (

@@ -1,17 +1,24 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { Image as ImageIcon, Video, FolderOpen, Shield } from "lucide-react"
+import { Image as ImageIcon, Video, FolderOpen, Shield, Wand2, Boxes, Film, Users } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
-import { NewsStreamCard } from "./NewsStreamCard"
 import { GenerationsCarousel } from "./GenerationsCarousel"
 
 // Model group shape (matches IMAGE_MODEL_GROUPS / VIDEO_MODEL_GROUPS in portal-v2).
 export type ModelGroup = { label: string; type: string; accent: string; dot: string; items: string[] }
+/**
+ * A tool-first section, subdivided by maker (matches IMAGE_MODEL_SECTIONS).
+ *
+ * Upscalers live here rather than in the company list, so a home page that
+ * only read `imageGroups` never showed them at all — which is why SeedVR2 was
+ * missing from this page after it went public.
+ */
+export type ModelSection = { label: string; note?: string; groups: ModelGroup[] }
 
 // Home-page card order (overrides the group order). Listed models come first in this
 // exact order; any model not listed follows in its original order.
-const HOME_IMAGE_ORDER = ["NanoBanana Pro 2", "ChatGPT Images 2.0", "Kling O3", "SeeDream 5.0 Pro", "Recraft v4.1", "SeeDream 4.5", "Wan 2.7 Pro", "SeeDream 5.0 Lite"]
+const HOME_IMAGE_ORDER = ["NanoBanana Pro 2", "ChatGPT Images 2.5", "ChatGPT Images 2.0", "Kling O3", "SeeDream 5.0 Pro", "Recraft v4.1", "SeeDream 4.5", "Wan 2.7 Pro", "SeeDream 5.0 Lite"]
 const HOME_VIDEO_ORDER = ["SeeDance 2.0", "Kling 3.0", "Wan 2.5", "Happy Horse", "Kling V3 Motion", "SeeDance 1.5", "SeeDance 2.0 Fast", "Lipsync v3"]
 
 function reorder<T extends { name: string }>(models: T[], order: string[]): T[] {
@@ -22,14 +29,24 @@ function reorder<T extends { name: string }>(models: T[], order: string[]): T[] 
 
 function Section({ icon, title, subtitle, children }: { icon?: ReactNode; title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <section className="mb-8">
+    <section className="mb-7 sm:mb-8">
       <div className="flex items-center gap-2 mb-3">
         {icon && <span className="text-slate-300">{icon}</span>}
         <h2 className="text-base font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">{title}</h2>
-        {subtitle && <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-600">{subtitle}</span>}
+        {subtitle && <span className="hidden sm:inline text-[9px] font-mono uppercase tracking-[0.18em] text-slate-600">{subtitle}</span>}
       </div>
       {children}
     </section>
+  )
+}
+
+/** A quieter heading for a group inside a section (Generate / Upscale). */
+function SubHead({ label, note }: { label: string; note?: string }) {
+  return (
+    <div className="flex items-center gap-1.5 mb-2">
+      <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">{label}</span>
+      {note && <span className="text-[9px] text-slate-600">· {note}</span>}
+    </div>
   )
 }
 
@@ -43,10 +60,11 @@ function ModelRow({ models, kind, cards, isAdmin, costByName, onSelect, onCardMe
   onSelect: (name: string) => void
   onCardMediaChange: (key: string, media: CardMedia | null) => void
 }) {
+  if (models.length === 0) return null
   return (
     <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 snap-x [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
       {models.map(m => (
-        <div key={`${kind}:${m.name}`} className="w-44 sm:w-52 shrink-0 snap-start">
+        <div key={`${kind}:${m.name}`} className="w-40 sm:w-52 shrink-0 snap-start">
           <HomeMediaCard
             cardKey={`${kind}:${m.name}`}
             title={m.name}
@@ -64,10 +82,44 @@ function ModelRow({ models, kind, cards, isAdmin, costByName, onSelect, onCardMe
   )
 }
 
+/**
+ * A studio: a whole workspace rather than a single model.
+ *
+ * Deliberately not a HomeMediaCard. Those are media-led and admin-uploadable,
+ * which suits "pick a model"; a studio is picked for what it DOES, so it reads
+ * as an icon, a name and a line about the job.
+ */
+function StudioCard({ icon, title, blurb, accent, onClick }: {
+  icon: ReactNode
+  title: string
+  blurb: string
+  accent: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`group relative w-full overflow-hidden rounded-2xl border bg-white/[0.02] p-3 text-left transition-all hover:bg-white/[0.05] ${accent}`}
+    >
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 shrink-0">{icon}</span>
+        <span className="min-w-0">
+          <span className="block text-[13px] font-bold leading-tight text-white">{title}</span>
+          {/* Two lines on a phone, three once there is room: the blurb is the
+              thing that tells you which studio you want, so it should not be
+              cut to a single line on small screens. */}
+          <span className="mt-0.5 block text-[10px] leading-snug text-slate-400 line-clamp-2 sm:line-clamp-3">{blurb}</span>
+        </span>
+      </div>
+    </button>
+  )
+}
+
 export function HomeView({
   isAdmin,
   signedIn,
   imageGroups,
+  imageSections = [],
   adminImageGroups = [],
   videoGroups,
   adminVideoGroups = [],
@@ -77,11 +129,15 @@ export function HomeView({
   onSelectImageModel,
   onSelectVideoModel,
   onGoChat,
+  onGoEmployee,
+  onGoThreeD,
+  onOpenFrames,
   onCardMediaChange,
 }: {
   isAdmin: boolean
   signedIn: boolean
   imageGroups: ModelGroup[]
+  imageSections?: ModelSection[]
   adminImageGroups?: ModelGroup[]
   videoGroups: ModelGroup[]
   adminVideoGroups?: ModelGroup[]
@@ -91,6 +147,9 @@ export function HomeView({
   onSelectImageModel: (name: string) => void
   onSelectVideoModel: (name: string) => void
   onGoChat: () => void
+  onGoEmployee: (id: "movie-studio" | "face-swap" | "character-design") => void
+  onGoThreeD: () => void
+  onOpenFrames: () => void
   onCardMediaChange: (key: string, media: CardMedia | null) => void
 }) {
   const flatten = (groups: ModelGroup[]) =>
@@ -99,6 +158,7 @@ export function HomeView({
   // Public sections show only the non-admin models; admin-only models live in the
   // Admin section at the bottom (visible/interactable to admins only).
   const imageModels = reorder(flatten(imageGroups), HOME_IMAGE_ORDER)
+  const upscaleModels = imageSections.flatMap(sec => flatten(sec.groups))
   const videoModels = reorder(flatten(videoGroups), HOME_VIDEO_ORDER)
   const adminImageModels = flatten(adminImageGroups)
   const adminVideoModels = flatten(adminVideoGroups)
@@ -106,7 +166,7 @@ export function HomeView({
   return (
     <div className="max-w-6xl mx-auto px-4 py-6 pb-32">
       {/* SHOP — top of the page, no header, just the two cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-7 sm:mb-8">
         <HomeMediaCard
           cardKey="shop:tickets"
           title="Buy Tickets"
@@ -133,9 +193,75 @@ export function HomeView({
         />
       </div>
 
-      {/* IMAGE — one continuous horizontal-scroll row */}
+      {/*
+        STUDIOS — whole workspaces, not single models.
+
+        Admin-gated to match the app: portal-v2 sends non-admins straight back
+        out of the employees and 3D modes, and the frames tool is admin-only,
+        so showing these to everyone would be five cards that bounce you.
+
+        The grid is deliberately not just `sm:grid-cols-2 lg:grid-cols-3`: a
+        phone held sideways is wide but SHORT, and one-column cards there push
+        everything else below the fold. `landscape:grid-cols-2` gives it two
+        columns as soon as the phone turns, independent of width.
+      */}
+      {isAdmin && (
+        <Section icon={<Wand2 size={17} />} title="Studios" subtitle="Guided workspaces">
+          <div className="grid grid-cols-1 landscape:grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 sm:gap-3">
+            <StudioCard
+              icon={<Film size={16} className="text-fuchsia-400" />}
+              title="Movie Studio"
+              blurb="Characters and a story in, a cut and scored film out."
+              accent="border-fuchsia-500/25 hover:border-fuchsia-400/50"
+              onClick={() => onGoEmployee("movie-studio")}
+            />
+            <StudioCard
+              icon={<Users size={16} className="text-violet-400" />}
+              title="Character Design"
+              blurb="Lock one character down: canon description, turnarounds, expressions, wardrobe."
+              accent="border-violet-500/25 hover:border-violet-400/50"
+              onClick={() => onGoEmployee("character-design")}
+            />
+            <StudioCard
+              icon={<Users size={16} className="text-cyan-400" />}
+              title="Face Swap"
+              blurb="One face, one body. No prompt, no settings."
+              accent="border-cyan-500/25 hover:border-cyan-400/50"
+              onClick={() => onGoEmployee("face-swap")}
+            />
+            <StudioCard
+              icon={<Boxes size={16} className="text-emerald-400" />}
+              title="3D Studio"
+              blurb="Meshes, scenes and rigs from the fal 3D suite."
+              accent="border-emerald-500/25 hover:border-emerald-400/50"
+              onClick={onGoThreeD}
+            />
+            <StudioCard
+              icon={<Film size={16} className="text-red-400" />}
+              title="Frames"
+              blurb="Pull stills and clips out of a video, auto-ranked by sharpness."
+              accent="border-red-500/25 hover:border-red-400/50"
+              onClick={onOpenFrames}
+            />
+          </div>
+        </Section>
+      )}
+
+      {/*
+        IMAGE — generating models and upscalers are different jobs, so they get
+        their own rows. Upscalers were invisible on this page entirely: they
+        live in a tool-first section rather than the company list, and this page
+        only ever read the company list.
+      */}
       <Section icon={<ImageIcon size={17} />} title="Image Models" subtitle="Scroll · tap a model to start">
+        <SubHead label="Generate" note="text to image" />
         <ModelRow models={imageModels} kind="image" cards={cards} isAdmin={isAdmin} costByName={imageCostByName} onSelect={onSelectImageModel} onCardMediaChange={onCardMediaChange} />
+        {upscaleModels.length > 0 && (
+          <div className="mt-4">
+            <SubHead label="Upscale" note="enhance & enlarge" />
+            <ModelRow models={upscaleModels} kind="image" cards={cards} isAdmin={isAdmin} costByName={imageCostByName} onSelect={onSelectImageModel} onCardMediaChange={onCardMediaChange} />
+          </div>
+        )}
       </Section>
 
       {/* VIDEO — one continuous horizontal-scroll row */}
@@ -143,12 +269,9 @@ export function HomeView({
         <ModelRow models={videoModels} kind="video" cards={cards} isAdmin={isAdmin} costByName={videoCostByName} onSelect={onSelectVideoModel} onCardMediaChange={onCardMediaChange} />
       </Section>
 
-      {/* LIBRARY + NEWS */}
-      <Section icon={<FolderOpen size={17} />} title="Your Library &amp; News">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <GenerationsCarousel signedIn={signedIn} className="lg:col-span-1" />
-          <NewsStreamCard className="lg:col-span-2" />
-        </div>
+      {/* LIBRARY — full width now that the news card is gone */}
+      <Section icon={<FolderOpen size={17} />} title="Your Library">
+        <GenerationsCarousel signedIn={signedIn} />
       </Section>
 
       {/* ADMIN — visible & interactable to admins only */}
