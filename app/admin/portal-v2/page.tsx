@@ -7617,10 +7617,25 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
         //    and the next tile got placed on top of them)
         //  • degenerate (<24px) boxes → never meaningful
         if (arEl && (arEl.dataset.arReady === "0" || !arEl.dataset.natAr)) continue
-        const h = e.contentRect.height
-        const w = e.contentRect.width
+        /*
+         * THE BORDER BOX, not the content box.
+         *
+         * contentRect excludes padding and border, so any tile with a rim
+         * measured shorter than the room it really takes — and the next tile
+         * was placed that much too high, eating the gap between them. The
+         * layout positions elements by their outer size, so that is the number
+         * it has to be given.
+         *
+         * borderBoxSize is the direct reading; offsetHeight is the fallback
+         * for anything that does not report it, and is also outer-size.
+         */
+        const h = e.borderBoxSize?.[0]?.blockSize
+          ?? (e.target as HTMLElement).offsetHeight
+          ?? e.contentRect.height
+        const w = e.borderBoxSize?.[0]?.inlineSize
+          ?? (e.target as HTMLElement).offsetWidth
+          ?? e.contentRect.width
         if (h < 24) continue
-        // Height is trusted from here — it includes chrome (border rim padding)
         const prev = heightsRef.current.get(k)
         if (prev === undefined || Math.abs(prev - h) > 1) { heightsRef.current.set(k, h); changed = true }
         // Box-shape inference remains ONLY for tiles without media (error
@@ -7715,7 +7730,10 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
     // ratio at its rendered width. (They used to be cropped to a uniform
     // 1:1-card height — masonry needs no uniform heights, and that crop both
     // hid image content and forced an extreme box ratio.)
-    const h = Math.max(heightsRef.current.get(key) ?? 0, w / ratio)
+    // Estimate from the width the element is ACTUALLY given (p.w below is
+    // rounded), not the fractional column width: rounding up made the real
+    // tile a fraction taller than the space reserved for it.
+    const h = Math.max(heightsRef.current.get(key) ?? 0, Math.round(w) / ratio)
     // Single tiles: fill the topmost hole they fit into first
     if (span === 1 && gaps.length > 0) {
       let gi = -1
