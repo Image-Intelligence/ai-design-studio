@@ -1179,8 +1179,8 @@ const IMAGE_MODEL_SECTIONS = [
   {
     label: "Upscalers",
     note: "enhance & enlarge",
-    accent: "border-cyan-500/25 bg-cyan-500/[0.04]",
-    dot: "bg-cyan-400",
+    // No accent: a section is a heading, not a differently-coloured box.
+    dot: "bg-slate-500",
     groups: [
       { label: "ByteDance", type: "1-10× · detail recovery", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeedVR2 Upscale"] },
     ],
@@ -2105,13 +2105,17 @@ function ModelMenuPanel({
               const subs = filterGroups(sec.groups)
               if (subs.length === 0) return null
               return (
-                <div key={sec.label} className={`col-span-2 mt-0.5 rounded-lg border overflow-hidden ${sec.accent ?? "border-white/10 bg-white/[0.02]"}`}>
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-white/[0.07]">
-                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sec.dot ?? "bg-slate-400"}`} />
-                    <span className="text-[9px] font-bold tracking-widest uppercase text-slate-300">{sec.label}</span>
-                    {sec.note && <span className="text-[8px] text-slate-600">· {sec.note}</span>}
+                <div key={sec.label} className="col-span-2">
+                  {/* Same header the companies get — this is a heading in the
+                      list, not a block bolted onto the side of it. */}
+                  <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sec.dot ?? "bg-slate-500"}`} />
+                    <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sec.label}</span>
+                    {sec.note && <span className="text-[8px] text-slate-600 leading-none truncate">· {sec.note}</span>}
                   </div>
-                  <div className="p-2">
+                  {/* One indent, one hairline: enough to read as nested under
+                      the heading without becoming a panel of its own. */}
+                  <div className="ml-[3px] pl-2 border-l border-white/[0.06]">
                     <div className="flex gap-2 items-start">
                       {splitColumns(subs).map((col, ci) => (
                         <div key={ci} className="flex-1 min-w-0 space-y-2">
