@@ -2593,6 +2593,21 @@ function mediaPathKey(urlOrKey: string): string {
   try { return new URL(urlOrKey).pathname.replace(/^\/+/, "") } catch { return urlOrKey.replace(/^\/+/, "") }
 }
 
+/**
+ * Do these two tiles stand for the same generation?
+ *
+ * A job is known by its queue row id (queueId when it was submitted straight
+ * to fal, queueJobId when it waited for capacity — both are the same
+ * GenerationQueue.id) and by its fal request id once it has one. Any overlap
+ * means one job, and one job is one tile.
+ */
+function sameJob(a: PendingSlot, b: PendingSlot): boolean {
+  const ids = (s: PendingSlot) => [s.queueId, s.queueJobId].filter((v): v is number => v != null)
+  const aIds = ids(a), bIds = ids(b)
+  if (aIds.some(id => bIds.includes(id))) return true
+  return !!a.nb2RequestId && a.nb2RequestId === b.nb2RequestId
+}
+
 function slotHeldKeys(slots: PendingSlot[]): { ids: Set<number>; urls: Set<string>; keys: Set<string> } {
   const ids = new Set<number>()
   const urls = new Set<string>()
@@ -26406,7 +26421,17 @@ export default function PortalV2Page() {
   const handleAddPending    = useCallback((slot: PendingSlot) =>
     setPendingSlots(p => {
       if (p.some(s => s.slotId === slot.slotId)) return p
-      if (slot.nb2RequestId && p.some(s => s.nb2RequestId === slot.nb2RequestId)) return p
+      /*
+       * Already on screen under another slot id?
+       *
+       * The cross-device pass adopts anything it does not recognise as
+       * tracked, building `batch-<id>` for a queued row and `db-<id>-<req>`
+       * for a promoted one. Its own guards read a snapshot of the slot list
+       * and can miss — a slot added moments earlier in the same tick, a race
+       * between the submit returning its queue id and the next poll. This is
+       * the backstop, at the one door every tile comes through.
+       */
+      if (p.some(s => sameJob(slot, s))) return p
       return [{ ...slot, queuedAtMs: slot.queuedAtMs ?? Date.now() }, ...p]
     }), [])
   // Slots whose failure has ALREADY produced an error card + server record —
@@ -29011,10 +29036,14 @@ export default function PortalV2Page() {
           // may not be in the database yet, and they are what the pollers and
           // the 10s reconciliation pass reattach to.
           const cutoff = Date.now() - 3 * 3600 * 1000
-          const slots = (JSON.parse(stored) as PendingSlot[])
+          const restored = (JSON.parse(stored) as PendingSlot[])
             .filter(s => s.status !== "done")
             .filter(s => s.queueId != null || s.queueJobId != null || !!s.nb2RequestId)
             .filter(s => s.queuedAtMs != null && s.queuedAtMs > cutoff)
+          // setPendingSlots here bypasses handleAddPending, so it has to keep
+          // the same invariant itself: a stored list written while a duplicate
+          // was on screen would otherwise restore the duplicate too.
+          const slots = restored.filter((s, i) => !restored.slice(0, i).some(prev => sameJob(s, prev)))
           setPendingSlots(slots)
           try { localStorage.setItem("pv2-pending-slots", JSON.stringify(slots)) } catch {}
         }
