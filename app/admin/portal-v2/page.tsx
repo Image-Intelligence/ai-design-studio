@@ -19012,6 +19012,9 @@ function PromptBox({
       .catch(() => setWanT2iRuns([]))
   }, [model.id, wanT2iRuns])
   const [loraUploading, setLoraUploading] = useState(false)
+  // Why an upload was refused. A silent console.error told the user nothing;
+  // "it just doesn't work" is exactly what that produces.
+  const [loraError, setLoraError] = useState<string | null>(null)
   const loraFileInputRef = useRef<HTMLInputElement>(null)
   const loraPickerRef = useRef<HTMLDivElement>(null)
   // Upscaler state
@@ -20563,6 +20566,52 @@ function PromptBox({
     tabSwitchRef.current = false
   }, [model])
 
+  /**
+   * Is this .safetensors file complete, and how big should it be?
+   *
+   * Reads the header only. The format is 8 bytes of little-endian header
+   * length, that many bytes of JSON, then the tensor data — and every tensor
+   * in the header carries its byte range, so the largest end offset is exactly
+   * how long the file should be.
+   *
+   * Worth doing because iOS leaves a partly-downloaded file as
+   * `<name>.safetensors.download` and nothing about a 70 MB file tells you
+   * whether that is the whole thing. Only called for files named
+   * .safetensors, so an unreadable header is a verdict, not an unknown —
+   * .ckpt/.pt/.bin are allowed through without this check.
+   */
+  async function inspectSafetensors(file: File): Promise<{ expected: number; complete: boolean } | null> {
+    try {
+      const head = new DataView(await file.slice(0, 8).arrayBuffer())
+      if (head.byteLength < 8) return { expected: 0, complete: false }
+      // getBigUint64 little-endian; a sane header is well under 100 MB.
+      const headerLen = Number(head.getBigUint64(0, true))
+      /*
+       * An implausible header length means this is not a safetensors at all.
+       * The caller only asks about files NAMED .safetensors, so that is a
+       * failure, not an unknown: it is how an HTML error page saved under the
+       * right extension gets caught before it is uploaded.
+       */
+      if (!Number.isFinite(headerLen) || headerLen <= 0 || headerLen > 100_000_000) {
+        return { expected: 0, complete: false }
+      }
+      if (file.size < 8 + headerLen) return { expected: 8 + headerLen, complete: false }
+
+      const json = JSON.parse(new TextDecoder().decode(await file.slice(8, 8 + headerLen).arrayBuffer()))
+      let end = 0
+      for (const [k, v] of Object.entries(json as Record<string, any>)) {
+        if (k === "__metadata__") continue
+        const offs = v?.data_offsets
+        if (Array.isArray(offs) && typeof offs[1] === "number") end = Math.max(end, offs[1])
+      }
+      const expected = 8 + headerLen + end
+      return { expected, complete: file.size >= expected }
+    } catch {
+      // An unreadable header means it is not a whole safetensors.
+      return { expected: 0, complete: false }
+    }
+  }
+
   const CUSTOM_LORAS_KEY = "portal-v2-custom-loras"
 
   function loadCustomLoras(): Array<{ id: number; name: string; loraUrl: string; custom: true }> {
@@ -22111,7 +22160,28 @@ function PromptBox({
                                 const file = e.target.files?.[0]
                                 if (!file) return
                                 setLoraUploading(true)
+                                setLoraError(null)
                                 try {
+                                  /*
+                                   * Verify before spending the upload.
+                                   *
+                                   * A truncated file uploads perfectly happily
+                                   * and then fails at generation, where the
+                                   * error says nothing useful. The header knows
+                                   * how long the file should be, so ask it.
+                                   */
+                                  if (/\.safetensors(\.download)?$/i.test(file.name)) {
+                                    const info = await inspectSafetensors(file)
+                                    if (info && !info.complete) {
+                                      const mb = (n: number) => `${(n / 1_048_576).toFixed(1)} MB`
+                                      setLoraError(info.expected
+                                        ? `This file is incomplete \u2014 it is ${mb(file.size)} and should be ${mb(info.expected)}. Download it again.`
+                                        : "This file is not a readable .safetensors \u2014 the download did not finish.")
+                                      setLoraUploading(false)
+                                      e.target.value = ''
+                                      return
+                                    }
+                                  }
                                   /*
                                    * Step 1: a presigned R2 PUT (bypasses the
                                    * 4.5 MB body limit).
@@ -22151,6 +22221,7 @@ function PromptBox({
                                   if (!newLoraName) setNewLoraName(cleanName.replace(/\.[^.]+$/, ''))
                                 } catch (err) {
                                   console.error('[lora-upload]', err)
+                                  setLoraError(err instanceof Error ? err.message : 'Upload failed')
                                 }
                                 setLoraUploading(false)
                                 e.target.value = ''
@@ -22163,6 +22234,12 @@ function PromptBox({
                             >
                               {loraUploading ? "Uploading…" : "Upload .safetensors"}
                             </button>
+                            {/* The reason, where the button is. An upload that
+                                refuses itself silently is indistinguishable
+                                from one that is broken. */}
+                            {loraError && (
+                              <p className="mt-1 text-[10px] leading-snug text-red-300">{loraError}</p>
+                            )}
                             <div className="flex gap-1.5 pt-0.5">
                               <button
                                 onClick={async () => {
