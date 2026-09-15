@@ -103,6 +103,7 @@ export async function POST(request: Request) {
       loraScale = 1.0,    // LoRA strength (0-2)
       loraGuidanceScale,  // Guidance / CFG scale override
       loraSteps,          // Inference steps override
+      acceleration: accelerationRaw,  // fal speed/fidelity trade-off
       // Clarity Upscaler params
       upscaleImageUrl,
       upscaleFactor = 2,
@@ -247,6 +248,15 @@ export async function POST(request: Request) {
      * tickets, 17 with a LoRA, against 2 for the same picture at "2k").
      * Priced as what it can actually make.
      */
+    /*
+     * none | regular | high, on the models whose endpoints take it. Anything
+     * else is dropped rather than passed through: an unknown value is a 422
+     * from fal, and the per-model default is a better answer than an error.
+     */
+    const acceleration = ['none', 'regular', 'high'].includes(accelerationRaw)
+      ? accelerationRaw as 'none' | 'regular' | 'high'
+      : undefined
+
     const Z_IMAGE_MAX_SIDE = 2048
     const isZImage = model === 'z-image-base' || model === 'z-image-turbo'
     const quality = isZImage && qualityRaw === '4k' ? '2k' : qualityRaw
@@ -1005,6 +1015,7 @@ export async function POST(request: Request) {
           inputParams.num_images = 1
           inputParams.output_format = 'png'
           inputParams.enable_safety_checker = false
+          if (acceleration) inputParams.acceleration = acceleration
           inputParams.guidance_scale = loraUrl && loraGuidanceScale ? loraGuidanceScale : 2.5
           inputParams.num_inference_steps = loraUrl && loraSteps ? loraSteps : 28
           if (loraUrl) {
@@ -1027,7 +1038,7 @@ export async function POST(request: Request) {
           inputParams.num_images = 1
           inputParams.enable_safety_checker = fluxDevSafetyChecker === true
           inputParams.output_format = 'png'
-          inputParams.acceleration = loraUrl ? 'none' : 'regular'
+          inputParams.acceleration = acceleration ?? (loraUrl ? 'none' : 'regular')
           if (loraUrl) {
             modelEndpoint = 'fal-ai/flux-lora'
             inputParams.loras = [{ path: falLoraPath, scale: loraScale ?? 1.0 }]
@@ -1056,7 +1067,7 @@ export async function POST(request: Request) {
           const round16 = (n: number) => Math.max(256, Math.round(n * fit / 16) * 16)
           inputParams.image_size = { width: round16(want.w), height: round16(want.h) }
           inputParams.enable_safety_checker = false
-          inputParams.acceleration = 'regular'
+          inputParams.acceleration = acceleration ?? 'regular'
           inputParams.output_format = 'png'
           inputParams.num_images = 1
           if (loraUrl) {
@@ -1141,6 +1152,12 @@ export async function POST(request: Request) {
               console.log(`Edit mode: ${imageUrls.length} reference images uploaded`)
             }
           }
+        }
+
+        // The endpoint is settled now, so narrow the setting to what it
+        // accepts: the flux-lora endpoints stop at 'regular'.
+        if (inputParams.acceleration === 'high' && /flux-lora/.test(modelEndpoint)) {
+          inputParams.acceleration = 'regular'
         }
 
         if (syncMode) {

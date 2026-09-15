@@ -106,6 +106,7 @@ interface ImageModelConfig {
   aspectRatios: AspectRatio[]
   supportsQuality: boolean
   qualityOptions?: Quality[]       // custom quality options (defaults to ["2k","4k"])
+  supportsAcceleration?: boolean   // fal's none|regular|high speed/fidelity trade-off
   maxReferenceImages: number
   requiresReferenceImage?: boolean // if true, at least 1 ref image required
   supportsOutputFormat?: boolean   // shows png/jpeg/webp picker
@@ -167,13 +168,13 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "wan-2.7-pro",          apiId: "wan-2.7-pro",              name: "Wan 2.7 Pro",         aspectRatios: ["1:1", "4:3", "16:9", "3:4", "9:16"],                     supportsQuality: false, maxReferenceImages: 4,  isFal: false, maxImages: 4 },
   // ADMIN ONLY — Wan 2.2 A14B text-to-image with custom trained LoRAs
   { id: "wan-2.2-t2i-lora",     apiId: "wan-2.2-t2i-lora",         name: "Wan 2.2 T2I LoRA",    aspectRatios: ["1:1", "4:3", "16:9", "3:4", "9:16"],                     supportsQuality: false, maxReferenceImages: 0,  isFal: false, maxImages: 4 },
-  { id: "flux-1-dev",           apiId: "flux-1-dev",               name: "FLUX 1 Dev",          aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 1, isFal: true, maxImages: 1 },
-  { id: "flux-2",               apiId: "flux-2",                   name: "FLUX 2",              aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, maxReferenceImages: 4,  isFal: true  },
+  { id: "flux-1-dev",           apiId: "flux-1-dev",               name: "FLUX 1 Dev",          aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], supportsAcceleration: true, maxReferenceImages: 1, isFal: true, maxImages: 1 },
+  { id: "flux-2",               apiId: "flux-2",                   name: "FLUX 2",              aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, supportsAcceleration: true, maxReferenceImages: 4,  isFal: true  },
   { id: "pro-scanner-v3",       apiId: "gemini-3-pro-image",       name: "Pro Scanner v3",      aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: false },
   { id: "flash-scanner-v2.5",   apiId: "gemini-2.5-flash-image",   name: "Flash Scanner v2.5",  aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, maxReferenceImages: 4,  isFal: false },
   { id: "gpt-image-2",          apiId: "gpt-image-2",              name: "ChatGPT Images 2.0",  aspectRatios: ["1024x1024", "1024x768", "1024x1536", "1920x1080", "2560x1440", "3840x2160"], supportsQuality: true, qualityOptions: ["low", "medium", "high"], supportsOutputFormat: true, maxReferenceImages: 8, isFal: false, maxImages: 4 },
-  { id: "z-image-base",         apiId: "z-image-base",             name: "Z-Image Base",        aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 0, isFal: true, maxImages: 4 },
-  { id: "z-image-turbo",        apiId: "z-image-turbo",            name: "Z-Image Turbo",       aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
+  { id: "z-image-base",         apiId: "z-image-base",             name: "Z-Image Base",        aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5"], supportsQuality: true, qualityOptions: ["1k", "2k"], supportsAcceleration: true, maxReferenceImages: 0, isFal: true, maxImages: 4 },
+  { id: "z-image-turbo",        apiId: "z-image-turbo",            name: "Z-Image Turbo",       aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5"], supportsQuality: true, qualityOptions: ["1k", "2k"], supportsAcceleration: true, maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "clarity-upscaler",     apiId: "clarity-upscaler",         name: "Clarity Upscaler",    aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true,  isUpscaler: true },
   { id: "aura-sr",              apiId: "aura-sr",                  name: "AuraSR",              aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true,  isUpscaler: true },
   { id: "esrgan",               apiId: "esrgan",                   name: "ESRGAN",              aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true,  isUpscaler: true },
@@ -18886,6 +18887,9 @@ function PromptBox({
   const [loraJobs, setLoraJobs] = useState<Array<{ id: number; name: string; loraUrl: string; custom?: boolean; triggerWord?: string }>>([])
   const [selectedLoraUrl, setSelectedLoraUrl] = useState<string | null>(null)
   const [loraScale, setLoraScale] = useState(1.0)
+  // fal's speed/fidelity trade-off. 'regular' is fal's own default on
+  // z-image and FLUX 2, and what this route has always sent.
+  const [acceleration, setAcceleration] = useState<"none" | "regular" | "high">("regular")
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -20399,7 +20403,7 @@ function PromptBox({
               signal: AbortSignal.timeout(90_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20416,7 +20420,7 @@ function PromptBox({
           signal: AbortSignal.timeout(90_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -20676,6 +20680,11 @@ function PromptBox({
 
   // Fetch completed LoRA jobs when a LoRA-capable model is selected
   const isZImageModel = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
+  // Selecting a LoRA moves FLUX 1 Dev onto an endpoint without 'high'. The
+  // server narrows it anyway; this keeps the button from lying about it.
+  useEffect(() => {
+    if (acceleration === "high" && model.id === "flux-1-dev" && selectedLoraUrl) setAcceleration("regular")
+  }, [acceleration, model.id, selectedLoraUrl])
   useEffect(() => {
     if (!isZImageModel) { setSelectedLoraUrl(null); setLoraJobs([]); return }
     const compatTrainers = LORA_TRAINER_COMPAT[model.id] ?? []
@@ -21437,6 +21446,38 @@ function PromptBox({
           )}
 
           {/* LoRA config row — visible when a LoRA is active */}
+          {model.supportsAcceleration && (
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
+              <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Acceleration</span>
+                <div className="flex rounded-md overflow-hidden border border-white/10 w-fit">
+                  {(["none", "regular", "high"] as const).map(v => {
+                    /*
+                     * FLUX 1 Dev with a LoRA runs on fal-ai/flux-lora, whose
+                     * schema stops at 'regular'. Offering 'high' there would
+                     * be offering a 422.
+                     */
+                    const unavailable = v === "high" && model.id === "flux-1-dev" && !!selectedLoraUrl
+                    if (unavailable) return null
+                    return (
+                      <button key={v} onClick={() => setAcceleration(v)}
+                        className={`px-3 py-1 text-[11px] font-mono transition-colors ${acceleration === v ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                        {v}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <p className="text-[10px] leading-snug text-slate-600">
+                How hard fal optimises the run. <span className="text-slate-500">none</span> is
+                slowest and most faithful, <span className="text-slate-500">high</span> fastest.
+                Worth most on the many-step models {"—"} FLUX 1 Dev runs about 3&times; quicker
+                than <span className="text-slate-500">none</span>, while Turbo is already few-step
+                and barely moves. It changes the picture, even at the same seed.
+              </p>
+            </div>
+          )}
+
           {isZImageModel && selectedLoraUrl && (
             <div className="px-4 py-3 border-t border-violet-500/10 space-y-2">
               <div className="flex items-center justify-between mb-1">
