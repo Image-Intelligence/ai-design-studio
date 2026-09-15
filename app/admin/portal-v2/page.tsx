@@ -19015,6 +19015,9 @@ function PromptBox({
   // Why an upload was refused. A silent console.error told the user nothing;
   // "it just doesn't work" is exactly what that produces.
   const [loraError, setLoraError] = useState<string | null>(null)
+  // Something worth saying that is not a failure, e.g. "this was rewritten
+  // into the layout fal reads".
+  const [loraNote, setLoraNote] = useState<string | null>(null)
   const loraFileInputRef = useRef<HTMLInputElement>(null)
   const loraPickerRef = useRef<HTMLDivElement>(null)
   // Upscaler state
@@ -22240,11 +22243,14 @@ function PromptBox({
                                   })
                                   const vData = await vRes.json().catch(() => ({}))
                                   if (!vRes.ok) throw new Error(vData.error || 'The uploaded file is not usable')
+                                  if (vData.converted) setLoraNote(vData.converted)
 
                                   setNewLoraUrl(presignData.publicUrl)
                                   if (!newLoraName) setNewLoraName(cleanName.replace(/\.[^.]+$/, ''))
                                 } catch (err) {
-                                  console.error('[lora-upload]', err)
+                                  // Shown in the panel, so it is handled - not
+                                  // a console error, which would throw Next's
+                                  // dev overlay over the whole screen.
                                   setLoraError(err instanceof Error ? err.message : 'Upload failed')
                                 }
                                 setLoraUploading(false)
@@ -22263,6 +22269,8 @@ function PromptBox({
                                 from one that is broken. */}
                             {loraError ? (
                               <p className="mt-1 text-[10px] leading-snug text-red-300">{loraError}</p>
+                            ) : loraNote ? (
+                              <p className="mt-1 text-[10px] leading-snug text-emerald-300/80">{loraNote}</p>
                             ) : (
                               /* iOS leaves a finished download named
                                  `.safetensors.download` and greys it out in the
@@ -22318,7 +22326,6 @@ function PromptBox({
                                     setShowAddLora(false)
                                     setLoraPickerOpen(false)
                                   } catch (err) {
-                                    console.error('[lora-save]', err)
                                     setLoraError(err instanceof Error ? err.message : 'Could not save this LoRA')
                                   }
                                   setLoraUploading(false)

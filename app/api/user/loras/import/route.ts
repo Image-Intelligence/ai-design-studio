@@ -5,6 +5,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { uploadToR2 } from '@/lib/r2'
 import { inspectSafetensors } from '@/lib/safetensors'
+import { detectLoraFormat, convertKohyaToPeft } from '@/lib/lora-convert'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -93,6 +94,21 @@ export async function POST(req: NextRequest) {
     }, { status: 400 })
   }
 
+  /*
+   * Trainers disagree about what to call the two LoRA matrices, and fal only
+   * reads one of the two conventions. Handed the other it loads nothing and
+   * returns the base model - the job succeeds, the tickets are spent, and the
+   * only symptom is that the character is absent. Convert on the way in.
+   */
+  let body: Buffer = buf
+  let convertedNote: string | undefined
+  if (detectLoraFormat(buf) === 'kohya') {
+    const conv = convertKohyaToPeft(buf)
+    if (!conv.converted) return jsonPrivate({ error: conv.reason }, { status: 400 })
+    body = conv.buffer
+    convertedNote = `Converted ${conv.modules} modules to the layout fal reads.`
+  }
+
   const fromUrl = (() => {
     try { return decodeURIComponent(new URL(url).pathname.split('/').pop() || '') } catch { return '' }
   })()
@@ -101,7 +117,7 @@ export async function POST(req: NextRequest) {
   // Same prefix the upload writes, so lib/lora-access.ts decides this by
   // the key alone rather than by the row we are about to create.
   const key = `user-loras/${user.id}/${Date.now()}-${safe}`
-  const loraUrl = await uploadToR2(key, buf, 'application/octet-stream')
+  const loraUrl = await uploadToR2(key, body, 'application/octet-stream')
 
   const lora = await prisma.userLora.create({
     data: {
@@ -113,5 +129,5 @@ export async function POST(req: NextRequest) {
     select: { id: true, name: true, loraUrl: true, modelIds: true, createdAt: true },
   })
 
-  return jsonPrivate({ lora, bytes: buf.length })
+  return jsonPrivate({ lora, bytes: body.length, converted: convertedNote })
 }

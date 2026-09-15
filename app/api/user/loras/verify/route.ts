@@ -2,11 +2,13 @@ import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { jsonPrivate } from '@/lib/api-json'
-import { presignGetUrl, deleteFromR2 } from '@/lib/r2'
+import { presignGetUrl, deleteFromR2, uploadToR2 } from '@/lib/r2'
 import { keyFromUrl } from '@/lib/media-url'
 import { inspectSafetensors } from '@/lib/safetensors'
+import { detectLoraFormat, convertKohyaToPeft } from '@/lib/lora-convert'
 
 export const runtime = 'nodejs'
+export const maxDuration = 300
 
 /** The header is at the front, so a megabyte is far more than enough. */
 const HEAD_BYTES = 1024 * 1024
@@ -62,7 +64,29 @@ export async function POST(req: NextRequest) {
   }
 
   const verdict = inspectSafetensors(head, total)
-  if (verdict.complete) return jsonPrivate({ ok: true, bytes: total })
+  if (verdict.complete) {
+    /*
+     * Complete is not the same as usable. A LoRA written in kohya's naming
+     * loads as nothing on fal: no error, no warning, just the base model and
+     * a bill. Rewrite it into the layout fal reads, in place, so that what is
+     * in the library is what will actually work.
+     */
+    if (detectLoraFormat(head) === 'kohya') {
+      if (total > 600 * 1024 * 1024) {
+        return jsonPrivate({ ok: false, error: 'That LoRA is too large to convert (over 600 MB).' }, { status: 400 })
+      }
+      const full = Buffer.from(await (await fetch(await presignGetUrl(key, 600))).arrayBuffer())
+      const conv = convertKohyaToPeft(full)
+      if (!conv.converted) return jsonPrivate({ ok: false, error: conv.reason }, { status: 400 })
+      await uploadToR2(key, conv.buffer, 'application/octet-stream')
+      return jsonPrivate({
+        ok: true,
+        bytes: conv.buffer.length,
+        converted: `Converted ${conv.modules} modules to the layout fal reads.`,
+      })
+    }
+    return jsonPrivate({ ok: true, bytes: total })
+  }
 
   const mb = (n: number) => `${(n / 1_048_576).toFixed(1)} MB`
   // An incomplete file has a measurable shortfall; say it, because it is the
