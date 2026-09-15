@@ -21490,6 +21490,12 @@ function PromptBox({
 
           {isZImageModel && selectedLoraUrl && (
             <div className="px-4 py-3 border-t border-violet-500/10 space-y-2">
+              {model.id === "z-image-base" && (
+                <p className="text-[10px] leading-snug text-amber-300/90 mb-1">
+                  Z-Image Base cannot load LoRAs right now: fal&apos;s base/lora endpoint fails on every
+                  LoRA, including ones fal trained itself. Switch to Z-Image Turbo to use this LoRA.
+                </p>
+              )}
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] font-mono text-violet-400/50 uppercase tracking-wider">LoRA Config</span>
                 <button
