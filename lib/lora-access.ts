@@ -99,12 +99,39 @@ export async function loraFileProblem(loraUrl: unknown): Promise<string | null> 
   const { isPrivateMedia, keyFromUrl } = await import('@/lib/media-url')
   if (!isPrivateMedia(loraUrl)) return null
 
-  const { objectSize } = await import('@/lib/r2')
-  const size = await objectSize(keyFromUrl(loraUrl))
+  const key = keyFromUrl(loraUrl)
+  const { objectSize, presignGetUrl } = await import('@/lib/r2')
+  const size = await objectSize(key)
 
   if (size === null) return 'That LoRA file is missing from storage. Upload it again.'
   // A real LoRA is megabytes. Anything this small is a failed upload, not a
   // model, and saying so beats letting fal answer with a status code.
-  if (size < 1024) return 'That LoRA file is empty — the upload did not send any data. Upload it again.'
+  if (size < 1024) return 'That LoRA file is empty — the upload did not send any data. Paste its download link instead.'
+
+  // The header is at the front, so this costs a megabyte however big the
+  // weights are.
+  let head: Buffer
+  try {
+    const res = await fetch(await presignGetUrl(key, 300), { headers: { Range: 'bytes=0-1048575' } })
+    if (!res.ok && res.status !== 206) return null // storage hiccup: not the LoRA's fault
+    head = Buffer.from(await res.arrayBuffer())
+  } catch {
+    return null
+  }
+
+  const { inspectSafetensors } = await import('@/lib/safetensors')
+  const verdict = inspectSafetensors(head, size)
+  if (!verdict.complete) {
+    return `${verdict.reason ?? 'That LoRA file is not usable.'} Paste its download link instead.`
+  }
+
+  // Complete, but in a layout fal reads as nothing at all — it would return
+  // the base model and charge for it. Anything added now is converted on the
+  // way in, so this only catches what was stored before that existed.
+  const { detectLoraFormat } = await import('@/lib/lora-convert')
+  if (detectLoraFormat(head) === 'kohya') {
+    return 'This LoRA is in a format the model cannot read. Remove it and add it again — it will be converted.'
+  }
+
   return null
 }

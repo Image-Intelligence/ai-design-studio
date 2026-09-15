@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { jsonPrivate } from '@/lib/api-json'
-import { presignGetUrl, deleteFromR2, uploadToR2 } from '@/lib/r2'
+import { presignGetUrl, uploadToR2 } from '@/lib/r2'
 import { keyFromUrl } from '@/lib/media-url'
 import { inspectSafetensors } from '@/lib/safetensors'
 import { detectLoraFormat, convertKohyaToPeft } from '@/lib/lora-convert'
@@ -97,6 +97,8 @@ export async function POST(req: NextRequest) {
       ? `${verdict.reason} It is ${mb(verdict.size)} and should be ${mb(verdict.expected)}.`
       : verdict.reason ?? 'That file is not a usable .safetensors.'
 
-  await deleteFromR2(key).catch(() => {})
+  // Left in place on purpose: the panel fills this link into the form, and a
+  // link to a deleted object explains nothing. lib/lora-access.ts refuses it
+  // by name before any ticket is spent.
   return jsonPrivate({ ok: false, error: detail, kind: verdict.kind }, { status: 400 })
 }

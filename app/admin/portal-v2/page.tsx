@@ -19018,6 +19018,9 @@ function PromptBox({
   // Something worth saying that is not a failure, e.g. "this was rewritten
   // into the layout fal reads".
   const [loraNote, setLoraNote] = useState<string | null>(null)
+  // The upload went through but what arrived is not usable. Distinct from
+  // loraError, which means the panel could not do the thing at all.
+  const [loraWarning, setLoraWarning] = useState<string | null>(null)
   const loraFileInputRef = useRef<HTMLInputElement>(null)
   const loraPickerRef = useRef<HTMLDivElement>(null)
   // Upscaler state
@@ -22164,6 +22167,8 @@ function PromptBox({
                                 if (!file) return
                                 setLoraUploading(true)
                                 setLoraError(null)
+                                setLoraWarning(null)
+                                setLoraNote(null)
                                 try {
                                   /*
                                    * Skip the upload only when the file can be
@@ -22232,9 +22237,8 @@ function PromptBox({
                                    * first megabyte back out of R2 and measures
                                    * it against the header, so it sees the real
                                    * bytes rather than whatever the browser
-                                   * managed to hand us. A file that fails is
-                                   * deleted server-side; there is nothing here
-                                   * to clean up.
+                                   * managed to hand us - and rewrites the file
+                                   * if it is in a layout fal cannot read.
                                    */
                                   const vRes = await fetch('/api/user/loras/verify', {
                                     method: 'POST',
@@ -22242,8 +22246,17 @@ function PromptBox({
                                     body: JSON.stringify({ url: presignData.publicUrl }),
                                   })
                                   const vData = await vRes.json().catch(() => ({}))
-                                  if (!vRes.ok) throw new Error(vData.error || 'The uploaded file is not usable')
                                   if (vData.converted) setLoraNote(vData.converted)
+                                  /*
+                                   * A failed check does NOT throw away the
+                                   * fields. Picking the file is the hard part
+                                   * on a phone or tablet, and clearing both
+                                   * boxes means doing it again with no more
+                                   * information than the first time. The name
+                                   * and link go in as they always did; the
+                                   * warning says what is wrong with them.
+                                   */
+                                  if (!vRes.ok) setLoraWarning(vData.error || 'The uploaded file is not usable.')
 
                                   setNewLoraUrl(presignData.publicUrl)
                                   if (!newLoraName) setNewLoraName(cleanName.replace(/\.[^.]+$/, ''))
@@ -22269,6 +22282,11 @@ function PromptBox({
                                 from one that is broken. */}
                             {loraError ? (
                               <p className="mt-1 text-[10px] leading-snug text-red-300">{loraError}</p>
+                            ) : loraWarning ? (
+                              <p className="mt-1 text-[10px] leading-snug text-amber-300/90">
+                                {loraWarning} It has been filled in below, but it will not generate until
+                                you replace it {"\u2014"} paste the file's download link over it.
+                              </p>
                             ) : loraNote ? (
                               <p className="mt-1 text-[10px] leading-snug text-emerald-300/80">{loraNote}</p>
                             ) : (
