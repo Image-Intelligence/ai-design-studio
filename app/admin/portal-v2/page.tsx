@@ -19566,6 +19566,7 @@ function PromptBox({
     // One-click retry: use these exact ref URLs instead of the active refs
     refUrlsOverride?: string[]
   }) => {
+    const generateStartedAt = Date.now()
     const { model, prompt, aspectRatio, quality, outputFormat, imageCount,
             seedreamSafetyChecker, wanSafetyChecker, fluxDevSafetyChecker, selectedLoraUrl } = cfg
     setGenerating(true)
@@ -20396,11 +20397,13 @@ function PromptBox({
 
       // --- FAL async (NB Pro, SeeDream 4.5, FLUX 2 multi-image) ---
       if (model.isFal && count > 1) {
+        const timedOut: string[] = []
+        const claimedQueueIds = new Set<number>()
         // Submit N separate jobs concurrently — each gets its own queue entry and slot
         await Promise.all(slotIds.map(async (sid) => {
           try {
             const res = await fetch("/api/generate", {
-              signal: AbortSignal.timeout(90_000),
+              signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}) }),
@@ -20408,16 +20411,21 @@ function PromptBox({
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
             if (data.newBalance !== undefined) onBalanceChange(data.newBalance)
+            claimedQueueIds.add(data.queueId)
             onUpdatePending(sid, { queueId: data.queueId })
             onStartPolling(sid, data.queueId, currentPrompt)
           } catch (err: any) {
+            if (isAbortErr(err)) { timedOut.push(sid); return }
             onUpdatePending(sid, { status: "failed", error: err.message || "Network error" })
           }
         }))
+        if (timedOut.length > 0) {
+          await recoverTimedOutSubmits(timedOut, model.apiId, currentPrompt, generateStartedAt, claimedQueueIds)
+        }
       } else {
         // Single FAL request (count=1)
         const res = await fetch("/api/generate", {
-          signal: AbortSignal.timeout(90_000),
+          signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}) }),
@@ -20432,10 +20440,66 @@ function PromptBox({
         onStartPolling(slotId, data.queueId, currentPrompt)
       }
     } catch (err: any) {
-      slotIds.forEach(sid => onUpdatePending(sid, { status: "failed", error: err.message || "Network error" }))
+      // Only the single-request branch reaches here with an abort; the batch
+      // branch resolves its own above.
+      if (isAbortErr(err)) {
+        await recoverTimedOutSubmits(slotIds, model.apiId, currentPrompt, generateStartedAt, new Set())
+      } else {
+        slotIds.forEach(sid => onUpdatePending(sid, { status: "failed", error: err.message || "Network error" }))
+      }
     } finally {
       setGenerating(false)
     }
+  }
+
+  /*
+   * Safari words an AbortSignal timeout as "Fetch is aborted" and Chrome as
+   * "The operation was aborted"; both arrive as AbortError. TimeoutError is
+   * the spec name some engines use.
+   */
+  const isAbortErr = (e: any) => e?.name === "AbortError" || e?.name === "TimeoutError"
+
+  /**
+   * The submit timed out. Did it actually land?
+   *
+   * The browser giving up says nothing about what the server did with the
+   * request, and treating the two as the same thing produced failure cards for
+   * generations that were never attempted AND would hide ones that were. Ask
+   * the queue: any job of this model that appeared after we started, and that
+   * no tile in this run already holds, belongs to one of these slots.
+   */
+  const recoverTimedOutSubmits = async (
+    slots: string[], modelId: string, prompt: string, since: number, claimed: Set<number>,
+  ) => {
+    // The row is written after the fal submit, so give the server a moment to
+    // finish the work the browser stopped waiting for.
+    await new Promise(r => setTimeout(r, 4000))
+    let jobs: any[] = []
+    try {
+      const res = await fetch("/api/prompting-studio/jobs?source=main-scanner", { cache: "no-store" })
+      if (res.ok) jobs = (await res.json()).jobs ?? []
+    } catch { /* offline: fall through and fail the tiles honestly */ }
+
+    const candidates = jobs
+      .filter(j => j.modelId === modelId
+        && !claimed.has(j.id)
+        && new Date(j.createdAt).getTime() >= since - 5000
+        && (j.status === "processing" || j.status === "queued" || j.status === "completed"))
+      .sort((a, b) => a.id - b.id)
+
+    slots.forEach((sid, i) => {
+      const job = candidates[i]
+      if (job) {
+        claimed.add(job.id)
+        onUpdatePending(sid, { queueId: job.id })
+        onStartPolling(sid, job.id, prompt)
+      } else {
+        onUpdatePending(sid, {
+          status: "failed",
+          error: "The server did not answer within 3 minutes, and no matching job was found. Nothing was charged \u2014 try again.",
+        })
+      }
+    })
   }
 
   const handleGenerate = async () => {
