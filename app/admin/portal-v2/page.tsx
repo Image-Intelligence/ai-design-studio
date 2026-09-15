@@ -22163,20 +22163,25 @@ function PromptBox({
                                 setLoraError(null)
                                 try {
                                   /*
-                                   * Verify before spending the upload.
+                                   * Skip the upload only when the file can be
+                                   * PROVEN short: a readable header says how
+                                   * long it should be, and it is shorter. That
+                                   * is worth catching here, because otherwise
+                                   * it fails at generation with an error about
+                                   * the model.
                                    *
-                                   * A truncated file uploads perfectly happily
-                                   * and then fails at generation, where the
-                                   * error says nothing useful. The header knows
-                                   * how long the file should be, so ask it.
+                                   * Anything else - a header we cannot parse, a
+                                   * file the browser cannot read - is NOT proof
+                                   * of a bad file, and refusing on it told
+                                   * people to re-download files that were fine.
+                                   * Those go up and get checked server-side
+                                   * against the bytes that actually landed.
                                    */
                                   if (/\.safetensors(\.download)?$/i.test(file.name)) {
                                     const info = await inspectSafetensors(file)
-                                    if (info && !info.complete) {
+                                    if (info && !info.complete && info.expected > 0) {
                                       const mb = (n: number) => `${(n / 1_048_576).toFixed(1)} MB`
-                                      setLoraError(info.expected
-                                        ? `This file is incomplete \u2014 it is ${mb(file.size)} and should be ${mb(info.expected)}. Download it again.`
-                                        : "This file is not a readable .safetensors \u2014 the download did not finish.")
+                                      setLoraError(`This file is incomplete \u2014 it is ${mb(file.size)} and should be ${mb(info.expected)}. Download it again.`)
                                       setLoraUploading(false)
                                       e.target.value = ''
                                       return
@@ -22216,6 +22221,25 @@ function PromptBox({
                                     headers: { 'Content-Type': 'application/octet-stream' },
                                   })
                                   if (!putRes.ok) throw new Error(`R2 upload failed: ${putRes.status}`)
+
+                                  /*
+                                   * Step 3: ask the server what it received.
+                                   *
+                                   * This is the check that counts. It reads the
+                                   * first megabyte back out of R2 and measures
+                                   * it against the header, so it sees the real
+                                   * bytes rather than whatever the browser
+                                   * managed to hand us. A file that fails is
+                                   * deleted server-side; there is nothing here
+                                   * to clean up.
+                                   */
+                                  const vRes = await fetch('/api/user/loras/verify', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ url: presignData.publicUrl }),
+                                  })
+                                  const vData = await vRes.json().catch(() => ({}))
+                                  if (!vRes.ok) throw new Error(vData.error || 'The uploaded file is not usable')
 
                                   setNewLoraUrl(presignData.publicUrl)
                                   if (!newLoraName) setNewLoraName(cleanName.replace(/\.[^.]+$/, ''))
