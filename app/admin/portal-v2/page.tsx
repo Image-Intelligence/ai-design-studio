@@ -2601,6 +2601,24 @@ function mediaPathKey(urlOrKey: string): string {
  * GenerationQueue.id) and by its fal request id once it has one. Any overlap
  * means one job, and one job is one tile.
  */
+/**
+ * When a job was QUEUED, from its database row.
+ *
+ * Every tile sorts on this. A tile adopted from a row is not new work, so
+ * stamping it with the adoption time sends it to the front of a feed it should
+ * have re-joined in place — which is what made tiles jump on refresh.
+ * Falls back to now only when the row has no usable timestamp at all.
+ */
+function queuedAtMsOf(job: { createdAt?: unknown; startedAt?: unknown }): number {
+  for (const v of [job?.createdAt, job?.startedAt]) {
+    if (typeof v === "string" || typeof v === "number" || v instanceof Date) {
+      const t = new Date(v as string).getTime()
+      if (Number.isFinite(t) && t > 0) return t
+    }
+  }
+  return Date.now()
+}
+
 function sameJob(a: PendingSlot, b: PendingSlot): boolean {
   const ids = (s: PendingSlot) => [s.queueId, s.queueJobId].filter((v): v is number => v != null)
   const aIds = ids(a), bIds = ids(b)
@@ -20450,13 +20468,17 @@ function PromptBox({
         // reload was the fastest way to see the rest. The server now hands
         // back the row ids, so each one gets its placeholder immediately and
         // the poller's job is reduced to resolving them.
-        for (const job of (data.jobs ?? []) as { id: number; refs?: string[] }[]) {
+        // createdAt when the server sends it: these placeholders should carry the
+        // row's queue time like every other adopted tile, not the moment the
+        // response happened to arrive.
+        for (const job of (data.jobs ?? []) as { id: number; refs?: string[]; createdAt?: string }[]) {
           if (typeof job?.id !== "number") continue
           onAddPending({
             slotId: `batch-${job.id}`,
             status: "loading",
             prompt,
             queueId: job.id,
+            queuedAtMs: queuedAtMsOf(job),
             referenceImageUrls: Array.isArray(job.refs) ? job.refs : [],
           } as PendingSlot)
         }
@@ -28390,6 +28412,7 @@ export default function PortalV2Page() {
             status: "loading",
             prompt: j.prompt,
             queueId: j.id,
+            queuedAtMs: queuedAtMsOf(j),
             referenceImageUrls: params?.referenceImageUrls || params?.permanentReferenceUrls || [],
           } as PendingSlot)
         }
@@ -28415,6 +28438,7 @@ export default function PortalV2Page() {
               status: "loading",
               prompt: j.prompt,
               queueId: j.id,
+              queuedAtMs: queuedAtMsOf(j),
               modelId: j.modelId,
               aspectRatio: params?.aspectRatio,
               quality: params?.quality,
@@ -28431,6 +28455,8 @@ export default function PortalV2Page() {
             slotId:         `db-${j.id}-${j.falRequestId.slice(-6)}`,
             status:         "loading",
             prompt:         j.prompt,
+            queueId:        j.id,
+            queuedAtMs:     queuedAtMsOf(j),
             nb2RequestId:   j.falRequestId,
             nb2FalEndpoint: params?.falEndpoint || params?.falInput?.endpoint,
             nb2StatusUrl:   MODEL_STATUS_URLS[j.modelId],
@@ -29514,6 +29540,8 @@ export default function PortalV2Page() {
                   slotId:         `db-${j.id}`,
                   status:         "loading" as const,
                   prompt:         j.prompt,
+                  queueId:        j.id,
+                  queuedAtMs:     queuedAtMsOf(j),
                   nb2RequestId:   j.falRequestId,
                   nb2FalEndpoint: params?.falEndpoint || params?.falInput?.endpoint,
                   nb2StatusUrl:   MODEL_STATUS_URLS[j.modelId],
