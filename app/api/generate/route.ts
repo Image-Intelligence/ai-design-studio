@@ -92,7 +92,7 @@ export async function POST(request: Request) {
     const body = canonicalisePayload(await request.json())
     const {
       prompt,
-      quality = '2k',
+      quality: qualityRaw = '2k',
       aspectRatio = '16:9',
       referenceImages = [],
       model = 'gemini-2.5-flash-image',  // Default to Flash Scanner v2.5
@@ -240,6 +240,16 @@ export async function POST(request: Request) {
         { status: 503 }
       )
     }
+
+    /*
+     * z-image tops out at 2048 on a side, so a "4k" z-image does not exist.
+     * Asking for one produced a clamped square AND charged the 4k rate (8
+     * tickets, 17 with a LoRA, against 2 for the same picture at "2k").
+     * Priced as what it can actually make.
+     */
+    const Z_IMAGE_MAX_SIDE = 2048
+    const isZImage = model === 'z-image-base' || model === 'z-image-turbo'
+    const quality = isZImage && qualityRaw === '4k' ? '2k' : qualityRaw
 
     // Get ticket cost
     const ticketCost = model === 'clarity-upscaler'
@@ -1035,7 +1045,16 @@ export async function POST(request: Request) {
           }
           const mult = quality === '4k' ? 4 : quality === '2k' ? 2 : 1
           const dims = zSizes[aspectRatio] || zSizes['1:1']
-          inputParams.image_size = { width: dims.w * mult, height: dims.h * mult }
+          /*
+           * Scale the whole box to fit, rather than handing over something too
+           * big and letting the model cut each side to 2048 on its own — that
+           * cuts width and height by different amounts and squares off the
+           * picture. Rounded to a multiple of 16 for the VAE.
+           */
+          const want = { w: dims.w * mult, h: dims.h * mult }
+          const fit = Math.min(1, Z_IMAGE_MAX_SIDE / Math.max(want.w, want.h))
+          const round16 = (n: number) => Math.max(256, Math.round(n * fit / 16) * 16)
+          inputParams.image_size = { width: round16(want.w), height: round16(want.h) }
           inputParams.enable_safety_checker = false
           inputParams.acceleration = 'regular'
           inputParams.output_format = 'png'
