@@ -161,9 +161,13 @@ export async function POST(request: Request) {
      * is submitted.
      */
     if (loraUrl) {
-      const { loraUsableBy } = await import('@/lib/lora-access')
+      const { loraUsableBy, loraFileProblem } = await import('@/lib/lora-access')
       const allowed = await loraUsableBy(loraUrl, user)
       if (!allowed.ok) return jsonPrivate({ error: allowed.reason }, { status: 403 })
+      // May use it, but is there anything there? A zero-byte upload otherwise
+      // reaches fal and comes back as a 422 about reference images.
+      const problem = await loraFileProblem(loraUrl)
+      if (problem) return jsonPrivate({ error: problem }, { status: 400 })
     }
 
     /*

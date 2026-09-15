@@ -22301,17 +22301,11 @@ function PromptBox({
                                       headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ name, loraUrl: url }),
                                     })
-                                    let res = alreadyOurs ? await record() : await fetch('/api/user/loras/import', {
+                                    const res = alreadyOurs ? await record() : await fetch('/api/user/loras/import', {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ name, url }),
                                     })
-                                    // A link we cannot fetch may still be one
-                                    // fal can, so recording it beats refusing.
-                                    // 502 is "could not reach"; 400 is "reached
-                                    // it and the bytes are wrong", which the
-                                    // user needs to hear rather than route past.
-                                    if (!alreadyOurs && res.status === 502) res = await record()
                                     const data = await res.json()
                                     if (!res.ok) throw new Error(data.error || 'Could not save this LoRA')
                                     setLoraJobs(prev => [...prev, {

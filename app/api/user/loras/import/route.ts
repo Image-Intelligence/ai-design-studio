@@ -54,7 +54,14 @@ export async function POST(req: NextRequest) {
     return jsonPrivate({ error: 'Could not reach that link' }, { status: 502 })
   }
   if (!res.ok) {
-    return jsonPrivate({ error: `That link returned ${res.status}` }, { status: 502 })
+    // The host answered and said no. Usually a private or gated repo, or a
+    // download link that has already expired.
+    const why = res.status === 401 || res.status === 403
+      ? 'That link needs a login — use a direct, public download link.'
+      : res.status === 404
+        ? 'That link is a 404. Check it points straight at the .safetensors file.'
+        : `That link returned ${res.status}.`
+    return jsonPrivate({ error: why }, { status: 400 })
   }
 
   // Refuse something obviously too big before reading it into memory.

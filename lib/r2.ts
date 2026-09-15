@@ -107,6 +107,23 @@ export async function uploadPublicAsset(
   return `${PUBLIC_ASSET_URL}/${key}`
 }
 
+/**
+ * How big is this object, or null if it is not there?
+ *
+ * Existence is not enough for anything we hand to a third party: a failed
+ * browser upload leaves a real object of zero bytes, which exists, serves a
+ * 200, and makes fal reject the job with a bare 422 that names neither the
+ * file nor the size.
+ */
+export async function objectSize(key: string): Promise<number | null> {
+  try {
+    const head = await r2.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }))
+    return head.ContentLength ?? null
+  } catch {
+    return null
+  }
+}
+
 /** Does this object exist on the private bucket? */
 export async function objectExists(key: string): Promise<boolean> {
   try {
