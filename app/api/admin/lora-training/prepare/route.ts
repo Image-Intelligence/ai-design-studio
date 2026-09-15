@@ -12,6 +12,7 @@ import { Upload } from '@aws-sdk/lib-storage'
 import { composeTrainingCaption, normalizeCaptionSections } from '@/lib/caption-compose'
 import { getTrainerFamily } from '@/lib/trainer-families'
 import { gifToMp4 } from '@/lib/video-clip'
+import { fetchMedia } from '@/lib/media-fetch'
 
 export const maxDuration = 300
 
@@ -205,7 +206,7 @@ export async function POST(req: NextRequest) {
             const isMp4Like = /\.(mp4|mov|m4v)(\?|#|$)/i.test(url)
             const isWebm = /\.webm(\?|#|$)/i.test(url)
             if (!isGif && !isMp4Like && !isWebm) return null
-            const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
+            const res = await fetchMedia(url, { signal: AbortSignal.timeout(60_000) })
             if (!res.ok) return null
             const rawBuf = Buffer.from(await res.arrayBuffer())
             if (rawBuf.length > 100 * 1024 * 1024) return null

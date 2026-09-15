@@ -9,6 +9,7 @@ import { claimUserGenerationRow } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
+import { fetchMedia } from '@/lib/media-fetch'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -100,10 +101,10 @@ export async function POST(req: Request) {
           permanentReferenceUrls.push(imgUrl)
           let pushed = false
           try {
-            const head = await fetch(imgUrl, { method: 'HEAD' })
+            const head = await fetchMedia(imgUrl, { method: 'HEAD' })
             const len = parseInt(head.headers.get('content-length') || '0')
             if (len > FAL_REF_MAX_BYTES) {
-              const res = await fetch(imgUrl)
+              const res = await fetchMedia(imgUrl)
               if (res.ok) {
                 const { buffer, mimeType } = await compressForFal(Buffer.from(await res.arrayBuffer()))
                 hostedUrls.push(await fal.storage.upload(new Blob([new Uint8Array(buffer)], { type: mimeType })))

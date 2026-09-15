@@ -14,6 +14,7 @@ import { createWriteStream } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import crypto from 'crypto'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // POST /api/admin/frames-clips — ADMIN ONLY
 // Frame Extractor "clips" mode: slices an uploaded video into short MP4 clips
@@ -79,7 +80,7 @@ export async function POST(req: Request) {
 
   let dir: string | null = null
   try {
-    const srcRes = await fetch(sourceUrl)
+    const srcRes = await fetchMedia(sourceUrl)
     if (!srcRes.ok) return NextResponse.json({ error: `Could not fetch the uploaded video (${srcRes.status})` }, { status: 400 })
     const srcBuf = Buffer.from(await srcRes.arrayBuffer())
 

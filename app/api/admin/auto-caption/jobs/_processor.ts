@@ -9,6 +9,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY!
 // both admin pages' dropdowns)
 export { AUTOFILL_MODELS } from '@/lib/autofill-models'
 import { AUTOFILL_MODELS as _AM } from '@/lib/autofill-models'
+import { fetchMedia } from '@/lib/media-fetch'
 const MODELS: Record<string, string> = Object.fromEntries(_AM.map(m => [m.key, m.apiId]))
 
 type ImagePart  = { inlineData: { data: string; mimeType: string } }
@@ -16,7 +17,7 @@ type TextPart   = { text: string }
 type GeminiPart = ImagePart | TextPart
 
 async function fetchImageAsBase64(url: string, timeoutMs = 20_000): Promise<{ data: string; mimeType: string }> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+  const res = await fetchMedia(url, { signal: AbortSignal.timeout(timeoutMs) })
   if (!res.ok) throw new Error(`Image fetch failed: ${res.status}`)
   const buffer = await res.arrayBuffer()
   const mimeType = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim()

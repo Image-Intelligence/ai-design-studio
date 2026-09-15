@@ -7,6 +7,7 @@ import { gifToMp4 } from '@/lib/video-clip'
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import path from 'path'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // POST /api/admin/frames-gif — ADMIN ONLY
 // Frame Extractor GIF support: browsers cannot seek GIFs in a <video>
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
       if (typeof url !== 'string' || !publicBase || !url.startsWith(`${publicBase}/`)) {
         return NextResponse.json({ error: 'url must point at our own storage' }, { status: 400 })
       }
-      const src = await fetch(url)
+      const src = await fetchMedia(url)
       if (!src.ok) return NextResponse.json({ error: `Source fetch failed (${src.status})` }, { status: 502 })
       const len = Number(src.headers.get('content-length') || 0)
       if (len > MAX_GIF_BYTES) return NextResponse.json({ error: 'GIF too large (max 80MB)' }, { status: 413 })

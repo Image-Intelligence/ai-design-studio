@@ -3,6 +3,7 @@ import sharp from 'sharp'
 import prisma from '@/lib/prisma'
 import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
 import { movieFormatById, audioPlanById } from '@/lib/chat-hub-skills'
+import { fetchMedia } from '@/lib/media-fetch'
 
 /**
  * Write the brief for the user.
@@ -41,7 +42,7 @@ export const maxDuration = 60
 /** A reference as Gemini wants it: base64 JPEG, downscaled hard. */
 async function inlineRef(url: string): Promise<{ inlineData: { mimeType: string; data: string } } | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    const res = await fetchMedia(url, { signal: AbortSignal.timeout(10_000) })
     if (!res.ok) return null
     const buf = Buffer.from(await res.arrayBuffer())
     const small = await sharp(buf)

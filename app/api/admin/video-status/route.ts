@@ -6,6 +6,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { uploadToR2 } from '@/lib/r2'
 import { jsonPrivate } from '@/lib/api-json'
+import { fetchMedia } from '@/lib/media-fetch'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -67,7 +68,7 @@ export async function POST(req: Request) {
       // Upload video to Vercel Blob for permanent storage (FAL URLs expire after ~24–48h)
       let permanentVideoUrl = falVideoUrl
       try {
-        const videoRes = await fetch(falVideoUrl)
+        const videoRes = await fetchMedia(falVideoUrl)
         if (videoRes.ok) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'

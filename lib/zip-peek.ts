@@ -1,4 +1,5 @@
 import zlib from 'zlib'
+import { fetchMedia } from './media-fetch'
 
 /**
  * Read inside a remote ZIP without downloading it.
@@ -41,7 +42,7 @@ async function rangeBytes(url: string, start: number, end: number): Promise<Buff
 
 /** The archive's table of contents. */
 export async function listZipEntries(url: string): Promise<{ size: number; entries: ZipEntry[] }> {
-  const head = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(30_000) })
+  const head = await fetchMedia(url, { method: 'HEAD', signal: AbortSignal.timeout(30_000) })
   const size = Number(head.headers.get('content-length'))
   if (!Number.isFinite(size) || size <= 0) throw new Error('archive size unknown')
 

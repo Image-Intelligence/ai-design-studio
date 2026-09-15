@@ -10,6 +10,7 @@ import { probeDuration } from '@/lib/video-clip'
 import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import path from 'path'
+import { fetchMedia } from '@/lib/media-fetch'
 
 export const maxDuration = 60
 const execP = promisify(execFile)
@@ -176,7 +177,7 @@ export async function GET(
 
   const srcUrl = posterUrl ?? image.imageUrl
   try {
-    const res = await fetch(srcUrl, { signal: AbortSignal.timeout(20_000) })
+    const res = await fetchMedia(srcUrl, { signal: AbortSignal.timeout(20_000) })
     if (!res.ok) {
       // The recorded poster is gone; the video it came from is not.
       if (posterUrl) return makePoster(imageId, image.imageUrl)

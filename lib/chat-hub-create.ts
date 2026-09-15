@@ -1,6 +1,7 @@
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import type { ChatCreateSettings } from '@/lib/chat-hub-models'
+import { fetchMedia } from './media-fetch'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -304,7 +305,7 @@ export async function generateWithGeminiApi(
   const contentParts: any[] = []
   for (const refUrl of refs) {
     try {
-      const res = await fetch(refUrl)
+      const res = await fetchMedia(refUrl)
       if (!res.ok) continue
       const buf = Buffer.from(await res.arrayBuffer())
       contentParts.push({ inlineData: { mimeType: 'image/jpeg', data: buf.toString('base64') } })

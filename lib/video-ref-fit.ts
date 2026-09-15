@@ -1,5 +1,6 @@
 import sharp from 'sharp'
 import { uploadToR2 } from '@/lib/r2'
+import { fetchMedia } from './media-fetch'
 
 /**
  * Shrink reference images that a video model would reject outright.
@@ -29,7 +30,7 @@ const MAX_EDGE = 3840
 
 async function byteSize(url: string): Promise<number | null> {
   try {
-    const res = await fetch(url, { method: 'HEAD' })
+    const res = await fetchMedia(url, { method: 'HEAD' })
     if (!res.ok) return null
     const len = res.headers.get('content-length')
     return len ? Number(len) || null : null
@@ -51,7 +52,7 @@ export async function fitRefForVideo(url: string): Promise<string> {
   if (size !== null && size <= TARGET_BYTES) return url
 
   try {
-    const res = await fetch(url)
+    const res = await fetchMedia(url)
     if (!res.ok) return url
     const input = Buffer.from(await res.arrayBuffer())
     // A HEAD without content-length (some CDNs) still lands here — check the
@@ -114,7 +115,7 @@ export async function measureRef(url: string): Promise<{ width: number; height: 
     // The header carries the dimensions, so the first chunk is usually enough.
     // A server that ignores Range simply gives the whole file, which still
     // parses — the request is only ever an optimisation.
-    const res = await fetch(url, { headers: { Range: 'bytes=0-131071' } })
+    const res = await fetchMedia(url, { headers: { Range: 'bytes=0-131071' } })
     if (res.ok || res.status === 206) {
       const buf = Buffer.from(await res.arrayBuffer())
       try {
@@ -122,7 +123,7 @@ export async function measureRef(url: string): Promise<{ width: number; height: 
         if (md.width && md.height) out = { width: md.width, height: md.height }
       } catch {
         // A truncated buffer sharp cannot parse: pay for the whole file once.
-        const full = await fetch(url)
+        const full = await fetchMedia(url)
         if (full.ok) {
           const md = await sharp(Buffer.from(await full.arrayBuffer())).metadata()
           if (md.width && md.height) out = { width: md.width, height: md.height }

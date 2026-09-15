@@ -23,6 +23,7 @@ import { executeRenderShots, executeRenderPlates, executeCheckShots, executeAsse
 import { writeFilmNotes, BIBLE_TEMPLATE, CHARACTER_TEMPLATE, BIBLE_MAX } from '@/lib/film-notes'
 import { AUDIO_MODELS } from '@/lib/audio-models'
 import { getPlaybook } from '@/lib/chat-hub-playbooks'
+import { fetchMedia } from './media-fetch'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -735,7 +736,7 @@ export async function flattenImageForModel(
   url: string,
 ): Promise<{ bytes: Uint8Array; mediaType: string } | null> {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    const r = await fetchMedia(url, { signal: AbortSignal.timeout(10_000) })
     if (!r.ok) return null
     const input = Buffer.from(await r.arrayBuffer())
     const { default: sharp } = await import('sharp')

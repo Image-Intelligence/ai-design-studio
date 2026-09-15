@@ -9,6 +9,7 @@ import { existsSync } from 'fs'
 import path from 'path'
 import os from 'os'
 import { jsonPrivate } from '@/lib/api-json'
+import { fetchMedia } from '@/lib/media-fetch'
 
 const FALLBACK_ADMIN_EMAILS = ['promptandprotocol@gmail.com', 'dirtysecretai@gmail.com']
 
@@ -71,7 +72,7 @@ async function runInferenceBackground(
 
   try {
     // No hard timeout — large images can take >30s to download
-    const imgRes = await fetch(imageUrl)
+    const imgRes = await fetchMedia(imageUrl)
     if (!imgRes.ok) throw new Error(`Failed to fetch source image (${imgRes.status})`)
     const buf = Buffer.from(await imgRes.arrayBuffer())
 

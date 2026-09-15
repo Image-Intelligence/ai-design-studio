@@ -3,6 +3,7 @@ import fs from 'fs'
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { checkAuth } from '@/lib/admin-auth'
+import { fetchMedia } from '@/lib/media-fetch'
 
 const TEMPLATES_PATH = path.join(process.cwd(), 'AI', 'export-templates.json')
 
@@ -92,7 +93,7 @@ async function downloadUrl(url: string): Promise<{ buf: Buffer | null; reason?: 
   }
 
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
+    const res = await fetchMedia(url, { signal: AbortSignal.timeout(30_000) })
     if (!res.ok) return { buf: null, reason: `HTTP ${res.status}` }
     return { buf: Buffer.from(await res.arrayBuffer()) }
   } catch (err) {

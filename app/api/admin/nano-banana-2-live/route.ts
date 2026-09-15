@@ -10,6 +10,7 @@ import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
+import { fetchMedia } from '@/lib/media-fetch'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -73,7 +74,7 @@ export async function POST(req: Request) {
           if (url.startsWith('data:')) {
             mimeType = url.split(',')[0].split(':')[1]?.split(';')[0] || 'image/jpeg'
           }
-          const imgRes = await fetch(url)
+          const imgRes = await fetchMedia(url)
           if (!imgRes.ok) continue
           const arrayBuffer = await imgRes.arrayBuffer()
           const buffer = Buffer.from(arrayBuffer)

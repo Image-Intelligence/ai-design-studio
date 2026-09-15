@@ -10,6 +10,7 @@ import { tmpdir } from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { jsonPrivate } from '@/lib/api-json'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // POST /api/admin/gif-to-video — ADMIN ONLY
 // Turns a GIF into an H.264 MP4 stored in R2, so GIFs can be used wherever a
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
       if (typeof url !== 'string' || !publicBase || !url.startsWith(`${publicBase}/`)) {
         return jsonPrivate({ error: 'url must point at our own storage' }, { status: 400 })
       }
-      const src = await fetch(url)
+      const src = await fetchMedia(url)
       if (!src.ok) return jsonPrivate({ error: `Source fetch failed (${src.status})` }, { status: 502 })
       buf = Buffer.from(await src.arrayBuffer())
     } else {

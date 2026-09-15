@@ -18,6 +18,7 @@ import {
   falImageModelIsPromptless,
 } from '@/lib/fal-image-models'
 import { jsonPrivate } from '@/lib/api-json'
+import { fetchMedia } from '@/lib/media-fetch'
 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
@@ -33,7 +34,7 @@ fal.config({
 // normalize both shapes for the various downstream consumers.
 async function refToBuffer(ref: string): Promise<Buffer> {
   if (/^https?:\/\//i.test(ref)) {
-    const r = await fetch(ref, { signal: AbortSignal.timeout(20_000) })
+    const r = await fetchMedia(ref, { signal: AbortSignal.timeout(20_000) })
     if (!r.ok) throw new Error(`reference fetch ${r.status}`)
     return Buffer.from(await r.arrayBuffer())
   }

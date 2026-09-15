@@ -6,6 +6,7 @@ import sharp from 'sharp'
 import { PassThrough } from 'stream'
 import { S3Client, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
+import { fetchMedia } from '@/lib/media-fetch'
 
 export const maxDuration = 300
 
@@ -75,7 +76,7 @@ async function runBuild(jobId: number) {
     const getImage = async (url: string): Promise<Buffer | null> => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
+          const res = await fetchMedia(url, { signal: AbortSignal.timeout(30_000) })
           if (res.ok) return Buffer.from(await res.arrayBuffer())
           if (res.status !== 429 && res.status < 500) break // hard 4xx — no point retrying
         } catch { /* timeout / held connection — retry with backoff */ }

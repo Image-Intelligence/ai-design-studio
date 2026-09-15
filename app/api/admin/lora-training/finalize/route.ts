@@ -6,6 +6,7 @@ import { S3Client } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import { uploadToR2 } from '@/lib/r2'
 import { getTrainerFamily } from '@/lib/trainer-families'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // POST /api/admin/lora-training/finalize { jobId }
 //
@@ -100,7 +101,7 @@ async function runFinalize(
       // LoRA files run to hundreds of MB and a fetch signal governs the WHOLE
       // body stream — no explicit timeout; the route's maxDuration bounds it
       // on Vercel, and local finalize is manually retried if it ever hangs
-      const res = await fetch(src)
+      const res = await fetchMedia(src)
       if (!res.ok || !res.body) throw new Error(`fetch ${f.key} → HTTP ${res.status}`)
       const key = `${prefix}/${f.saveAs}`
       const upload = new Upload({

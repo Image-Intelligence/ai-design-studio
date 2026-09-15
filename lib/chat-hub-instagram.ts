@@ -11,6 +11,7 @@
 import prisma from '@/lib/prisma'
 import { decryptKey } from '@/lib/chat-key-crypto'
 import { uploadToR2 } from '@/lib/r2'
+import { fetchMedia } from './media-fetch'
 
 const IG_GRAPH = 'https://graph.instagram.com/v23.0'
 
@@ -63,7 +64,7 @@ export async function igMe(creds: IgCreds): Promise<{ username: string; userId: 
 // and re-hosted on R2 (IG fetches media from public URLs).
 async function normalizeImageForInstagram(imageUrl: string): Promise<{ url: string } | { error: string }> {
   try {
-    const res = await fetch(imageUrl)
+    const res = await fetchMedia(imageUrl)
     if (!res.ok) return { error: `Could not fetch the image (${res.status})` }
     const input = Buffer.from(await res.arrayBuffer())
     const sharp = (await import('sharp')).default
