@@ -9,7 +9,7 @@ import { authenticateApiKey, invalidKeyResponse, requireScopes, canUseModel, mod
 import { enforceContentFilter } from '@/lib/content-filter'
 import { FAL_ENDPOINTS, ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
 import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS } from '@/lib/ticket-pricing'
-import { canonicalisePayload } from '@/lib/media-url'
+import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
 
 fal.config({
@@ -211,7 +211,10 @@ export async function POST(request: NextRequest) {
         }
         const scale = Math.min(4, Math.max(0, Number(l?.scale) || 1))
         const transformer = l?.transformer === 'low' || l?.transformer === 'both' ? l.transformer : 'high'
-        wanLoras.push({ path: p, scale, transformer })
+        // Checked against the canonical prefix above, signed here: the bucket
+        // is private now, so fal cannot read these weights without a signature
+        // — and the failure looks like a broken model, not a 401.
+        wanLoras.push({ path: signMediaUrl(p, FAL_TTL), scale, transformer })
       }
       if (wanLoras.length === 0) {
         return NextResponse.json({ success: false, error: 'Select a trained LoRA first' }, { status: 400 });

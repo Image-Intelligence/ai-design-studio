@@ -22145,7 +22145,7 @@ function PromptBox({
                               className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-violet-500/50"
                             />
                             <input
-                              placeholder="Paste URL  (or upload file below)"
+                              placeholder="Paste a .safetensors link"
                               value={newLoraUrl}
                               onChange={e => setNewLoraUrl(e.target.value)}
                               className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-violet-500/50"
@@ -22237,8 +22237,18 @@ function PromptBox({
                             {/* The reason, where the button is. An upload that
                                 refuses itself silently is indistinguishable
                                 from one that is broken. */}
-                            {loraError && (
+                            {loraError ? (
                               <p className="mt-1 text-[10px] leading-snug text-red-300">{loraError}</p>
+                            ) : (
+                              /* iOS leaves a finished download named
+                                 `.safetensors.download` and greys it out in the
+                                 picker, so the button looks broken. Both ways
+                                 round it are one line each. */
+                              <p className="mt-1 text-[10px] leading-snug text-slate-600">
+                                On iPhone/iPad, a file ending in{" "}
+                                <span className="text-slate-500">.download</span> is greyed out {"\u2014"} rename it
+                                in Files to end in .safetensors, or paste its link above instead.
+                              </p>
                             )}
                             <div className="flex gap-1.5 pt-0.5">
                               <button
@@ -22246,14 +22256,38 @@ function PromptBox({
                                   const name = newLoraName.trim()
                                   const url = newLoraUrl.trim()
                                   if (!name || !url) return
-                                  // On the account, so it is there on the next
-                                  // device and the server can tell whose it is.
+                                  setLoraError(null)
+                                  setLoraUploading(true)
                                   try {
-                                    const res = await fetch('/api/user/loras', {
+                                    /*
+                                     * A link our own upload produced is already
+                                     * in this account's storage, so it only
+                                     * needs recording. Any OTHER link gets
+                                     * imported: the server fetches it, checks
+                                     * the bytes are a whole safetensors, and
+                                     * copies it into the user's own library.
+                                     *
+                                     * That is also the only way in when iOS
+                                     * refuses to hand us the file %s a paste
+                                     * never touches the Files picker.
+                                     */
+                                    const alreadyOurs = /\/user-loras\//.test(url)
+                                    const record = () => fetch('/api/user/loras', {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ name, loraUrl: url }),
                                     })
+                                    let res = alreadyOurs ? await record() : await fetch('/api/user/loras/import', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ name, url }),
+                                    })
+                                    // A link we cannot fetch may still be one
+                                    // fal can, so recording it beats refusing.
+                                    // 502 is "could not reach"; 400 is "reached
+                                    // it and the bytes are wrong", which the
+                                    // user needs to hear rather than route past.
+                                    if (!alreadyOurs && res.status === 502) res = await record()
                                     const data = await res.json()
                                     if (!res.ok) throw new Error(data.error || 'Could not save this LoRA')
                                     setLoraJobs(prev => [...prev, {
@@ -22267,12 +22301,14 @@ function PromptBox({
                                     setLoraPickerOpen(false)
                                   } catch (err) {
                                     console.error('[lora-save]', err)
+                                    setLoraError(err instanceof Error ? err.message : 'Could not save this LoRA')
                                   }
+                                  setLoraUploading(false)
                                 }}
-                                disabled={!newLoraName.trim() || !newLoraUrl.trim()}
+                                disabled={loraUploading || !newLoraName.trim() || !newLoraUrl.trim()}
                                 className="flex-1 py-1 rounded bg-violet-500/20 border border-violet-500/30 text-[11px] text-violet-300 hover:bg-violet-500/30 transition-colors disabled:opacity-40"
                               >
-                                Save
+                                {loraUploading ? "Saving\u2026" : "Save"}
                               </button>
                               <button
                                 onClick={() => setShowAddLora(false)}

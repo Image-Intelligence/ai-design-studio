@@ -9,7 +9,7 @@ import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { enforceContentFilter } from '@/lib/content-filter'
-import { canonicalisePayload } from '@/lib/media-url'
+import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 import {
   ADMIN_FAL_IMAGE_MODEL_IDS,
   getFalImageModelSpec,
@@ -165,6 +165,15 @@ export async function POST(request: Request) {
       const allowed = await loraUsableBy(loraUrl, user)
       if (!allowed.ok) return jsonPrivate({ error: allowed.reason }, { status: 403 })
     }
+
+    /*
+     * The weights live on the private bucket, so fal needs a signed link to
+     * read them — unsigned it gets a 401 and the job fails with an error
+     * about the model. Signed for USE only: `loraUrl` stays canonical
+     * everywhere it is stored, because an expiring URL in the database is a
+     * job that cannot be retried tomorrow.
+     */
+    const falLoraPath = loraUrl ? signMediaUrl(loraUrl, FAL_TTL) : loraUrl
 
     // Bearer API-key calls: enforce scopes + per-model permission, and force the
     // queue path (adminMode/syncMode are portal concepts — sync blocks too long
@@ -986,7 +995,7 @@ export async function POST(request: Request) {
           inputParams.num_inference_steps = loraUrl && loraSteps ? loraSteps : 28
           if (loraUrl) {
             modelEndpoint = 'fal-ai/flux-2/lora'
-            inputParams.loras = [{ path: loraUrl, scale: loraScale ?? 1.0 }]
+            inputParams.loras = [{ path: falLoraPath, scale: loraScale ?? 1.0 }]
           }
           console.log(`FLUX 2: ${JSON.stringify(inputParams.image_size)}`)
 
@@ -1007,7 +1016,7 @@ export async function POST(request: Request) {
           inputParams.acceleration = loraUrl ? 'none' : 'regular'
           if (loraUrl) {
             modelEndpoint = 'fal-ai/flux-lora'
-            inputParams.loras = [{ path: loraUrl, scale: loraScale ?? 1.0 }]
+            inputParams.loras = [{ path: falLoraPath, scale: loraScale ?? 1.0 }]
           }
           console.log(`FLUX 1 Dev${loraUrl ? ' LoRA' : ''}: ${dims.width}x${dims.height}`)
 
@@ -1029,7 +1038,7 @@ export async function POST(request: Request) {
           inputParams.num_images = 1
           if (loraUrl) {
             modelEndpoint = model === 'z-image-turbo' ? 'fal-ai/z-image/turbo/lora' : 'fal-ai/z-image/base/lora'
-            inputParams.loras = [{ path: loraUrl, scale: loraScale ?? 1.0 }]
+            inputParams.loras = [{ path: falLoraPath, scale: loraScale ?? 1.0 }]
             if (loraGuidanceScale) inputParams.guidance_scale = loraGuidanceScale
             if (loraSteps) inputParams.num_inference_steps = loraSteps
           }
