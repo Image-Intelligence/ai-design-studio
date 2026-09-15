@@ -5,6 +5,15 @@
 export function friendlyFalError(raw: string, model?: string): string {
   const d = raw.toLowerCase()
 
+  /*
+   * A fault inside fal's own LoRA loader, not in the weights. Verified by
+   * sending a LoRA fal trained itself, hosted by fal, to the same endpoint:
+   * identical failure. Without this the message blames the file.
+   */
+  if (d.includes('cache_dir') || d.includes('_build_lora_manager')) {
+    return "Z-Image Base cannot load LoRAs at the moment — the fault is inside fal's endpoint, not your LoRA file (their own trained LoRAs fail there too). Use Z-Image Turbo with this LoRA until fal fixes it."
+  }
+
   if (d.includes('safety system') || d.includes('moderation')) {
     return 'The model\'s safety system declined this request. Adjust your prompt or swap the reference image and try again.'
   }

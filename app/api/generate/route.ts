@@ -1073,8 +1073,17 @@ export async function POST(request: Request) {
           if (loraUrl) {
             modelEndpoint = model === 'z-image-turbo' ? 'fal-ai/z-image/turbo/lora' : 'fal-ai/z-image/base/lora'
             inputParams.loras = [{ path: falLoraPath, scale: loraScale ?? 1.0 }]
-            if (loraGuidanceScale) inputParams.guidance_scale = loraGuidanceScale
-            if (loraSteps) inputParams.num_inference_steps = loraSteps
+            /*
+             * Turbo is distilled: its schema has no guidance_scale, and
+             * num_inference_steps stops at 8. Sending FLUX's 3.5 and 28 was
+             * not an error - fal ignored both - but it meant the CFG and Steps
+             * sliders did nothing here while appearing to work.
+             */
+            const zTurbo = model === 'z-image-turbo'
+            if (loraGuidanceScale && !zTurbo) inputParams.guidance_scale = loraGuidanceScale
+            if (loraSteps) {
+              inputParams.num_inference_steps = Math.min(zTurbo ? 8 : 50, Math.max(1, loraSteps))
+            }
           }
 
         } else if (model === 'nano-banana-pro') {

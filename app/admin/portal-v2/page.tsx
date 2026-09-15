@@ -20680,6 +20680,16 @@ function PromptBox({
 
   // Fetch completed LoRA jobs when a LoRA-capable model is selected
   const isZImageModel = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
+  /*
+   * Per fal's published schemas. Z-Image Turbo is distilled: no guidance_scale
+   * field exists and num_inference_steps is capped at 8, so offering FLUX's
+   * CFG 3.5 / 28 steps there was offering two controls that do nothing.
+   */
+  const loraLimits = model.id === "z-image-turbo"
+    ? { cfg: false, steps: [1, 8] as const, defaultSteps: 8 }
+    : model.id === "z-image-base"
+      ? { cfg: true, steps: [1, 50] as const, defaultSteps: 28 }
+      : { cfg: true, steps: [10, 60] as const, defaultSteps: 28 }
   // Selecting a LoRA moves FLUX 1 Dev onto an endpoint without 'high'. The
   // server narrows it anyway; this keeps the button from lying about it.
   useEffect(() => {
@@ -21485,8 +21495,8 @@ function PromptBox({
                 <button
                   onClick={() => {
                     setLoraScale(1.0)
-                    setLoraGuidanceScale(model.id === 'flux-2' ? 2.5 : 3.5)
-                    setLoraSteps(28)
+                    setLoraGuidanceScale(model.id === 'flux-2' ? 2.5 : model.id === 'z-image-base' ? 4 : 3.5)
+                    setLoraSteps(loraLimits.defaultSteps)
                   }}
                   className="text-[10px] font-mono text-slate-600 hover:text-slate-400 transition-colors"
                 >reset</button>
@@ -21503,7 +21513,8 @@ function PromptBox({
                 <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{loraScale.toFixed(2)}</span>
               </div>
 
-              {/* CFG */}
+              {/* CFG — Turbo has no guidance_scale field at all */}
+              {loraLimits.cfg && (
               <div className="grid grid-cols-[4rem_1fr_2.5rem] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">CFG</span>
                 <input
@@ -21513,12 +21524,14 @@ function PromptBox({
                 />
                 <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{loraGuidanceScale.toFixed(1)}</span>
               </div>
+              )}
 
-              {/* Steps */}
+              {/* Steps — range is the model's own */}
               <div className="grid grid-cols-[4rem_1fr_2.5rem] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Steps</span>
                 <input
-                  type="range" min="10" max="60" step="1" value={loraSteps}
+                  type="range" min={loraLimits.steps[0]} max={loraLimits.steps[1]} step="1"
+                  value={Math.min(loraLimits.steps[1], Math.max(loraLimits.steps[0], loraSteps))}
                   onChange={e => setLoraSteps(parseInt(e.target.value))}
                   className="w-full accent-violet-400 cursor-pointer h-0.5"
                 />
