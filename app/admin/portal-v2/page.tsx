@@ -20575,6 +20575,42 @@ function PromptBox({
     localStorage.setItem(CUSTOM_LORAS_KEY, JSON.stringify(loras))
   }
 
+  /**
+   * Move a browser-local LoRA library onto the account, once.
+   *
+   * These were stored in localStorage, so they existed only in the browser
+   * that uploaded them and nothing recorded who owned one. Simply switching
+   * the list to the account would have made them disappear, so they are
+   * written across first — and the local copy is cleared only after the
+   * server has accepted them, so a failed run can be retried rather than
+   * losing the library.
+   *
+   * A row also GRANTS access: lib/lora-access.ts allows a LoRA recorded
+   * against the account, which is what keeps these old shared-prefix uploads
+   * working for the person who made them.
+   */
+  async function migrateLocalLoras(): Promise<void> {
+    let local: Array<{ id: number; name: string; loraUrl: string }> = []
+    try { local = loadCustomLoras() } catch { return }
+    if (local.length === 0) return
+    try {
+      const existing = await fetch("/api/user/loras", { cache: "no-store" })
+        .then(r => r.ok ? r.json() : { loras: [] })
+        .then((d: { loras?: Array<{ loraUrl: string }> }) => new Set((d.loras ?? []).map(l => l.loraUrl)))
+      let moved = 0
+      for (const l of local) {
+        if (!l?.loraUrl || existing.has(l.loraUrl)) { moved++; continue }
+        const res = await fetch("/api/user/loras", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: l.name || "LoRA", loraUrl: l.loraUrl }),
+        })
+        if (res.ok) moved++
+      }
+      if (moved === local.length) localStorage.removeItem(CUSTOM_LORAS_KEY)
+    } catch { /* leave the local copy alone and try again next time */ }
+  }
+
   // Which training model IDs produce LoRAs compatible with each portal model
   const LORA_TRAINER_COMPAT: Record<string, string[]> = {
     "flux-1-dev":   ["fal-ai/flux-lora-fast-training"],
@@ -20587,27 +20623,35 @@ function PromptBox({
   const isZImageModel = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
   useEffect(() => {
     if (!isZImageModel) { setSelectedLoraUrl(null); setLoraJobs([]); return }
-    const customLoras = loadCustomLoras()
     const compatTrainers = LORA_TRAINER_COMPAT[model.id] ?? []
     const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
-    fetch("/api/admin/lora-training/jobs", { headers: pass ? { "x-admin-password": pass } : {} })
-      .then(r => r.json())
-      .then((data: { jobs: Array<{ id: number; name: string; loraUrl: string | null; status: string; modelId: string; config: Record<string, unknown> }> }) => {
-        const completed = (data.jobs ?? []).filter(j =>
-          j.status === "completed" && j.loraUrl &&
-          (compatTrainers.length === 0 || compatTrainers.includes(j.modelId))
-        )
-        setLoraJobs([
-          ...completed.map(j => ({
-            id: j.id,
-            name: j.name,
-            loraUrl: j.loraUrl!,
-            triggerWord: j.config?.trigger_word as string | undefined,
-          })),
-          ...customLoras,
-        ])
-      })
-      .catch(() => { setLoraJobs(customLoras) })
+    /*
+     * Two sources, both scoped by the server.
+     *
+     * /api/user/loras returns only THIS account's uploads; the training-jobs
+     * route is admin-only and 401s for everyone else, so a normal user ends up
+     * with exactly their own list. It used to read localStorage, which meant a
+     * user's LoRAs were per-browser and nothing recorded who owned one.
+     */
+    void (async () => {
+      await migrateLocalLoras()
+      const [mine, trained] = await Promise.all([
+        fetch("/api/user/loras", { cache: "no-store" })
+          .then(r => r.ok ? r.json() : { loras: [] })
+          .then((d: { loras?: Array<{ id: number; name: string; loraUrl: string }> }) =>
+            (d.loras ?? []).map(l => ({ id: l.id, name: l.name, loraUrl: l.loraUrl, custom: true as const })))
+          .catch(() => []),
+        fetch("/api/admin/lora-training/jobs", { headers: pass ? { "x-admin-password": pass } : {} })
+          .then(r => r.ok ? r.json() : { jobs: [] })
+          .then((d: { jobs?: Array<{ id: number; name: string; loraUrl: string | null; status: string; modelId: string; config: Record<string, unknown> }> }) =>
+            (d.jobs ?? [])
+              .filter(j => j.status === "completed" && j.loraUrl
+                && (compatTrainers.length === 0 || compatTrainers.includes(j.modelId)))
+              .map(j => ({ id: j.id, name: j.name, loraUrl: j.loraUrl!, triggerWord: j.config?.trigger_word as string | undefined })))
+          .catch(() => []),
+      ])
+      setLoraJobs([...trained, ...mine])
+    })()
   }, [model.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset LoRA config to model-appropriate defaults when model changes
@@ -22021,8 +22065,9 @@ function PromptBox({
                           {j.custom && (
                             <button
                               onClick={() => {
-                                const updated = loadCustomLoras().filter(c => c.loraUrl !== j.loraUrl)
-                                saveCustomLoras(updated)
+                                // DELETE is owner-checked server-side; the id is
+                                // the row id now, not a localStorage timestamp.
+                                void fetch(`/api/user/loras?id=${j.id}`, { method: 'DELETE' }).catch(() => {})
                                 if (selectedLoraUrl === j.loraUrl) setSelectedLoraUrl(null)
                                 setLoraJobs(prev => prev.filter(p => p.loraUrl !== j.loraUrl))
                               }}
@@ -22067,11 +22112,29 @@ function PromptBox({
                                 if (!file) return
                                 setLoraUploading(true)
                                 try {
-                                  // Step 1: get a presigned R2 PUT URL (bypasses Vercel 4.5 MB limit)
-                                  const presignRes = await fetch('/api/admin/upload-lora', {
+                                  /*
+                                   * Step 1: a presigned R2 PUT (bypasses the
+                                   * 4.5 MB body limit).
+                                   *
+                                   * The USER route, not the admin one: it keys
+                                   * the object under user-loras/<id>/, which is
+                                   * the prefix lib/lora-access.ts reads to
+                                   * decide who may generate with it. The admin
+                                   * route writes to a shared `loras/` prefix
+                                   * that belongs to nobody.
+                                   *
+                                   * iOS names an in-progress Safari download
+                                   * `<name>.safetensors.download`. Strip that
+                                   * so a file the user did manage to pick is
+                                   * not rejected on its extension — the
+                                   * completeness check is the upload's job,
+                                   * not the filename's.
+                                   */
+                                  const cleanName = file.name.replace(/\.download$/i, '')
+                                  const presignRes = await fetch('/api/user/upload-lora', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ filename: file.name }),
+                                    body: JSON.stringify({ filename: cleanName }),
                                   })
                                   const presignData = await presignRes.json()
                                   if (!presignData.uploadUrl) throw new Error(presignData.error || 'Failed to get upload URL')
@@ -22085,7 +22148,7 @@ function PromptBox({
                                   if (!putRes.ok) throw new Error(`R2 upload failed: ${putRes.status}`)
 
                                   setNewLoraUrl(presignData.publicUrl)
-                                  if (!newLoraName) setNewLoraName(file.name.replace(/\.[^.]+$/, ''))
+                                  if (!newLoraName) setNewLoraName(cleanName.replace(/\.[^.]+$/, ''))
                                 } catch (err) {
                                   console.error('[lora-upload]', err)
                                 }
@@ -22102,17 +22165,32 @@ function PromptBox({
                             </button>
                             <div className="flex gap-1.5 pt-0.5">
                               <button
-                                onClick={() => {
+                                onClick={async () => {
                                   const name = newLoraName.trim()
                                   const url = newLoraUrl.trim()
                                   if (!name || !url) return
-                                  const existing = loadCustomLoras()
-                                  const entry = { id: Date.now(), name, loraUrl: url, custom: true as const }
-                                  saveCustomLoras([...existing, entry])
-                                  setLoraJobs(prev => [...prev, entry])
-                                  setSelectedLoraUrl(url)
-                                  setShowAddLora(false)
-                                  setLoraPickerOpen(false)
+                                  // On the account, so it is there on the next
+                                  // device and the server can tell whose it is.
+                                  try {
+                                    const res = await fetch('/api/user/loras', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ name, loraUrl: url }),
+                                    })
+                                    const data = await res.json()
+                                    if (!res.ok) throw new Error(data.error || 'Could not save this LoRA')
+                                    setLoraJobs(prev => [...prev, {
+                                      id: data.lora?.id ?? Date.now(),
+                                      name: data.lora?.name ?? name,
+                                      loraUrl: data.lora?.loraUrl ?? url,
+                                      custom: true as const,
+                                    }])
+                                    setSelectedLoraUrl(data.lora?.loraUrl ?? url)
+                                    setShowAddLora(false)
+                                    setLoraPickerOpen(false)
+                                  } catch (err) {
+                                    console.error('[lora-save]', err)
+                                  }
                                 }}
                                 disabled={!newLoraName.trim() || !newLoraUrl.trim()}
                                 className="flex-1 py-1 rounded bg-violet-500/20 border border-violet-500/30 text-[11px] text-violet-300 hover:bg-violet-500/30 transition-colors disabled:opacity-40"

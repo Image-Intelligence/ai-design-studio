@@ -151,6 +151,21 @@ export async function POST(request: Request) {
       }
     }
 
+    /*
+     * A LoRA belongs to the account that uploaded it.
+     *
+     * loraUrl arrives on the request body and is handed to fal as
+     * `loras[].path`. Listing was already scoped per user; USING was not, so
+     * anyone holding another account's LoRA URL could generate with their
+     * trained weights. Checked here, before a ticket is reserved or anything
+     * is submitted.
+     */
+    if (loraUrl) {
+      const { loraUsableBy } = await import('@/lib/lora-access')
+      const allowed = await loraUsableBy(loraUrl, user)
+      if (!allowed.ok) return jsonPrivate({ error: allowed.reason }, { status: 403 })
+    }
+
     // Bearer API-key calls: enforce scopes + per-model permission, and force the
     // queue path (adminMode/syncMode are portal concepts — sync blocks too long
     // for a desktop poller).
