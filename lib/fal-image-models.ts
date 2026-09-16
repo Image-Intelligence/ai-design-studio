@@ -216,6 +216,9 @@ const BASE_DIMS: Record<string, [number, number]> = {
  * whose `image_size` accepts a custom object. `maxDim` keeps us inside each
  * provider's practical ceiling (the schema cap of 14142 is not a real limit).
  */
+/** Largest side ideogram/v4/tiling returns as asked. Measured, not read. */
+const IDEOGRAM_TILING_MAX_DIM = 2048
+
 function imageSize(aspectRatio: string, quality: string, maxDim = 2048): { width: number; height: number } {
   const [bw, bh] = BASE_DIMS[aspectRatio] ?? BASE_DIMS['1:1']
   const mult = quality === '4k' ? 3 : quality === '2k' ? 2 : 1
@@ -681,6 +684,45 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       enable_safety_checker: false,
       expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
       rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
+    }),
+  },
+
+  /*
+   * Seamless textures, not a bigger canvas.
+   *
+   * "Tiling" gets used for two unrelated things. This is the texture sense:
+   * one image whose opposite edges match, so it repeats without a visible
+   * join - wallpaper, fabric, ground cover. It is NOT tiled upscaling, and it
+   * does not give more pixels than any other endpoint; what it gives is an
+   * image you can repeat to cover any surface at all.
+   *
+   * Unlike Instant and Fast it accepts an input image with a strength, which
+   * is how an existing texture is made to wrap.
+   */
+  'ideogram-v4-tiling': {
+    id: 'ideogram-v4-tiling',
+    promptMin: 1,
+    promptMax: 10000,
+    endpoint: 'ideogram/v4/tiling',
+    needsImage: false,
+    imageParam: 'image_url',
+    maxInputImages: 1,
+    promptRequired: true,
+    aspectRatios: null,
+    usesImageSize: true,
+    notes: 'seamless tile; tiling_mode both|horizontal|vertical',
+    build: (ctx) => ({
+      prompt: ctx.prompt,
+      image_size: imageSize(ctx.aspectRatio, ctx.quality, IDEOGRAM_TILING_MAX_DIM),
+      num_images: 1,
+      output_format: 'png',
+      enable_safety_checker: false,
+      expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
+      rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
+      tiling_mode: pickEnum(ctx.options.tilingMode, ['both', 'horizontal', 'vertical'] as const, 'both'),
+      // An input image is optional here: with one, it re-renders that texture
+      // so the edges wrap; without, it invents one from the prompt.
+      ...(ctx.imageUrls[0] ? { image_url: ctx.imageUrls[0], strength: 0.8 } : {}),
     }),
   },
 

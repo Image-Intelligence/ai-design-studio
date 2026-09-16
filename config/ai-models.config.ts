@@ -482,6 +482,19 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  {
+    id: 'ideogram-v4-tiling',
+    name: 'ideogram/v4/tiling',
+    displayName: 'Ideogram v4 Tiling',
+    description: 'Ideogram v4 Tiling — seamless repeating textures (edges wrap)',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'balanced',
+    isAvailable: true,
+    provider: 'fal'
+  },
+
   // Google NanoBanana 2 Lite
   {
     id: 'nano-banana-2-lite',
