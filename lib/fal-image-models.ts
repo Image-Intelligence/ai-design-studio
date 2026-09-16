@@ -670,14 +670,27 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     promptRequired: true,
     aspectRatios: null,
     usesImageSize: true,
-    build: (ctx) => ({
-      prompt: ctx.prompt,
-      image_size: imageSize(ctx.aspectRatio, ctx.quality, 2048),
-      num_images: 1,
-      output_format: 'png',
-      enable_safety_checker: false,
-      expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
-    }),
+    notes: 'fastest tier; a LoRA moves it to ideogram/v4/lora at TURBO',
+    /*
+     * Instant has no LoRA endpoint of its own, but it is a speed tier rather
+     * than a different model — and ideogram/v4/lora accepts rendering_speed
+     * TURBO. So a LoRA runs there at the fastest setting instead of being
+     * unavailable on this variant.
+     */
+    resolveEndpoint: (ctx) => ideogramLoras(ctx.options) ? 'ideogram/v4/lora' : 'ideogram/v4/instant',
+    build: (ctx) => {
+      const loras = ideogramLoras(ctx.options)
+      return {
+        prompt: ctx.prompt,
+        image_size: imageSize(ctx.aspectRatio, ctx.quality, 2048),
+        num_images: 1,
+        output_format: 'png',
+        enable_safety_checker: false,
+        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
+        // Only the LoRA endpoint has this field; the instant one does not.
+        ...(loras ? { loras, rendering_speed: 'TURBO' } : {}),
+      }
+    },
   },
   'ideogram-v4-fast': {
     id: 'ideogram-v4-fast',

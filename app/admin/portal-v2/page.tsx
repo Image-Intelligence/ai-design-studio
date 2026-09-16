@@ -132,7 +132,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "meta-muse",            apiId: "meta-muse",                name: "Meta Muse",           aspectRatios: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "bria-fibo",            apiId: "bria-fibo",                name: "Bria Fibo 1.5",       aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-instant",  apiId: "ideogram-v4-instant",      name: "Ideogram v4 Instant", aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 0, isFal: true, maxImages: 4 },
-  { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 0, isFal: true, maxImages: 4 },
+  { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-tiling",   apiId: "ideogram-v4-tiling",       name: "Ideogram v4 Tiling",  aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "nano-banana-2-lite",   apiId: "nano-banana-2-lite",       name: "NanoBanana 2 Lite",   aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
   // Recraft V4 Styles — the vector pair outputs true SVG
@@ -20740,21 +20740,33 @@ function PromptBox({
   }
 
   // Which training model IDs produce LoRAs compatible with each portal model
+  /*
+   * Which trainers produce LoRAs this model can load. A LoRA is built against
+   * one base and loads on nothing else, so this is the difference between a
+   * list of usable adapters and a list of things that will fail at generation.
+   *
+   * An entry of [] means "no trained LoRAs apply here" — it used to be read as
+   * "no filter", which is the opposite, and is why a model with no dedicated
+   * trainer was offered every LoRA in the studio.
+   */
   const LORA_TRAINER_COMPAT: Record<string, string[]> = {
-    "flux-1-dev":   ["fal-ai/flux-lora-fast-training"],
-    "flux-2":       ["fal-ai/flux-2-trainer"],
-    "z-image-turbo":["fal-ai/z-image-turbo-trainer-v2"],
-    "z-image-base": [], // no dedicated trainer yet — custom uploads only
+    "flux-1-dev":          ["fal-ai/flux-lora-fast-training"],
+    "flux-2":              ["fal-ai/flux-2-trainer"],
+    "z-image-turbo":       ["fal-ai/z-image-turbo-trainer-v2"],
+    "z-image-base":        [], // no dedicated trainer yet — custom uploads only
+    "ideogram-v4-instant": ["ideogram/v4/trainer"],
+    "ideogram-v4-fast":    ["ideogram/v4/trainer"],
+    "ideogram-v4-tiling":  ["ideogram/v4/trainer"],
   }
 
   // Fetch completed LoRA jobs when a LoRA-capable model is selected
   /*
    * "Can this model take a LoRA?" — the name is from when only z-image could.
-   * Ideogram v4 Fast and Tiling each have a LoRA sibling endpoint; Instant has
-   * none, so it is deliberately absent and shows no LoRA button.
+   * All three Ideogram variants qualify: Fast and Tiling have LoRA sibling
+   * endpoints, and Instant borrows ideogram/v4/lora at TURBO.
    */
   const isZImageModel = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
-    || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling"
+    || model.id.startsWith("ideogram-v4-")
   /*
    * Per fal's published schemas. Z-Image Turbo is distilled: no guidance_scale
    * field exists and num_inference_steps is capped at 8, so offering FLUX's
@@ -20775,7 +20787,8 @@ function PromptBox({
   }, [acceleration, model.id, selectedLoraUrl])
   useEffect(() => {
     if (!isZImageModel) { setSelectedLoraUrl(null); setLoraJobs([]); return }
-    const compatTrainers = LORA_TRAINER_COMPAT[model.id] ?? []
+    // Undefined = not in the table = unfiltered. [] = nothing applies.
+    const compatTrainers = LORA_TRAINER_COMPAT[model.id]
     const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
     /*
      * Two sources, both scoped by the server.
@@ -20798,7 +20811,7 @@ function PromptBox({
           .then((d: { jobs?: Array<{ id: number; name: string; loraUrl: string | null; status: string; modelId: string; config: Record<string, unknown> }> }) =>
             (d.jobs ?? [])
               .filter(j => j.status === "completed" && j.loraUrl
-                && (compatTrainers.length === 0 || compatTrainers.includes(j.modelId)))
+                && (compatTrainers === undefined || compatTrainers.includes(j.modelId)))
               .map(j => ({ id: j.id, name: j.name, loraUrl: j.loraUrl!, triggerWord: j.config?.trigger_word as string | undefined })))
           .catch(() => []),
       ])
