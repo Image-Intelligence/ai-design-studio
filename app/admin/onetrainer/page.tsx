@@ -262,6 +262,24 @@ const RECIPE_SIZES = {
 } as const
 type RecipeSize = keyof typeof RECIPE_SIZES
 
+/**
+ * Suggested total steps for a fal trainer, from the number of items attached.
+ *
+ * What matters is steps ÷ items — how many times the trainer sees each one.
+ * Around 30 passes is the usual middle for a character or style LoRA: fewer
+ * under-fits, many more starts memorising the set. Video clips carry far more
+ * signal per item, so they need fewer.
+ *
+ * Rounded to 50 because the precision is not real, and clamped to the range
+ * every fal trainer here accepts.
+ */
+const PASSES_PER_ITEM = { image: 30, video: 20 } as const
+function suggestFalSteps(items: number, media: 'image' | 'video' | undefined): number | null {
+  if (!items || items < 1) return null
+  const passes = PASSES_PER_ITEM[media === 'video' ? 'video' : 'image']
+  return Math.min(40000, Math.max(100, Math.round((items * passes) / 50) * 50))
+}
+
 const recipeSizeForCount = (n: number): RecipeSize =>
   n <= 50 ? 's' : n <= 100 ? 'm' : n <= 250 ? 'l' : n <= 1000 ? 'xl' : n <= 5000 ? 'xxl' : n <= 20000 ? 'xxxl' : 'huge'
 
@@ -3449,6 +3467,9 @@ export default function OneTrainerPage() {
     if (!TRAINER_FAMILIES[base]) return
     setFalTrainer(base)
     const cfg = selectedPreset?.config ?? {}
+    // A preset's number is the preset's, not ours — drop the marker so the
+    // suggestion does not immediately overwrite what the preset asked for.
+    if (cfg.steps !== undefined) autoStepsRef.current = null
     setFalCfg(f => ({
       ...f,
       steps: cfg.steps !== undefined ? String(cfg.steps) : f.steps,
@@ -3464,6 +3485,9 @@ export default function OneTrainerPage() {
     autoScale: true,
   })
   const [falJobId, setFalJobId] = useState<number | null>(null)
+  // The value this last put in the Steps box. If the box still holds it, the
+  // number is ours to update; if it holds anything else, someone typed it.
+  const autoStepsRef = useRef<string | null>(null)
   const [lr,         setLr]         = useState('')
   const [batchSize,  setBatchSize]  = useState('')
   const [epochs,     setEpochs]     = useState('')
@@ -3731,6 +3755,36 @@ export default function OneTrainerPage() {
 
   // Dataset composition snapshots per concept (stored in run.json for Reload)
   const [conceptSnapshots, setConceptSnapshots] = useState<Record<string, DatasetSnapshot>>({})
+
+  /*
+   * How many items are attached, counted exactly as the launch counts them:
+   * unique image ids across every concept. Anything else could disagree with
+   * what actually gets trained.
+   */
+  const falItemCount = (() => {
+    const ids = new Set<number>()
+    for (const c of concepts) {
+      for (const img of conceptSnapshots[c.id]?.images ?? []) if (img.id > 0) ids.add(img.id)
+    }
+    return ids.size
+  })()
+  const suggestedSteps = suggestFalSteps(falItemCount, falFamily?.media)
+
+  /*
+   * Follow the dataset while the box still holds a number we put there. Once
+   * it holds something typed by hand, stop touching it — the suggestion moves
+   * under the field instead.
+   */
+  useEffect(() => {
+    if (suggestedSteps === null) return
+    const next = String(suggestedSteps)
+    setFalCfg(f => {
+      if (f.steps !== '' && f.steps !== autoStepsRef.current) return f
+      autoStepsRef.current = next
+      return { ...f, steps: next }
+    })
+  }, [suggestedSteps])
+
 
   // ── Pre-launch runtime estimate (cloud) — from config + attached datasets.
   // Tuned A40 priors; the Monitor's live-measured ETAs take over once running.
@@ -4992,7 +5046,32 @@ export default function OneTrainerPage() {
                           <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Steps</label>
                           <input type="number" value={falCfg.steps} onChange={e => setFalCfg(f => ({ ...f, steps: e.target.value }))} placeholder="400"
                             className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-slate-700 focus:outline-none focus:border-white/30" />
-                          <p className="text-[9px] text-slate-600 leading-snug">Total training steps. ~400 is the trainer default; more learns harder but risks overfitting motion.</p>
+                          {(() => {
+                            /*
+                             * Steps are absolute, so the useful figure is how
+                             * many times each item is seen. Showing that turns
+                             * "is 1000 right?" into something answerable
+                             * without asking anyone.
+                             */
+                            if (falItemCount === 0) {
+                              return <p className="text-[9px] text-slate-600 leading-snug">Attach a dataset below and this will suggest a step count.</p>
+                            }
+                            const current = parseInt(falCfg.steps) || 0
+                            const passes = current > 0 ? Math.round(current / falItemCount) : 0
+                            const matches = suggestedSteps !== null && current === suggestedSteps
+                            return (
+                              <p className="text-[9px] text-slate-600 leading-snug">
+                                {passes > 0 && <>≈{passes} pass{passes === 1 ? '' : 'es'} over {falItemCount} item{falItemCount === 1 ? '' : 's'}. </>}
+                                {matches ? (
+                                  <span className="text-emerald-400/70">Suggested for this dataset.</span>
+                                ) : suggestedSteps !== null ? (
+                                  <>Suggested <button type="button"
+                                    onClick={() => { autoStepsRef.current = String(suggestedSteps); setFalCfg(f => ({ ...f, steps: String(suggestedSteps) })) }}
+                                    className="underline underline-offset-2 text-slate-400 hover:text-white">{suggestedSteps}</button>.</>
+                                ) : null}
+                              </p>
+                            )
+                          })()}
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Learning Rate</label>
