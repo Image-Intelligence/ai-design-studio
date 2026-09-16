@@ -263,21 +263,48 @@ const RECIPE_SIZES = {
 type RecipeSize = keyof typeof RECIPE_SIZES
 
 /**
- * Suggested total steps for a fal trainer, from the number of items attached.
+ * Steps per item, by what is being trained.
  *
- * What matters is steps ÷ items — how many times the trainer sees each one.
- * Around 30 passes is the usual middle for a character or style LoRA: fewer
- * under-fits, many more starts memorising the set. Video clips carry far more
- * signal per item, so they need fewer.
+ * From fal's own guidance for this trainer — 500–1500 for styles and small
+ * datasets, 1500–3000 for specific subjects, 3000+ for larger ones, over its
+ * recommended 10–30 images. These rates reproduce those bands at those sizes.
  *
- * Rounded to 50 because the precision is not real, and clamped to the range
- * every fal trainer here accepts.
+ * Independent Ideogram 4 write-ups agree on the shape from the other side:
+ * 15–30 per image for a general LoRA over many images, 60–120 for a focused
+ * object or outfit, 80–150 for a specific character. Those are from
+ * ai-toolkit, not this hosted trainer, so they corroborate rather than rule.
  */
-const PASSES_PER_ITEM = { image: 30, video: 20 } as const
-function suggestFalSteps(items: number, media: 'image' | 'video' | undefined): number | null {
+const FAL_STEPS_PER_ITEM: Record<RecipeSubject, number> = {
+  character: 100,   // a single identity has to be locked in hard
+  multichar: 120,   // each identity needs its own share of the run
+  clothing:  90,
+  object:    90,
+  pose:      90,
+  style:     40,    // absorb the look without copying the images
+  scene:     40,    // trains like a style
+}
+/** With nothing picked, the middle of fal's range rather than either extreme. */
+const FAL_STEPS_PER_ITEM_DEFAULT = 60
+
+/**
+ * Suggested total steps for a fal trainer.
+ *
+ * Clamped to 500–6000: below 500 nothing has been learned whatever the count,
+ * and above 6000 a large set is proposing more money than anyone means to
+ * spend — 191 images at the character rate would otherwise ask for $129.
+ *
+ * Video keeps a flat 20 per clip. fal publishes no equivalent guidance for the
+ * Wan trainer, so that one is still a convention and is labelled as such.
+ */
+function suggestFalSteps(
+  items: number,
+  media: 'image' | 'video' | undefined,
+  subject: RecipeSubject | null,
+): number | null {
   if (!items || items < 1) return null
-  const passes = PASSES_PER_ITEM[media === 'video' ? 'video' : 'image']
-  return Math.min(40000, Math.max(100, Math.round((items * passes) / 50) * 50))
+  if (media === 'video') return Math.min(40000, Math.max(100, Math.round((items * 20) / 50) * 50))
+  const per = subject ? FAL_STEPS_PER_ITEM[subject] : FAL_STEPS_PER_ITEM_DEFAULT
+  return Math.min(6000, Math.max(500, Math.round((items * per) / 50) * 50))
 }
 
 const recipeSizeForCount = (n: number): RecipeSize =>
@@ -3768,7 +3795,7 @@ export default function OneTrainerPage() {
     }
     return ids.size
   })()
-  const suggestedSteps = suggestFalSteps(falItemCount, falFamily?.media)
+  const suggestedSteps = suggestFalSteps(falItemCount, falFamily?.media, recipeSubject)
 
   /*
    * Follow the dataset while the box still holds a number we put there. Once
@@ -3784,6 +3811,13 @@ export default function OneTrainerPage() {
       return { ...f, steps: next }
     })
   }, [suggestedSteps])
+
+  /*
+   * fal's learning-rate guidance for this trainer is "0.0001, raise cautiously,
+   * lower for gentler" — no per-subject values. The RunPod recipes DO carry
+   * per-subject rates, but those are tuned for a different trainer entirely, so
+   * they are deliberately not applied here.
+   */
 
 
   // ── Pre-launch runtime estimate (cloud) — from config + attached datasets.
@@ -5041,6 +5075,33 @@ export default function OneTrainerPage() {
 
                   {isFalPreset ? (
                     <div className="space-y-3">
+                      {/*
+                        * fal bands its step guidance by what you are training,
+                        * not by dataset size alone, so the suggestion needs
+                        * this answer. Sets only the subject — the recipe's
+                        * rank/alpha/scheduler belong to the RunPod trainer.
+                        */}
+                      <div className="space-y-1.5">
+                        <p className="text-[9px] text-slate-600 uppercase tracking-wider font-mono">What are you training?</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(Object.keys(RECIPE_SUBJECTS) as RecipeSubject[]).map(k => (
+                            <button key={k} type="button"
+                              onClick={() => setRecipeSubject(recipeSubject === k ? null : k)}
+                              className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${
+                                recipeSubject === k
+                                  ? 'border-white/40 bg-white/[0.12] text-white'
+                                  : 'border-white/[0.08] bg-white/[0.03] text-slate-400 hover:text-white hover:border-white/20'}`}>
+                              {RECIPE_SUBJECTS[k].label}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[9px] text-slate-600 leading-snug">
+                          Sets the suggested step count. fal's guidance for this trainer:
+                          500–1500 for a style or a small set, 1500–3000 for a specific subject,
+                          3000+ for a large varied one.
+                        </p>
+                      </div>
+
                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
                         <div className="space-y-1.5">
                           <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Steps</label>
@@ -5077,7 +5138,11 @@ export default function OneTrainerPage() {
                           <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Learning Rate</label>
                           <input value={falCfg.learningRate} onChange={e => setFalCfg(f => ({ ...f, learningRate: e.target.value }))} placeholder="0.0002"
                             className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-slate-700 focus:outline-none focus:border-white/30" />
-                          <p className="text-[9px] text-slate-600 leading-snug">Trainer default 2e-4. Lower for subtle styles, higher fries motion fast.</p>
+                          <p className="text-[9px] text-slate-600 leading-snug">
+                            {falFamily?.familyId === 'ideogram-v4'
+                              ? 'Ideogram default 1e-4. fal advises raising it only cautiously — faster learning at the risk of instability — and lowering it for gentler, slower learning. Change steps first.'
+                              : 'Trainer default 2e-4. Lower for subtle styles, higher fries motion fast.'}
+                          </p>
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Trigger Phrase</label>
@@ -5085,7 +5150,7 @@ export default function OneTrainerPage() {
                             className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-slate-700 focus:outline-none focus:border-white/30" />
                           <p className="text-[9px] text-slate-600 leading-snug">
                             Optional word to bind the concept to — use it in prompts when serving the LoRA.
-                            {falFamily?.familyId === 'ideogram-v4' && ' Ideogram has no trigger field, so this becomes the default caption on every training image.'}
+                            {falFamily?.familyId === 'ideogram-v4' && ' Ideogram has no trigger field, so this becomes the default caption on uncaptioned images. fal advises a RARE token (e.g. "sks", "ohwx") in EVERY caption when training a specific subject.'}
                           </p>
                         </div>
                       </div>
