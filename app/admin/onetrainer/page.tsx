@@ -3438,6 +3438,24 @@ export default function OneTrainerPage() {
    */
   const [falTrainer, setFalTrainer] = useState<string>('ideogram/v4/trainer')
   const falFamily = TRAINER_FAMILIES[falTrainer]
+  /*
+   * The preset is the thing the user picked, so it decides the trainer — and
+   * carries that trainer's own defaults, which differ a lot (Ideogram starts
+   * at 1000 steps and 1e-4; Wan at 400 and 2e-4). Without this the picker and
+   * the preset could disagree about what was about to run.
+   */
+  useEffect(() => {
+    const base = String(selectedPreset?.config?.base_model_name ?? '')
+    if (!TRAINER_FAMILIES[base]) return
+    setFalTrainer(base)
+    const cfg = selectedPreset?.config ?? {}
+    setFalCfg(f => ({
+      ...f,
+      steps: cfg.steps !== undefined ? String(cfg.steps) : f.steps,
+      learningRate: cfg.learning_rate !== undefined ? String(cfg.learning_rate) : f.learningRate,
+      variant: (cfg.variant === 'i2v-a14b' ? 'i2v-a14b' : cfg.variant === 't2v-a14b' ? 't2v-a14b' : f.variant),
+    }))
+  }, [selectedPreset])
   const [falCfg, setFalCfg] = useState({
     variant: 't2v-a14b' as 't2v-a14b' | 'i2v-a14b',
     steps: '400',
@@ -4536,7 +4554,12 @@ export default function OneTrainerPage() {
   // local mode is single-run
   // Wan 2.2 preset trains on fal's hosted trainer — no checkpoint, and the
   // run settings collapse to the trainer's own four knobs
-  const isFalPreset = String(selectedPreset?.config?.base_model_name ?? '') === 'fal-ai/wan-22-trainer'
+  /*
+   * A fal preset is any preset whose base model names a registered trainer
+   * family. Comparing against one hard-coded id meant a new family could be
+   * registered, given a preset and a picker entry, and still be invisible.
+   */
+  const isFalPreset = !!TRAINER_FAMILIES[String(selectedPreset?.config?.base_model_name ?? '')]
   const canTrain = mode === 'local'
     ? (serverRunning && !!selectedPreset && concepts.some(c => c.path.trim()) && !isTraining)
     : mode === 'fal'
@@ -4720,7 +4743,7 @@ export default function OneTrainerPage() {
                           for (const p of presets) {
                             // fal trainer presets only exist in API mode; the
                             // OneTrainer presets can't run there
-                            const falP = String(p.config?.base_model_name ?? '') === 'fal-ai/wan-22-trainer'
+                            const falP = !!TRAINER_FAMILIES[String(p.config?.base_model_name ?? '')]
                             if (mode === 'fal' ? !falP : falP) continue
                             const { family } = parsePreset(p.filename)
                             ;(grouped[family] ??= []).push(p)
@@ -5210,7 +5233,9 @@ export default function OneTrainerPage() {
                     <div>
                       <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">3 · Training Concepts</p>
                       <p className="text-[10px] text-slate-600 mt-0.5">
-                        {mode === 'local' ? 'Each concept is a local folder of images.' : isFalPreset ? 'Compose datasets of CLIPS and GIFs (5–50 items total) — stills are rejected; GIFs auto-convert server-side.' : 'Upload a .zip of your image + caption pairs for each concept.'}
+                        {mode === 'local' ? 'Each concept is a local folder of images.' : isFalPreset ? (falFamily?.media === 'video'
+                          ? `Compose datasets of CLIPS and GIFs (${falFamily.datasetRules.min}–${falFamily.datasetRules.max} items) — stills are rejected; GIFs auto-convert server-side.`
+                          : `Compose a dataset of STILL IMAGES (${falFamily?.datasetRules.min}–${falFamily?.datasetRules.max} items) — captions ride along automatically.`) : 'Upload a .zip of your image + caption pairs for each concept.'}
                       </p>
                     </div>
                     <button onClick={() => setConcepts(p => [...p, emptyConcept()])}

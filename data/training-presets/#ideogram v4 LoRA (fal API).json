@@ -1,0 +1,9 @@
+{
+  "base_model_name": "ideogram/v4/trainer",
+  "model_type": "IDEOGRAM_V4_FAL",
+  "training_method": "LORA",
+  "learning_rate": 0.0001,
+  "steps": 1000,
+  "trigger_phrase": "",
+  "resolution": "auto"
+}
