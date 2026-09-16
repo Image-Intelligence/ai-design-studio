@@ -3512,6 +3512,13 @@ export default function OneTrainerPage() {
     autoScale: true,
   })
   const [falJobId, setFalJobId] = useState<number | null>(null)
+  type FalJob = {
+    id: number; name: string; modelId: string; status: string
+    imageCount: number; errorMsg: string | null; loraUrl: string | null
+    createdAt: string; requestId: string | null
+  }
+  const [falJobs, setFalJobs] = useState<FalJob[]>([])
+  const [falJobsLoading, setFalJobsLoading] = useState(false)
   // The value this last put in the Steps box. If the box still holds it, the
   // number is ours to update; if it holds anything else, someone typed it.
   const autoStepsRef = useRef<string | null>(null)
@@ -4170,6 +4177,34 @@ export default function OneTrainerPage() {
     finally { setR2CheckpointsLoading(false) }
   }
 
+  const loadFalJobs = useCallback(async () => {
+    setFalJobsLoading(true)
+    try {
+      const res = await fetch('/api/admin/lora-training/jobs', { headers: ah() })
+      if (res.ok) {
+        const d = await res.json() as { jobs?: FalJob[] }
+        // Only the hosted-trainer families — this page's fal mode launches
+        // those and nothing else.
+        setFalJobs((d.jobs ?? []).filter(j => !!TRAINER_FAMILIES[j.modelId]))
+      }
+    } catch { /* transient — the next poll retries */ }
+    finally { setFalJobsLoading(false) }
+  }, [])
+
+  /*
+   * Poll only while something is unfinished. A tab left open on a page with no
+   * running jobs should not keep asking.
+   */
+  useEffect(() => {
+    if (mode !== 'fal' || tab !== 'monitor') return
+    void loadFalJobs()
+    const t = setInterval(() => {
+      const busy = falJobs.some(j => ['preparing', 'queued', 'in_progress'].includes(j.status))
+      if (busy || falJobs.length === 0) void loadFalJobs()
+    }, 5000)
+    return () => clearInterval(t)
+  }, [mode, tab, loadFalJobs]) // eslint-disable-line react-hooks/exhaustive-deps
+
   async function loadRuns() {
     setR2LorasLoading(true)
     setLorasError(null)
@@ -4492,6 +4527,9 @@ export default function OneTrainerPage() {
         const d = await res.json().catch(() => ({}))
         if (!res.ok || !d.jobId) { alert(d.error ?? `Error ${res.status}`); return }
         setFalJobId(d.jobId)
+        // The run is watchable here; no reason to send anyone elsewhere.
+        setTab('monitor')
+        void loadFalJobs()
         return
       }
       if (!selectedPreset) return // narrow: local/cloud always have one (guarded above)
@@ -5211,7 +5249,9 @@ export default function OneTrainerPage() {
                       {falJobId !== null && (
                         <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-300">
                           Job #{falJobId} started — dataset preparing &amp; submitting to fal.{' '}
-                          <a href="/admin/lora-training" className="underline underline-offset-2 hover:text-white">Monitor on the LoRA Training page</a>.
+                          <button type="button" onClick={() => setTab('monitor')} className="underline underline-offset-2 hover:text-white">
+                            Watch it on the Monitor tab
+                          </button>.
                         </div>
                       )}
                     </div>
@@ -5794,6 +5834,90 @@ export default function OneTrainerPage() {
 
       {/* ── Monitor tab ── */}
       {/* ── Monitor tab — cloud: concurrent runs, one self-polling card each ── */}
+      {tab === 'monitor' && mode === 'fal' && (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="space-y-3 max-w-3xl mx-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-bold text-white">fal Training Runs</p>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Hosted on fal. Preparing zips the dataset here; the rest runs on their side and lands in Saved LoRAs.
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button onClick={() => void loadFalJobs()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-slate-400 hover:text-white hover:border-white/20 text-[11px] transition-all">
+                  {falJobsLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                  Refresh
+                </button>
+                <button onClick={() => setTab('config')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-slate-400 hover:text-white hover:border-white/20 text-[11px] transition-all">
+                  <Settings2 size={11} />
+                  Configuration
+                </button>
+              </div>
+            </div>
+
+            {falJobs.length === 0 && !falJobsLoading && (
+              <p className="text-[11px] text-slate-600 py-8 text-center">
+                No fal training runs yet. Start one from the Configuration tab.
+              </p>
+            )}
+
+            {falJobs.map(j => {
+              const running = ['preparing', 'queued', 'in_progress'].includes(j.status)
+              const failed = j.status === 'failed'
+              const done = j.status === 'completed'
+              const fam = TRAINER_FAMILIES[j.modelId]
+              return (
+                <div key={j.id} className={`rounded-xl border p-4 space-y-2 ${
+                  failed ? 'border-red-500/25 bg-red-500/[0.04]'
+                    : done ? 'border-emerald-500/25 bg-emerald-500/[0.04]'
+                      : 'border-white/[0.10] bg-white/[0.03]'}`}>
+                  <div className="flex items-center gap-2.5">
+                    {running ? <Loader2 size={13} className="animate-spin text-sky-400 shrink-0" />
+                      : failed ? <AlertCircle size={13} className="text-red-400 shrink-0" />
+                        : <CheckCircle size={13} className="text-emerald-400 shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <p className="text-[12px] font-semibold text-white truncate">{j.name}</p>
+                        <span className="shrink-0 px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.10] text-[9px] font-mono text-slate-400">
+                          {fam?.label ?? j.modelId}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-600 font-mono mt-0.5">
+                        #{j.id} · {j.imageCount} item{j.imageCount === 1 ? '' : 's'} · {j.status}
+                        {j.createdAt && ` · ${new Date(j.createdAt).toLocaleTimeString()}`}
+                      </p>
+                    </div>
+                  </div>
+                  {/* prepare writes progress into errorMsg, so this line is the
+                      live status while running and the reason when it fails. */}
+                  {j.errorMsg && (
+                    <p className={`text-[10px] leading-snug font-mono ${failed ? 'text-red-300' : 'text-slate-500'}`}>
+                      {j.errorMsg}
+                    </p>
+                  )}
+                  {done && j.loraUrl && (
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <button onClick={() => { setTab('loras'); void loadRuns() }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/[0.06] border border-white/[0.12] text-white text-[10px] font-bold hover:bg-white/[0.12] transition-colors">
+                        <Zap size={10} />
+                        Saved LoRAs
+                      </button>
+                      <button onClick={() => { void navigator.clipboard?.writeText(j.loraUrl!) }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-slate-400 hover:text-white text-[10px] transition-colors">
+                        Copy URL
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {tab === 'monitor' && mode === 'cloud' && (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="space-y-3 max-w-3xl mx-auto">

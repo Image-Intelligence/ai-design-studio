@@ -225,7 +225,9 @@ export async function POST(req: NextRequest) {
 
           // Image path: resize to max 1024px, preserve original format
           // (PNG stays PNG to avoid JPEG artifacts)
-          const res = await fetch(img.imageUrl, { signal: AbortSignal.timeout(15_000) })
+          // fetchMedia, not fetch: these live on the private bucket and an
+          // unsigned request is a 401 that looks like an unusable dataset.
+          const res = await fetchMedia(img.imageUrl, { signal: AbortSignal.timeout(60_000) })
           if (!res.ok) return null
           const rawBuf = Buffer.from(await res.arrayBuffer())
           const meta = await sharp(rawBuf).metadata()
