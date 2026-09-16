@@ -3818,6 +3818,22 @@ export default function OneTrainerPage() {
    * per-subject rates, but those are tuned for a different trainer entirely, so
    * they are deliberately not applied here.
    */
+  const falDefaultLr = (() => {
+    const fromPreset = selectedPreset?.config?.learning_rate
+    if (fromPreset !== undefined && fromPreset !== '') return String(fromPreset)
+    return falFamily?.familyId === 'ideogram-v4' ? '0.0001' : '0.0002'
+  })()
+
+  /** Fill Steps and Learning Rate from the dataset, the subject and the trainer. */
+  function applyFalAutomatic() {
+    if (suggestedSteps === null) return
+    autoStepsRef.current = String(suggestedSteps)
+    setFalCfg(f => ({ ...f, steps: String(suggestedSteps), learningRate: falDefaultLr }))
+  }
+  const falIsAutomatic =
+    suggestedSteps !== null
+    && (parseInt(falCfg.steps) || 0) === suggestedSteps
+    && falCfg.learningRate === falDefaultLr
 
 
   // ── Pre-launch runtime estimate (cloud) — from config + attached datasets.
@@ -5100,6 +5116,27 @@ export default function OneTrainerPage() {
                           500–1500 for a style or a small set, 1500–3000 for a specific subject,
                           3000+ for a large varied one.
                         </p>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[9px] text-slate-600 leading-snug">
+                          {falItemCount === 0
+                            ? 'Attach a dataset below to enable automatic settings.'
+                            : falIsAutomatic
+                              ? 'Steps and learning rate are set for this dataset.'
+                              : 'Set steps and learning rate from the dataset and what you are training.'}
+                        </p>
+                        <button type="button" onClick={applyFalAutomatic}
+                          disabled={suggestedSteps === null || falIsAutomatic}
+                          className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-semibold transition-all ${
+                            falIsAutomatic
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300/80 cursor-default'
+                              : suggestedSteps === null
+                                ? 'border-white/[0.08] bg-white/[0.02] text-slate-700 cursor-not-allowed'
+                                : 'border-white/[0.14] bg-white/[0.06] text-white hover:bg-white/[0.12]'}`}>
+                          {falIsAutomatic ? <Check size={11} /> : <Sparkles size={11} />}
+                          Automatic
+                        </button>
                       </div>
 
                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
