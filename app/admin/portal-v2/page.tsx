@@ -20748,17 +20748,26 @@ function PromptBox({
   }
 
   // Fetch completed LoRA jobs when a LoRA-capable model is selected
+  /*
+   * "Can this model take a LoRA?" — the name is from when only z-image could.
+   * Ideogram v4 Fast and Tiling each have a LoRA sibling endpoint; Instant has
+   * none, so it is deliberately absent and shows no LoRA button.
+   */
   const isZImageModel = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
+    || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling"
   /*
    * Per fal's published schemas. Z-Image Turbo is distilled: no guidance_scale
    * field exists and num_inference_steps is capped at 8, so offering FLUX's
    * CFG 3.5 / 28 steps there was offering two controls that do nothing.
    */
-  const loraLimits = model.id === "z-image-turbo"
-    ? { cfg: false, steps: [1, 8] as const, defaultSteps: 8 }
-    : model.id === "z-image-base"
-      ? { cfg: true, steps: [1, 50] as const, defaultSteps: 28 }
-      : { cfg: true, steps: [10, 60] as const, defaultSteps: 28 }
+  const loraLimits = model.id.startsWith("ideogram-")
+    // Ideogram exposes neither: speed is a rendering_speed enum instead.
+    ? { cfg: false, steps: null, defaultSteps: 28 }
+    : model.id === "z-image-turbo"
+      ? { cfg: false, steps: [1, 8] as const, defaultSteps: 8 }
+      : model.id === "z-image-base"
+        ? { cfg: true, steps: [1, 50] as const, defaultSteps: 28 }
+        : { cfg: true, steps: [10, 60] as const, defaultSteps: 28 }
   // Selecting a LoRA moves FLUX 1 Dev onto an endpoint without 'high'. The
   // server narrows it anyway; this keeps the button from lying about it.
   useEffect(() => {
@@ -21622,7 +21631,8 @@ function PromptBox({
               </div>
               )}
 
-              {/* Steps — range is the model's own */}
+              {/* Steps — range is the model's own, or absent entirely */}
+              {loraLimits.steps && (
               <div className="grid grid-cols-[4rem_1fr_2.5rem] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Steps</span>
                 <input
@@ -21633,6 +21643,7 @@ function PromptBox({
                 />
                 <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{loraSteps}</span>
               </div>
+              )}
             </div>
           )}
 

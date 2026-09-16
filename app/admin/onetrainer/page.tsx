@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
+import { TRAINER_FAMILIES } from "@/lib/trainer-families"
 import {
   ArrowLeft, Play, Square, Loader2, CheckCircle, AlertCircle,
   Plus, Trash2, FolderOpen, ChevronDown, RefreshCw, Cpu,
@@ -175,6 +176,18 @@ interface RunInfo {
   epochs:    R2Checkpoint[]
   hasMeta:   boolean
   createdAt: string | null
+  /** Trainer family from run.json, or 'onetrainer-runpod' for local/cloud runs. */
+  trainedOn?: string | null
+  runName?:   string | null
+}
+
+/** Family id → the name a person would recognise. */
+const TRAINED_ON_LABEL: Record<string, string> = {
+  'ideogram-v4':      'Ideogram v4',
+  'wan22-video':      'Wan 2.2 Video',
+  'wan22-image':      'Wan 2.2 Image',
+  'ltx2-video':       'LTX-2 Video',
+  'onetrainer-runpod': 'OneTrainer / RunPod',
 }
 
 // A cloud training run being tracked on the Monitor tab. Each RunPod submission
@@ -541,7 +554,16 @@ function RunCard({ run, adminHeaders, onReload }: {
       <div className="flex items-center gap-3 px-4 py-3">
         <Zap size={14} className="text-emerald-400 shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-[12px] font-semibold text-white truncate">{run.folder}</p>
+          <div className="flex items-center gap-2 min-w-0">
+            <p className="text-[12px] font-semibold text-white truncate">{run.folder}</p>
+            {/* Which model these weights are FOR. A LoRA is useless against
+                the wrong base, and the folder name never said. */}
+            {run.trainedOn && (
+              <span className="shrink-0 px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/[0.10] text-[9px] font-mono text-slate-400">
+                {TRAINED_ON_LABEL[run.trainedOn] ?? run.trainedOn}
+              </span>
+            )}
+          </div>
           <p className="text-[10px] text-slate-600 font-mono mt-0.5">
             {run.final ? fmtGb(run.final.size_gb) : 'no final file'}
             {run.epochs.length > 0 && ` · ${run.epochs.length} epoch snapshot${run.epochs.length === 1 ? '' : 's'}`}
@@ -3409,6 +3431,13 @@ export default function OneTrainerPage() {
   const [runName,    setRunName]    = useState('My Training Run')
   // fal API mode (Wan 2.2 Video via fal-ai/wan-22-trainer): trains on the
   // datasets composed below — clips + GIFs (GIFs auto-convert server-side)
+  /*
+   * Which fal trainer to run. Driven by lib/trainer-families.ts so adding a
+   * family is a registry record and nothing here — which is what the registry
+   * was built for, and was not true while this page hard-coded Wan 2.2.
+   */
+  const [falTrainer, setFalTrainer] = useState<string>('ideogram/v4/trainer')
+  const falFamily = TRAINER_FAMILIES[falTrainer]
   const [falCfg, setFalCfg] = useState({
     variant: 't2v-a14b' as 't2v-a14b' | 'i2v-a14b',
     steps: '400',
@@ -4328,13 +4357,15 @@ export default function OneTrainerPage() {
           variant: falCfg.variant,
           steps: Math.max(100, parseInt(falCfg.steps) || 400),
           learning_rate: Math.max(0.000001, parseFloat(falCfg.learningRate) || 0.0002),
+          // Ideogram has no trigger_phrase field; its family maps this onto
+          // default_caption, which is where a token goes there.
           trigger_phrase: falCfg.triggerPhrase.trim(),
           auto_scale_input: falCfg.autoScale,
         }
         const res = await fetch('/api/admin/lora-training/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...ah() },
-          body: JSON.stringify({ imageIds: ids, modelId: 'fal-ai/wan-22-trainer', name: runName.trim(), config: cfg }),
+          body: JSON.stringify({ imageIds: ids, modelId: falTrainer, name: runName.trim(), config: cfg }),
         })
         const d = await res.json().catch(() => ({}))
         if (!res.ok || !d.jobId) { alert(d.error ?? `Error ${res.status}`); return }
@@ -4773,16 +4804,30 @@ export default function OneTrainerPage() {
                   {isFalPreset ? (
                     <div className="space-y-2">
                       <label className="space-y-1 block max-w-xs">
-                        <span className="text-[9px] text-slate-600 uppercase tracking-wider font-mono">Variant</span>
-                        <select value={falCfg.variant} onChange={e => setFalCfg(f => ({ ...f, variant: e.target.value as 't2v-a14b' | 'i2v-a14b' }))}
+                        <span className="text-[9px] text-slate-600 uppercase tracking-wider font-mono">Trainer</span>
+                        <select value={falTrainer} onChange={e => setFalTrainer(e.target.value)}
                           className="w-full px-3 py-2 rounded-lg bg-[#0a101d] border border-white/[0.08] text-sm text-white focus:outline-none focus:border-white/30 cursor-pointer">
-                          <option value="t2v-a14b">Text-to-video (t2v-a14b)</option>
-                          <option value="i2v-a14b">Image-to-video (i2v-a14b)</option>
+                          {Object.entries(TRAINER_FAMILIES).map(([id, f]) => (
+                            <option key={id} value={id}>{f.label} ({f.media})</option>
+                          ))}
                         </select>
                       </label>
+                      {/* Wan video only — an image trainer has no t2v/i2v split. */}
+                      {falFamily?.familyId === 'wan22-video' && (
+                        <label className="space-y-1 block max-w-xs">
+                          <span className="text-[9px] text-slate-600 uppercase tracking-wider font-mono">Variant</span>
+                          <select value={falCfg.variant} onChange={e => setFalCfg(f => ({ ...f, variant: e.target.value as 't2v-a14b' | 'i2v-a14b' }))}
+                            className="w-full px-3 py-2 rounded-lg bg-[#0a101d] border border-white/[0.08] text-sm text-white focus:outline-none focus:border-white/30 cursor-pointer">
+                            <option value="t2v-a14b">Text-to-video (t2v-a14b)</option>
+                            <option value="i2v-a14b">Image-to-video (i2v-a14b)</option>
+                          </select>
+                        </label>
+                      )}
                       <p className="text-[10px] text-slate-600 leading-relaxed">
-                        Hosted trainer on fal — no checkpoint to pick. Wan 2.2 A14B is the newest OPEN Wan;
-                        the LoRA it produces serves through the portal's Wan 2.2 pickers automatically.
+                        Hosted trainer on fal — no checkpoint to pick. Needs{" "}
+                        <span className="text-slate-500">{falFamily?.media === 'video' ? 'clips or GIFs' : 'still images'}</span>{" "}
+                        in the dataset composer below ({falFamily?.datasetRules.min}–{falFamily?.datasetRules.max} items).
+                        The finished LoRA lands in Saved LoRAs and serves through the portal's picker for that model.
                       </p>
                     </div>
                   ) : mode === 'local' ? (
@@ -4936,16 +4981,29 @@ export default function OneTrainerPage() {
                           <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Trigger Phrase</label>
                           <input value={falCfg.triggerPhrase} onChange={e => setFalCfg(f => ({ ...f, triggerPhrase: e.target.value }))} placeholder="optional, e.g. TOK_MOTION"
                             className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-slate-700 focus:outline-none focus:border-white/30" />
-                          <p className="text-[9px] text-slate-600 leading-snug">Optional word to bind the concept to — use it in prompts when serving the LoRA.</p>
+                          <p className="text-[9px] text-slate-600 leading-snug">
+                            Optional word to bind the concept to — use it in prompts when serving the LoRA.
+                            {falFamily?.familyId === 'ideogram-v4' && ' Ideogram has no trigger field, so this becomes the default caption on every training image.'}
+                          </p>
                         </div>
                       </div>
-                      <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none">
-                        <input type="checkbox" checked={falCfg.autoScale} onChange={e => setFalCfg(f => ({ ...f, autoScale: e.target.checked }))} className="accent-emerald-400" />
-                        Auto-scale clips to 81 frames @ 16fps (recommended)
-                      </label>
-                      <p className="text-[10px] text-slate-600 font-mono">
-                        ~$0.005/step on the fal account — est. ${(Math.max(100, parseInt(falCfg.steps) || 400) * 0.005).toFixed(2)} at {Math.max(100, parseInt(falCfg.steps) || 400)} steps · typical run 30–90 min
-                      </p>
+                      {falFamily?.media === 'video' && (
+                        <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none">
+                          <input type="checkbox" checked={falCfg.autoScale} onChange={e => setFalCfg(f => ({ ...f, autoScale: e.target.checked }))} className="accent-emerald-400" />
+                          Auto-scale clips to 81 frames @ 16fps (recommended)
+                        </label>
+                      )}
+                      {(() => {
+                        // fal publishes per-step pricing per trainer; Ideogram's
+                        // own page states 0.00675.
+                        const perStep = falFamily?.familyId === 'ideogram-v4' ? 0.00675 : 0.005
+                        const steps = Math.max(100, parseInt(falCfg.steps) || 400)
+                        return (
+                          <p className="text-[10px] text-slate-600 font-mono">
+                            ~${perStep}/step on the fal account — est. ${(steps * perStep).toFixed(2)} at {steps} steps
+                          </p>
+                        )
+                      })()}
                       {falJobId !== null && (
                         <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-300">
                           Job #{falJobId} started — dataset preparing &amp; submitting to fal.{' '}
@@ -5380,7 +5438,7 @@ export default function OneTrainerPage() {
                     <span className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none" style={{ animation: 'sheen-sweep 2.6s infinite' }} />
                   )}
                   {launching ? <Loader2 size={15} className="animate-spin" /> : mode === 'cloud' ? <Cloud size={15} /> : mode === 'fal' ? <Sparkles size={15} /> : <Play size={15} />}
-                  {launching ? 'Launching…' : isTraining ? 'Training in progress…' : mode === 'cloud' ? 'Train on RunPod' : mode === 'fal' ? 'Train on fal (Wan 2.2 Video)' : 'Start Training'}
+                  {launching ? 'Launching…' : isTraining ? 'Training in progress…' : mode === 'cloud' ? 'Train on RunPod' : mode === 'fal' ? `Train on fal (${falFamily?.label ?? falTrainer})` : 'Start Training'}
                 </button>
 
               </div>

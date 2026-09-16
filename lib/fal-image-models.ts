@@ -216,6 +216,21 @@ const BASE_DIMS: Record<string, [number, number]> = {
  * whose `image_size` accepts a custom object. `maxDim` keeps us inside each
  * provider's practical ceiling (the schema cap of 14142 is not a real limit).
  */
+/**
+ * The `loras` array for Ideogram's LoRA endpoints.
+ *
+ * Returns undefined rather than [] when there is nothing to send, so the
+ * caller can drop the key entirely: an empty array is a valid input that
+ * quietly selects the base model, which looks identical to a LoRA that failed
+ * to load.
+ */
+function ideogramLoras(options: Record<string, any>): { path: string; scale: number }[] | undefined {
+  const url = typeof options.loraUrl === 'string' ? options.loraUrl.trim() : ''
+  if (!url) return undefined
+  const scale = Number(options.loraScale)
+  return [{ path: url, scale: Number.isFinite(scale) ? Math.min(2, Math.max(0, scale)) : 1 }]
+}
+
 /** Largest side ideogram/v4/tiling returns as asked. Measured, not read. */
 const IDEOGRAM_TILING_MAX_DIM = 2048
 
@@ -670,21 +685,40 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     promptMax: 10000,
     endpoint: 'ideogram/v4/fast',
     needsImage: false,
-    imageParam: null,
-    maxInputImages: 0,
+    imageParam: 'image_url',
+    maxInputImages: 1,
     promptRequired: true,
     aspectRatios: null,
     usesImageSize: true,
-    notes: 'adds rendering_speed TURBO|BALANCED|QUALITY',
-    build: (ctx) => ({
-      prompt: ctx.prompt,
-      image_size: imageSize(ctx.aspectRatio, ctx.quality, 2048),
-      num_images: 1,
-      output_format: 'png',
-      enable_safety_checker: false,
-      expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
-      rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
-    }),
+    notes: 'rendering_speed TURBO|BALANCED|QUALITY; LoRA + i2i via sibling endpoints',
+    /*
+     * Four endpoints, one model. A LoRA or a reference image each move the
+     * request to the sibling that accepts it, because the plain endpoint has
+     * no loras field and would ignore the LoRA without complaint.
+     */
+    resolveEndpoint: (ctx) => {
+      const lora = !!ideogramLoras(ctx.options)
+      const img = ctx.imageUrls.length > 0
+      if (img && lora) return 'ideogram/v4/image-to-image/lora'
+      if (img) return 'ideogram/v4/image-to-image'
+      if (lora) return 'ideogram/v4/lora'
+      return 'ideogram/v4/fast'
+    },
+    build: (ctx) => {
+      const loras = ideogramLoras(ctx.options)
+      const img = ctx.imageUrls[0]
+      return {
+        prompt: ctx.prompt,
+        image_size: imageSize(ctx.aspectRatio, ctx.quality, 2048),
+        num_images: 1,
+        output_format: 'png',
+        enable_safety_checker: false,
+        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
+        rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
+        ...(loras ? { loras } : {}),
+        ...(img ? { image_url: img, strength: 0.8 } : {}),
+      }
+    },
   },
 
   /*
@@ -710,7 +744,8 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     promptRequired: true,
     aspectRatios: null,
     usesImageSize: true,
-    notes: 'seamless tile; tiling_mode both|horizontal|vertical',
+    notes: 'seamless tile; tiling_mode both|horizontal|vertical; LoRA via sibling',
+    resolveEndpoint: (ctx) => ideogramLoras(ctx.options) ? 'ideogram/v4/tiling/lora' : 'ideogram/v4/tiling',
     build: (ctx) => ({
       prompt: ctx.prompt,
       image_size: imageSize(ctx.aspectRatio, ctx.quality, IDEOGRAM_TILING_MAX_DIM),
@@ -720,6 +755,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
       rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
       tiling_mode: pickEnum(ctx.options.tilingMode, ['both', 'horizontal', 'vertical'] as const, 'both'),
+      ...(ideogramLoras(ctx.options) ? { loras: ideogramLoras(ctx.options) } : {}),
       // An input image is optional here: with one, it re-renders that texture
       // so the edges wrap; without, it invents one from the prompt.
       ...(ctx.imageUrls[0] ? { image_url: ctx.imageUrls[0], strength: 0.8 } : {}),

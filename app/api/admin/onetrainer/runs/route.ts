@@ -106,7 +106,7 @@ export async function GET(req: Request) {
       last_modified: o.LastModified?.toISOString() ?? null,
     })
 
-    const runs = new Map<string, { folder: string; final: FileInfo | null; epochs: FileInfo[]; hasMeta: boolean; createdAt: string | null }>()
+    const runs = new Map<string, { folder: string; final: FileInfo | null; epochs: FileInfo[]; hasMeta: boolean; createdAt: string | null; trainedOn?: string | null; runName?: string | null }>()
     const legacy: FileInfo[] = []
 
     for (const o of objects) {
@@ -121,7 +121,7 @@ export async function GET(req: Request) {
       }
 
       const folder = parts[0]
-      const run = runs.get(folder) ?? { folder, final: null, epochs: [], hasMeta: false, createdAt: null }
+      const run = runs.get(folder) ?? { folder, final: null, epochs: [], hasMeta: false, createdAt: null, trainedOn: null, runName: null }
       if (parts.length === 2 && parts[1] === 'run.json') {
         run.hasMeta = true
         run.createdAt = o.LastModified?.toISOString() ?? null
@@ -141,6 +141,24 @@ export async function GET(req: Request) {
       const m = n.match(/(\d+)(?=\.safetensors$)/i)
       return m ? parseInt(m[1]) : 0
     }
+    /*
+     * Which trainer produced each run.
+     *
+     * A run's folder name says nothing about where it came from, and there are
+     * now several sources: RunPod fine-tunes and each fal trainer family. The
+     * family is already in run.json, so read it rather than guessing from the
+     * name.
+     */
+    await Promise.all([...runs.values()].filter(r => r.hasMeta).map(async r => {
+      try {
+        const obj = await r2.send(new GetObjectCommand({ Bucket: bucket, Key: `training/loras/${r.folder}/run.json` }))
+        const meta = JSON.parse((await obj.Body?.transformToString('utf-8')) || '{}')
+        // fal runs carry `family`; RunPod runs do not, and are named as such.
+        r.trainedOn = typeof meta?.family === 'string' ? meta.family : 'onetrainer-runpod'
+        if (typeof meta?.run_name === 'string') r.runName = meta.run_name
+      } catch { /* unreadable meta is not a reason to drop the run */ }
+    }))
+
     const list = [...runs.values()]
       .filter(r => r.final || r.epochs.length > 0 || r.hasMeta)
       .map(r => ({ ...r, epochs: r.epochs.sort((a, b) => epochNum(a.name) - epochNum(b.name)) }))

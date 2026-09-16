@@ -929,7 +929,9 @@ export async function POST(request: Request) {
               aspectRatio,
               quality,
               imageUrls: falImageUrls,
-              options: body,
+              // Signed, not canonical: these specs put loraUrl straight into
+              // the fal payload, and the bucket is private.
+              options: { ...body, loraUrl: falLoraPath ?? body.loraUrl },
             })
             modelEndpoint = built.endpoint
             newFalInput = built.input

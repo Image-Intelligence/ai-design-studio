@@ -75,6 +75,43 @@ export const TRAINER_FAMILIES: Record<string, TrainerFamily> = {
     datasetRules: { min: 5, max: 200 },
     r2Namespace: 'training/video-loras',
   },
+  'ideogram/v4/trainer': {
+    familyId: 'ideogram-v4',
+    label: 'Ideogram v4 LoRA',
+    media: 'image',
+    falEndpoint: () => 'ideogram/v4/trainer',
+    // NOT training_data_url — this trainer names the field differently, and
+    // the wrong name is a 422 with no hint about which field is missing.
+    zipField: 'images_data_url',
+    buildInput: (config) => {
+      const input: Record<string, unknown> = {}
+      // Ranges are the schema's: steps 100..40000, lr 1e-6..0.01.
+      const steps = num(config.steps)
+      if (steps !== undefined) input.steps = Math.min(40000, Math.max(100, steps))
+      const lr = num(config.learning_rate)
+      if (lr !== undefined) input.learning_rate = Math.min(0.01, Math.max(0.000001, lr))
+      // Ideogram has no trigger_phrase field; the caption is where a token
+      // goes, so the UI's trigger box feeds this when no caption is given.
+      const caption = str(config.default_caption) ?? str(config.trigger_phrase)
+      if (caption) input.default_caption = caption
+      const res = str(config.resolution); if (res) input.resolution = res
+      // 'fal' is what ideogram/v4/lora loads; 'comfy' is for export elsewhere.
+      input.output_lora_format = config.output_lora_format === 'comfy' ? 'comfy' : 'fal'
+      return input
+    },
+    outputFiles: [
+      { key: 'diffusers_lora_file', saveAs: 'final.safetensors' },
+      { key: 'config_file', saveAs: 'config.json' },
+    ],
+    /*
+     * 3 is the smallest set proven to train here: three captioned images
+     * completed in 11 minutes, while two uncaptioned ones failed. Which of
+     * those two differences mattered was not isolated, so this is a floor
+     * taken from what worked rather than from a documented minimum.
+     */
+    datasetRules: { min: 3, max: 200 },
+    r2Namespace: 'training/loras',
+  },
   'fal-ai/ltx2-video-trainer': {
     familyId: 'ltx2-video',
     label: 'LTX-2 Video LoRA',
