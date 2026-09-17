@@ -274,6 +274,17 @@ type RecipeSize = keyof typeof RECIPE_SIZES
  * object or outfit, 80–150 for a specific character. Those are from
  * ai-toolkit, not this hosted trainer, so they corroborate rather than rule.
  */
+/*
+ * How long a run takes, from fal's own inference_time on real runs:
+ * 100 steps 11.1 min, 2000 steps 26.4, and three 6000-step runs at
+ * 47.6 / 61.8 / 66.6. Both segments fit 0.0081 min per step, leaving ~10 min
+ * of fixed overhead. Item count does NOT move it — 161 items took the least
+ * of the three 6000-step runs and 182 the most — which is what batch size 1
+ * implies. The spread at 6000 is about +/- 10 min, so it is shown as a range.
+ */
+const TRAIN_FIXED_MIN = 10
+const TRAIN_MIN_PER_STEP = 0.0081
+
 const FAL_STEPS_PER_ITEM: Record<RecipeSubject, number> = {
   character: 100,   // a single identity has to be locked in hard
   multichar: 120,   // each identity needs its own share of the run
@@ -5256,9 +5267,14 @@ export default function OneTrainerPage() {
                         // own page states 0.00675.
                         const perStep = falFamily?.familyId === 'ideogram-v4' ? 0.00675 : 0.005
                         const steps = Math.max(100, parseInt(falCfg.steps) || 400)
+                        // Measured on Ideogram; the other families get no
+                        // estimate rather than a borrowed one.
+                        const lo = Math.round((TRAIN_FIXED_MIN + steps * TRAIN_MIN_PER_STEP) * 0.85)
+                        const hi = Math.round((TRAIN_FIXED_MIN + steps * TRAIN_MIN_PER_STEP) * 1.15)
                         return (
                           <p className="text-[10px] text-slate-600 font-mono">
                             ~${perStep}/step on the fal account — est. ${(steps * perStep).toFixed(2)} at {steps} steps
+                            {falFamily?.familyId === 'ideogram-v4' && <> · ~{lo}–{hi} min training, after the dataset uploads</>}
                           </p>
                         )
                       })()}
