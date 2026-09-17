@@ -726,7 +726,11 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
-        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
+        // 'Large' is a sibling-only field here: /instant stops at Medium, but
+        // the endpoints a LoRA or a reference move this to do accept it.
+        expansion_model: loras || img
+          ? pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium')
+          : pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
         // rendering_speed exists on every sibling but not on /instant itself,
         // so it is sent only once the request has moved off that endpoint.
         ...(loras ? { loras } : {}),
@@ -735,6 +739,53 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       }
     },
   },
+  /*
+   * The base tier. Same family as Fast and Instant; what it adds is the top of
+   * the rendering_speed range and the 'Large' prompt expansion the other two
+   * do not accept. Measured on one prompt and seed: BALANCED 9.8s inference,
+   * QUALITY 19.6s, against Fast's 8.9s and Instant's 4.8s.
+   *
+   * Note the LoRA and image-to-image siblings below are THIS tier's — there
+   * is no fast/lora — so attaching either already moved a Fast request here.
+   */
+  'ideogram-v4': {
+    id: 'ideogram-v4',
+    promptMin: 1,
+    promptMax: 10000,
+    endpoint: 'ideogram/v4',
+    needsImage: false,
+    imageParam: 'image_url',
+    maxInputImages: 1,
+    promptRequired: true,
+    aspectRatios: null,
+    usesImageSize: true,
+    notes: 'base tier; rendering_speed TURBO|BALANCED|QUALITY, expansion up to Large',
+    resolveEndpoint: (ctx) => {
+      const lora = !!ideogramLoras(ctx.options)
+      const img = ctx.imageUrls.length > 0
+      if (img && lora) return 'ideogram/v4/image-to-image/lora'
+      if (img) return 'ideogram/v4/image-to-image'
+      if (lora) return 'ideogram/v4/lora'
+      return 'ideogram/v4'
+    },
+    build: (ctx) => {
+      const loras = ideogramLoras(ctx.options)
+      const img = ctx.imageUrls[0]
+      return {
+        prompt: ctx.prompt,
+        image_size: ideogramSize(ctx, 2048),
+        num_images: 1,
+        output_format: 'png',
+        enable_safety_checker: false,
+        // Only this tier and its siblings accept 'Large'.
+        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
+        rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
+        ...(loras ? { loras } : {}),
+        ...(img ? { image_url: img, strength: ideogramStrength(ctx.options) } : {}),
+      }
+    },
+  },
+
   'ideogram-v4-fast': {
     id: 'ideogram-v4-fast',
     promptMin: 1,
@@ -769,7 +820,9 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
-        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
+        // 'Large' is a base-tier field; ideogram/v4/fast stops at Medium, so
+        // offering it here would be a 422 for anyone who set it.
+        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
         rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
         ...(loras ? { loras } : {}),
         ...(img ? { image_url: img, strength: ideogramStrength(ctx.options) } : {}),

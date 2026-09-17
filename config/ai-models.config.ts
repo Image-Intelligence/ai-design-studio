@@ -483,6 +483,18 @@ export const AI_MODELS: AIModel[] = [
   },
 
   {
+    id: 'ideogram-v4',
+    name: 'ideogram/v4',
+    displayName: 'Ideogram v4',
+    description: 'Ideogram v4 base tier — TURBO/BALANCED/QUALITY, highest fidelity of the three',
+    ticketCost: 3,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  {
     id: 'ideogram-v4-tiling',
     name: 'ideogram/v4/tiling',
     displayName: 'Ideogram v4 Tiling',

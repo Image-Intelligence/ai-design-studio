@@ -132,6 +132,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "grok-imagine-2",       apiId: "grok-imagine-2",           name: "Grok Imagine 2.0",    aspectRatios: ["2:1", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 4, isFal: true, maxImages: 4 },
   { id: "meta-muse",            apiId: "meta-muse",                name: "Meta Muse",           aspectRatios: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "bria-fibo",            apiId: "bria-fibo",                name: "Bria Fibo 1.5",       aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "ideogram-v4",          apiId: "ideogram-v4",              name: "Ideogram v4",         aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-instant",  apiId: "ideogram-v4-instant",      name: "Ideogram v4 Instant", aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-tiling",   apiId: "ideogram-v4-tiling",       name: "Ideogram v4 Tiling",  aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
@@ -1117,10 +1118,11 @@ const IMAGE_VARIANT_GROUPS: { label: string; blurb: string; members: { id: strin
   },
   {
     label: "Ideogram v4",
-    blurb: "Text inside images, plus seamless tiles",
+    blurb: "Text inside images — three speed tiers, plus seamless tiles",
     members: [
-      { id: "ideogram-v4-instant", label: "Instant" },
+      { id: "ideogram-v4",         label: "v4" },
       { id: "ideogram-v4-fast",    label: "Fast" },
+      { id: "ideogram-v4-instant", label: "Instant" },
       { id: "ideogram-v4-tiling",  label: "Tiling" },
     ],
   },
@@ -18904,6 +18906,13 @@ function PromptBox({
   // Ideogram image-to-image: how far the result may depart from the reference.
   // 0.8 is fal's own default and is kept so results do not change silently.
   const [ideogramStrength, setIdeogramStrength] = useState(0.8)
+  /*
+   * The tier dial. Present on v4, Fast and Tiling; Instant has no
+   * rendering_speed field at all. fal prices on it — base is 0.0075 /
+   * 0.015 / 0.025 per megapixel across the three — so it is the real
+   * decision, not a detail.
+   */
+  const [ideogramRenderingSpeed, setIdeogramRenderingSpeed] = useState<"TURBO" | "BALANCED" | "QUALITY">("BALANCED")
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -20420,7 +20429,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4-") ? { ideogramStrength } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20442,7 +20451,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4-") ? { ideogramStrength } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -20763,6 +20772,7 @@ function PromptBox({
     "flux-2":              ["fal-ai/flux-2-trainer"],
     "z-image-turbo":       ["fal-ai/z-image-turbo-trainer-v2"],
     "z-image-base":        [], // no dedicated trainer yet — custom uploads only
+    "ideogram-v4":         ["ideogram/v4/trainer"],
     "ideogram-v4-instant": ["ideogram/v4/trainer"],
     "ideogram-v4-fast":    ["ideogram/v4/trainer"],
     "ideogram-v4-tiling":  ["ideogram/v4/trainer"],
@@ -21556,7 +21566,27 @@ function PromptBox({
           )}
 
           {/* LoRA config row — visible when a LoRA is active */}
-          {model.id.startsWith("ideogram-v4-") && activeRefImages.length > 0 && (
+          {(model.id === "ideogram-v4" || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling") && (
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
+              <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Render</span>
+                <div className="flex rounded-md overflow-hidden border border-white/10 w-fit">
+                  {(["TURBO", "BALANCED", "QUALITY"] as const).map(v => (
+                    <button key={v} onClick={() => setIdeogramRenderingSpeed(v)}
+                      className={`px-2.5 py-1 text-[11px] font-mono transition-colors ${ideogramRenderingSpeed === v ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                      {v.toLowerCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[10px] leading-snug text-slate-600">
+                Speed against fidelity, and what fal bills on. Measured at 1024{"\u00d7"}1024 on the
+                base tier: balanced {"\u2248"}10s, quality {"\u2248"}20s. Instant has no such setting.
+              </p>
+            </div>
+          )}
+
+          {model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
                 <span className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
