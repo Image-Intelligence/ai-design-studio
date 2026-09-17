@@ -21559,7 +21559,17 @@ function PromptBox({
           {model.id.startsWith("ideogram-v4-") && activeRefImages.length > 0 && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
-                <span className="text-[10px] font-mono text-slate-500">Ref strength</span>
+                <span className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
+                  {/* The reference itself. A model whose ref capacity just went
+                      up can inherit one left active elsewhere, and a slider
+                      alone is too quiet a way to say so. */}
+                  {activeRefImages[0]?.url && (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={mediaSrc(activeRefImages[0].url)} alt=""
+                      className="w-5 h-5 rounded object-cover border border-white/15 shrink-0" />
+                  )}
+                  Ref strength
+                </span>
                 <input
                   type="range" min="0.1" max="1" step="0.05" value={ideogramStrength}
                   onChange={e => setIdeogramStrength(parseFloat(e.target.value))}
