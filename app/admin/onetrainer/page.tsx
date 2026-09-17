@@ -1529,7 +1529,7 @@ function DatasetImageViewer({ images, index, onClose, onNav, isSelected, onToggl
 
   const img = images[index]
   if (!img) return null
-  const thumbSrc = img.thumb || `/api/admin/dataset/thumb/${img.id}?v=2`
+  const thumbSrc = `/api/admin/dataset/thumb/${img.id}?v=2`
   const src = img.url || thumbSrc
   const sel = isSelected(img.id)
   const infoText = infoSrc === 'prompt' ? img.prompt : infoSrc === 'caption' ? img.caption : img.tags
@@ -1725,7 +1725,7 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
   const [tapMode, setTapMode] = useState<'select' | 'view'>('select')
   const [viewerIdx, setViewerIdx] = useState<number | null>(null)
   // Presets
-  const [presets, setPresets] = useState<{ id: number; name: string }[]>([])
+  const [presets, setPresets] = useState<{ id: number; name: string; itemCount?: number | null }[]>([])
   const [presetName, setPresetName] = useState('')
   const [presetBusy, setPresetBusy] = useState(false)
   // Upload (iPad photos → permanent uploads bucket + this dataset)
@@ -2845,7 +2845,7 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                           className={`relative rounded-lg overflow-hidden border-2 bg-white/[0.04] transition-all ${
                             masonry ? 'w-full mb-1.5 break-inside-avoid block min-h-12' : 'aspect-square'} ${
                             isSel ? 'border-white ring-1 ring-white/40' : 'border-transparent hover:border-white/30'}`}>
-                          <RetryImg src={img.thumb || `/api/admin/dataset/thumb/${img.id}?v=2`}
+                          <RetryImg src={`/api/admin/dataset/thumb/${img.id}?v=2`}
                             className={`${masonry ? 'w-full h-auto block' : 'w-full h-full object-cover'} ${isSel ? 'opacity-80' : ''}`} />
                           {/* Green check = has an admin caption (same as the Dataset page) */}
                           {!!img.caption && (
@@ -3147,8 +3147,11 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                   {presets.map(pr => (
                     <div key={pr.id} className="flex items-center gap-1.5">
                       <button onClick={() => loadPreset(pr.id)} disabled={presetBusy}
-                        className="flex-1 min-w-0 text-left px-2 py-1 rounded-lg border border-white/[0.07] bg-white/[0.02] text-[10px] text-slate-300 hover:border-white/20 hover:text-white truncate transition-colors disabled:opacity-40">
-                        {pr.name}
+                        className="flex-1 min-w-0 flex items-center gap-2 text-left px-2 py-1 rounded-lg border border-white/[0.07] bg-white/[0.02] text-[10px] text-slate-300 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40">
+                        <span className="flex-1 min-w-0 truncate">{pr.name}</span>
+                        {typeof pr.itemCount === 'number' && (
+                          <span className="shrink-0 font-mono text-[9px] text-slate-600">{pr.itemCount}</span>
+                        )}
                       </button>
                       <button onClick={() => deletePreset(pr.id)} title="Delete preset"
                         className="p-1 rounded text-slate-700 hover:text-red-400 transition-colors shrink-0">
@@ -3289,7 +3292,7 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                         ? (afSel ? 'border-amber-400 ring-1 ring-amber-400/50' : 'border-white/[0.07] opacity-45 hover:opacity-80')
                         : 'border-white/[0.07] hover:border-white/30'} ${
                       masonry ? 'w-full mb-1.5 break-inside-avoid min-h-12' : 'aspect-square'}`}>
-                    <RetryImg src={img.thumb || `/api/admin/dataset/thumb/${img.id}?v=2`}
+                    <RetryImg src={`/api/admin/dataset/thumb/${img.id}?v=2`}
                       className={masonry ? 'w-full h-auto block' : 'w-full h-full object-cover'} />
                     {afOpen && (
                       <span className={`absolute top-1 left-1 w-4 h-4 rounded-full border flex items-center justify-center ${

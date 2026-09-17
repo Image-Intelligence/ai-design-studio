@@ -19,9 +19,26 @@ export async function GET(req: Request) {
     try { data = JSON.parse(rows[0].data) } catch {}
     return NextResponse.json({ id: rows[0].id, name: rows[0].name, createdAt: rows[0].createdAt, data })
   }
-  const rows = await prisma.$queryRaw<{ id: number; name: string; createdAt: Date; size: number }[]>`
-    SELECT "id", "name", "createdAt", LENGTH("data") as "size" FROM "TrainingDatasetPreset" ORDER BY "updatedAt" DESC`
-  return NextResponse.json({ presets: rows })
+  /*
+   * How many images each preset holds, so the list is choosable without
+   * opening every entry. `data` is {"defaultSource":..,"images":[..]}, and
+   * these rows run 25-219 KB, so the cast is cheap.
+   *
+   * One malformed row would fail the cast for the whole query, so a failure
+   * falls back to the list without counts: no counts beats no list.
+   */
+  type PresetRow = { id: number; name: string; createdAt: Date; size: number; itemCount?: number | null }
+  try {
+    const rows = await prisma.$queryRaw<PresetRow[]>`
+      SELECT "id", "name", "createdAt", LENGTH("data") as "size",
+             jsonb_array_length(("data"::jsonb)->'images') as "itemCount"
+      FROM "TrainingDatasetPreset" ORDER BY "updatedAt" DESC`
+    return NextResponse.json({ presets: rows })
+  } catch {
+    const rows = await prisma.$queryRaw<PresetRow[]>`
+      SELECT "id", "name", "createdAt", LENGTH("data") as "size" FROM "TrainingDatasetPreset" ORDER BY "updatedAt" DESC`
+    return NextResponse.json({ presets: rows })
+  }
 }
 
 // POST { name, data } → save a new preset
