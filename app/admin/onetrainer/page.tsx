@@ -1529,7 +1529,7 @@ function DatasetImageViewer({ images, index, onClose, onNav, isSelected, onToggl
 
   const img = images[index]
   if (!img) return null
-  const thumbSrc = img.thumb || `/api/admin/dataset/thumb/${img.id}`
+  const thumbSrc = img.thumb || `/api/admin/dataset/thumb/${img.id}?v=2`
   const src = img.url || thumbSrc
   const sel = isSelected(img.id)
   const infoText = infoSrc === 'prompt' ? img.prompt : infoSrc === 'caption' ? img.caption : img.tags
@@ -2845,7 +2845,7 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                           className={`relative rounded-lg overflow-hidden border-2 bg-white/[0.04] transition-all ${
                             masonry ? 'w-full mb-1.5 break-inside-avoid block min-h-12' : 'aspect-square'} ${
                             isSel ? 'border-white ring-1 ring-white/40' : 'border-transparent hover:border-white/30'}`}>
-                          <RetryImg src={img.thumb || `/api/admin/dataset/thumb/${img.id}`}
+                          <RetryImg src={img.thumb || `/api/admin/dataset/thumb/${img.id}?v=2`}
                             className={`${masonry ? 'w-full h-auto block' : 'w-full h-full object-cover'} ${isSel ? 'opacity-80' : ''}`} />
                           {/* Green check = has an admin caption (same as the Dataset page) */}
                           {!!img.caption && (
@@ -3289,7 +3289,7 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                         ? (afSel ? 'border-amber-400 ring-1 ring-amber-400/50' : 'border-white/[0.07] opacity-45 hover:opacity-80')
                         : 'border-white/[0.07] hover:border-white/30'} ${
                       masonry ? 'w-full mb-1.5 break-inside-avoid min-h-12' : 'aspect-square'}`}>
-                    <RetryImg src={img.thumb || `/api/admin/dataset/thumb/${img.id}`}
+                    <RetryImg src={img.thumb || `/api/admin/dataset/thumb/${img.id}?v=2`}
                       className={masonry ? 'w-full h-auto block' : 'w-full h-full object-cover'} />
                     {afOpen && (
                       <span className={`absolute top-1 left-1 w-4 h-4 rounded-full border flex items-center justify-center ${
@@ -5760,7 +5760,7 @@ export default function OneTrainerPage() {
                     {builtView.images.map((img, idx) => (
                       <button key={`${img.id}-${idx}`} onClick={() => setBuiltViewerIdx(idx)}
                         className="relative aspect-square rounded-lg overflow-hidden border border-white/[0.07] bg-white/[0.03] hover:border-white/30 transition-colors">
-                        <RetryImg src={`/api/admin/dataset/thumb/${img.id}`}
+                        <RetryImg src={`/api/admin/dataset/thumb/${img.id}?v=2`}
                           className="w-full h-full object-cover" />
                         {!!img.caption && (
                           <span className="absolute bottom-1 left-1 w-4 h-4 rounded-full bg-emerald-500/80 flex items-center justify-center" title="Has caption">

@@ -2017,8 +2017,8 @@ const ImageCard = memo(function ImageCard({ img, selected, selectMode, onSelect,
             /* The counter is a cache-buster: a retry has to be a NEW request,
                and the browser will happily re-serve its own failed response. */
             src={thumbReload === 0
-              ? `/api/admin/dataset/thumb/${img.id}`
-              : `/api/admin/dataset/thumb/${img.id}?retry=${thumbReload}`}
+              ? `/api/admin/dataset/thumb/${img.id}?v=2`
+              : `/api/admin/dataset/thumb/${img.id}?v=2&retry=${thumbReload}`}
             alt=""
             loading={priority ? 'eager' : 'lazy'}
             decoding="async"

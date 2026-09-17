@@ -348,7 +348,7 @@ function MotionThumb({ item, className = "", idx = 0 }: { item: LibraryItem; cla
       <img
         src={isLocal(item)
           ? `/api/admin/movies/poster?path=${encodeURIComponent(item.path || "")}&t=${Math.max(1, (item.dur ?? 60) * 0.15)}&w=320`
-          : `/api/admin/dataset/thumb/${item.id}`}
+          : `/api/admin/dataset/thumb/${item.id}?v=2`}
         alt="" className={MEDIA_CLASS} loading="lazy" decoding="async" />
       {live && !failed && !isLocal(item) && (
         /* eslint-disable-next-line @next/next/no-img-element */

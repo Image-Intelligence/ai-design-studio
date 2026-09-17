@@ -7983,7 +7983,7 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   const thumbSrc = thumbUrl
     ? thumbUrl
     : adminThumb && imageId
-    ? `/api/admin/dataset/thumb/${imageId}`
+    ? `/api/admin/dataset/thumb/${imageId}?v=2`
     : directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
   const fullSrc = directUrl || src
   // Remount ≠ reload: when a queued generation pushes tiles into a different
