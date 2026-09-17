@@ -11,6 +11,7 @@ import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import path from 'path'
 import { fetchMedia } from '@/lib/media-fetch'
+import { signMediaUrl } from '@/lib/media-url'
 
 export const maxDuration = 60
 const execP = promisify(execFile)
@@ -148,9 +149,17 @@ export async function GET(
   // A stored R2 thumb already exists → redirect straight to it. The browser
   // caches the redirect and fetches from R2/CDN — zero server work.
   if (image.thumbnailUrl && /^https?:\/\//.test(image.thumbnailUrl)) {
-    return NextResponse.redirect(image.thumbnailUrl, {
+    /*
+     * Signed: the browser follows this itself, and the bucket is private now.
+     * Unsigned it gets Cloudflare's 401 page, which renders as a broken image.
+     *
+     * Cached for an hour rather than a week — a signature lives at least
+     * twelve hours, and a redirect cached beyond that is a stored pointer to
+     * an expired link.
+     */
+    return NextResponse.redirect(signMediaUrl(image.thumbnailUrl), {
       status: 302,
-      headers: { 'Cache-Control': 'public, max-age=604800' },
+      headers: { 'Cache-Control': 'public, max-age=3600' },
     })
   }
 

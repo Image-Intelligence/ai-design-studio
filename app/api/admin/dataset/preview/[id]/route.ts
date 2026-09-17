@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
+import { signMediaUrl } from '@/lib/media-url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import ffmpegPath from 'ffmpeg-static'
@@ -65,9 +66,11 @@ export async function GET(
   const metaKey = seg === 0 ? 'previewAnimUrl' : `previewAnimUrl${seg}`
   const cached = meta[metaKey]
   if (typeof cached === 'string' && /^https?:\/\//.test(cached)) {
-    return NextResponse.redirect(cached, {
+    // Signed, and cached for less than the signature lives. See the thumb
+    // route for the same shortcut and the same reasoning.
+    return NextResponse.redirect(signMediaUrl(cached), {
       status: 302,
-      headers: { 'Cache-Control': 'public, max-age=604800' },
+      headers: { 'Cache-Control': 'public, max-age=3600' },
     })
   }
 
