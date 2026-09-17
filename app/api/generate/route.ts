@@ -50,12 +50,14 @@ async function refToBase64(ref: string): Promise<string> {
  * uploaded once. Process-local and bounded; a cold serverless instance simply
  * uploads again, which is the behaviour this replaces.
  */
-const falUploadCache = new Map<string, { url: string; at: number }>()
+// dims ride along so a cached reference still has a shape for "auto" — the
+// cache hit skips the download that would otherwise reveal it.
+const falUploadCache = new Map<string, { url: string; at: number; dims?: { width: number; height: number } }>()
 const FAL_UPLOAD_TTL_MS = 30 * 60 * 1000
 const FAL_UPLOAD_CACHE_MAX = 200
 
-function rememberFalUpload(source: string, url: string) {
-  falUploadCache.set(source, { url, at: Date.now() })
+function rememberFalUpload(source: string, url: string, dims?: { width: number; height: number }) {
+  falUploadCache.set(source, { url, at: Date.now(), dims })
   if (falUploadCache.size > FAL_UPLOAD_CACHE_MAX) {
     for (const [k, v] of falUploadCache) {
       if (Date.now() - v.at >= FAL_UPLOAD_TTL_MS) falUploadCache.delete(k)
@@ -892,6 +894,8 @@ export async function POST(request: Request) {
           modelEndpoint = newFalSpec.endpoint
 
           const falImageUrls: string[] = []
+          // The first reference's shape, for models that offer "auto".
+          let refDims: { width: number; height: number } | null = null
           // Pure text-to-image endpoints (maxInputImages 0) skip uploads entirely.
           for (const ref of rawSources.slice(0, newFalSpec.maxInputImages)) {
             try {
@@ -904,15 +908,28 @@ export async function POST(request: Request) {
               if (hit && Date.now() - hit.at < FAL_UPLOAD_TTL_MS) {
                 falImageUrls.push(hit.url)
                 newFalPermanentRefs.push(ref)
+                if (!refDims && hit.dims) refDims = hit.dims
                 continue
               }
               const imageBuffer = await refToBuffer(ref)
+              /*
+               * Measure while the bytes are here. This costs a header read on
+               * a buffer already in memory, and it is the only chance — after
+               * the upload all we keep is a URL.
+               */
+              let dims: { width: number; height: number } | undefined
+              try {
+                const sharp = (await import('sharp')).default
+                const meta = await sharp(imageBuffer).metadata()
+                if (meta.width && meta.height) dims = { width: meta.width, height: meta.height }
+              } catch { /* unreadable: "auto" falls back to square */ }
+              if (!refDims && dims) refDims = dims
               const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' })
               const uploadedUrl = await fal.storage.upload(blob)
               falImageUrls.push(uploadedUrl)
               // Keep a permanent copy for the DB record (reuse https refs as-is).
               if (isHttpRef) {
-                rememberFalUpload(ref, uploadedUrl)
+                rememberFalUpload(ref, uploadedUrl, dims)
                 newFalPermanentRefs.push(ref)
               } else {
                 const refFilename = `reference-${user.id}-${Date.now()}-${falImageUrls.length}.jpg`
@@ -931,7 +948,7 @@ export async function POST(request: Request) {
               imageUrls: falImageUrls,
               // Signed, not canonical: these specs put loraUrl straight into
               // the fal payload, and the bucket is private.
-              options: { ...body, loraUrl: falLoraPath ?? body.loraUrl },
+              options: { ...body, loraUrl: falLoraPath ?? body.loraUrl, refDims },
             })
             modelEndpoint = built.endpoint
             newFalInput = built.input

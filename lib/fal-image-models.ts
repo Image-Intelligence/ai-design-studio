@@ -225,6 +225,27 @@ const BASE_DIMS: Record<string, [number, number]> = {
  * to load.
  */
 /**
+ * The size to ask Ideogram for, honouring "auto".
+ *
+ * Ideogram has no auto of its own — its schema is an explicit width/height or
+ * one of six presets — so auto means "the reference's shape", measured by the
+ * route and passed through. Rounded to a multiple of 16 for the VAE and fitted
+ * to the ceiling the model actually honours.
+ *
+ * With no reference there is nothing to be automatic about, so it falls back
+ * to the square the picker would otherwise have used.
+ */
+function ideogramSize(ctx: FalImageBuildContext, maxDim: number): { width: number; height: number } {
+  if (ctx.aspectRatio !== 'auto') return imageSize(ctx.aspectRatio, ctx.quality, maxDim)
+  const dims = ctx.options.refDims as { width: number; height: number } | null | undefined
+  if (!dims?.width || !dims?.height) return imageSize('1:1', ctx.quality, maxDim)
+  const mult = ctx.quality === '4k' ? 3 : ctx.quality === '2k' ? 2 : 1
+  const scale = Math.min(mult, maxDim / Math.max(dims.width, dims.height))
+  const round16 = (n: number) => Math.max(256, Math.round((n * scale) / 16) * 16)
+  return { width: round16(dims.width), height: round16(dims.height) }
+}
+
+/**
  * How far image-to-image departs from the source. fal's default is 0.8, and
  * measured at one seed that is a full re-render: the composition and the
  * scene carry over, the person does not. 0.3 keeps the subject.
@@ -692,7 +713,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       const loras = ideogramLoras(ctx.options)
       return {
         prompt: ctx.prompt,
-        image_size: imageSize(ctx.aspectRatio, ctx.quality, 2048),
+        image_size: ideogramSize(ctx, 2048),
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
@@ -732,7 +753,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       const img = ctx.imageUrls[0]
       return {
         prompt: ctx.prompt,
-        image_size: imageSize(ctx.aspectRatio, ctx.quality, 2048),
+        image_size: ideogramSize(ctx, 2048),
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
@@ -771,7 +792,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     resolveEndpoint: (ctx) => ideogramLoras(ctx.options) ? 'ideogram/v4/tiling/lora' : 'ideogram/v4/tiling',
     build: (ctx) => ({
       prompt: ctx.prompt,
-      image_size: imageSize(ctx.aspectRatio, ctx.quality, IDEOGRAM_TILING_MAX_DIM),
+      image_size: ideogramSize(ctx, IDEOGRAM_TILING_MAX_DIM),
       num_images: 1,
       output_format: 'png',
       enable_safety_checker: false,
