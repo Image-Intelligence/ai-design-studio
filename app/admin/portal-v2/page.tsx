@@ -28508,6 +28508,8 @@ export default function PortalV2Page() {
   // Use a ref so the poll closure always sees the latest pendingSlots without re-registering the interval
   const pendingSlotsRef = useRef(pendingSlots)
   useEffect(() => { pendingSlotsRef.current = pendingSlots }, [pendingSlots])
+  // The reconcile pass, callable from outside its own effect.
+  const pollNowRef = useRef<(() => void) | null>(null)
 
   // When the tab becomes visible again (e.g. returning from a locked screen), immediately do a
   // one-shot status check for any Flux RunPod slots that are still loading so they aren't stuck.
@@ -28603,7 +28605,25 @@ export default function PortalV2Page() {
         // reload), resolve the tile NOW. This is exactly what a page refresh
         // does, applied live every 10s, so spinners can never spin forever.
         const currentSlotsForRearm = pendingSlotsRef.current
-        const settled: any[] = (jobs || []).filter((j: any) => j.status === "completed" || j.status === "failed")
+        /*
+         * Only jobs some tile is still waiting on.
+         *
+         * The window returns everything settled in two hours — 185 rows on a
+         * busy account — and the image lookups below cap at 60 ids. The server
+         * returns them oldest first, so without this the cap spent itself on
+         * jobs that were resolved long ago and the newly finished ones, the
+         * only ones with a spinner, never made it into the request.
+         *
+         * This is the same test the loop applies to pick a tile; running it
+         * first makes the cap unreachable, because there are only ever a few
+         * live tiles.
+         */
+        const waitingFor = (j: any) => pendingSlotsRef.current.some(s =>
+          s.status !== "done" &&
+          ((j.falRequestId && s.nb2RequestId === j.falRequestId) || s.queueJobId === j.id || s.queueId === j.id))
+        const settled: any[] = (jobs || [])
+          .filter((j: any) => j.status === "completed" || j.status === "failed")
+          .filter(waitingFor)
         const doneIds = new Set(JSON.parse(localStorage.getItem("pv2-nb2-done") || "[]") as string[])
 
         // ONE image fetch for the whole pass.
@@ -28919,13 +28939,30 @@ export default function PortalV2Page() {
       } catch {} finally { pollBusy = false }
     }
     poll()
+    pollNowRef.current = poll
     const id = setInterval(poll, 10000)
     // iPad/Safari suspend timers while the tab is hidden — reconcile IMMEDIATELY
     // on wake instead of waiting for the next scheduled tick
     const onVis = () => { if (document.visibilityState === "visible") poll() }
     document.addEventListener("visibilitychange", onVis)
-    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis) }
+    return () => {
+      clearInterval(id)
+      document.removeEventListener("visibilitychange", onVis)
+      if (pollNowRef.current === poll) pollNowRef.current = null
+    }
   }, [user?.id])
+
+  /*
+   * Tiles restored from the last session arrive after that first poll, so
+   * without this they wait out a full interval before anything looks at them —
+   * ten seconds of spinning on generations that may already be finished.
+   */
+  const restoredPollRef = useRef(false)
+  useEffect(() => {
+    if (restoredPollRef.current || pendingSlots.length === 0) return
+    restoredPollRef.current = true
+    pollNowRef.current?.()
+  }, [pendingSlots.length])
 
   // Computed: active ref images limited to the current model's cap
   const activeRefImages = refLibrary
