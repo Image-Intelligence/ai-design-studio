@@ -36,6 +36,16 @@ export async function POST(request: Request) {
       if (loraJob) {
         console.log(`Found LoRA training job #${loraJob.id} for request_id: ${request_id}`)
 
+        /*
+         * fal's cancel is a request, not an immediate stop, so a run cancelled
+         * near the end can still finish and call this. Re-hosting it would
+         * file a result the user explicitly said they did not want.
+         */
+        if (loraJob.status === 'cancelled') {
+          console.log(`LoRA job #${loraJob.id} was cancelled — ignoring this callback`)
+          return NextResponse.json({ received: true, ignored: 'cancelled' })
+        }
+
         if (status === 'ERROR' || status === 'FAILED' || error) {
           const errorMsg = error?.message || error || 'FAL training failed'
           await prisma.loraTrainingJob.update({

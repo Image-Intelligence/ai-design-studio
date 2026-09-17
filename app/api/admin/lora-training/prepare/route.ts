@@ -177,13 +177,37 @@ export async function POST(req: NextRequest) {
 
     let downloaded = 0
     let skipped = 0
+    /*
+     * Why each one was dropped. This used to be discarded, so a run could
+     * train on half the chosen dataset and report nothing but a count — and
+     * the count looked like the images were unusable rather than that our own
+     * requests were timing out.
+     */
+    const skipReasons = new Map<string, number>()
+    const noteSkip = (why: string) => skipReasons.set(why, (skipReasons.get(why) ?? 0) + 1)
     const isVideoFamily = family?.media === 'video'
-    // Video collection is heavier (per-clip ffmpeg possible) — smaller batches
-    const BATCH = isVideoFamily ? 4 : 20
+    /*
+     * Four either way. Images were on 20, which looked like the cheap case and
+     * is not: these are ~17.5MB PNGs at 3712x4608, so twenty at once is ~1.3 GB
+     * of decoded pixels and enough contention that requests time out and get
+     * dropped. Measured over a real 182-image job: 20 -> 10 skipped in 403s,
+     * 4 -> none skipped in 88s.
+     */
+    const BATCH = 4
     const tmpDir = isVideoFamily ? await fs.promises.mkdtemp(path.join(os.tmpdir(), `lorav-${jobId}-`)) : null
 
     try {
     for (let i = 0; i < images.length; i += BATCH) {
+      /*
+       * Cancelled while downloading? Stop here rather than finishing the zip
+       * and submitting it — submitting is the moment this starts costing
+       * money, which is the thing the cancel button exists to prevent.
+       */
+      const still = await prisma.loraTrainingJob.findUnique({
+        where: { id: jobId }, select: { status: true },
+      }).catch(() => null)
+      if (still?.status === 'cancelled') throw new Error('Run was cancelled')
+
       const batch = images.slice(i, i + BATCH)
 
       const results = await Promise.all(batch.map(async (img) => {
@@ -228,7 +252,7 @@ export async function POST(req: NextRequest) {
           // fetchMedia, not fetch: these live on the private bucket and an
           // unsigned request is a 401 that looks like an unusable dataset.
           const res = await fetchMedia(img.imageUrl, { signal: AbortSignal.timeout(60_000) })
-          if (!res.ok) return null
+          if (!res.ok) { noteSkip(`HTTP ${res.status}`); return null }
           const rawBuf = Buffer.from(await res.arrayBuffer())
           const meta = await sharp(rawBuf).metadata()
           const isPng = meta.format === 'png'
@@ -243,7 +267,11 @@ export async function POST(req: NextRequest) {
                 .toBuffer()
           const ext = isPng ? 'png' : 'jpg'
           return { name: `${img.id}.${ext}`, buf, caption, id: img.id }
-        } catch { return null }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          noteSkip(/abort|timeout/i.test(msg) ? 'timed out' : msg.slice(0, 60))
+          return null
+        }
       }))
 
       // Append each result to archive — archiver writes to disk and frees the buffer
@@ -255,13 +283,27 @@ export async function POST(req: NextRequest) {
       }
 
       const processed = downloaded + skipped
-      await setProgress(jobId, `Downloading: ${downloaded} ok, ${skipped} skipped (${processed}/${images.length})`)
+      const why = skipped > 0
+        ? ` — ${[...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')}`
+        : ''
+      await setProgress(jobId, `Downloading: ${downloaded} ok, ${skipped} skipped (${processed}/${images.length})${why}`)
     }
     } finally {
       if (tmpDir) fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
     }
 
-    if (downloaded === 0) throw new Error('No usable media in the selection')
+    if (downloaded === 0) {
+      const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')
+      throw new Error(`No usable media in the selection${why ? ` — ${why}` : ''}`)
+    }
+    /*
+     * Losing a few images quietly means paying to train on a dataset nobody
+     * chose. Under 90% kept, stop and say so rather than proceed.
+     */
+    if (skipped > 0 && downloaded < images.length * 0.9) {
+      const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')
+      throw new Error(`Only ${downloaded} of ${images.length} items could be prepared (${why}) — nothing was submitted. Retry, or drop the unusable items.`)
+    }
     if (family && downloaded < family.datasetRules.min) {
       throw new Error(`${family.label} needs at least ${family.datasetRules.min} usable items — only ${downloaded} downloaded (${skipped} skipped)`)
     }

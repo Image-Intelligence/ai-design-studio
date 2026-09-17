@@ -4205,6 +4205,22 @@ export default function OneTrainerPage() {
     return () => clearInterval(t)
   }, [mode, tab, loadFalJobs]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [cancellingJob, setCancellingJob] = useState<number | null>(null)
+  async function cancelFalJob(jobId: number) {
+    if (cancellingJob) return
+    setCancellingJob(jobId)
+    try {
+      const res = await fetch('/api/admin/lora-training/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...ah() },
+        body: JSON.stringify({ jobId }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) alert(d.error ?? `Error ${res.status}`)
+      await loadFalJobs()
+    } finally { setCancellingJob(null) }
+  }
+
   async function loadRuns() {
     setR2LorasLoading(true)
     setLorasError(null)
@@ -5867,17 +5883,20 @@ export default function OneTrainerPage() {
             {falJobs.map(j => {
               const running = ['preparing', 'queued', 'in_progress'].includes(j.status)
               const failed = j.status === 'failed'
+              const cancelled = j.status === 'cancelled'
               const done = j.status === 'completed'
               const fam = TRAINER_FAMILIES[j.modelId]
               return (
                 <div key={j.id} className={`rounded-xl border p-4 space-y-2 ${
                   failed ? 'border-red-500/25 bg-red-500/[0.04]'
-                    : done ? 'border-emerald-500/25 bg-emerald-500/[0.04]'
-                      : 'border-white/[0.10] bg-white/[0.03]'}`}>
+                    : cancelled ? 'border-white/[0.10] bg-white/[0.02]'
+                      : done ? 'border-emerald-500/25 bg-emerald-500/[0.04]'
+                        : 'border-white/[0.10] bg-white/[0.03]'}`}>
                   <div className="flex items-center gap-2.5">
                     {running ? <Loader2 size={13} className="animate-spin text-sky-400 shrink-0" />
                       : failed ? <AlertCircle size={13} className="text-red-400 shrink-0" />
-                        : <CheckCircle size={13} className="text-emerald-400 shrink-0" />}
+                        : cancelled ? <X size={13} className="text-slate-500 shrink-0" />
+                          : <CheckCircle size={13} className="text-emerald-400 shrink-0" />}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 min-w-0">
                         <p className="text-[12px] font-semibold text-white truncate">{j.name}</p>
@@ -5890,6 +5909,14 @@ export default function OneTrainerPage() {
                         {j.createdAt && ` · ${new Date(j.createdAt).toLocaleTimeString()}`}
                       </p>
                     </div>
+                    {running && (
+                      <button onClick={() => cancelFalJob(j.id)} disabled={cancellingJob === j.id}
+                        title="Stop this run. Training is billed per step, so stopping early stops the spend."
+                        className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/10 border border-red-500/25 text-red-300 text-[10px] font-bold hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                        {cancellingJob === j.id ? <Loader2 size={10} className="animate-spin" /> : <Square size={10} />}
+                        Cancel
+                      </button>
+                    )}
                   </div>
                   {/* prepare writes progress into errorMsg, so this line is the
                       live status while running and the reason when it fails. */}
