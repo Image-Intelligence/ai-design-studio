@@ -696,21 +696,30 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     promptMax: 10000,
     endpoint: 'ideogram/v4/instant',
     needsImage: false,
-    imageParam: null,
-    maxInputImages: 0,
+    imageParam: 'image_url',
+    maxInputImages: 1,
     promptRequired: true,
     aspectRatios: null,
     usesImageSize: true,
-    notes: 'fastest tier; a LoRA moves it to ideogram/v4/lora at TURBO',
+    notes: 'fastest tier; a LoRA or a reference moves it to the matching sibling at TURBO',
     /*
-     * Instant has no LoRA endpoint of its own, but it is a speed tier rather
-     * than a different model — and ideogram/v4/lora accepts rendering_speed
-     * TURBO. So a LoRA runs there at the fastest setting instead of being
-     * unavailable on this variant.
+     * Instant has no LoRA or image-to-image endpoint of its own, but it is a
+     * speed TIER rather than a different model, and every sibling carries
+     * rendering_speed with TURBO in its enum. So a LoRA or a reference moves
+     * the request to the endpoint that accepts it and asks for the fastest
+     * setting, instead of the feature being absent on this variant.
      */
-    resolveEndpoint: (ctx) => ideogramLoras(ctx.options) ? 'ideogram/v4/lora' : 'ideogram/v4/instant',
+    resolveEndpoint: (ctx) => {
+      const lora = !!ideogramLoras(ctx.options)
+      const img = ctx.imageUrls.length > 0
+      if (img && lora) return 'ideogram/v4/image-to-image/lora'
+      if (img) return 'ideogram/v4/image-to-image'
+      if (lora) return 'ideogram/v4/lora'
+      return 'ideogram/v4/instant'
+    },
     build: (ctx) => {
       const loras = ideogramLoras(ctx.options)
+      const img = ctx.imageUrls[0]
       return {
         prompt: ctx.prompt,
         image_size: ideogramSize(ctx, 2048),
@@ -718,8 +727,11 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         output_format: 'png',
         enable_safety_checker: false,
         expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
-        // Only the LoRA endpoint has this field; the instant one does not.
-        ...(loras ? { loras, rendering_speed: 'TURBO' } : {}),
+        // rendering_speed exists on every sibling but not on /instant itself,
+        // so it is sent only once the request has moved off that endpoint.
+        ...(loras ? { loras } : {}),
+        ...(img ? { image_url: img, strength: ideogramStrength(ctx.options) } : {}),
+        ...(loras || img ? { rendering_speed: 'TURBO' } : {}),
       }
     },
   },
