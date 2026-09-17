@@ -270,7 +270,11 @@ export async function POST(request: Request) {
               quality: (params?.quality as string) || null,
               aspectRatio: (params?.aspectRatio as string) || null,
               videoMetadata: params?.loraUrl
-                ? { loraUrl: params.loraUrl, loraName: params.loraName ?? undefined }
+                ? {
+                    loraUrl: params.loraUrl,
+                    loraName: params.loraName ?? undefined,
+                    loraScale: params.loraScale ?? undefined,
+                  }
                 : queueItem.modelId === 'gpt-image-2.5'
                   ? {
                       // Derived from the endpoint that ran, not from what the

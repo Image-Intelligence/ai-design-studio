@@ -89,6 +89,7 @@ interface ImageItem {
   videoMetadata?: Record<string, any>
   loraUrl?: string | null
   loraName?: string | null
+  loraScale?: number | null
   r2Key?: string
 }
 
@@ -9671,6 +9672,11 @@ function ImageDetailModal({
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
                   <Sparkles size={9} />
                   {image.loraName || "Custom LoRA"}
+                  {/* Strength, when it was recorded. Older generations have
+                      none, and a missing value must not read as 0. */}
+                  {typeof image.loraScale === "number" && (
+                    <span className="text-amber-300/60">· {image.loraScale.toFixed(2)}</span>
+                  )}
                 </span>
               </div>
             )}
@@ -9703,7 +9709,7 @@ function ImageDetailModal({
               {isUpscalerImage && image.videoMetadata?.upscaleFactor != null && <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] font-mono">{image.videoMetadata.upscaleFactor}x upscale</span>}
               {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.aspectRatio}</span>}
               {!isUpscalerImage && image.quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.quality.toUpperCase()}</span>}
-              {image.loraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{image.loraName || "LoRA"}</span>}
+              {image.loraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{image.loraName || "LoRA"}{typeof image.loraScale === "number" && <span className="text-amber-300/60">· {image.loraScale.toFixed(2)}</span>}</span>}
               {measuredSize && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono tabular-nums">{measuredSize.w}&times;{measuredSize.h}</span>}
               {formattedDate && <span className="text-[10px] text-slate-600">{formattedDate}</span>}
             </div>
@@ -18895,6 +18901,9 @@ function PromptBox({
   // Which edges have to meet. "both" is a texture that repeats in every
   // direction; one axis is for a border or a strip that only runs one way.
   const [tilingMode, setTilingMode] = useState<"both" | "horizontal" | "vertical">("both")
+  // Ideogram image-to-image: how far the result may depart from the reference.
+  // 0.8 is fal's own default and is kept so results do not change silently.
+  const [ideogramStrength, setIdeogramStrength] = useState(0.8)
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -20411,7 +20420,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4-") ? { ideogramStrength } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20433,7 +20442,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4-") ? { ideogramStrength } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -21547,6 +21556,27 @@ function PromptBox({
           )}
 
           {/* LoRA config row — visible when a LoRA is active */}
+          {model.id.startsWith("ideogram-v4-") && model.maxReferenceImages > 0 && (
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
+              <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Ref strength</span>
+                <input
+                  type="range" min="0.1" max="1" step="0.05" value={ideogramStrength}
+                  onChange={e => setIdeogramStrength(parseFloat(e.target.value))}
+                  className="w-full accent-violet-400 cursor-pointer h-0.5"
+                />
+                <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{ideogramStrength.toFixed(2)}</span>
+              </div>
+              <p className="text-[10px] leading-snug text-slate-600">
+                How far it may depart from the attached reference. Measured at one seed:
+                <span className="text-slate-500"> 0.3</span> keeps the subject and re-renders it;
+                <span className="text-slate-500"> 0.8</span> (fal&apos;s default) keeps the framing,
+                clothes and scene but the person becomes someone else. Only applies when a reference
+                is attached.
+              </p>
+            </div>
+          )}
+
           {model.id === "ideogram-v4-tiling" && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">

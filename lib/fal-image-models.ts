@@ -224,6 +224,16 @@ const BASE_DIMS: Record<string, [number, number]> = {
  * quietly selects the base model, which looks identical to a LoRA that failed
  * to load.
  */
+/**
+ * How far image-to-image departs from the source. fal's default is 0.8, and
+ * measured at one seed that is a full re-render: the composition and the
+ * scene carry over, the person does not. 0.3 keeps the subject.
+ */
+function ideogramStrength(options: Record<string, any>): number {
+  const v = Number(options.ideogramStrength)
+  return Number.isFinite(v) ? Math.min(1, Math.max(0.01, v)) : 0.8
+}
+
 function ideogramLoras(options: Record<string, any>): { path: string; scale: number }[] | undefined {
   const url = typeof options.loraUrl === 'string' ? options.loraUrl.trim() : ''
   if (!url) return undefined
@@ -729,7 +739,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium'),
         rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
         ...(loras ? { loras } : {}),
-        ...(img ? { image_url: img, strength: 0.8 } : {}),
+        ...(img ? { image_url: img, strength: ideogramStrength(ctx.options) } : {}),
       }
     },
   },
@@ -771,7 +781,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       ...(ideogramLoras(ctx.options) ? { loras: ideogramLoras(ctx.options) } : {}),
       // An input image is optional here: with one, it re-renders that texture
       // so the edges wrap; without, it invents one from the prompt.
-      ...(ctx.imageUrls[0] ? { image_url: ctx.imageUrls[0], strength: 0.8 } : {}),
+      ...(ctx.imageUrls[0] ? { image_url: ctx.imageUrls[0], strength: ideogramStrength(ctx.options) } : {}),
     }),
   },
 

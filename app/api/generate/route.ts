@@ -1273,6 +1273,9 @@ export async function POST(request: Request) {
                   referenceImageUrls: permanentReferenceUrls,
                   loraUrl: loraUrl || null,
                   loraName: loraName || null,
+                  // How hard it was applied — the setting most likely to
+                  // explain a result, and previously not kept anywhere.
+                  loraScale: loraUrl ? (loraScale ?? 1) : null,
                   // Stored so promoteNextQueuedJob can replay this job later
                   falEndpoint: modelEndpoint,
                   falInput: inputParams,
@@ -1329,6 +1332,7 @@ export async function POST(request: Request) {
                 referenceImageUrls: permanentReferenceUrls,
                 loraUrl: loraUrl || null,
                 loraName: loraName || null,
+                loraScale: loraUrl ? (loraScale ?? 1) : null,
                 // What was ACTUALLY sent, so the info panel reports the run
                 // rather than the request. For families served by sibling
                 // endpoints (GPT Image 2.5's sunburst/flare) the endpoint is
