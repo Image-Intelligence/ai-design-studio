@@ -18,6 +18,15 @@ export type TrainerFamily = {
   outputFiles: { key: string; saveAs: string }[]
   datasetRules: { min: number; max: number }
   r2Namespace: string
+  /**
+   * Longest side prepare resizes training images to (image families only).
+   *
+   * It is a ceiling on the run: a trainer that crops without upscaling can
+   * never exceed what is in the zip. Defaults to 1024, which several trainers
+   * are happy with and which keeps the zip small; raise it where the trainer
+   * can actually use the pixels.
+   */
+  maxImageDim?: number
 }
 
 const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v))
@@ -111,6 +120,15 @@ export const TRAINER_FAMILIES: Record<string, TrainerFamily> = {
      */
     datasetRules: { min: 3, max: 200 },
     r2Namespace: 'training/loras',
+    /*
+     * 2048, because "auto" takes the largest common no-upscale crop and then
+     * center-crops. At the old 1024 ceiling a 3712x4608 source arrived as
+     * 825x1024 and reached no preset at all, square included. At 2048 it is
+     * 1650x2048 and reaches square, landscape, portrait and phone_wallpaper.
+     * Measured: 128 MB per 191 images as JPEG q95, against 331 MB for the
+     * 1024 PNGs this replaces.
+     */
+    maxImageDim: 2048,
   },
   'fal-ai/ltx2-video-trainer': {
     familyId: 'ltx2-video',

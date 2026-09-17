@@ -247,25 +247,33 @@ export async function POST(req: NextRequest) {
             return { name: `${img.id}.${ext}`, buf: rawBuf, caption, id: img.id }
           }
 
-          // Image path: resize to max 1024px, preserve original format
-          // (PNG stays PNG to avoid JPEG artifacts)
+          /*
+           * Image path: resize to the family's ceiling.
+           *
+           * Whatever lands in the zip is the most the trainer can use, so the
+           * cap is the run's real resolution limit rather than a storage
+           * detail. Above 1024 the encode switches to JPEG q95: PNG at 2048
+           * would be ~1.3 GB for a 191-image set, where q95 is 128 MB - and
+           * smaller than the 1024 PNGs it replaces.
+           */
+          const maxDim = family?.maxImageDim ?? 1024
           // fetchMedia, not fetch: these live on the private bucket and an
           // unsigned request is a 401 that looks like an unusable dataset.
           const res = await fetchMedia(img.imageUrl, { signal: AbortSignal.timeout(60_000) })
           if (!res.ok) { noteSkip(`HTTP ${res.status}`); return null }
           const rawBuf = Buffer.from(await res.arrayBuffer())
           const meta = await sharp(rawBuf).metadata()
-          const isPng = meta.format === 'png'
-          const buf = isPng
+          const keepPng = meta.format === 'png' && maxDim <= 1024
+          const buf = keepPng
             ? await sharp(rawBuf)
-                .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+                .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
                 .png({ compressionLevel: 6 })
                 .toBuffer()
             : await sharp(rawBuf)
-                .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+                .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
                 .jpeg({ quality: 95 })
                 .toBuffer()
-          const ext = isPng ? 'png' : 'jpg'
+          const ext = keepPng ? 'png' : 'jpg'
           return { name: `${img.id}.${ext}`, buf, caption, id: img.id }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
