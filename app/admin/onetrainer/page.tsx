@@ -2561,6 +2561,24 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
     }
   }
 
+  /*
+   * Hand the selection over as-is, for the fal trainers.
+   *
+   * They resolve image ids and fetch the originals themselves, so the zip is
+   * work nobody reads. The snapshot is the same one build() passes; only the
+   * R2 key is missing, and the launch path already requires that key for a
+   * RunPod run, so nothing can silently train on an absent zip.
+   */
+  function attachWithoutBuild() {
+    if (selected.size === 0) return
+    const snapshot: DatasetSnapshot = {
+      name: presetName.trim() || 'dataset',
+      defaultSource,
+      images: [...selected.values()],
+    }
+    onBuilt('', snapshot)
+  }
+
   async function cancelBuild() {
     const jid = buildJobIdRef.current
     // Optimistic: stop polling + reset the UI immediately; the server-side
@@ -3365,6 +3383,16 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                 {building ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
                 {building ? 'Building dataset zip…' : `Build dataset (${selected.size} images)`}
               </button>
+              {/* fal reads image ids, not the zip — so skip it. */}
+              <button onClick={attachWithoutBuild} disabled={selected.size === 0 || building}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-white/[0.04] border border-white/[0.10] text-slate-300 text-[11px] font-semibold hover:bg-white/[0.08] hover:text-white transition-all disabled:opacity-40">
+                <Sparkles size={11} />
+                Use for fal training ({selected.size}) — no zip
+              </button>
+              <p className="text-[9px] text-slate-600 leading-snug">
+                The fal trainers fetch the originals by id, so they never read the zip.
+                Building is only needed for a RunPod run.
+              </p>
               {building && buildProgress && (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-[9px] font-mono">
@@ -5593,7 +5621,21 @@ export default function OneTrainerPage() {
                           ) : (
                             <div className="space-y-1.5 col-span-2">
                               <label className="text-[9px] text-slate-600 uppercase tracking-wider font-mono">Dataset (.zip of images + captions)</label>
-                              {c.r2DatasetKey ? (
+                              {!c.r2DatasetKey && (conceptSnapshots[c.id]?.images?.length ?? 0) > 0 ? (
+                                /* Attached for fal: ids, no zip. Without this the
+                                   row looked empty and the dataset invisible. */
+                                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                                  <CheckCircle size={11} className="text-emerald-400 shrink-0" />
+                                  <span className="flex-1 text-[11px] text-emerald-300 truncate">
+                                    {conceptSnapshots[c.id]!.images.length} images
+                                    <span className="text-emerald-300/60"> · {conceptSnapshots[c.id]!.name} · no zip needed (fal)</span>
+                                  </span>
+                                  <button onClick={() => setConceptSnapshots(prev => { const n = { ...prev }; delete n[c.id]; return n })}
+                                    className="text-slate-600 hover:text-red-400 transition-colors">
+                                    <X size={11} />
+                                  </button>
+                                </div>
+                              ) : c.r2DatasetKey ? (
                                 <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
                                   <CheckCircle size={11} className="text-emerald-400 shrink-0" />
                                   <span className="flex-1 text-[11px] text-emerald-300 font-mono truncate">{c.r2DatasetKey}</span>
