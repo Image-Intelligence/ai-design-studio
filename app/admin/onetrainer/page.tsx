@@ -3352,6 +3352,11 @@ function BucketPickerModal({ onClose, onBuilt, adminHeaders, initialData }: {
                   <option value={0}>Original — full size (fits ~85 large images)</option>
                 </select>
               </div>
+              <p className="text-[9px] text-slate-600 leading-snug">
+                Applies to the built .zip, which the RunPod trainer reads. The fal trainers
+                never open it — they re-fetch the originals by id and resize to their own
+                ceiling (Ideogram 2048px), so this setting does not affect them.
+              </p>
               <button onClick={build} disabled={selected.size === 0 || building}
                 className="relative overflow-hidden w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-bold hover:bg-white/15 transition-all disabled:opacity-40">
                 {!building && selected.size > 0 && (
