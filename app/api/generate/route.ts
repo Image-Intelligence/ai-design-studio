@@ -174,6 +174,22 @@ export async function POST(request: Request) {
     }
 
     /*
+     * The extras get the same two checks. Skipping them would make the
+     * ownership gate trivially avoidable: put someone else's LoRA second.
+     */
+    if (Array.isArray(body.extraLoras) && body.extraLoras.length > 0) {
+      const { loraUsableBy: usable, loraFileProblem: fileProblem } = await import('@/lib/lora-access')
+      for (const e of body.extraLoras.slice(0, 2) as { url?: unknown }[]) {
+        const url = typeof e?.url === 'string' ? e.url : ''
+        if (!url) continue
+        const ok = await usable(url, user)
+        if (!ok.ok) return jsonPrivate({ error: ok.reason }, { status: 403 })
+        const bad = await fileProblem(url)
+        if (bad) return jsonPrivate({ error: bad }, { status: 400 })
+      }
+    }
+
+    /*
      * The weights live on the private bucket, so fal needs a signed link to
      * read them — unsigned it gets a 401 and the job fails with an error
      * about the model. Signed for USE only: `loraUrl` stays canonical
@@ -948,7 +964,19 @@ export async function POST(request: Request) {
               imageUrls: falImageUrls,
               // Signed, not canonical: these specs put loraUrl straight into
               // the fal payload, and the bucket is private.
-              options: { ...body, loraUrl: falLoraPath ?? body.loraUrl, refDims },
+              // Every LoRA path has to be signed, not just the first — the
+              // extras are on the same private bucket.
+              options: {
+                ...body,
+                loraUrl: falLoraPath ?? body.loraUrl,
+                refDims,
+                extraLoras: Array.isArray(body.extraLoras)
+                  ? body.extraLoras.map((e: { url?: unknown; scale?: unknown }) => ({
+                      url: typeof e?.url === 'string' ? signMediaUrl(e.url, FAL_TTL) : '',
+                      scale: e?.scale,
+                    }))
+                  : undefined,
+              },
             })
             modelEndpoint = built.endpoint
             newFalInput = built.input

@@ -18896,6 +18896,14 @@ function PromptBox({
   const [safetyConfirmCallback, setSafetyConfirmCallback] = useState<(() => void) | null>(null)
   const [loraJobs, setLoraJobs] = useState<Array<{ id: number; name: string; loraUrl: string; custom?: boolean; triggerWord?: string }>>([])
   const [selectedLoraUrl, setSelectedLoraUrl] = useState<string | null>(null)
+  /*
+   * LoRAs two and three. Ideogram's endpoints take an array of up to three;
+   * every other family here takes one, so this stays empty for them.
+   * selectedLoraUrl remains the first, which keeps every existing consumer
+   * working unchanged.
+   */
+  const [extraLoras, setExtraLoras] = useState<{ url: string; scale: number }[]>([])
+  const multiLoraMax = model.id.startsWith("ideogram-v4") ? 3 : 1
   const [loraScale, setLoraScale] = useState(1.0)
   // fal's speed/fidelity trade-off. 'regular' is fal's own default on
   // z-image and FLUX 2, and what this route has always sent.
@@ -20429,7 +20437,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20451,7 +20459,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -20805,7 +20813,7 @@ function PromptBox({
     if (acceleration === "high" && model.id === "flux-1-dev" && selectedLoraUrl) setAcceleration("regular")
   }, [acceleration, model.id, selectedLoraUrl])
   useEffect(() => {
-    if (!isZImageModel) { setSelectedLoraUrl(null); setLoraJobs([]); return }
+    if (!isZImageModel) { setSelectedLoraUrl(null); setExtraLoras([]); setLoraJobs([]); return }
     // Undefined = not in the table = unfiltered. [] = nothing applies.
     const compatTrainers = LORA_TRAINER_COMPAT[model.id]
     const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
@@ -21700,6 +21708,47 @@ function PromptBox({
                 <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{loraScale.toFixed(2)}</span>
               </div>
 
+              {/* Stacked LoRAs: one row each, plus what they add up to. */}
+              {extraLoras.map((e, i) => {
+                const name = loraJobs.find(j => j.loraUrl === e.url)?.name ?? `LoRA ${i + 2}`
+                return (
+                  <div key={e.url} className="grid grid-cols-[4rem_1fr_2.5rem_0.75rem] items-center gap-2">
+                    <span className="text-[10px] font-mono text-slate-500 truncate" title={name}>{name}</span>
+                    <input
+                      type="range" min="0" max="2" step="0.05" value={e.scale}
+                      onChange={ev => {
+                        const v = parseFloat(ev.target.value)
+                        setExtraLoras(prev => prev.map((x, xi) => xi === i ? { ...x, scale: v } : x))
+                      }}
+                      className="w-full accent-violet-400 cursor-pointer h-0.5"
+                    />
+                    <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{e.scale.toFixed(2)}</span>
+                    <button onClick={() => setExtraLoras(prev => prev.filter((_, xi) => xi !== i))}
+                      className="text-slate-600 hover:text-red-400 transition-colors" title="Remove">
+                      <X size={10} />
+                    </button>
+                  </div>
+                )
+              })}
+
+              {extraLoras.length > 0 && (() => {
+                /*
+                 * They add rather than take turns, so the total is what decides
+                 * the result. Measured: two identity LoRAs at 1.0 each (total
+                 * 2.0) melted textures and hands; the same pair at 0.5 each
+                 * (total 1.0) was clean.
+                 */
+                const total = loraScale + extraLoras.reduce((sum, e) => sum + e.scale, 0)
+                const hot = total > 1.4
+                return (
+                  <p className={`text-[10px] leading-snug ${hot ? 'text-amber-300/90' : 'text-slate-600'}`}>
+                    Combined strength {total.toFixed(2)} across {extraLoras.length + 1} LoRAs.
+                    They are applied together, not in turn, so the total is what counts
+                    {hot ? ` — past about 1.4 this starts melting textures and hands.` : '. Around 1.0 total is the safe range.'}
+                  </p>
+                )
+              })()}
+
               {/* CFG — Turbo has no guidance_scale field at all */}
               {loraLimits.cfg && (
               <div className="grid grid-cols-[4rem_1fr_2.5rem] items-center gap-3">
@@ -22346,7 +22395,7 @@ function PromptBox({
                   {loraPickerOpen && (
                     <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[220px] rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl overflow-hidden py-1">
                       <button
-                        onClick={() => { setSelectedLoraUrl(null); setLoraPickerOpen(false) }}
+                        onClick={() => { setSelectedLoraUrl(null); setExtraLoras([]); setLoraPickerOpen(false) }}
                         className={`w-full text-left px-3 py-2 text-[11px] transition-colors ${!selectedLoraUrl ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
                       >
                         No LoRA
@@ -22354,8 +22403,35 @@ function PromptBox({
                       {loraJobs.map(j => (
                         <div key={j.id} className="flex items-center group">
                           <button
-                            onClick={() => { setSelectedLoraUrl(j.loraUrl); setLoraPickerOpen(false) }}
-                            className={`flex-1 text-left px-3 py-2 text-[11px] transition-colors ${selectedLoraUrl === j.loraUrl ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
+                            onClick={() => {
+                              /*
+                               * One LoRA: replace, as before. Several: toggle,
+                               * because the whole point is combining them.
+                               */
+                              const chosen = selectedLoraUrl === j.loraUrl || extraLoras.some(e => e.url === j.loraUrl)
+                              if (multiLoraMax === 1) {
+                                setSelectedLoraUrl(j.loraUrl)
+                                setLoraPickerOpen(false)
+                                return
+                              }
+                              if (chosen) {
+                                if (selectedLoraUrl === j.loraUrl) {
+                                  // Promote the next one so there is never a
+                                  // stack with an empty first slot.
+                                  const [next, ...rest] = extraLoras
+                                  setSelectedLoraUrl(next?.url ?? null)
+                                  setExtraLoras(rest)
+                                } else {
+                                  setExtraLoras(prev => prev.filter(e => e.url !== j.loraUrl))
+                                }
+                                return
+                              }
+                              if (!selectedLoraUrl) { setSelectedLoraUrl(j.loraUrl); return }
+                              if (extraLoras.length < multiLoraMax - 1) {
+                                setExtraLoras(prev => [...prev, { url: j.loraUrl, scale: 0.6 }])
+                              }
+                            }}
+                            className={`flex-1 text-left px-3 py-2 text-[11px] transition-colors ${selectedLoraUrl === j.loraUrl || extraLoras.some(e => e.url === j.loraUrl) ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
                           >
                             <div className="truncate">{j.name}{j.custom && <span className="ml-1 text-slate-600">·custom</span>}</div>
                             {j.triggerWord && <div className="text-[10px] text-amber-400/70 mt-0.5">trigger: <span className="font-mono">{j.triggerWord}</span></div>}
@@ -22367,6 +22443,7 @@ function PromptBox({
                                 // the row id now, not a localStorage timestamp.
                                 void fetch(`/api/user/loras?id=${j.id}`, { method: 'DELETE' }).catch(() => {})
                                 if (selectedLoraUrl === j.loraUrl) setSelectedLoraUrl(null)
+                                setExtraLoras(prev => prev.filter(e => e.url !== j.loraUrl))
                                 setLoraJobs(prev => prev.filter(p => p.loraUrl !== j.loraUrl))
                               }}
                               className="px-2 py-2 text-slate-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"

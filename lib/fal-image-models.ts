@@ -256,10 +256,27 @@ function ideogramStrength(options: Record<string, any>): number {
 }
 
 function ideogramLoras(options: Record<string, any>): { path: string; scale: number }[] | undefined {
-  const url = typeof options.loraUrl === 'string' ? options.loraUrl.trim() : ''
-  if (!url) return undefined
-  const scale = Number(options.loraScale)
-  return [{ path: url, scale: Number.isFinite(scale) ? Math.min(2, Math.max(0, scale)) : 1 }]
+  // Scale is 0-4 per the schema; this used to clamp at 2 and quietly halve
+  // the usable range.
+  const clamp = (v: unknown) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.min(4, Math.max(0, n)) : 1
+  }
+  const out: { path: string; scale: number }[] = []
+  const first = typeof options.loraUrl === 'string' ? options.loraUrl.trim() : ''
+  if (first) out.push({ path: first, scale: clamp(options.loraScale) })
+  /*
+   * Second and third. fal caps the array at 3, and the deltas ADD rather than
+   * apply in turn, so three at full strength is three times the intended
+   * effect — the caller is responsible for the totals, not this.
+   */
+  if (Array.isArray(options.extraLoras)) {
+    for (const e of options.extraLoras) {
+      const url = typeof e?.url === 'string' ? e.url.trim() : ''
+      if (url && out.length < 3) out.push({ path: url, scale: clamp(e?.scale) })
+    }
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /** Largest side ideogram/v4/tiling returns as asked. Measured, not read. */
