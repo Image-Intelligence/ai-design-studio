@@ -18894,7 +18894,7 @@ function PromptBox({
   const [showSafetyModal, setShowSafetyModal] = useState(false)
   const [safetyAgeConfirmed, setSafetyAgeConfirmed] = useState(false)
   const [safetyConfirmCallback, setSafetyConfirmCallback] = useState<(() => void) | null>(null)
-  const [loraJobs, setLoraJobs] = useState<Array<{ id: number; name: string; loraUrl: string; custom?: boolean; triggerWord?: string }>>([])
+  const [loraJobs, setLoraJobs] = useState<Array<{ id: number; name: string; loraUrl: string; custom?: boolean; triggerWord?: string; trainedCrop?: string }>>([])
   const [selectedLoraUrl, setSelectedLoraUrl] = useState<string | null>(null)
   /*
    * LoRAs two and three. Ideogram's endpoints take an array of up to three;
@@ -20839,7 +20839,14 @@ function PromptBox({
             (d.jobs ?? [])
               .filter(j => j.status === "completed" && j.loraUrl
                 && (compatTrainers === undefined || compatTrainers.includes(j.modelId)))
-              .map(j => ({ id: j.id, name: j.name, loraUrl: j.loraUrl!, triggerWord: j.config?.trigger_word as string | undefined })))
+              .map(j => ({
+                id: j.id,
+                name: j.name,
+                loraUrl: j.loraUrl!,
+                triggerWord: j.config?.trigger_word as string | undefined,
+                // The crop the trainer settled on — recorded at finalize.
+                trainedCrop: j.config?._resolvedResolution as string | undefined,
+              })))
           .catch(() => []),
       ])
       setLoraJobs([...trained, ...mine])
@@ -22435,6 +22442,24 @@ function PromptBox({
                           >
                             <div className="truncate">{j.name}{j.custom && <span className="ml-1 text-slate-600">·custom</span>}</div>
                             {j.triggerWord && <div className="text-[10px] text-amber-400/70 mt-0.5">trigger: <span className="font-mono">{j.triggerWord}</span></div>}
+                            {j.trainedCrop && (() => {
+                              /*
+                               * What shape and size this LoRA actually learned.
+                               * Below ~640 on the short side it has seen far
+                               * less area than a 1024+ generation asks for,
+                               * which is where duplicated subjects show up.
+                               */
+                              const [w, h] = j.trainedCrop.split('x').map(Number)
+                              const shape = !w || !h ? '' : w > h * 1.1 ? 'landscape' : h > w * 1.1 ? 'portrait' : 'square'
+                              const small = !!w && !!h && Math.min(w, h) < 640
+                              return (
+                                <div className={`text-[10px] mt-0.5 ${small ? 'text-amber-400/80' : 'text-slate-600'}`}>
+                                  trained <span className="font-mono">{j.trainedCrop}</span>
+                                  {shape && ` \u00b7 ${shape}`}
+                                  {small && ' \u00b7 small'}
+                                </div>
+                              )
+                            })()}
                           </button>
                           {j.custom && (
                             <button

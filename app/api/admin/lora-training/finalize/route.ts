@@ -135,12 +135,30 @@ async function runFinalize(
     }
     await uploadToR2(`${prefix}/run.json`, Buffer.from(JSON.stringify(runJson, null, 2)), 'application/json')
 
+    /*
+     * The crop the trainer settled on. With resolution 'auto' this is decided
+     * from the dataset and is not knowable up front, yet it governs how the
+     * LoRA behaves — a run that resolved to landscape produces landscape
+     * framing. Recorded here so the picker can say so.
+     */
+    let resolved: string | null = null
+    try {
+      const cfgUrl = saved['config.json']
+      if (cfgUrl) {
+        const r = await fetchMedia(cfgUrl)
+        if (r.ok) {
+          const parsed = JSON.parse(await r.text())
+          if (typeof parsed?.resolved_resolution === 'string') resolved = parsed.resolved_resolution
+        }
+      }
+    } catch { /* the LoRA is saved either way; this is a label */ }
+
     await prisma.loraTrainingJob.update({
       where: { id: jobId },
       data: {
         loraUrl: saved['final.safetensors'],
         configUrl: saved['config.json'] ?? job.configUrl,
-        config: { ...config, _r2Prefix: prefix, _r2Files: saved } as object,
+        config: { ...config, _r2Prefix: prefix, _r2Files: saved, _resolvedResolution: resolved } as object,
       },
     })
 
