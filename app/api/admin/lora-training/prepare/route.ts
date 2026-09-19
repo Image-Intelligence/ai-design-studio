@@ -185,6 +185,13 @@ export async function POST(req: NextRequest) {
      */
     const skipReasons = new Map<string, number>()
     const noteSkip = (why: string) => skipReasons.set(why, (skipReasons.get(why) ?? 0) + 1)
+    /*
+     * Images that cannot supply the requested crop. Ideogram center-crops
+     * without upscaling, so anything smaller in either dimension cannot
+     * contribute at that size — and would do so silently.
+     */
+    const wantCrop = /^(\d+)x(\d+)$/.exec(String(config.resolution ?? ''))
+    let tooSmallForCrop = 0
     const isVideoFamily = family?.media === 'video'
     /*
      * Four either way. Images were on 20, which looked like the cheap case and
@@ -273,6 +280,10 @@ export async function POST(req: NextRequest) {
                 .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
                 .jpeg({ quality: 95 })
                 .toBuffer()
+          if (wantCrop) {
+            const m2 = await sharp(buf).metadata()
+            if ((m2.width ?? 0) < Number(wantCrop[1]) || (m2.height ?? 0) < Number(wantCrop[2])) tooSmallForCrop++
+          }
           const ext = keepPng ? 'png' : 'jpg'
           return { name: `${img.id}.${ext}`, buf, caption, id: img.id }
         } catch (err) {
@@ -300,6 +311,9 @@ export async function POST(req: NextRequest) {
       if (tmpDir) fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
     }
 
+    if (wantCrop && tooSmallForCrop > 0) {
+      await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} are smaller than the ${config.resolution} crop and cannot fill it`)
+    }
     if (downloaded === 0) {
       const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')
       throw new Error(`No usable media in the selection${why ? ` — ${why}` : ''}`)

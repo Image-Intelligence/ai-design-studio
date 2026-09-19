@@ -3528,6 +3528,13 @@ export default function OneTrainerPage() {
    * family is a registry record and nothing here — which is what the registry
    * was built for, and was not true while this page hard-coded Wan 2.2.
    */
+  /*
+   * The crop the run trains at. NOT 'auto' by default: auto takes the largest
+   * crop that fits inside every image, so a handful of odd-shaped photos
+   * decide the shape for the whole set - one dataset of 159 portraits
+   * resolved to 864x768 landscape and lost the top of every head.
+   */
+  const [falResolution, setFalResolution] = useState<string>('1024x1536')
   const [falTrainer, setFalTrainer] = useState<string>('ideogram/v4/trainer')
   const falFamily = TRAINER_FAMILIES[falTrainer]
   /*
@@ -4581,6 +4588,8 @@ export default function OneTrainerPage() {
           // default_caption, which is where a token goes there.
           trigger_phrase: falCfg.triggerPhrase.trim(),
           auto_scale_input: falCfg.autoScale,
+          // Only Ideogram has a crop to choose; the others ignore it.
+          ...(falFamily?.familyId === 'ideogram-v4' ? { resolution: falResolution } : {}),
         }
         const res = await fetch('/api/admin/lora-training/start', {
           method: 'POST',
@@ -5239,6 +5248,27 @@ export default function OneTrainerPage() {
                           Automatic
                         </button>
                       </div>
+
+                      {falFamily?.familyId === 'ideogram-v4' && (
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Training crop</label>
+                          <select value={falResolution} onChange={e => setFalResolution(e.target.value)}
+                            className="w-full max-w-xs px-3 py-2 rounded-lg bg-[#0a101d] border border-white/[0.08] text-sm text-white focus:outline-none focus:border-white/30 cursor-pointer">
+                            <option value="1024x1536">Portrait 1024{"\u00d7"}1536 {"\u2014"} people, full body</option>
+                            <option value="1024x1024">Square 1024{"\u00d7"}1024 {"\u2014"} faces, products</option>
+                            <option value="1536x1024">Landscape 1536{"\u00d7"}1024 {"\u2014"} scenes</option>
+                            <option value="1920x1088">Widescreen 1920{"\u00d7"}1088</option>
+                            <option value="1024x1792">Tall 1024{"\u00d7"}1792 {"\u2014"} phone wallpaper</option>
+                            <option value="auto">Auto {"\u2014"} largest crop that fits every image</option>
+                          </select>
+                          <p className="text-[9px] text-slate-600 leading-snug">
+                            Ideogram center-crops to this, so a crop wider than your photos cuts off
+                            heads. <span className="text-slate-500">Auto</span> is bounded by the
+                            WORST-shaped image in the set {"\u2014"} three stray landscape photos among
+                            159 portraits resolved one run to 864{"\u00d7"}768 and cropped every head.
+                          </p>
+                        </div>
+                      )}
 
                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
                         <div className="space-y-1.5">
