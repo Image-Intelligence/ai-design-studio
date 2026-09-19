@@ -270,14 +270,30 @@ export async function POST(req: NextRequest) {
           if (!res.ok) { noteSkip(`HTTP ${res.status}`); return null }
           const rawBuf = Buffer.from(await res.arrayBuffer())
           const meta = await sharp(rawBuf).metadata()
+          /*
+           * The cap shrinks by the LONG side, which is the wrong axis for a
+           * wide source: a 5632x3072 original holds a 1024x1536 portrait crop
+           * comfortably, but fitted inside 2048 it becomes 2048x1117 and no
+           * longer does. So the cap applies unless it would take a dimension
+           * below the crop, and then the crop wins. Tall sources are
+           * unaffected — their cap scale is already the smaller of the two.
+           */
+          let fitDim = maxDim
+          if (wantCrop && meta.width && meta.height) {
+            const capScale = Math.min(1, maxDim / Math.max(meta.width, meta.height))
+            const coverScale = Math.max(Number(wantCrop[1]) / meta.width, Number(wantCrop[2]) / meta.height)
+            if (coverScale > capScale && coverScale <= 1) {
+              fitDim = Math.ceil(Math.max(meta.width, meta.height) * coverScale)
+            }
+          }
           const keepPng = meta.format === 'png' && maxDim <= 1024
           const buf = keepPng
             ? await sharp(rawBuf)
-                .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
+                .resize(fitDim, fitDim, { fit: 'inside', withoutEnlargement: true })
                 .png({ compressionLevel: 6 })
                 .toBuffer()
             : await sharp(rawBuf)
-                .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
+                .resize(fitDim, fitDim, { fit: 'inside', withoutEnlargement: true })
                 .jpeg({ quality: 95 })
                 .toBuffer()
           if (wantCrop) {
