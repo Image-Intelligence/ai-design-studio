@@ -2623,6 +2623,19 @@ export default function DatasetPage() {
   }
 
   // ── Bucket helpers ────────────────────────────────────────────────────────────
+  /*
+   * Correct one bucket's count without refetching the rest.
+   *
+   * loadBuckets() pulls every bucket WITH previews - one query per bucket,
+   * 402 of them here - and the re-render then asks for up to four thumbnails
+   * each. That is the whole of the "Adding..." wait; the write itself is
+   * 0.2s. Both endpoints hand back the new total, so nothing needs fetching.
+   */
+  function patchBucketCount(bucketId: number, total: number | undefined) {
+    if (typeof total !== 'number') return
+    setBuckets(prev => prev.map(b => b.id === bucketId ? { ...b, count: total } : b))
+  }
+
   async function removeFromBucket(bucketId: number) {
     const ids = Array.from(selected)
     const res = await fetch(`/api/admin/buckets/${bucketId}/images`, {
@@ -2631,7 +2644,9 @@ export default function DatasetPage() {
       body: JSON.stringify({ imageIds: ids }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    await loadBuckets()
+    const d = await res.json().catch(() => ({})) as { removed?: number }
+    setBuckets(prev => prev.map(b =>
+      b.id === bucketId ? { ...b, count: Math.max(0, b.count - (d.removed ?? ids.length)) } : b))
     setSelected(new Set())
     // Remove the images from local state so the grid updates immediately
     setImages(prev => prev.filter(img => !ids.includes(img.id)))
@@ -2645,8 +2660,9 @@ export default function DatasetPage() {
       body: JSON.stringify({ imageIds: ids }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const d = await res.json().catch(() => ({})) as { total?: number }
     setRecentBucketIds(prev => [bucketId, ...prev.filter(id => id !== bucketId)].slice(0, 20))
-    await loadBuckets()
+    patchBucketCount(bucketId, d.total)
     setSelected(new Set())
   }
 
@@ -2658,6 +2674,8 @@ export default function DatasetPage() {
     })
     if (!createRes.ok) throw new Error(`HTTP ${createRes.status}`)
     const bucket: Bucket = await createRes.json()
+    // A new bucket is not in the list yet, so this one does need a refresh —
+    // but only one, and addToBucket no longer does its own.
     await addToBucket(bucket.id)
     await loadBuckets()
   }
