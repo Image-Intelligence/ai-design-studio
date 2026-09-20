@@ -9309,6 +9309,22 @@ function ImageDetailModal({
   const siteLogo = useSiteLogoCached()
   /** Per-model run details recorded at save time (renderer, LoRA, upscale…). */
   const vm = (image.videoMetadata ?? {}) as Record<string, any>
+  /*
+   * The run's own record comes first, the flat field second.
+   *
+   * videoMetadata is where these are actually written; the flat fields are a
+   * convenience that only /api/my-images fills in. The admin dataset feed -
+   * which is what the portal feed loads from whenever an admin has feed
+   * filters saved - returns none of them, and neither does the in-session
+   * item. Reading vm first makes the panel agree with the database whichever
+   * of the three the item arrived through.
+   */
+  const num = (a: unknown, b: unknown) =>
+    typeof a === "number" ? a : typeof b === "number" ? b : null
+  const panelLoraUrl     = image.loraUrl  ?? vm.loraUrl  ?? null
+  const panelLoraName    = image.loraName ?? vm.loraName ?? null
+  const panelLoraScale   = num(image.loraScale, vm.loraScale)
+  const panelRefStrength = num(image.refStrength, vm.refStrength)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
   const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality)
@@ -9669,16 +9685,16 @@ function ImageDetailModal({
                 </div>
               </div>
             )}
-            {image.loraUrl && (
+            {panelLoraUrl && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">LoRA</p>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
                   <Sparkles size={9} />
-                  {image.loraName || "Custom LoRA"}
+                  {panelLoraName || "Custom LoRA"}
                   {/* Strength, when it was recorded. Older generations have
                       none, and a missing value must not read as 0. */}
-                  {typeof image.loraScale === "number" && (
-                    <span className="text-amber-300/60">· {image.loraScale.toFixed(2)}</span>
+                  {panelLoraScale !== null && (
+                    <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>
                   )}
                 </span>
               </div>
@@ -9688,9 +9704,9 @@ function ImageDetailModal({
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">
                   References ({image.referenceImageUrls.length})
                   {/* How far the edit was allowed to move from them. */}
-                  {typeof image.refStrength === "number" && (
+                  {panelRefStrength !== null && (
                     <span className="ml-1.5 normal-case tracking-normal text-slate-500">
-                      strength {image.refStrength.toFixed(2)}
+                      strength {panelRefStrength.toFixed(2)}
                     </span>
                   )}
                 </p>
@@ -9718,7 +9734,7 @@ function ImageDetailModal({
               {isUpscalerImage && image.videoMetadata?.upscaleFactor != null && <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] font-mono">{image.videoMetadata.upscaleFactor}x upscale</span>}
               {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.aspectRatio}</span>}
               {!isUpscalerImage && image.quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.quality.toUpperCase()}</span>}
-              {image.loraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{image.loraName || "LoRA"}{typeof image.loraScale === "number" && <span className="text-amber-300/60">· {image.loraScale.toFixed(2)}</span>}</span>}
+              {panelLoraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{panelLoraName || "LoRA"}{panelLoraScale !== null && <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>}</span>}
               {measuredSize && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono tabular-nums">{measuredSize.w}&times;{measuredSize.h}</span>}
               {formattedDate && <span className="text-[10px] text-slate-600">{formattedDate}</span>}
             </div>

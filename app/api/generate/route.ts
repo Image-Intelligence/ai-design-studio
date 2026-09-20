@@ -1323,7 +1323,7 @@ export async function POST(request: Request) {
                   loraScale: loraUrl ? (loraScale ?? 1) : null,
                   // How far an edit was allowed to depart from its reference.
                   // Inside falInput too, but nothing reads that back.
-                  refStrength: body.ideogramStrength ?? null,
+                  refStrength: permanentReferenceUrls.length > 0 ? (body.ideogramStrength ?? null) : null,
                   // Stored so promoteNextQueuedJob can replay this job later
                   falEndpoint: modelEndpoint,
                   falInput: inputParams,
@@ -1381,7 +1381,7 @@ export async function POST(request: Request) {
                 loraUrl: loraUrl || null,
                 loraName: loraName || null,
                 loraScale: loraUrl ? (loraScale ?? 1) : null,
-                refStrength: body.ideogramStrength ?? null,
+                refStrength: permanentReferenceUrls.length > 0 ? (body.ideogramStrength ?? null) : null,
                 // What was ACTUALLY sent, so the info panel reports the run
                 // rather than the request. For families served by sibling
                 // endpoints (GPT Image 2.5's sunburst/flare) the endpoint is
