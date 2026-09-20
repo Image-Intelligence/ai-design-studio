@@ -328,7 +328,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (wantCrop && tooSmallForCrop > 0) {
-      await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} are smaller than the ${config.resolution} crop and cannot fill it`)
+      noteSkip(`too small for the ${config.resolution} crop`)
+      await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} left out, too small for the ${config.resolution} crop`)
     }
     if (downloaded === 0) {
       const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')

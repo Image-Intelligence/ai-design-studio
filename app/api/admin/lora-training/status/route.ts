@@ -11,6 +11,36 @@ function authOk(req: NextRequest) {
   return req.headers.get('x-admin-password') === pass
 }
 
+/**
+ * fal's own words when a finished request is actually a refusal.
+ *
+ * Returns null when the result is a normal success, so the usual path runs.
+ * Best-effort throughout: a reporting helper must never be the reason a job
+ * cannot be read.
+ */
+async function readFalRefusal(modelId: string, requestId: string): Promise<string | null> {
+  try {
+    const baseApp = modelId.split('/').slice(0, 2).join('/')
+    const res = await fetch(`https://queue.fal.run/${baseApp}/requests/${requestId}`, {
+      headers: { Authorization: `Key ${process.env.FAL_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (res.ok) return null
+    const body = await res.json().catch(() => null) as { detail?: unknown } | null
+    const detail = body?.detail
+    if (Array.isArray(detail)) {
+      const msgs = detail
+        .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : '')
+        .filter(Boolean)
+      if (msgs.length > 0) return msgs.join(' \u00b7 ').slice(0, 1500)
+    }
+    if (typeof detail === 'string') return detail.slice(0, 1500)
+    return `fal returned ${res.status} with no detail`
+  } catch {
+    return null
+  }
+}
+
 export async function GET(req: NextRequest) {
   if (!authOk(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -48,6 +78,20 @@ export async function GET(req: NextRequest) {
     if (status === 'IN_PROGRESS') updateData.status = 'in_progress'
 
     if (status === 'COMPLETED') {
+      /*
+       * A COMPLETED status can still carry a 422 body: fal validates the
+       * dataset late, so the run reports finished and the RESULT is the
+       * refusal. The client turns that into "Unexpected status code: 422",
+       * which names neither the problem nor the file. Read the body first.
+       */
+      const falDetail = await readFalRefusal(job.modelId, job.requestId)
+      if (falDetail) {
+        const updated = await prisma.loraTrainingJob.update({
+          where: { id: jobId },
+          data: { status: 'failed', errorMsg: falDetail, updatedAt: new Date() },
+        })
+        return NextResponse.json({ job: updated, falStatus, logs: [] })
+      }
       const result = await fal.queue.result(job.modelId, { requestId: job.requestId })
       updateData.status    = 'completed'
       const rd = result.data as Record<string, { url?: string } | null> | null
