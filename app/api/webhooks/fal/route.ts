@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
 import { releaseReservedTickets } from '@/lib/ticket-gate'
 import { getTrainerFamily } from '@/lib/trainer-families'
+import { falDetailMessage } from '@/lib/fal-error'
 
 // FAL.ai calls this endpoint when an async job completes or fails.
 // We must return 200 quickly — FAL.ai will retry on non-200 responses.
@@ -47,7 +48,16 @@ export async function POST(request: Request) {
         }
 
         if (status === 'ERROR' || status === 'FAILED' || error) {
-          const errorMsg = error?.message || error || 'FAL training failed'
+          /*
+           * Prefer the body over the client's summary. A dataset refusal
+           * arrives here as `error: "Unexpected status code: 422"` with the
+           * whole diagnosis sitting in `payload.detail` - and because this
+           * write marks the job failed, the status poller's reader never runs
+           * and that summary is what the user is left with.
+           */
+          const errorMsg = falDetailMessage(payload)
+            ?? falDetailMessage(error)
+            ?? (error?.message || error || 'FAL training failed')
           await prisma.loraTrainingJob.update({
             where: { id: loraJob.id },
             data: { status: 'failed', errorMsg },
@@ -74,6 +84,20 @@ export async function POST(request: Request) {
               const u = data[f.key]?.url
               if (u) resultUrls[f.key] = u
             }
+          }
+          /*
+           * No weights in an OK callback means the run produced nothing; the
+           * reason, if there is one, is in the same payload. Recording that as
+           * "completed" leaves a job that looks finished and has no LoRA.
+           */
+          if (!loraUrl) {
+            const why = falDetailMessage(data) ?? 'the trainer returned no weights'
+            await prisma.loraTrainingJob.update({
+              where: { id: loraJob.id },
+              data: { status: 'failed', errorMsg: why },
+            })
+            console.log(`LoRA job #${loraJob.id} finished with no weights: ${why}`)
+            return NextResponse.json({ received: true })
           }
           await prisma.loraTrainingJob.update({
             where: { id: loraJob.id },

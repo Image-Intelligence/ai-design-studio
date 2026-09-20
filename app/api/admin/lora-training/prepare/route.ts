@@ -192,6 +192,9 @@ export async function POST(req: NextRequest) {
      */
     const wantCrop = /^(\d+)x(\d+)$/.exec(String(config.resolution ?? ''))
     let tooSmallForCrop = 0
+    // Named in the progress line: a count tells you a run shrank, a list
+    // tells you which items to fix or deselect.
+    const tooSmallNames: string[] = []
     const isVideoFamily = family?.media === 'video'
     /*
      * Four either way. Images were on 20, which looked like the cheap case and
@@ -296,9 +299,24 @@ export async function POST(req: NextRequest) {
                 .resize(fitDim, fitDim, { fit: 'inside', withoutEnlargement: true })
                 .jpeg({ quality: 95 })
                 .toBuffer()
+          /*
+           * Leave out anything that cannot fill the crop.
+           *
+           * The trainer does not skip an undersized image, it refuses the
+           * whole job: "Invalid image(s) in input; image 78.jpg has
+           * dimensions 928x1152, but minimum required is 1024x1536". One bad
+           * file wastes the entire run, an hour and a full training fee
+           * later. Measured across the four failed datasets, dropping costs
+           * 3-8% of the images; keeping costs 100%.
+           */
           if (wantCrop) {
             const m2 = await sharp(buf).metadata()
-            if ((m2.width ?? 0) < Number(wantCrop[1]) || (m2.height ?? 0) < Number(wantCrop[2])) tooSmallForCrop++
+            if ((m2.width ?? 0) < Number(wantCrop[1]) || (m2.height ?? 0) < Number(wantCrop[2])) {
+              tooSmallForCrop++
+              if (tooSmallNames.length < 8) tooSmallNames.push(`${img.id} (${m2.width}x${m2.height})`)
+              noteSkip(`too small for the ${config.resolution} crop`)
+              return null
+            }
           }
           const ext = keepPng ? 'png' : 'jpg'
           return { name: `${img.id}.${ext}`, buf, caption, id: img.id }
@@ -328,8 +346,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (wantCrop && tooSmallForCrop > 0) {
-      noteSkip(`too small for the ${config.resolution} crop`)
-      await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} left out, too small for the ${config.resolution} crop`)
+      const shown = tooSmallNames.join(', ')
+      const more = tooSmallForCrop > tooSmallNames.length ? ', ...' : ''
+      await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} left out, too small for the ${config.resolution} crop: ${shown}${more}`)
     }
     if (downloaded === 0) {
       const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')

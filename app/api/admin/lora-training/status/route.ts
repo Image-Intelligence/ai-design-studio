@@ -3,6 +3,7 @@ import { after } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { fal } from '@/lib/fal-client'
 import { getTrainerFamily } from '@/lib/trainer-families'
+import { falDetailMessage } from '@/lib/fal-error'
 
 function authOk(req: NextRequest) {
   const pass = process.env.ADMIN_PASSWORD
@@ -26,16 +27,8 @@ async function readFalRefusal(modelId: string, requestId: string): Promise<strin
       signal: AbortSignal.timeout(10_000),
     })
     if (res.ok) return null
-    const body = await res.json().catch(() => null) as { detail?: unknown } | null
-    const detail = body?.detail
-    if (Array.isArray(detail)) {
-      const msgs = detail
-        .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : '')
-        .filter(Boolean)
-      if (msgs.length > 0) return msgs.join(' \u00b7 ').slice(0, 1500)
-    }
-    if (typeof detail === 'string') return detail.slice(0, 1500)
-    return `fal returned ${res.status} with no detail`
+    const body = await res.json().catch(() => null)
+    return falDetailMessage(body) ?? `fal returned ${res.status} with no detail`
   } catch {
     return null
   }
