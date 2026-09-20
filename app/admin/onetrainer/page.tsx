@@ -5833,6 +5833,7 @@ export default function OneTrainerPage() {
                     </p>
                     <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mt-1">
                       {items.length} of {job?.imageCount ?? '?'} left out of the zip
+                      {job?.status === 'preparing' && ' — still downloading'}
                     </p>
                   </div>
                 </div>
@@ -6094,6 +6095,7 @@ export default function OneTrainerPage() {
                       className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/[0.08] border border-amber-500/25 text-amber-200/90 text-[10px] font-semibold hover:bg-amber-500/[0.16] transition-colors">
                       <ImageOff size={10} />
                       {j.skipped.length} skipped {j.skipped.length === 1 ? 'image' : 'images'}
+                      {j.status === 'preparing' && ' so far'}
                     </button>
                   )}
                   {done && j.loraUrl && (

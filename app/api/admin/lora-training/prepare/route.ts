@@ -195,6 +195,30 @@ export async function POST(req: NextRequest) {
       if (typeof id === 'number' && skippedItems.length < 400) skippedItems.push({ id, reason: why })
     }
     /*
+     * Publish the list as it grows, so the Monitor can show it while the run
+     * is still downloading - which is the part that takes the longest and the
+     * only point at which seeing a bad dataset is still worth acting on.
+     *
+     * jsonb_set rather than writing the object back: the `config` read at the
+     * top of this handler predates the _prepClaim marker, so a whole-object
+     * write would erase the guard that stops two prepares racing.
+     *
+     * Throttled on both axes - nothing to say, or said too recently - so a
+     * 45-batch run costs a few small updates instead of one per batch.
+     */
+    let flushedAt = 0
+    let flushedCount = 0
+    const flushSkipped = async (force = false) => {
+      if (skippedItems.length === flushedCount) return
+      if (!force && Date.now() - flushedAt < 4_000) return
+      flushedCount = skippedItems.length
+      flushedAt = Date.now()
+      await prisma.$executeRaw`
+        UPDATE "LoraTrainingJob"
+        SET config = jsonb_set(config::jsonb, '{_skipped}', ${JSON.stringify(skippedItems)}::jsonb)
+        WHERE id = ${jobId}`.catch(() => {})
+    }
+    /*
      * Images that cannot supply the requested crop. Ideogram center-crops
      * without upscaling, so anything smaller in either dimension cannot
      * contribute at that size — and would do so silently.
@@ -349,6 +373,7 @@ export async function POST(req: NextRequest) {
         ? ` — ${[...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')}`
         : ''
       await setProgress(jobId, `Downloading: ${downloaded} ok, ${skipped} skipped (${processed}/${images.length})${why}`)
+      await flushSkipped()
     }
     } finally {
       if (tmpDir) fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
@@ -360,21 +385,11 @@ export async function POST(req: NextRequest) {
       await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} left out, too small for the ${config.resolution} crop: ${shown}${more}`)
     }
     /*
-     * Keep the list on the job so the Monitor can show what was dropped.
-     *
-     * jsonb_set rather than writing the object back: the `config` read at the
-     * top of this handler predates the _prepClaim marker, so a whole-object
-     * write would erase the guard that stops two prepares racing.
-     *
-     * Written before the guards below, so a run that aborts on them still
-     * explains itself instead of leaving a bare count.
+     * The last word, whatever the throttle was holding. Before the guards
+     * below, so a run that aborts on them still explains itself instead of
+     * leaving a bare count.
      */
-    if (skippedItems.length > 0) {
-      await prisma.$executeRaw`
-        UPDATE "LoraTrainingJob"
-        SET config = jsonb_set(config::jsonb, '{_skipped}', ${JSON.stringify(skippedItems)}::jsonb)
-        WHERE id = ${jobId}`.catch(() => {})
-    }
+    await flushSkipped(true)
     if (downloaded === 0) {
       const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')
       throw new Error(`No usable media in the selection${why ? ` — ${why}` : ''}`)
