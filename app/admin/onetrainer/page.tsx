@@ -8,6 +8,7 @@ import {
   Circle, Zap, Terminal, Settings2, BookOpen, X,
   Cloud, Upload, HardDrive, ExternalLink,
   Sparkles, Eye, Maximize2, Minimize2, ChevronLeft, ChevronRight, Check, Clock,
+  ImageOff,
 } from "lucide-react"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { AUTOFILL_MODELS, autofillModelLabel } from '@/lib/autofill-models'
@@ -3570,6 +3571,9 @@ export default function OneTrainerPage() {
     id: number; name: string; modelId: string; status: string
     imageCount: number; errorMsg: string | null; loraUrl: string | null
     createdAt: string; requestId: string | null
+    // What the download phase left out, and why. Empty for older runs, which
+    // were never recorded - only counted.
+    skipped?: { id: number; reason: string }[]
   }
   const [falJobs, setFalJobs] = useState<FalJob[]>([])
   const [falJobsLoading, setFalJobsLoading] = useState(false)
@@ -4259,6 +4263,9 @@ export default function OneTrainerPage() {
     return () => clearInterval(t)
   }, [mode, tab, loadFalJobs]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The run whose skipped images are open. Held by id rather than by object so
+  // a poll refreshing the list does not leave a stale copy on screen.
+  const [skippedFor, setSkippedFor] = useState<number | null>(null)
   const [cancellingJob, setCancellingJob] = useState<number | null>(null)
   async function cancelFalJob(jobId: number) {
     if (cancellingJob) return
@@ -5806,6 +5813,64 @@ export default function OneTrainerPage() {
         </div>
       )}
 
+      {/* Skipped-images viewer — which items the download phase left out */}
+      {skippedFor !== null && (() => {
+        const job = falJobs.find(j => j.id === skippedFor)
+        const items = job?.skipped ?? []
+        // Grouped: one heading per reason reads far better than a flat grid of
+        // thumbnails each captioned with the same sentence.
+        const groups = new Map<string, number[]>()
+        for (const it of items) groups.set(it.reason, [...(groups.get(it.reason) ?? []), it.id])
+        return (
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setSkippedFor(null)}>
+            <div className="relative w-full max-w-2xl max-h-[85vh] rounded-2xl border border-white/[0.08] bg-[#070b14]/95 shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06] shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <ImageOff size={14} className="text-amber-300/80" />
+                  <div>
+                    <p className="text-sm font-bold text-white leading-none">
+                      Skipped in download{job ? ` — #${job.id} ${job.name}` : ''}
+                    </p>
+                    <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mt-1">
+                      {items.length} of {job?.imageCount ?? '?'} left out of the zip
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => setSkippedFor(null)} className="text-slate-500 hover:text-white transition-colors"><X size={15} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-4 min-h-0">
+                {items.length === 0 ? (
+                  <p className="text-center text-slate-600 text-xs py-8">Nothing was skipped.</p>
+                ) : [...groups].map(([reason, ids]) => (
+                  <div key={reason} className="space-y-1.5">
+                    <div className="flex items-center gap-2 px-0.5">
+                      <p className="text-[11px] font-semibold text-amber-200/90">{reason}</p>
+                      <span className="text-[10px] text-slate-600 font-mono">{ids.length}</span>
+                      {/* The ids are the point: they are what you search for to
+                          replace or deselect these items. */}
+                      <button onClick={() => { void navigator.clipboard?.writeText(ids.join(', ')) }}
+                        className="ml-auto px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.08] text-[9px] text-slate-400 hover:text-white transition-colors">
+                        Copy IDs
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {ids.map(id => (
+                        <div key={id} className="relative aspect-square rounded-lg overflow-hidden border border-white/[0.07] bg-white/[0.03]">
+                          <RetryImg src={`/api/admin/dataset/thumb/${id}?v=2`} className="w-full h-full object-cover opacity-70" />
+                          <span className="absolute bottom-1 left-1 px-1 py-0.5 rounded bg-black/70 text-[9px] font-mono text-slate-300">
+                            {id}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Bucket dataset picker modal */}
       {/* Built-datasets chooser — reuse a finished build as a concept */}
       {builtPickerFor && (
@@ -6020,6 +6085,16 @@ export default function OneTrainerPage() {
                     <p className={`text-[10px] leading-snug font-mono ${failed ? 'text-red-300' : 'text-slate-500'}`}>
                       {j.errorMsg}
                     </p>
+                  )}
+                  {/* What the download phase dropped. Worth seeing whatever
+                      the run went on to do: a finished LoRA trained on 167 of
+                      181 images is still a LoRA missing fourteen. */}
+                  {!!j.skipped?.length && (
+                    <button onClick={() => setSkippedFor(j.id)}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/[0.08] border border-amber-500/25 text-amber-200/90 text-[10px] font-semibold hover:bg-amber-500/[0.16] transition-colors">
+                      <ImageOff size={10} />
+                      {j.skipped.length} skipped {j.skipped.length === 1 ? 'image' : 'images'}
+                    </button>
                   )}
                   {done && j.loraUrl && (
                     <div className="flex items-center gap-1.5 pt-0.5">

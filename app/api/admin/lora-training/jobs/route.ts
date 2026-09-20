@@ -26,7 +26,17 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: 'desc' },
       take: 50,
     })
-    return NextResponse.json({ jobs })
+    /*
+     * Lift the skip list out of config so the Monitor does not have to know
+     * where prepare hid it. Each entry is { id, reason }; the thumbnail comes
+     * from /api/admin/dataset/thumb/<id>, which already signs and caches.
+     */
+    return NextResponse.json({
+      jobs: jobs.map(j => ({
+        ...j,
+        skipped: ((j.config as { _skipped?: unknown } | null)?._skipped ?? []) as { id: number; reason: string }[],
+      })),
+    })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error('[lora-training/jobs] DB error:', msg)

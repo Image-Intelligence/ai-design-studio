@@ -184,7 +184,16 @@ export async function POST(req: NextRequest) {
      * requests were timing out.
      */
     const skipReasons = new Map<string, number>()
-    const noteSkip = (why: string) => skipReasons.set(why, (skipReasons.get(why) ?? 0) + 1)
+    /*
+     * The same information per image rather than per reason, so the Monitor
+     * can show the actual thumbnails. Capped: a pathological run should not
+     * write a megabyte of Json into the job row.
+     */
+    const skippedItems: { id: number; reason: string }[] = []
+    const noteSkip = (why: string, id?: number) => {
+      skipReasons.set(why, (skipReasons.get(why) ?? 0) + 1)
+      if (typeof id === 'number' && skippedItems.length < 400) skippedItems.push({ id, reason: why })
+    }
     /*
      * Images that cannot supply the requested crop. Ideogram center-crops
      * without upscaling, so anything smaller in either dimension cannot
@@ -239,11 +248,11 @@ export async function POST(req: NextRequest) {
             const isGif = /\.gif(\?|#|$)/i.test(url)
             const isMp4Like = /\.(mp4|mov|m4v)(\?|#|$)/i.test(url)
             const isWebm = /\.webm(\?|#|$)/i.test(url)
-            if (!isGif && !isMp4Like && !isWebm) return null
+            if (!isGif && !isMp4Like && !isWebm) { noteSkip('not a video', img.id); return null }
             const res = await fetchMedia(url, { signal: AbortSignal.timeout(60_000) })
-            if (!res.ok) return null
+            if (!res.ok) { noteSkip(`HTTP ${res.status}`, img.id); return null }
             const rawBuf = Buffer.from(await res.arrayBuffer())
-            if (rawBuf.length > 100 * 1024 * 1024) return null
+            if (rawBuf.length > 100 * 1024 * 1024) { noteSkip('over 100MB', img.id); return null }
             if (isGif || isWebm) {
               const inFile = path.join(tmpDir!, `${img.id}-in${isGif ? '.gif' : '.webm'}`)
               const outFile = path.join(tmpDir!, `${img.id}.mp4`)
@@ -270,7 +279,7 @@ export async function POST(req: NextRequest) {
           // fetchMedia, not fetch: these live on the private bucket and an
           // unsigned request is a 401 that looks like an unusable dataset.
           const res = await fetchMedia(img.imageUrl, { signal: AbortSignal.timeout(60_000) })
-          if (!res.ok) { noteSkip(`HTTP ${res.status}`); return null }
+          if (!res.ok) { noteSkip(`HTTP ${res.status}`, img.id); return null }
           const rawBuf = Buffer.from(await res.arrayBuffer())
           const meta = await sharp(rawBuf).metadata()
           /*
@@ -314,7 +323,7 @@ export async function POST(req: NextRequest) {
             if ((m2.width ?? 0) < Number(wantCrop[1]) || (m2.height ?? 0) < Number(wantCrop[2])) {
               tooSmallForCrop++
               if (tooSmallNames.length < 8) tooSmallNames.push(`${img.id} (${m2.width}x${m2.height})`)
-              noteSkip(`too small for the ${config.resolution} crop`)
+              noteSkip(`too small for the ${config.resolution} crop`, img.id)
               return null
             }
           }
@@ -322,7 +331,7 @@ export async function POST(req: NextRequest) {
           return { name: `${img.id}.${ext}`, buf, caption, id: img.id }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          noteSkip(/abort|timeout/i.test(msg) ? 'timed out' : msg.slice(0, 60))
+          noteSkip(/abort|timeout/i.test(msg) ? 'timed out' : msg.slice(0, 60), img.id)
           return null
         }
       }))
@@ -349,6 +358,22 @@ export async function POST(req: NextRequest) {
       const shown = tooSmallNames.join(', ')
       const more = tooSmallForCrop > tooSmallNames.length ? ', ...' : ''
       await setProgress(jobId, `${downloaded} ready — ${tooSmallForCrop} left out, too small for the ${config.resolution} crop: ${shown}${more}`)
+    }
+    /*
+     * Keep the list on the job so the Monitor can show what was dropped.
+     *
+     * jsonb_set rather than writing the object back: the `config` read at the
+     * top of this handler predates the _prepClaim marker, so a whole-object
+     * write would erase the guard that stops two prepares racing.
+     *
+     * Written before the guards below, so a run that aborts on them still
+     * explains itself instead of leaving a bare count.
+     */
+    if (skippedItems.length > 0) {
+      await prisma.$executeRaw`
+        UPDATE "LoraTrainingJob"
+        SET config = jsonb_set(config::jsonb, '{_skipped}', ${JSON.stringify(skippedItems)}::jsonb)
+        WHERE id = ${jobId}`.catch(() => {})
     }
     if (downloaded === 0) {
       const why = [...skipReasons].map(([r, n]) => `${n} ${r}`).join(', ')
