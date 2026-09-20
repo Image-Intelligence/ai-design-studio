@@ -90,6 +90,7 @@ interface ImageItem {
   loraUrl?: string | null
   loraName?: string | null
   loraScale?: number | null
+  refStrength?: number | null
   r2Key?: string
 }
 
@@ -9686,6 +9687,12 @@ function ImageDetailModal({
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">
                   References ({image.referenceImageUrls.length})
+                  {/* How far the edit was allowed to move from them. */}
+                  {typeof image.refStrength === "number" && (
+                    <span className="ml-1.5 normal-case tracking-normal text-slate-500">
+                      strength {image.refStrength.toFixed(2)}
+                    </span>
+                  )}
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {image.referenceImageUrls.map((url, i) => (
@@ -10506,6 +10513,15 @@ function ImageGrid({
             aspectRatio: img.aspectRatio ?? undefined,
             quality: img.quality ?? undefined,
             videoMetadata: img.videoMetadata ?? undefined,
+            /*
+             * These were missing, which is why the info panel lost its LoRA
+             * after a reload: the API returns them, the panel reads them off
+             * the item, and this rebuild left them behind.
+             */
+            loraUrl: img.loraUrl ?? undefined,
+            loraName: img.loraName ?? undefined,
+            loraScale: img.loraScale ?? undefined,
+            refStrength: img.refStrength ?? undefined,
           }))
         return [...prev, ...newItems]
       })
@@ -22400,7 +22416,9 @@ function PromptBox({
                     })()}
                   </button>
                   {loraPickerOpen && (
-                    <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[220px] rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl overflow-hidden py-1">
+                    /* Capped and scrollable: the list grows with every LoRA
+                       trained, and unbounded it runs off the screen. */
+                    <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[220px] max-w-[min(20rem,calc(100vw-2rem))] max-h-[min(24rem,60vh)] overflow-y-auto overscroll-contain rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl py-1">
                       <button
                         onClick={() => { setSelectedLoraUrl(null); setExtraLoras([]); setLoraPickerOpen(false) }}
                         className={`w-full text-left px-3 py-2 text-[11px] transition-colors ${!selectedLoraUrl ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
