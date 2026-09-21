@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
-import { TRAINER_FAMILIES } from "@/lib/trainer-families"
+import { TRAINER_FAMILIES, IDEOGRAM_TRAINING_CROPS, ideogramCropProblem } from "@/lib/trainer-families"
 import {
   ArrowLeft, Play, Square, Loader2, CheckCircle, AlertCircle,
   Plus, Trash2, FolderOpen, ChevronDown, RefreshCw, Cpu,
@@ -5258,17 +5258,74 @@ export default function OneTrainerPage() {
 
                       {falFamily?.familyId === 'ideogram-v4' && (
                         <div className="space-y-1.5">
-                          <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Training crop</label>
-                          <select value={falResolution} onChange={e => setFalResolution(e.target.value)}
-                            className="w-full max-w-xs px-3 py-2 rounded-lg bg-[#0a101d] border border-white/[0.08] text-sm text-white focus:outline-none focus:border-white/30 cursor-pointer">
-                            <option value="1024x1536">Portrait 1024{"\u00d7"}1536 {"\u2014"} people, full body</option>
-                            <option value="1024x1024">Square 1024{"\u00d7"}1024 {"\u2014"} faces, products</option>
-                            <option value="1536x1024">Landscape 1536{"\u00d7"}1024 {"\u2014"} scenes</option>
-                            <option value="1920x1088">Widescreen 1920{"\u00d7"}1088</option>
-                            <option value="1024x1792">Tall 1024{"\u00d7"}1792 {"\u2014"} phone wallpaper</option>
-                            <option value="auto">Auto {"\u2014"} largest crop that fits every image</option>
-                          </select>
-                          <p className="text-[9px] text-slate-600 leading-snug">
+                          <div className="flex items-center gap-2">
+                            <label className="text-[10px] text-slate-600 uppercase tracking-wider font-mono">Training crop</label>
+                            {/* What the badge on each tile means. */}
+                            <span className="flex items-center gap-1 text-[9px] text-emerald-300/70">
+                              <Check size={9} strokeWidth={3} />
+                              named by the trainer
+                            </span>
+                          </div>
+                          {(() => {
+                            const customValue = falResolution !== 'auto'
+                              && !IDEOGRAM_TRAINING_CROPS.some(c => c.value === falResolution)
+                              ? falResolution : ''
+                            const problem = customValue ? ideogramCropProblem(customValue) : null
+                            return (
+                              <>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-w-2xl">
+                                  {IDEOGRAM_TRAINING_CROPS.map(c => {
+                                    const [w, h] = c.value.split('x').map(Number)
+                                    const on = falResolution === c.value
+                                    // The shape itself, drawn to scale inside a
+                                    // fixed box - the fastest way to see what a
+                                    // ratio means.
+                                    const k = 26 / Math.max(w, h)
+                                    return (
+                                      <button key={c.value} type="button" onClick={() => setFalResolution(c.value)}
+                                        title={`${c.preset} \u2014 ${c.note ?? ''}`}
+                                        className={`relative rounded-lg border p-2 text-left transition-colors ${
+                                          on ? 'border-white/30 bg-white/[0.08]' : 'border-white/[0.07] bg-white/[0.02] hover:border-white/20'}`}>
+                                        <Check size={9} strokeWidth={3} className="absolute top-1.5 right-1.5 text-emerald-400/80" />
+                                        <div className="flex items-center gap-2">
+                                          <span className="shrink-0 w-[28px] h-[28px] flex items-center justify-center">
+                                            <span className="block border border-white/30 bg-white/[0.06] rounded-[2px]"
+                                              style={{ width: `${Math.max(3, w * k)}px`, height: `${Math.max(3, h * k)}px` }} />
+                                          </span>
+                                          <span className="min-w-0">
+                                            <span className={`block text-[11px] font-semibold truncate ${on ? 'text-white' : 'text-slate-300'}`}>{c.label}</span>
+                                            <span className="block text-[9px] font-mono text-slate-500">{c.value}</span>
+                                            <span className="block text-[9px] font-mono text-slate-600">{c.ratio}</span>
+                                          </span>
+                                        </div>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                  <button type="button" onClick={() => setFalResolution('auto')}
+                                    className={`px-2.5 py-1.5 rounded-lg border text-[10px] transition-colors ${
+                                      falResolution === 'auto'
+                                        ? 'border-white/30 bg-white/[0.08] text-white'
+                                        : 'border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-white/20'}`}>
+                                    Auto {"\u2014"} largest crop that fits every image
+                                  </button>
+                                  {/* Accepted, but not one of theirs, so no tick. */}
+                                  <input value={customValue} onChange={e => setFalResolution(e.target.value.trim())}
+                                    placeholder="custom 1234x5678"
+                                    className={`w-[140px] px-2.5 py-1.5 rounded-lg bg-white/[0.02] border text-[10px] font-mono text-white placeholder:text-slate-700 focus:outline-none ${
+                                      problem ? 'border-red-500/40' : 'border-white/[0.07] focus:border-white/30'}`} />
+                                  {problem && <span className="text-[9px] text-red-300">{problem}</span>}
+                                  {customValue && !problem && (
+                                    <span className="text-[9px] text-amber-300/70">custom {"\u2014"} accepted, not a listed preset</span>
+                                  )}
+                                </div>
+                              </>
+                            )
+                          })()}
+                          <p className="text-[9px] text-slate-600 leading-snug max-w-2xl">
+                            The seven ticked sizes are the presets ideogram/v4/trainer names in its own
+                            schema; any other WIDTHxHEIGHT is accepted as long as both sides divide by 16.
                             Ideogram center-crops to this, so a crop wider than your photos cuts off
                             heads. <span className="text-slate-500">Auto</span> is bounded by the
                             WORST-shaped image in the set {"\u2014"} three stray landscape photos among

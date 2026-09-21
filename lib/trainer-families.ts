@@ -32,6 +32,47 @@ export type TrainerFamily = {
 const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v))
 const str = (v: unknown) => (v === undefined || v === '' ? undefined : String(v))
 
+/**
+ * The crops ideogram/v4/trainer names in its own schema.
+ *
+ * Quoted from the `resolution` field's description rather than chosen: these
+ * are the sizes the endpoint calls presets, and anything else has to be a
+ * custom WIDTHxHEIGHT with both sides divisible by 16. The distinction is
+ * worth showing, because a crop is the one setting that can reject an entire
+ * dataset an hour after you press go.
+ *
+ * `ratio` is derived, not quoted - a label for the picker.
+ */
+export const IDEOGRAM_TRAINING_CROPS: {
+  value: string
+  preset: string
+  label: string
+  ratio: string
+  note?: string
+}[] = [
+  { value: '1024x1536', preset: 'portrait',        label: 'Portrait',   ratio: '2:3',    note: 'people, full body' },
+  { value: '1024x1024', preset: 'square',          label: 'Square',     ratio: '1:1',    note: 'faces, products' },
+  { value: '1536x1024', preset: 'landscape',       label: 'Landscape',  ratio: '3:2',    note: 'scenes' },
+  { value: '1920x1088', preset: 'widescreen',      label: 'Widescreen', ratio: '16:9',   note: 'near enough 16:9' },
+  { value: '1024x1792', preset: 'phone_wallpaper', label: 'Tall',       ratio: '4:7',    note: 'phone wallpaper' },
+  { value: '2048x768',  preset: 'ultrawide',       label: 'Ultrawide',  ratio: '8:3',    note: 'panoramas' },
+  { value: '1584x400',  preset: 'social_banner',   label: 'Banner',     ratio: '3.96:1', note: 'social headers' },
+]
+
+/** Is this string one the trainer will accept at all? */
+export function ideogramCropProblem(value: string): string | null {
+  const v = value.trim()
+  if (v === 'auto') return null
+  if (IDEOGRAM_TRAINING_CROPS.some(c => c.value === v)) return null
+  const m = /^(\d{3,5})x(\d{3,5})$/.exec(v)
+  if (!m) return 'Use a preset, auto, or a custom WIDTHxHEIGHT.'
+  const [w, h] = [Number(m[1]), Number(m[2])]
+  // The schema's rule, checked here so a typo costs nothing instead of a run.
+  if (w % 16 !== 0 || h % 16 !== 0) return 'Both sides must divide by 16.'
+  if (w < 256 || h < 256) return 'Too small to train on.'
+  return null
+}
+
 export const TRAINER_FAMILIES: Record<string, TrainerFamily> = {
   'fal-ai/wan-22-trainer': {
     familyId: 'wan22-video',

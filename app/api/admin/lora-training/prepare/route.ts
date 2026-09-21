@@ -223,6 +223,16 @@ export async function POST(req: NextRequest) {
      * without upscaling, so anything smaller in either dimension cannot
      * contribute at that size — and would do so silently.
      */
+    /*
+     * Check the crop before spending anything on it. The trainer validates
+     * late, so a typo here is paid for with the whole download, the upload
+     * and the training fee before it says a word.
+     */
+    if (family?.familyId === 'ideogram-v4') {
+      const { ideogramCropProblem } = await import('@/lib/trainer-families')
+      const bad = ideogramCropProblem(String(config.resolution ?? 'auto'))
+      if (bad) throw new Error(`Training crop "${config.resolution}" — ${bad}`)
+    }
     const wantCrop = /^(\d+)x(\d+)$/.exec(String(config.resolution ?? ''))
     let tooSmallForCrop = 0
     // Named in the progress line: a count tells you a run shrank, a list
