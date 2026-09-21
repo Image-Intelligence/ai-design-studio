@@ -237,7 +237,15 @@ const BASE_DIMS: Record<string, [number, number]> = {
  */
 function ideogramSize(ctx: FalImageBuildContext, maxDim: number): { width: number; height: number } {
   if (ctx.aspectRatio !== 'auto') return imageSize(ctx.aspectRatio, ctx.quality, maxDim)
-  const dims = ctx.options.refDims as { width: number; height: number } | null | undefined
+  /*
+   * The reference decides when there is one. With no reference, a LoRA's
+   * training crop is the next best answer and a much better one than a
+   * square: a LoRA trained at 1024x1536 has only ever seen that frame, so
+   * asking it for 1:1 asks for the one shape it was never shown. The caller
+   * supplies this only when it applies - LoRA present, no reference.
+   */
+  const dims = (ctx.options.refDims ?? ctx.options.loraDims) as
+    { width: number; height: number } | null | undefined
   if (!dims?.width || !dims?.height) return imageSize('1:1', ctx.quality, maxDim)
   const mult = ctx.quality === '4k' ? 3 : ctx.quality === '2k' ? 2 : 1
   const scale = Math.min(mult, maxDim / Math.max(dims.width, dims.height))

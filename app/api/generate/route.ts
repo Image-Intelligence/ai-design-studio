@@ -956,6 +956,17 @@ export async function POST(request: Request) {
             }
           }
 
+          /*
+           * Only asked when it can change the answer: 'auto' is being used,
+           * nothing was attached for it to measure, and there is a LoRA whose
+           * frame we might know. Anything else skips the query.
+           */
+          let loraDims: { width: number; height: number } | null = null
+          if (aspectRatio === 'auto' && falImageUrls.length === 0 && body.loraUrl) {
+            const { loraTrainedDims } = await import('@/lib/lora-access')
+            loraDims = await loraTrainedDims(body.loraUrl)
+          }
+
           try {
             const built = buildFalImageInput(newFalSpec, {
               prompt: typeof prompt === 'string' ? prompt.trim() : '',
@@ -970,6 +981,7 @@ export async function POST(request: Request) {
                 ...body,
                 loraUrl: falLoraPath ?? body.loraUrl,
                 refDims,
+                loraDims,
                 extraLoras: Array.isArray(body.extraLoras)
                   ? body.extraLoras.map((e: { url?: unknown; scale?: unknown }) => ({
                       url: typeof e?.url === 'string' ? signMediaUrl(e.url, FAL_TTL) : '',

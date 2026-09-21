@@ -11380,10 +11380,13 @@ function AspectRatioPicker({
   ratios,
   value,
   onChange,
+  autoHint,
 }: {
   ratios: AspectRatio[]
   value: AspectRatio
   onChange: (ar: AspectRatio) => void
+  /** What "auto" will actually resolve to, when that is knowable up front. */
+  autoHint?: string | null
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -11408,6 +11411,9 @@ function AspectRatioPicker({
         }`}
       >
         {PIXEL_DIM_RATIO[value] ?? value}
+        {value === "auto" && autoHint && (
+          <span className="text-slate-500 hidden sm:inline">{autoHint}</span>
+        )}
         <ChevronDown size={10} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
@@ -11424,6 +11430,9 @@ function AspectRatioPicker({
               }`}
             >
               {PIXEL_DIM_RATIO[ar] ? `${PIXEL_DIM_RATIO[ar]} (${ar})` : ar}
+              {ar === "auto" && autoHint && (
+                <span className="block text-[10px] text-slate-500 normal-case">{autoHint}</span>
+              )}
             </button>
           ))}
         </div>
@@ -22291,6 +22300,16 @@ function PromptBox({
                 ratios={model.aspectRatios}
                 value={aspectRatio}
                 onChange={setAspectRatio}
+                /*
+                 * A reference outranks the LoRA, so the hint only appears
+                 * when there is none - exactly the case the server now
+                 * resolves from the training crop.
+                 */
+                autoHint={(() => {
+                  if (!supportsLora || activeRefImages.length > 0) return null
+                  const crop = loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.trainedCrop
+                  return crop ? `LoRA ${crop}` : null
+                })()}
               />
             )}
 

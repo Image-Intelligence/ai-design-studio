@@ -79,6 +79,40 @@ export async function loraUsableBy(
 }
 
 /**
+ * The frame this LoRA was trained on, if we trained it.
+ *
+ * Recorded by finalize from the trainer's own config.json: with resolution
+ * 'auto' the crop is decided from the dataset and is not knowable up front,
+ * yet it governs how the LoRA behaves. `_resolvedResolution` is what the
+ * trainer actually used; `resolution` is what was asked for, and is only
+ * useful when it names an explicit WxH rather than 'auto'.
+ *
+ * Null for anything we did not train (a user upload, a HuggingFace URL) - the
+ * caller falls back to whatever it did before.
+ */
+export async function loraTrainedDims(
+  loraUrl: unknown,
+): Promise<{ width: number; height: number } | null> {
+  if (!loraUrl || typeof loraUrl !== 'string') return null
+  try {
+    const job = await prisma.loraTrainingJob.findFirst({
+      where: { loraUrl },
+      select: { config: true },
+    })
+    const cfg = (job?.config ?? null) as Record<string, unknown> | null
+    if (!cfg) return null
+    for (const key of ['_resolvedResolution', 'resolution']) {
+      const m = /^(\d{2,5})x(\d{2,5})$/.exec(String(cfg[key] ?? ''))
+      if (m) return { width: Number(m[1]), height: Number(m[2]) }
+    }
+    return null
+  } catch {
+    // A missing label must never be the reason a generation fails.
+    return null
+  }
+}
+
+/**
  * Is there actually a usable file behind this LoRA URL?
  *
  * A browser upload that reads nothing — an iOS file still in iCloud, a stale
