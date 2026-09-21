@@ -18972,6 +18972,43 @@ function PromptBox({
   const [extraLoras, setExtraLoras] = useState<{ url: string; scale: number }[]>([])
   const multiLoraMax = model.id.startsWith("ideogram-v4") ? 3 : 1
   const [loraScale, setLoraScale] = useState(1.0)
+  /*
+   * The scale each LoRA should load at, keyed by its url.
+   *
+   * Kept per account in portalPreferences rather than against the training
+   * job, because an uploaded LoRA has no job row - and the right strength is
+   * a matter of taste about a particular LoRA, which is the user's, not the
+   * LoRA's.
+   */
+  const [loraDefaults, setLoraDefaults] = useState<Record<string, { scale: number }>>({})
+  const loraDefaultsLoadedFor = useRef<number | null>(null)
+  useEffect(() => {
+    if (!userId || loraDefaultsLoadedFor.current === userId) return
+    loraDefaultsLoadedFor.current = userId
+    fetch("/api/user/preferences")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        const raw = d?.preferences?.loraDefaults
+        if (!raw || typeof raw !== "object") return
+        const clean: Record<string, { scale: number }> = {}
+        for (const [url, v] of Object.entries(raw as Record<string, any>)) {
+          const n = Number(v?.scale)
+          // The schema's own range. A stored value outside it would be sent
+          // to fal on every run and clamped there anyway.
+          if (Number.isFinite(n) && n >= 0 && n <= 4) clean[url] = { scale: n }
+        }
+        setLoraDefaults(clean)
+      })
+      .catch(() => { /* no defaults is a fine state to be in */ })
+  }, [userId])
+  const saveLoraDefaults = useCallback((next: Record<string, { scale: number }>) => {
+    setLoraDefaults(next)
+    fetch("/api/user/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loraDefaults: next }),
+    }).catch(() => { /* the next save retries; nothing is lost but the write */ })
+  }, [])
   // fal's speed/fidelity trade-off. 'regular' is fal's own default on
   // z-image and FLUX 2, and what this route has always sent.
   const [acceleration, setAcceleration] = useState<"none" | "regular" | "high">("regular")
@@ -22558,8 +22595,13 @@ function PromptBox({
                                * because the whole point is combining them.
                                */
                               const chosen = selectedLoraUrl === j.loraUrl || extraLoras.some(e => e.url === j.loraUrl)
+                              // Its remembered scale, when it has one. No
+                              // default leaves the slider where it is, rather
+                              // than resetting a number just set by hand.
+                              const def = loraDefaults[j.loraUrl]?.scale
                               if (multiLoraMax === 1) {
                                 setSelectedLoraUrl(j.loraUrl)
+                                if (def !== undefined) setLoraScale(def)
                                 setLoraPickerOpen(false)
                                 return
                               }
@@ -22575,9 +22617,15 @@ function PromptBox({
                                 }
                                 return
                               }
-                              if (!selectedLoraUrl) { setSelectedLoraUrl(j.loraUrl); return }
+                              if (!selectedLoraUrl) {
+                                setSelectedLoraUrl(j.loraUrl)
+                                if (def !== undefined) setLoraScale(def)
+                                return
+                              }
                               if (extraLoras.length < multiLoraMax - 1) {
-                                setExtraLoras(prev => [...prev, { url: j.loraUrl, scale: 0.6 }])
+                                // 0.6 is the stacking default: three at full
+                                // strength is three times the intended effect.
+                                setExtraLoras(prev => [...prev, { url: j.loraUrl, scale: def ?? 0.6 }])
                               }
                             }}
                             className={`flex-1 text-left px-3 py-2 text-[11px] transition-colors ${selectedLoraUrl === j.loraUrl || extraLoras.some(e => e.url === j.loraUrl) ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
@@ -22602,7 +22650,53 @@ function PromptBox({
                                 </div>
                               )
                             })()}
+                            {loraDefaults[j.loraUrl] !== undefined && (
+                              <div className="text-[10px] mt-0.5 text-violet-400/70">
+                                loads at <span className="font-mono">{loraDefaults[j.loraUrl].scale.toFixed(2)}</span>
+                              </div>
+                            )}
                           </button>
+                          {(() => {
+                            /*
+                             * Set or clear this LoRA's remembered scale.
+                             *
+                             * Only offered while the LoRA is actually selected,
+                             * because that is the only moment there is a
+                             * current scale to remember - "save the default"
+                             * on an unselected row would have to invent one.
+                             */
+                            const def = loraDefaults[j.loraUrl]?.scale
+                            const cur = selectedLoraUrl === j.loraUrl
+                              ? loraScale
+                              : extraLoras.find(e => e.url === j.loraUrl)?.scale
+                            if (cur !== undefined && cur !== def) {
+                              return (
+                                <button
+                                  title={`Always load this LoRA at ${cur.toFixed(2)}`}
+                                  onClick={() => saveLoraDefaults({ ...loraDefaults, [j.loraUrl]: { scale: cur } })}
+                                  className="px-2 py-2 text-[10px] font-mono text-slate-500 hover:text-violet-300 transition-colors whitespace-nowrap"
+                                >
+                                  set {cur.toFixed(2)}
+                                </button>
+                              )
+                            }
+                            if (def !== undefined) {
+                              return (
+                                <button
+                                  title="Forget this LoRA's default scale"
+                                  onClick={() => {
+                                    const next = { ...loraDefaults }
+                                    delete next[j.loraUrl]
+                                    saveLoraDefaults(next)
+                                  }}
+                                  className="px-2 py-2 text-slate-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                                >
+                                  <X size={10} />
+                                </button>
+                              )
+                            }
+                            return null
+                          })()}
                           {j.custom && (
                             <button
                               onClick={() => {
