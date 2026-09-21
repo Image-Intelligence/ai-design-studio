@@ -254,6 +254,32 @@ function ideogramSize(ctx: FalImageBuildContext, maxDim: number): { width: numbe
 }
 
 /**
+ * Ideogram's text remover.
+ *
+ * fal-ai/ideogram/v3/layerize-text pulls the text off a flat graphic and
+ * returns the background it was sitting on, plus the text it lifted as HTML
+ * and as structured containers. Its own schema calls the output image "The
+ * background image with text removed", which is the job.
+ *
+ * It is a v3 endpoint and shares nothing with v4's inputs - no image_size, no
+ * loras, no strength, no rendering_speed - so this is a diversion rather than
+ * a fifth variant: the request leaves the family entirely and only the
+ * attached image comes with it.
+ */
+const IDEOGRAM_TEXT_REMOVAL = 'fal-ai/ideogram/v3/layerize-text'
+
+/** Is this request asking for text removal rather than generation? */
+export function ideogramRemovesText(ctx: {
+  options: Record<string, any>
+  imageUrls: string[]
+}): boolean {
+  // Needs something to take the text OFF, so with no image the mode is inert
+  // and the normal path runs - rather than failing on an endpoint that would
+  // have rejected it anyway.
+  return ctx.options?.ideogramMode === 'remove-text' && ctx.imageUrls.length > 0
+}
+
+/**
  * How far image-to-image departs from the source. fal's default is 0.8, and
  * measured at one seed that is a full re-render: the composition and the
  * scene carry over, the person does not. 0.3 keeps the subject.
@@ -1344,6 +1370,23 @@ export function buildFalImageInput(
   }
   if (spec.id === 'google-virtual-try-on' && ctx.imageUrls.length < 2) {
     throw new Error('Virtual Try-On needs two images: a person photo and a product photo')
+  }
+  /*
+   * Text removal takes the image and leaves the rest behind.
+   *
+   * Placed ahead of the prompt checks deliberately: the endpoint's only
+   * required field is image_url, and demanding a prompt for a job that needs
+   * none would refuse a perfectly valid request. A prompt is passed through
+   * when there is one, because the schema accepts it as a hint.
+   */
+  if (spec.id.startsWith('ideogram-v4') && ideogramRemovesText(ctx)) {
+    return {
+      endpoint: IDEOGRAM_TEXT_REMOVAL,
+      input: compact({
+        image_url: ctx.imageUrls[0],
+        prompt: ctx.prompt?.trim() ? ctx.prompt.trim() : undefined,
+      }),
+    }
   }
   if (spec.promptRequired && !ctx.prompt) {
     throw new Error(`${spec.id} requires a prompt`)

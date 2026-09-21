@@ -18962,6 +18962,12 @@ function PromptBox({
    * decision, not a detail.
    */
   const [ideogramRenderingSpeed, setIdeogramRenderingSpeed] = useState<"TURBO" | "BALANCED" | "QUALITY">("BALANCED")
+  /*
+   * Edit, or strip the text out. "remove-text" leaves the v4 family for
+   * ideogram/v3/layerize-text, which wants the image and nothing else - so
+   * the controls that do not apply are hidden rather than quietly ignored.
+   */
+  const [ideogramMode, setIdeogramMode] = useState<"edit" | "remove-text">("edit")
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -20478,7 +20484,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20500,7 +20506,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -21642,7 +21648,34 @@ function PromptBox({
             </div>
           )}
 
+          {/* Mode. Only with a reference attached: there is nothing to take the
+              text off otherwise, and the server treats the mode as inert. */}
           {model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && (
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
+              <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Mode</span>
+                <div className="flex rounded-md overflow-hidden border border-white/10 w-fit">
+                  {([["edit", "edit"], ["remove-text", "remove text"]] as const).map(([v, label]) => (
+                    <button key={v} onClick={() => setIdeogramMode(v)}
+                      className={`px-2.5 py-1 text-[11px] font-mono transition-colors ${ideogramMode === v ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[10px] leading-snug text-slate-600">
+                {ideogramMode === "remove-text"
+                  ? <>Lifts the text off the attached image and returns the background underneath,
+                      via ideogram/v3/layerize-text. A different model from v4, so the prompt is
+                      optional and the aspect ratio, LoRA and strength do not apply. Measured on a
+                      1024{"\u00d7"}1536 poster: {"\u2248"}48s, back at 832{"\u00d7"}1248 {"\u2014"} the shape is
+                      kept, the size is about one megapixel whatever you put in.</>
+                  : <>Normal image-to-image: the prompt reworks the attached reference.</>}
+              </p>
+            </div>
+          )}
+
+          {model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && ideogramMode === "edit" && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
                 <span className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
