@@ -938,6 +938,27 @@ export async function POST(request: Request) {
                 const sharp = (await import('sharp')).default
                 const meta = await sharp(imageBuffer).metadata()
                 if (meta.width && meta.height) dims = { width: meta.width, height: meta.height }
+                /*
+                 * A blank reference is a guaranteed waste of a run.
+                 *
+                 * Measured on the black generations: the reference was pure
+                 * black - max 0, entropy 0 - and the model faithfully
+                 * enhanced it into a black picture. The client compositor is
+                 * fixed, but this is the choke point every path passes
+                 * through, and the failure is invisible without it.
+                 *
+                 * Judged on a 64px thumbnail so it costs a downscale rather
+                 * than a full-resolution pass over the statistics.
+                 */
+                const probe = await sharp(imageBuffer).resize(64, 64, { fit: 'inside' }).stats()
+                const brightest = Math.max(...probe.channels.slice(0, 3).map(c => c.max))
+                if (brightest <= 4) {
+                  return jsonPrivate({
+                    error: 'That reference image is blank (solid black). It is usually a layered '
+                      + 'reference whose layers could not load \u2014 reopen it, check the layers '
+                      + 'appear, and try again.',
+                  }, { status: 400 })
+                }
               } catch { /* unreadable: "auto" falls back to square */ }
               if (!refDims && dims) refDims = dims
               const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' })

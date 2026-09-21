@@ -11079,12 +11079,15 @@ async function compositeLayeredRef(baseUrl: string, stack: RefLayerStack): Promi
   canvas.width = stack.baseInLayer && stack.baseW ? stack.baseW : (baseImg!.naturalWidth || baseImg!.width)
   canvas.height = stack.baseInLayer && stack.baseH ? stack.baseH : (baseImg!.naturalHeight || baseImg!.height)
   const ctx = canvas.getContext("2d")!
+  // Whether anything actually landed on the artboard. See the throw below.
+  let drewSomething = false
   if (stack.baseInLayer) {
     // The base lives in Layer 1 — start from a black artboard (JPEG has no alpha)
     ctx.fillStyle = "#000000"
     ctx.fillRect(0, 0, canvas.width, canvas.height)
   } else if (baseImg) {
     ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height)
+    drewSomething = true
   }
   for (const l of stack.layers) {
     if (!l.visible) continue
@@ -11110,10 +11113,23 @@ async function compositeLayeredRef(baseUrl: string, stack: RefLayerStack): Promi
           const w = iw * sc, h = ih * sc
           ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h)
         }
-      } catch { /* skip unloadable items rather than failing the run */ }
+        drewSomething = true
+      } catch { /* one bad item should not lose the rest of the composite */ }
     }
   }
   ctx.globalAlpha = 1
+  /*
+   * Refuse to return a blank frame.
+   *
+   * Skipping an unloadable item is right when something else drew. When
+   * NOTHING did - every layer url expired, say - the export is a pure black
+   * JPEG, and a black reference is not a failure anyone sees: it uploads, it
+   * generates, it bills, and it comes back black. Better to stop here and say
+   * so; the caller turns this into "Reference image N failed to load".
+   */
+  if (!drewSomething) {
+    throw new Error("none of its layers could be loaded, so the composite would be a blank frame")
+  }
   return canvas.toDataURL("image/jpeg", 0.92)
 }
 

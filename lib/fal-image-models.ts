@@ -247,10 +247,26 @@ function ideogramSize(ctx: FalImageBuildContext, maxDim: number): { width: numbe
   const dims = (ctx.options.refDims ?? ctx.options.loraDims) as
     { width: number; height: number } | null | undefined
   if (!dims?.width || !dims?.height) return imageSize('1:1', ctx.quality, maxDim)
-  const mult = ctx.quality === '4k' ? 3 : ctx.quality === '2k' ? 2 : 1
-  const scale = Math.min(mult, maxDim / Math.max(dims.width, dims.height))
-  const round16 = (n: number) => Math.max(256, Math.round((n * scale) / 16) * 16)
-  return { width: round16(dims.width), height: round16(dims.height) }
+  /*
+   * Shape from the reference, size from the quality buttons.
+   *
+   * This used to scale the reference's OWN pixels by a quality multiplier
+   * capped at the endpoint maximum, which made the buttons do nothing in both
+   * directions. A reference already at the cap - which every 2k generation
+   * reused as a reference is - gave a multiplier of 1, so 1k and 2k both
+   * returned the input's size. A small reference did the opposite: a 400x272
+   * thumbnail produced 800x544 whatever was asked for.
+   *
+   * The aspect ratio is the only thing the reference is consulted for now.
+   * The long side comes from the quality, exactly as it does for a named
+   * ratio, and the endpoint's own ceiling still applies.
+   */
+  const longSideFor = ctx.quality === '4k' ? 4096 : ctx.quality === '2k' ? 2048 : 1024
+  const target = Math.min(longSideFor, maxDim)
+  const ratio = dims.width / dims.height
+  const [w, h] = ratio >= 1 ? [target, target / ratio] : [target * ratio, target]
+  const round16 = (n: number) => Math.max(256, Math.round(n / 16) * 16)
+  return { width: round16(w), height: round16(h) }
 }
 
 /**

@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { jsonPrivate } from '@/lib/api-json'
+import { canonicalMediaUrl } from '@/lib/media-url'
 
 // Dev-Tier multi-layer reference canvases. The layer stack lives in
 // UserReference.layers (TEXT, added via out-of-band DDL — add-ref-layers.js),
@@ -76,7 +77,16 @@ export async function POST(req: Request) {
           const hasRect = [it.x, it.y, it.w, it.h].every((v: unknown) => typeof v === 'number' && isFinite(v as number))
           items.push({
             id: typeof it.id === 'string' ? it.id.slice(0, 40) : `it-${totalItems}`,
-            url: it.url,
+            /*
+             * Canonical, never the signed form the client was handed.
+             *
+             * Every response here goes out through signPayload, so the client
+             * holds signed urls and posts them back. Stored, they expire in
+             * hours and the layer then 403s - and the compositor treats an
+             * unloadable layer as one to skip, so the reference silently
+             * becomes a blank black frame and the generation is paid for.
+             */
+            url: canonicalMediaUrl(it.url),
             ...(hasRect ? {
               x: Math.max(-2, Math.min(2, it.x)),
               y: Math.max(-2, Math.min(2, it.y)),
