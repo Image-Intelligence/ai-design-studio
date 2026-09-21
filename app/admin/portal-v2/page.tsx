@@ -20835,12 +20835,20 @@ function PromptBox({
 
   // Fetch completed LoRA jobs when a LoRA-capable model is selected
   /*
-   * "Can this model take a LoRA?" — the name is from when only z-image could.
-   * All three Ideogram variants qualify: Fast and Tiling have LoRA sibling
-   * endpoints, and Instant borrows ideogram/v4/lora at TURBO.
+   * Can this model take a LoRA?
+   *
+   * Every Ideogram v4 tier qualifies: Fast and Tiling have LoRA sibling
+   * endpoints, Instant borrows ideogram/v4/lora at TURBO, and the base tier
+   * owns the siblings the other two borrow. The prefix used to carry a
+   * trailing hyphen, which excluded "ideogram-v4" itself — the base tier had
+   * no LoRA button at all, and selecting it cleared the list.
+   *
+   * Named for what it asks. It was isZImageModel, which stopped being true
+   * the moment FLUX was added and has now produced two bugs from people
+   * reading the name instead of the value.
    */
-  const isZImageModel = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
-    || model.id.startsWith("ideogram-v4-")
+  const modelTakesLora = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
+    || model.id.startsWith("ideogram-v4")
   /*
    * Per fal's published schemas. Z-Image Turbo is distilled: no guidance_scale
    * field exists and num_inference_steps is capped at 8, so offering FLUX's
@@ -20860,7 +20868,7 @@ function PromptBox({
     if (acceleration === "high" && model.id === "flux-1-dev" && selectedLoraUrl) setAcceleration("regular")
   }, [acceleration, model.id, selectedLoraUrl])
   useEffect(() => {
-    if (!isZImageModel) { setSelectedLoraUrl(null); setExtraLoras([]); setLoraJobs([]); return }
+    if (!modelTakesLora) { setSelectedLoraUrl(null); setExtraLoras([]); setLoraJobs([]); return }
     // Undefined = not in the table = unfiltered. [] = nothing applies.
     const compatTrainers = LORA_TRAINER_COMPAT[model.id]
     const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
@@ -21758,7 +21766,7 @@ function PromptBox({
             </div>
           )}
 
-          {isZImageModel && selectedLoraUrl && (
+          {modelTakesLora && selectedLoraUrl && (
             <div className="px-4 py-3 border-t border-violet-500/10 space-y-2">
               {model.id === "z-image-base" && (
                 <p className="text-[10px] leading-snug text-amber-300/90 mb-1">
@@ -22339,7 +22347,7 @@ function PromptBox({
                  * resolves from the training crop.
                  */
                 autoHint={(() => {
-                  if (!supportsLora || activeRefImages.length > 0) return null
+                  if (!modelTakesLora || activeRefImages.length > 0) return null
                   const crop = loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.trainedCrop
                   return crop ? `LoRA ${crop}` : null
                 })()}
@@ -22463,7 +22471,7 @@ function PromptBox({
             })()}
 
             {/* LoRA picker — z-image-base / z-image-turbo only */}
-            {isZImageModel && !model.isUpscaler && (
+            {modelTakesLora && !model.isUpscaler && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
                 <div ref={loraPickerRef} className="relative shrink-0">
