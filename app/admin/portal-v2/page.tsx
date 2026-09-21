@@ -10756,22 +10756,27 @@ function ImageGrid({
            *
            * The completion path both marks the slot done AND prepends the
            * image, so the copy in freshImages has to be suppressed. Matching
-           * on the URL alone was not enough: once the server refresh returns
+           * on the URL alone is not enough: once the server refresh returns
            * the same generation re-hosted on R2 its URL no longer equals the
            * fal URL the slot is holding, the filter misses, and the picture
-           * renders twice. The row id and the R2 key survive that re-host.
+           * renders twice.
+           *
+           * This used to compare raw id, raw url and raw r2Key - directly
+           * under that paragraph, which explains why raw matching fails. So
+           * nano-banana runs, whose finished item carries a temporary id and
+           * a different host, duplicated on completion and only resolved on a
+           * reload, when the done slots are dropped and the database list is
+           * deduped properly. slotHeldKeys is the version that normalises
+           * through mediaPathKey, and it is what the database list below
+           * already uses; there is no reason for the head strip to carry its
+           * own weaker copy.
            */
-          const slotHeld = { urls: new Set<string>(), ids: new Set<number>(), keys: new Set<string>() }
-          for (const s of pendingSlots) {
-            if (s.status !== "done" || !s.doneImage) continue
-            if (s.doneImage.imageUrl) slotHeld.urls.add(s.doneImage.imageUrl)
-            if (typeof s.doneImage.id === "number") slotHeld.ids.add(s.doneImage.id)
-            if (s.doneImage.r2Key) slotHeld.keys.add(s.doneImage.r2Key)
-          }
+          const heldByHead = slotHeldKeys(pendingSlots)
           freshImages.forEach((img) => {
-            if (img.imageUrl && slotHeld.urls.has(img.imageUrl)) return
-            if (typeof img.id === "number" && slotHeld.ids.has(img.id)) return
-            if (img.r2Key && slotHeld.keys.has(img.r2Key)) return
+            if (img.imageUrl && heldByHead.urls.has(img.imageUrl)) return
+            if (typeof img.id === "number" && heldByHead.ids.has(img.id)) return
+            if (img.r2Key && heldByHead.keys.has(mediaPathKey(img.r2Key))) return
+            if (img.imageUrl && heldByHead.keys.has(mediaPathKey(img.imageUrl))) return
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
