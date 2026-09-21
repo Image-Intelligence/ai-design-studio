@@ -19192,6 +19192,38 @@ function PromptBox({
   const [loraWarning, setLoraWarning] = useState<string | null>(null)
   const loraFileInputRef = useRef<HTMLInputElement>(null)
   const loraPickerRef = useRef<HTMLDivElement>(null)
+  /*
+   * Where the panel can actually go.
+   *
+   * Its anchor is a button in a horizontally scrolling toolbar whose own label
+   * carries the selected LoRA's name, so it can sit anywhere across the page -
+   * and CSS cannot say "hang off this, but stay inside the viewport". Measured
+   * when it opens: `left` is an offset from the anchor, so the panel slides
+   * back into view when the anchor is near an edge, and `maxH` is the room
+   * that actually exists above the button, since it opens upward.
+   */
+  const [loraPickerBox, setLoraPickerBox] = useState<{ left: number; width: number; maxH: number } | null>(null)
+  useEffect(() => {
+    if (!loraPickerOpen) { setLoraPickerBox(null); return }
+    const measure = () => {
+      const el = loraPickerRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const GUTTER = 12
+      const width = Math.min(336, window.innerWidth - GUTTER * 2)
+      const wantLeft = Math.min(Math.max(GUTTER, r.left), window.innerWidth - width - GUTTER)
+      setLoraPickerBox({
+        left: wantLeft - r.left,
+        width,
+        // Never below 180: a panel too short to show a card is worse than one
+        // that has to scroll.
+        maxH: Math.max(180, Math.min(384, r.top - GUTTER * 2)),
+      })
+    }
+    measure()
+    window.addEventListener("resize", measure)
+    return () => window.removeEventListener("resize", measure)
+  }, [loraPickerOpen])
   // Upscaler state
   const [upscaleSourceUrl, setUpscaleSourceUrl] = useState("")
   // Virtual Try-On keeps its two images apart: fal takes person_image_url and
@@ -22606,8 +22638,15 @@ function PromptBox({
                      * with every LoRA trained, and a phone is narrower than
                      * the panel wants to be.
                      */
-                    <div className="absolute bottom-full mb-2 left-0 z-50 w-[min(23rem,calc(100vw-2rem))] max-h-[min(26rem,62vh)] flex flex-col rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl overflow-hidden">
-                      <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-white/[0.06] shrink-0">
+                    <div
+                      style={loraPickerBox
+                        ? { left: loraPickerBox.left, width: loraPickerBox.width, maxHeight: loraPickerBox.maxH }
+                        // Hidden for the first frame rather than flashing in
+                        // the wrong place and jumping.
+                        : { left: 0, width: 336, maxHeight: 384, visibility: "hidden" }}
+                      className="absolute bottom-full mb-2 z-50 flex flex-col rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl overflow-hidden"
+                    >
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-white/[0.06] shrink-0">
                         <div className="flex items-center gap-2 min-w-0">
                           <Sparkles size={12} className="text-violet-300/80 shrink-0" />
                           <div className="min-w-0">
@@ -22630,7 +22669,7 @@ function PromptBox({
                         </button>
                       </div>
 
-                      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1.5 space-y-1">
+                      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1.5 space-y-1 [scrollbar-width:thin]">
                         {loraJobs.length === 0 && (
                           <p className="px-3 py-6 text-center text-[11px] text-slate-600 leading-relaxed">
                             No LoRAs for this model yet.<br />Train one, or add a file below.
@@ -22663,7 +22702,7 @@ function PromptBox({
                                   : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.14]"
                               }`}
                             >
-                              <div className="flex items-center gap-2 px-2.5 pt-2 pb-1.5">
+                              <div className="flex items-center gap-2 px-2 py-1.5">
                                 <button
                                   onClick={() => {
                                     /*
@@ -22760,8 +22799,11 @@ function PromptBox({
                               </div>
 
                               {/* Everything this LoRA knows about itself, as
-                                  chips rather than stacked sentences. */}
-                              <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2">
+                                  chips rather than stacked sentences. Rendered
+                                  only when there is something to show, so a
+                                  bare LoRA is a one-line card. */}
+                              {(j.triggerWord || j.trainedCrop || j.custom || (cur !== undefined && cur !== def)) && (
+                              <div className="flex flex-wrap items-center gap-1 px-2 pb-1.5">
                                 {j.triggerWord && (
                                   <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300/90 text-[9px] font-mono">
                                     {j.triggerWord}
@@ -22792,6 +22834,7 @@ function PromptBox({
                                   </button>
                                 )}
                               </div>
+                              )}
                             </div>
                           )
                         })}
