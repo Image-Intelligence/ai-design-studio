@@ -18,25 +18,38 @@ export async function GET(req: Request) {
     include: { _count: { select: { images: true } } },
   })
 
-  // Fetch up to 4 preview URLs per bucket concurrently (avoids slow N+1 serial queries)
+  /*
+   * Every bucket's first few images in ONE statement.
+   *
+   * This used to be a query per bucket, fired concurrently - which is still
+   * 405 round trips through Accelerate, and measured at 1.63s against 0.33s
+   * for the statement below. Every mutation on the page waits for this list,
+   * so that 1.3s was being paid to add images to a bucket, to rename one, and
+   * to create one.
+   *
+   * Eight rows are ranked per bucket rather than four because videos are
+   * dropped afterwards and four survivors are still wanted.
+   */
   const previewMap = new Map<number, string[]>()
   if (!fast && buckets.length > 0) {
-    await Promise.all(buckets.map(async b => {
-      const rows = await prisma.datasetBucketImage.findMany({
-        where: { bucketId: b.id },
-        select: { imageId: true, image: { select: { imageUrl: true } } },
-        orderBy: { imageId: 'asc' },
-        take: 8,
-      })
-      // Serve the 400px thumb endpoint, NOT the full originals — 4 full-size
+    const rows = await prisma.$queryRaw<{ bucketId: number; imageId: number; imageUrl: string }[]>`
+      SELECT x."bucketId", x."imageId", i."imageUrl"
+      FROM (
+        SELECT bi."bucketId", bi."imageId",
+               ROW_NUMBER() OVER (PARTITION BY bi."bucketId" ORDER BY bi."imageId" ASC) AS rn
+        FROM "DatasetBucketImage" bi
+      ) x
+      JOIN "GeneratedImage" i ON i.id = x."imageId"
+      WHERE x.rn <= 8
+      ORDER BY x."bucketId", x."imageId"`
+    for (const r of rows) {
+      if (VIDEO_RE.test(r.imageUrl)) continue
+      const urls = previewMap.get(r.bucketId) ?? []
+      // Serve the 400px thumb endpoint, NOT the full originals - 4 full-size
       // decodes per card across a screen of cards blew iPad Safari's memory
-      // and force-restarted the tab
-      const urls = rows
-        .filter(r => !VIDEO_RE.test(r.image.imageUrl))
-        .slice(0, 4)
-        .map(r => `/api/admin/dataset/thumb/${r.imageId}`)
-      previewMap.set(b.id, urls)
-    }))
+      // and force-restarted the tab.
+      if (urls.length < 4) { urls.push(`/api/admin/dataset/thumb/${r.imageId}`); previewMap.set(r.bucketId, urls) }
+    }
   }
 
   return jsonPrivate(

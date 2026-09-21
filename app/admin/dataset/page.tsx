@@ -2636,6 +2636,20 @@ export default function DatasetPage() {
     setBuckets(prev => prev.map(b => b.id === bucketId ? { ...b, count: total } : b))
   }
 
+  /*
+   * Put a newly created bucket straight into the list.
+   *
+   * loadBuckets() returns all 405 with previews; asking for it because one was
+   * created is a round trip to learn something the POST just told us, and it
+   * is why a new bucket took a visible pause to appear.
+   */
+  function addBucketLocally(bucket: Bucket) {
+    setBuckets(prev => prev.some(b => b.id === bucket.id)
+      ? prev
+      // createdAt ascending, which is the order the server returns.
+      : [...prev, { ...bucket, count: bucket.count ?? 0, previewUrls: bucket.previewUrls ?? [] }])
+  }
+
   async function removeFromBucket(bucketId: number) {
     const ids = Array.from(selected)
     const res = await fetch(`/api/admin/buckets/${bucketId}/images`, {
@@ -2674,17 +2688,15 @@ export default function DatasetPage() {
     })
     if (!createRes.ok) throw new Error(`HTTP ${createRes.status}`)
     const bucket: Bucket = await createRes.json()
-    // A new bucket is not in the list yet, so this one does need a refresh —
-    // but only one, and addToBucket no longer does its own.
+    addBucketLocally(bucket)
     await addToBucket(bucket.id)
-    await loadBuckets()
   }
 
   async function deleteBucket(id: number) {
     if (!confirm('Delete this bucket? Images are not deleted.')) return
     await fetch(`/api/admin/buckets/${id}`, { method: 'DELETE', headers: authHeaders() })
     if (bucketFilter === String(id)) setBucketFilter("")
-    await loadBuckets()
+    setBuckets(prev => prev.filter(b => b.id !== id))
     setBucketMenuId(null)
   }
 
@@ -2695,9 +2707,10 @@ export default function DatasetPage() {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ name: renameValue.trim() }),
     })
+    const next = renameValue.trim()
+    setBuckets(prev => prev.map(b => b.id === id ? { ...b, name: next } : b))
     setRenamingId(null)
     setRenameValue("")
-    await loadBuckets()
   }
 
   async function createBucket(folderId?: number | null) {
@@ -2708,7 +2721,7 @@ export default function DatasetPage() {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ name, folderId: folderId ?? null }),
     })
-    if (res.ok) await loadBuckets()
+    if (res.ok) addBucketLocally(await res.json())
   }
 
   async function createFolder(parentId: number | null = null) {
