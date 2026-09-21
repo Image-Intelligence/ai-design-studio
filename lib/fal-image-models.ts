@@ -329,6 +329,20 @@ function ideogramLoras(options: Record<string, any>): { path: string; scale: num
   return out.length > 0 ? out : undefined
 }
 
+/**
+ * Which expansion settings each tier accepts, per their schemas.
+ *
+ * ideogram/v4/fast and /instant stop at Medium; the base tier, tiling,
+ * image-to-image and every LoRA sibling take Large as well. A LoRA or a
+ * reference relocates a Fast or Instant request onto one of those, so the
+ * choice widens with it - which is why the specs decide this at build time
+ * rather than from the model id.
+ */
+export const expansionChoices = (opts: { lora: boolean; ref: boolean; tier: string }): readonly string[] =>
+  opts.lora || opts.ref || opts.tier === 'ideogram-v4' || opts.tier === 'ideogram-v4-tiling'
+    ? ['None', 'Medium', 'Large']
+    : ['None', 'Medium']
+
 /** Largest side ideogram/v4/tiling returns as asked. Measured, not read. */
 const IDEOGRAM_TILING_MAX_DIM = 2048
 
@@ -887,9 +901,15 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
-        // 'Large' is a base-tier field; ideogram/v4/fast stops at Medium, so
-        // offering it here would be a 422 for anyone who set it.
-        expansion_model: pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
+        /*
+         * ideogram/v4/fast stops at Medium, but the siblings a LoRA or a
+         * reference move this to accept Large - the same reasoning the
+         * Instant tier already uses. Offering Large on the plain endpoint
+         * would be a 422; refusing it on the sibling loses a real setting.
+         */
+        expansion_model: loras || img
+          ? pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium', 'Large'] as const, 'Medium')
+          : pickEnum(ctx.options.ideogramExpansionModel, ['None', 'Medium'] as const, 'Medium'),
         rendering_speed: pickEnum(ctx.options.ideogramRenderingSpeed, ['TURBO', 'BALANCED', 'QUALITY'] as const, 'BALANCED'),
         ...(loras ? { loras } : {}),
         ...(img ? { image_url: img, strength: ideogramStrength(ctx.options) } : {}),

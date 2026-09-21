@@ -17,7 +17,7 @@ import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
-import { gptImage25Size } from "@/lib/fal-image-models"
+import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
@@ -19055,6 +19055,12 @@ function PromptBox({
    * the controls that do not apply are hidden rather than quietly ignored.
    */
   const [ideogramMode, setIdeogramMode] = useState<"edit" | "remove-text">("edit")
+  /*
+   * Prompt expansion. Ideogram has no CFG or prompt-strength field; this is
+   * the closest thing, and it was never being sent, so every run took fal's
+   * default of Medium and had its prompt rewritten.
+   */
+  const [ideogramExpansion, setIdeogramExpansion] = useState<"None" | "Medium" | "Large">("Medium")
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -20625,7 +20631,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20647,7 +20653,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -21799,6 +21805,40 @@ function PromptBox({
 
           {/* Mode. Only with a reference attached: there is nothing to take the
               text off otherwise, and the server treats the mode as inert. */}
+          {model.id.startsWith("ideogram-v4") && (() => {
+            // Large only where the resolved endpoint takes it — the same
+            // rule the request builder applies, read from one place.
+            const choices = expansionChoices({
+              lora: !!selectedLoraUrl,
+              ref: activeRefImages.length > 0,
+              tier: model.id,
+            }) as ("None" | "Medium" | "Large")[]
+            return (
+              <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
+                <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
+                  <span className="text-[10px] font-mono text-slate-500">Prompt</span>
+                  <div className="flex rounded-md overflow-hidden border border-white/10 w-fit">
+                    {choices.map(v => (
+                      <button key={v} onClick={() => setIdeogramExpansion(v)}
+                        className={`px-2.5 py-1 text-[11px] font-mono transition-colors ${ideogramExpansion === v ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                        {v === "None" ? "verbatim" : v.toLowerCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-[10px] leading-snug text-slate-600">
+                  Ideogram has no prompt-strength setting {"\u2014"} this is the nearest thing.
+                  {ideogramExpansion === "None"
+                    ? <> Your prompt is sent word for word.</>
+                    : <> Ideogram rewrites your prompt before rendering it. Measured on a
+                        372-character prompt: it came back as a 938-character description of
+                        itself, and took 131s against 12s for <span className="text-slate-500">verbatim</span>.
+                        Good for a short prompt, and what eats the detail out of a long one.</>}
+                </p>
+              </div>
+            )
+          })()}
+
           {model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
