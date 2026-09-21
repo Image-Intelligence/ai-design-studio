@@ -22601,143 +22601,203 @@ function PromptBox({
                     })()}
                   </button>
                   {loraPickerOpen && (
-                    /* Capped and scrollable: the list grows with every LoRA
-                       trained, and unbounded it runs off the screen. */
-                    <div className="absolute bottom-full mb-1.5 left-0 z-50 min-w-[220px] max-w-[min(20rem,calc(100vw-2rem))] max-h-[min(24rem,60vh)] overflow-y-auto overscroll-contain rounded-xl bg-[#131320] border border-white/[0.1] shadow-2xl py-1">
-                      <button
-                        onClick={() => { setSelectedLoraUrl(null); setExtraLoras([]); setLoraPickerOpen(false) }}
-                        className={`w-full text-left px-3 py-2 text-[11px] transition-colors ${!selectedLoraUrl ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
-                      >
-                        No LoRA
-                      </button>
-                      {loraJobs.map(j => (
-                        <div key={j.id} className="group">
-                         <div className="flex items-center">
-                          <button
-                            onClick={() => {
-                              /*
-                               * One LoRA: replace, as before. Several: toggle,
-                               * because the whole point is combining them.
-                               */
-                              const chosen = selectedLoraUrl === j.loraUrl || extraLoras.some(e => e.url === j.loraUrl)
-                              // Its remembered scale, when it has one. No
-                              // default leaves the slider where it is, rather
-                              // than resetting a number just set by hand.
-                              const def = loraDefaults[j.loraUrl]?.scale
-                              if (multiLoraMax === 1) {
-                                setSelectedLoraUrl(j.loraUrl)
-                                if (def !== undefined) setLoraScale(def)
-                                setLoraPickerOpen(false)
-                                return
-                              }
-                              if (chosen) {
-                                if (selectedLoraUrl === j.loraUrl) {
-                                  // Promote the next one so there is never a
-                                  // stack with an empty first slot.
-                                  const [next, ...rest] = extraLoras
-                                  setSelectedLoraUrl(next?.url ?? null)
-                                  setExtraLoras(rest)
-                                } else {
-                                  setExtraLoras(prev => prev.filter(e => e.url !== j.loraUrl))
-                                }
-                                return
-                              }
-                              if (!selectedLoraUrl) {
-                                setSelectedLoraUrl(j.loraUrl)
-                                if (def !== undefined) setLoraScale(def)
-                                return
-                              }
-                              if (extraLoras.length < multiLoraMax - 1) {
-                                // 0.6 is the stacking default: three at full
-                                // strength is three times the intended effect.
-                                setExtraLoras(prev => [...prev, { url: j.loraUrl, scale: def ?? 0.6 }])
-                              }
-                            }}
-                            className={`flex-1 text-left px-3 py-2 text-[11px] transition-colors ${selectedLoraUrl === j.loraUrl || extraLoras.some(e => e.url === j.loraUrl) ? "text-violet-300 bg-violet-500/10" : "text-slate-400 hover:text-white hover:bg-white/[0.06]"}`}
-                          >
-                            <div className="truncate">{j.name}{j.custom && <span className="ml-1 text-slate-600">·custom</span>}</div>
-                            {j.triggerWord && <div className="text-[10px] text-amber-400/70 mt-0.5">trigger: <span className="font-mono">{j.triggerWord}</span></div>}
-                            {j.trainedCrop && (() => {
-                              /*
-                               * What shape and size this LoRA actually learned.
-                               * Below ~640 on the short side it has seen far
-                               * less area than a 1024+ generation asks for,
-                               * which is where duplicated subjects show up.
-                               */
-                              const [w, h] = j.trainedCrop.split('x').map(Number)
-                              const shape = !w || !h ? '' : w > h * 1.1 ? 'landscape' : h > w * 1.1 ? 'portrait' : 'square'
-                              const small = !!w && !!h && Math.min(w, h) < 640
-                              return (
-                                <div className={`text-[10px] mt-0.5 ${small ? 'text-amber-400/80' : 'text-slate-600'}`}>
-                                  trained <span className="font-mono">{j.trainedCrop}</span>
-                                  {shape && ` \u00b7 ${shape}`}
-                                  {small && ' \u00b7 small'}
-                                </div>
-                              )
-                            })()}
-                          </button>
-                          {j.custom && (
-                            <button
-                              onClick={() => {
-                                // DELETE is owner-checked server-side; the id is
-                                // the row id now, not a localStorage timestamp.
-                                void fetch(`/api/user/loras?id=${j.id}`, { method: 'DELETE' }).catch(() => {})
-                                if (selectedLoraUrl === j.loraUrl) setSelectedLoraUrl(null)
-                                setExtraLoras(prev => prev.filter(e => e.url !== j.loraUrl))
-                                setLoraJobs(prev => prev.filter(p => p.loraUrl !== j.loraUrl))
-                              }}
-                              className="px-2 py-2 text-slate-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                    /*
+                     * Capped and scrollable in both directions: the list grows
+                     * with every LoRA trained, and a phone is narrower than
+                     * the panel wants to be.
+                     */
+                    <div className="absolute bottom-full mb-2 left-0 z-50 w-[min(23rem,calc(100vw-2rem))] max-h-[min(26rem,62vh)] flex flex-col rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl overflow-hidden">
+                      <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-white/[0.06] shrink-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Sparkles size={12} className="text-violet-300/80 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold text-white leading-none">LoRAs</p>
+                            <p className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-600 leading-none mt-1">
+                              {multiLoraMax > 1
+                                ? `${(selectedLoraUrl ? 1 : 0) + extraLoras.length} of ${multiLoraMax} active`
+                                : selectedLoraUrl ? "1 active" : "none active"}
+                            </p>
+                          </div>
+                        </div>
+                        {/* Was a "No LoRA" row at the top of the list, which
+                            read as a LoRA called "No LoRA". It is an action. */}
+                        <button
+                          onClick={() => { setSelectedLoraUrl(null); setExtraLoras([]) }}
+                          disabled={!selectedLoraUrl && extraLoras.length === 0}
+                          className="shrink-0 px-2 py-1 rounded-md border border-white/[0.08] bg-white/[0.03] text-[10px] text-slate-400 hover:text-white hover:border-white/20 transition-colors disabled:opacity-30 disabled:hover:text-slate-400 disabled:hover:border-white/[0.08]"
+                        >
+                          Clear
+                        </button>
+                      </div>
+
+                      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1.5 space-y-1">
+                        {loraJobs.length === 0 && (
+                          <p className="px-3 py-6 text-center text-[11px] text-slate-600 leading-relaxed">
+                            No LoRAs for this model yet.<br />Train one, or add a file below.
+                          </p>
+                        )}
+                        {loraJobs.map(j => {
+                          const active = selectedLoraUrl === j.loraUrl
+                          const extraAt = extraLoras.findIndex(e => e.url === j.loraUrl)
+                          const extra = extraAt >= 0 ? extraLoras[extraAt] : undefined
+                          const on = active || !!extra
+                          const def = loraDefaults[j.loraUrl]?.scale
+                          // The scale in play right now, when this one is in use.
+                          const cur = active ? loraScale : extra?.scale
+                          const shown = loraDefaultDraft[j.loraUrl] ?? (def !== undefined ? String(def) : "")
+                          /*
+                           * What shape and size this LoRA actually learned.
+                           * Below ~640 on the short side it has seen far less
+                           * area than a 1024+ generation asks for, which is
+                           * where duplicated subjects show up.
+                           */
+                          const [cw, ch] = (j.trainedCrop ?? "").split("x").map(Number)
+                          const shape = !cw || !ch ? "" : cw > ch * 1.1 ? "landscape" : ch > cw * 1.1 ? "portrait" : "square"
+                          const small = !!cw && !!ch && Math.min(cw, ch) < 640
+                          return (
+                            <div
+                              key={j.id}
+                              className={`group rounded-xl border transition-colors ${
+                                on
+                                  ? "border-violet-500/40 bg-violet-500/[0.08]"
+                                  : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.14]"
+                              }`}
                             >
-                              <X size={10} />
-                            </button>
-                          )}
-                         </div>
-                          {/* Its default scale — always editable, whether or
-                              not this LoRA is selected, so every one can be set
-                              from here rather than by selecting each in turn. */}
-                          {(() => {
-                            const def = loraDefaults[j.loraUrl]?.scale
-                            const cur = selectedLoraUrl === j.loraUrl
-                              ? loraScale
-                              : extraLoras.find(e => e.url === j.loraUrl)?.scale
-                            const shown = loraDefaultDraft[j.loraUrl] ?? (def !== undefined ? String(def) : "")
-                            return (
-                              <div className="flex items-center gap-1.5 px-3 pb-1.5 text-[10px] text-slate-600">
-                                loads at
-                                <input
-                                  value={shown}
-                                  inputMode="decimal"
-                                  placeholder="—"
-                                  onChange={e => setLoraDefaultDraft(d => ({ ...d, [j.loraUrl]: e.target.value }))}
-                                  onBlur={e => commitLoraDefault(j.loraUrl, e.target.value)}
-                                  onKeyDown={e => {
-                                    if (e.key === "Enter") (e.target as HTMLInputElement).blur()
-                                    if (e.key === "Escape") {
-                                      setLoraDefaultDraft(d => { const n = { ...d }; delete n[j.loraUrl]; return n })
-                                      ;(e.target as HTMLInputElement).blur()
+                              <div className="flex items-center gap-2 px-2.5 pt-2 pb-1.5">
+                                <button
+                                  onClick={() => {
+                                    /*
+                                     * One LoRA: replace, as before. Several:
+                                     * toggle, because the whole point is
+                                     * combining them.
+                                     */
+                                    if (multiLoraMax === 1) {
+                                      setSelectedLoraUrl(j.loraUrl)
+                                      if (def !== undefined) setLoraScale(def)
+                                      setLoraPickerOpen(false)
+                                      return
+                                    }
+                                    if (on) {
+                                      if (active) {
+                                        // Promote the next one so there is
+                                        // never a stack with an empty first
+                                        // slot.
+                                        const [next, ...rest] = extraLoras
+                                        setSelectedLoraUrl(next?.url ?? null)
+                                        setExtraLoras(rest)
+                                      } else {
+                                        setExtraLoras(prev => prev.filter(e => e.url !== j.loraUrl))
+                                      }
+                                      return
+                                    }
+                                    if (!selectedLoraUrl) {
+                                      setSelectedLoraUrl(j.loraUrl)
+                                      if (def !== undefined) setLoraScale(def)
+                                      return
+                                    }
+                                    if (extraLoras.length < multiLoraMax - 1) {
+                                      // 0.6 is the stacking default: three at
+                                      // full strength is three times the
+                                      // intended effect.
+                                      setExtraLoras(prev => [...prev, { url: j.loraUrl, scale: def ?? 0.6 }])
                                     }
                                   }}
-                                  className={`w-11 px-1 py-0.5 rounded bg-white/[0.04] border text-center font-mono text-[10px] focus:outline-none ${
-                                    def !== undefined
-                                      ? "border-violet-500/30 text-violet-200 focus:border-violet-400/60"
-                                      : "border-white/[0.08] text-slate-400 focus:border-white/30"}`}
-                                />
+                                  className="flex-1 min-w-0 flex items-center gap-2 text-left"
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${on ? "bg-violet-400" : "bg-white/15"}`} />
+                                  <span className={`truncate text-[11.5px] font-semibold ${on ? "text-violet-100" : "text-slate-300"}`}>
+                                    {j.name}
+                                  </span>
+                                  {/* Which slot it occupies, when several can. */}
+                                  {on && multiLoraMax > 1 && (
+                                    <span className="shrink-0 px-1 rounded bg-violet-500/20 text-violet-200 text-[9px] font-mono">
+                                      {active ? "1" : String(extraAt + 2)}
+                                    </span>
+                                  )}
+                                </button>
+                                {/* Its default scale, on the same row as the
+                                    name. Typed, not captured: see the commit
+                                    rule in commitLoraDefault. */}
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600">def</span>
+                                  <input
+                                    value={shown}
+                                    inputMode="decimal"
+                                    placeholder={"\u2014"}
+                                    onChange={e => setLoraDefaultDraft(d => ({ ...d, [j.loraUrl]: e.target.value }))}
+                                    onBlur={e => commitLoraDefault(j.loraUrl, e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                                      if (e.key === "Escape") {
+                                        setLoraDefaultDraft(d => { const n = { ...d }; delete n[j.loraUrl]; return n })
+                                        ;(e.target as HTMLInputElement).blur()
+                                      }
+                                    }}
+                                    className={`w-10 px-1 py-0.5 rounded-md bg-black/30 border text-center font-mono text-[10px] focus:outline-none transition-colors ${
+                                      def !== undefined
+                                        ? "border-violet-500/35 text-violet-200 focus:border-violet-400/70"
+                                        : "border-white/[0.08] text-slate-400 focus:border-white/30"
+                                    }`}
+                                  />
+                                </div>
+                                {j.custom && (
+                                  <button
+                                    title="Remove this LoRA from your library"
+                                    onClick={() => {
+                                      // DELETE is owner-checked server-side; the
+                                      // id is the row id now, not a localStorage
+                                      // timestamp.
+                                      void fetch(`/api/user/loras?id=${j.id}`, { method: "DELETE" }).catch(() => {})
+                                      if (selectedLoraUrl === j.loraUrl) setSelectedLoraUrl(null)
+                                      setExtraLoras(prev => prev.filter(e => e.url !== j.loraUrl))
+                                      setLoraJobs(prev => prev.filter(p => p.loraUrl !== j.loraUrl))
+                                    }}
+                                    className="shrink-0 text-slate-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                                  >
+                                    <X size={11} />
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Everything this LoRA knows about itself, as
+                                  chips rather than stacked sentences. */}
+                              <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2">
+                                {j.triggerWord && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300/90 text-[9px] font-mono">
+                                    {j.triggerWord}
+                                  </span>
+                                )}
+                                {j.trainedCrop && (
+                                  <span className={`px-1.5 py-0.5 rounded border text-[9px] font-mono ${
+                                    small
+                                      ? "bg-amber-500/10 border-amber-500/25 text-amber-300/90"
+                                      : "bg-white/[0.04] border-white/[0.08] text-slate-500"
+                                  }`}>
+                                    {j.trainedCrop}{shape && ` \u00b7 ${shape}`}{small && " \u00b7 small"}
+                                  </span>
+                                )}
+                                {j.custom && (
+                                  <span className="px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.08] text-slate-500 text-[9px] font-mono">
+                                    uploaded
+                                  </span>
+                                )}
                                 {/* Dialled in on the slider and worth keeping. */}
                                 {cur !== undefined && cur !== def && (
                                   <button
                                     title={`Always load this LoRA at ${cur.toFixed(2)}`}
                                     onClick={() => commitLoraDefault(j.loraUrl, String(cur))}
-                                    className="text-[10px] font-mono text-slate-500 hover:text-violet-300 transition-colors"
+                                    className="ml-auto px-1.5 py-0.5 rounded border border-violet-500/25 text-violet-300/80 hover:text-violet-200 hover:border-violet-400/50 text-[9px] font-mono transition-colors"
                                   >
                                     use {cur.toFixed(2)}
                                   </button>
                                 )}
                               </div>
-                            )
-                          })()}
-                        </div>
-                      ))}
-                      <div className="border-t border-white/[0.06] mt-1 pt-1">
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      <div className="border-t border-white/[0.06] shrink-0">
                         {!showAddLora ? (
                           <button
                             onClick={() => { setShowAddLora(true); setNewLoraName(""); setNewLoraUrl("") }}
