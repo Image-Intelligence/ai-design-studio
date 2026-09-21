@@ -19865,14 +19865,36 @@ function PromptBox({
     // concurrently, and clock-based ids collide within a millisecond — which
     // would produce duplicate React keys and slots that overwrite each other.
     const slotIds = Array.from({ length: count }, (_, i) => `slot-${nextTempFeedId()}-${i}`)
+    /*
+     * The run's own settings, carried from launch.
+     *
+     * The saved row records these too, but not until the webhook writes it, so
+     * until a reload the panel had nothing to read and an in-session tile
+     * showed no settings at all. Held under videoMetadata because that is
+     * where the server keeps them and where the panel already looks.
+     */
+    const runSettings: Record<string, unknown> = {
+      ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}),
+      ...(modelTakesLora && selectedLoraUrl ? {
+        loraUrl: selectedLoraUrl,
+        loraName: loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name,
+        loraScale,
+      } : {}),
+      // Only edits have one, matching what the server records.
+      ...(model.id.startsWith("ideogram-v4") && permanentRefUrls.length > 0
+        ? { refStrength: ideogramStrength } : {}),
+    }
     slotIds.forEach(sid => onAddPending({
       slotId: sid, status: "loading", prompt: currentPrompt, modelId: model.apiId,
       aspectRatio, quality, referenceImageUrls: permanentRefUrls,
-      // Carried on the slot so the tile can name the renderer while it is
-      // still generating — the saved row does not exist yet, and with two
-      // renderers running side by side "which one is this?" is the whole
-      // question you want answered at that moment.
-      ...(model.id === "gpt-image-2.5" ? { videoMetadata: { gptVariant } } : {}),
+      // Carried on the slot so the tile can name the renderer and its
+      // settings while it is still generating — the saved row does not exist
+      // yet, and with two renderers running side by side "which one is this?"
+      // is the whole question you want answered at that moment.
+      //
+      // Spread only when non-empty: an empty object is truthy, and the
+      // failed-slot path tests `slot.videoMetadata || update.videoMetadata`.
+      ...(Object.keys(runSettings).length > 0 ? { videoMetadata: runSettings } : {}),
     }))
     const slotId = slotIds[0] // alias for single-image paths
 
@@ -27239,7 +27261,31 @@ export default function PortalV2Page() {
           : s)
       })
     } else {
-      setPendingSlots(p => p.map(s => s.slotId === slotId ? { ...s, ...update } : s))
+      setPendingSlots(p => p.map(s => {
+        if (s.slotId !== slotId) return s
+        /*
+         * A finished image inherits the slot's settings.
+         *
+         * Three paths fill a slot - the fal poller, the queue claimer and the
+         * nb2 harvester - and each rebuilds the item field by field from a
+         * different source, so none of them carries the LoRA or the reference
+         * strength. Merging here fixes all three at once and cannot drift,
+         * where patching three mappings would. The image's own values win:
+         * the server knows better than the launch settings if it recorded
+         * anything.
+         */
+        const slotRunSettings = s.videoMetadata as Record<string, unknown> | undefined
+        if (update.doneImage && slotRunSettings) {
+          update = {
+            ...update,
+            doneImage: {
+              ...update.doneImage,
+              videoMetadata: { ...slotRunSettings, ...(update.doneImage.videoMetadata ?? {}) },
+            },
+          }
+        }
+        return { ...s, ...update }
+      }))
     }
   }, [])
   const handleRemovePending = useCallback((slotId: string) => {
