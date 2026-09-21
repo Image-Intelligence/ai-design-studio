@@ -9327,7 +9327,11 @@ function ImageDetailModal({
   const panelRefStrength = num(image.refStrength, vm.refStrength)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
-  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality)
+  /*
+   * ...and for anything carrying a reference strength, which would otherwise
+   * be recorded, derived, and then hidden behind a row that never rendered.
+   */
+  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality || panelRefStrength !== null)
   const formattedDate = image.createdAt
     ? new Date(image.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : null
@@ -9677,7 +9681,19 @@ function ImageDetailModal({
                           {image.quality.toUpperCase()}
                         </span>
                       )}
-                      {!image.aspectRatio && !image.quality && (
+                      {/* REF STRENGTH CHIP — how far an edit was allowed to
+                          depart from its reference. It sits here, beside the
+                          other settings and the LoRA scale, because that is
+                          where a setting is looked for; it spent a while on
+                          the References heading instead, where nobody found
+                          it. Only edits have one. */}
+                      {panelRefStrength !== null && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/25 text-violet-200 text-[11px] font-mono">
+                          <span className="text-violet-300/60">ref</span>
+                          {panelRefStrength.toFixed(2)}
+                        </span>
+                      )}
+                      {!image.aspectRatio && !image.quality && panelRefStrength === null && (
                         <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
                       )}
                     </>
@@ -9703,12 +9719,6 @@ function ImageDetailModal({
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">
                   References ({image.referenceImageUrls.length})
-                  {/* How far the edit was allowed to move from them. */}
-                  {panelRefStrength !== null && (
-                    <span className="ml-1.5 normal-case tracking-normal text-slate-500">
-                      strength {panelRefStrength.toFixed(2)}
-                    </span>
-                  )}
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {image.referenceImageUrls.map((url, i) => (
