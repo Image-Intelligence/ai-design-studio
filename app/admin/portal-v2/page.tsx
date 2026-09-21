@@ -6085,6 +6085,7 @@ function RefDropdown({
   onUploadUrls,
   onDelete,
   onDeleteMultiple,
+  onDuplicate,
   onClearAll,
   onActivate,
   onDeactivate,
@@ -6116,6 +6117,8 @@ function RefDropdown({
   onUploadUrls?: (items: { url: string }[], folderId: number | null) => Promise<unknown>
   onDelete: (id: string) => void
   onDeleteMultiple: (ids: string[]) => void
+  /** Copy the selection. Resolves to what went wrong, or null. */
+  onDuplicate?: (ids: string[]) => Promise<string | null>
   onClearAll: () => void
   onActivate: (id: string) => void
   onDeactivate: (id: string) => void
@@ -6181,6 +6184,26 @@ function RefDropdown({
     setTimeout(() => setDownloadingRefs("idle"), 3000)
   }
   const [selectedForDelete, setSelectedForDelete] = useState<Set<string>>(new Set())
+  // "working" | "done" | an error to show. Same shape as the download button,
+  // which is the neighbour it will be read against.
+  const [duplicating, setDuplicating] = useState<"idle" | "working" | "done">("idle")
+  const [duplicateError, setDuplicateError] = useState<string | null>(null)
+  async function handleDuplicateSelected() {
+    if (!onDuplicate || selectedForDelete.size === 0 || duplicating === "working") return
+    setDuplicating("working")
+    setDuplicateError(null)
+    const problem = await onDuplicate([...selectedForDelete])
+    if (problem) {
+      setDuplicating("idle")
+      setDuplicateError(problem)
+      return
+    }
+    // Leave select mode on but drop the selection: the copies are what you
+    // want to act on next, not the originals you just copied.
+    setSelectedForDelete(new Set())
+    setDuplicating("done")
+    setTimeout(() => setDuplicating("idle"), 1600)
+  }
   // Batch staging — uncapped, and an image may appear in any number of batches
   const [staged, setStaged] = useState<Set<string>>(new Set())
   const commitBatch = (mode: "one" | "each") => {
@@ -6971,6 +6994,9 @@ function RefDropdown({
           </div>
 
           {/* Select mode action bar */}
+          {selectMode && duplicateError && (
+            <p className="px-3 pt-2 text-[10px] leading-snug text-rose-300">{duplicateError}</p>
+          )}
           {selectMode && (
             <div className="px-3 py-2.5 border-t border-white/5 flex items-center justify-between gap-2">
               <span className="text-[11px] text-slate-400">
@@ -6999,6 +7025,20 @@ function RefDropdown({
                   {downloadingRefs === "zipping" ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
                   {downloadingRefs === "done" ? "Saved!" : downloadingRefs === "zipping" ? "Zipping…" : "Download"}
                 </button>
+                {onDuplicate && (
+                  <button
+                    onClick={handleDuplicateSelected}
+                    disabled={selectedForDelete.size === 0 || duplicating === "working"}
+                    title="Make a copy of each selected reference, with its folder and layers"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all ${
+                      duplicating === "done"
+                        ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
+                        : "bg-violet-500/10 border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:border-violet-500/40"}`}
+                  >
+                    {duplicating === "working" ? <Loader2 size={11} className="animate-spin" /> : <Copy size={11} />}
+                    {duplicating === "done" ? "Copied!" : duplicating === "working" ? "Copying\u2026" : "Duplicate"}
+                  </button>
+                )}
                 <button
                   onClick={handleDeleteSelected}
                   disabled={selectedForDelete.size === 0}
@@ -29705,6 +29745,36 @@ export default function PortalV2Page() {
     if (numeric.length > 0) fetch(`/api/user/references?ids=${numeric.join(",")}`, { method: "DELETE" }).catch(() => {})
   }, [])
 
+  /*
+   * Copy references, server-side, so the copies carry their layer stacks.
+   *
+   * The new rows are appended from the response rather than refetched: the
+   * library is already in state and a refetch would re-sign every thumbnail
+   * URL in it, which is a visible reload of the whole panel for an action that
+   * added two rows.
+   */
+  const handleLibraryDuplicate = useCallback(async (ids: string[]): Promise<string | null> => {
+    const numeric = ids.filter(id => /^\d+$/.test(id)).map(Number)
+    if (numeric.length === 0) return "Those references cannot be copied \u2014 they are not saved to your library yet."
+    try {
+      const res = await fetch("/api/user/references/duplicate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: numeric }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) return data?.error ?? `Couldn't copy those (${res.status}).`
+      const made = (data.references ?? []) as { id: number; url: string; folderId: number | null }[]
+      if (made.length === 0) return "Nothing was copied."
+      setRefLibrary(prev => [...prev, ...made.map(r => ({
+        id: String(r.id), url: r.url, folderId: r.folderId ?? null,
+      }))])
+      return null
+    } catch {
+      return "Couldn't reach the server."
+    }
+  }, [])
+
   const handleLibraryClearAll = useCallback(() => {
     setRefLibrary([])
     setActiveRefIds([])
@@ -30964,6 +31034,7 @@ function employeePending(
               onUploadUrls={handleLibraryUploadUrls}
               onDelete={handleLibraryDelete}
               onDeleteMultiple={handleLibraryDeleteMultiple}
+              onDuplicate={handleLibraryDuplicate}
               onClearAll={handleLibraryClearAll}
               onActivate={videoRefsEnabled ? handleActivateRefVideo : motionRefsEnabled ? handleActivateRefMotion : handleActivateRefImageOnly}
               onDeactivate={videoRefsEnabled ? handleDeactivateRefVideo : motionRefsEnabled ? handleDeactivateRefMotion : handleDeactivateRef}
