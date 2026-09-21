@@ -28454,12 +28454,27 @@ export default function PortalV2Page() {
   const userRef = useRef<UserData | null>(null)
   useEffect(() => { userRef.current = user }, [user])
 
-  // Polling is keyed by queueId so the same DB job can never be double-polled
-  const pollingIntervals = useRef<Record<number, ReturnType<typeof setInterval>>>({})
+  /*
+   * Every queued job being watched, and the ONE ticker watching them.
+   *
+   * This was an interval per job, each fetching the whole job list and
+   * filtering out its own row. At 131 batches that is 131 timers and ~44
+   * requests a second, all asking the same question and getting the same
+   * answer - which saturates the server with its own status traffic and
+   * starves the feed of the requests it needs to draw anything.
+   *
+   * Keyed by queueId still, so the same job can never be double-watched.
+   */
+  const pollWatchers = useRef<Map<number, { slotId: string; prompt: string }>>(new Map())
+  const sharedPollTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   /** How many times a finished job has looked for its image and not found it yet. */
   const claimAttempts = useRef<Record<number, number>>({})
   const completedQueueIds = useRef<Set<number>>(new Set())
-  useEffect(() => () => { Object.values(pollingIntervals.current).forEach(clearInterval) }, [])
+  useEffect(() => () => {
+    if (sharedPollTimer.current) clearInterval(sharedPollTimer.current)
+    sharedPollTimer.current = null
+    pollWatchers.current.clear()
+  }, [])
   // NB2 polling keyed by requestId (not DB-backed) — same pattern as videoPollingIntervals
   const nb2PollingIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({})
   useEffect(() => () => {
@@ -28915,129 +28930,161 @@ export default function PortalV2Page() {
     })
   }, [videoPendingSlots, startQueuePollingForVideoSlot])
 
+  /**
+   * Watch one queued job. Registers it with the shared ticker below.
+   *
+   * The signature is unchanged so the three call sites do not have to care
+   * that there is no longer a timer per job.
+   */
   const startPolling = useCallback((slotId: string, queueId: number, prompt: string) => {
-    if (pollingIntervals.current[queueId]) return // already watching this job
-    const interval = setInterval(async () => {
+    if (pollWatchers.current.has(queueId)) return // already watching this job
+    pollWatchers.current.set(queueId, { slotId, prompt })
+    if (sharedPollTimer.current) return
+
+    const tick = async () => {
+      if (pollWatchers.current.size === 0) {
+        if (sharedPollTimer.current) clearInterval(sharedPollTimer.current)
+        sharedPollTimer.current = null
+        return
+      }
       try {
+        // ONE status request for every job being watched.
         const res = await fetch("/api/prompting-studio/jobs?source=main-scanner")
         const data = await res.json()
-        const job = data.jobs?.find((j: any) => j.id === queueId)
-        if (!job) return
-        if (job.status === "completed") {
-          if (completedQueueIds.current.has(queueId)) {
-            clearInterval(interval)
-            delete pollingIntervals.current[queueId]
-            return
-          }
+        const jobs: any[] = data.jobs ?? []
+        const byId = new Map<number, any>(jobs.map(j => [j.id, j]))
 
-          /*
-           * Claim THIS job's image, not whichever is newest.
-           *
-           * This used to fetch `limit=1` and take images[0]. With several jobs
-           * finishing within a few seconds of each other, two pollers both
-           * read the same newest row and both prepended it — one picture
-           * rendered twice while another never appeared at all. Matching on
-           * the fal request id is exact.
-           */
-          const imgRes = await fetch("/api/my-images?page=1&limit=20&type=image")
-          const imgData = await imgRes.json()
-          const list: any[] = imgData?.images ?? []
-
-          /*
-           * Two keys, because one of them is not available yet.
-           *
-           * falRequestId is the exact answer, but the row is written by the fal
-           * webhook — which is delivered to APP_URL, i.e. PRODUCTION — so until
-           * that deploy ships, every locally-observed row has it as null.
-           *
-           * The webhook also backdates the image to its queue row's timestamp
-           * (`createdAt: queueItem.createdAt`), so the two match to the
-           * millisecond. Verified against every completed job in the database.
-           * That works with the webhook as deployed today.
-           */
-          /*
-           * Best key first: the completed queue row records the ids of the
-           * rows it wrote. That is exact, it is written by the same handler
-           * that saved the image, and unlike falRequestId it is already
-           * present on every job this account has run.
-           */
-          const ownIds: number[] = Array.isArray((job.parameters as any)?.completedImageIds)
-            ? (job.parameters as any).completedImageIds.filter((n: any) => typeof n === "number")
-            : []
-          const jobMs = job.createdAt ? Date.parse(job.createdAt) : NaN
-          const claimed =
-            (ownIds.length > 0 && list.find(i => ownIds.includes(i.id)))
-            || (job.falRequestId && list.find(i => i.falRequestId && i.falRequestId === job.falRequestId))
-            || (Number.isFinite(jobMs) && list.find(i => Date.parse(i.createdAt) === jobMs))
-            || undefined
-
-          /*
-           * The webhook marks the job completed and writes the image in the
-           * same handler, so a poll can land between the two. Giving up here
-           * would blank the tile for a result that is a second away; try again
-           * on the next tick instead, and only stop hunting after ~30s.
-           */
-          if (!claimed) {
-            claimAttempts.current[queueId] = (claimAttempts.current[queueId] ?? 0) + 1
-            if (claimAttempts.current[queueId] < 10) return
-          }
-
-          clearInterval(interval)
-          delete pollingIntervals.current[queueId]
-          completedQueueIds.current.add(queueId)
-
-          /*
-           * Attach the renderer from the QUEUE ROW.
-           *
-           * The saved image gets this from the fal webhook — but the webhook
-           * is delivered to APP_URL, which is production, so on localhost the
-           * row is written by deployed code and comes back without it. The
-           * queue row is written by THIS server and records the endpoint that
-           * actually ran, so the panel can be right either way.
-           */
-          const endpoint = String((job.parameters as any)?.falEndpoint ?? "")
-          if (claimed && endpoint.includes("/gpt-image-2.5/")) {
-            claimed.videoMetadata = {
-              ...(claimed.videoMetadata ?? {}),
-              gptVariant: endpoint.includes("/flare/") ? "flare" : "sunburst",
-              gptQuality: (job.parameters as any)?.falQuality ?? undefined,
-              gptImageSize: (job.parameters as any)?.falImageSize ?? undefined,
-            }
-          }
-
-          if (claimed) {
-            /*
-             * Fill the slot IN PLACE rather than prepending a copy and
-             * deleting the card. The slot is what holds this generation's
-             * position in the feed — destroy it and the tile is rebuilt from
-             * the fresh image, which sorts by when it finished rather than
-             * when it was queued, and nothing is left to suppress the
-             * duplicate.
-             */
-            handleUpdatePending(slotId, { status: "done", doneImage: claimed })
-          } else {
-            handleRemovePending(slotId)
-          }
-          const uid = userRef.current?.id
-          if (uid) {
-            const ticketRes = await fetch(`/api/user/tickets?userId=${uid}`)
-            const ticketData = await ticketRes.json()
-            if (ticketData.success) handleBalanceChange(ticketData.balance)
-          }
-        } else if (job.status === "failed") {
-          clearInterval(interval)
-          delete pollingIntervals.current[queueId]
-          handleUpdatePending(slotId, { status: "failed", error: job.errorMessage || "Generation failed" })
-          const uid = userRef.current?.id
-          if (uid) {
-            const ticketRes = await fetch(`/api/user/tickets?userId=${uid}`)
-            const ticketData = await ticketRes.json()
-            if (ticketData.success) handleBalanceChange(ticketData.balance)
+        type Finished = { queueId: number; slotId: string; job: any }
+        const finished: Finished[] = []
+        const failed: Finished[] = []
+        for (const [queueId, w] of pollWatchers.current) {
+          const job = byId.get(queueId)
+          if (!job) continue
+          if (job.status === "completed") {
+            if (completedQueueIds.current.has(queueId)) { pollWatchers.current.delete(queueId); continue }
+            finished.push({ queueId, slotId: w.slotId, job })
+          } else if (job.status === "failed") {
+            failed.push({ queueId, slotId: w.slotId, job })
           }
         }
+
+        for (const f of failed) {
+          pollWatchers.current.delete(f.queueId)
+          handleUpdatePending(f.slotId, { status: "failed", error: f.job.errorMessage || "Generation failed" })
+        }
+
+        if (finished.length > 0) {
+          /*
+           * Claim every finished job's image in ONE request.
+           *
+           * Each poller used to fetch /api/my-images?page=1&limit=20 for
+           * itself - offset mode, which also runs a count. The by-id fast
+           * path takes all the ids at once and skips the count; the rows a
+           * completed queue row names are exact and already present on every
+           * job this account has run.
+           */
+          const wantedIds = new Set<number>()
+          for (const f of finished) {
+            const own = (f.job.parameters as any)?.completedImageIds
+            if (Array.isArray(own)) for (const n of own) if (typeof n === "number") wantedIds.add(n)
+          }
+          let list: any[] = []
+          if (wantedIds.size > 0) {
+            // The route slices `ids` at 60, so ask in sixties rather than
+            // letting the surplus fall off the end.
+            const ID_PAGE = 60
+            const all = [...wantedIds]
+            for (let i = 0; i < all.length; i += ID_PAGE) {
+              const r = await fetch(`/api/my-images?ids=${all.slice(i, i + ID_PAGE).join(",")}`)
+              list = [...list, ...(((await r.json())?.images ?? []) as any[])]
+            }
+          }
+          // Older jobs recorded no ids, and are matched by fal request id or
+          // by their backdated timestamp - which needs a recent window rather
+          // than a list of ids.
+          if (finished.some(f => !Array.isArray((f.job.parameters as any)?.completedImageIds)
+            || (f.job.parameters as any).completedImageIds.length === 0)) {
+            const r = await fetch(`/api/my-images?page=1&limit=${Math.min(100, 20 + finished.length * 2)}&type=image`)
+            list = [...list, ...(((await r.json())?.images ?? []) as any[])]
+          }
+
+          let anySettled = false
+          for (const f of finished) {
+            const { queueId, slotId, job } = f
+            const ownIds: number[] = Array.isArray((job.parameters as any)?.completedImageIds)
+              ? (job.parameters as any).completedImageIds.filter((n: any) => typeof n === "number")
+              : []
+            const jobMs = job.createdAt ? Date.parse(job.createdAt) : NaN
+            /*
+             * Best key first: the completed queue row records the ids of the
+             * rows it wrote. Then the fal request id, then the backdated
+             * timestamp - the webhook stamps the image with its queue row's
+             * createdAt, so the two match to the millisecond.
+             */
+            const claimed =
+              (ownIds.length > 0 && list.find(i => ownIds.includes(i.id)))
+              || (job.falRequestId && list.find(i => i.falRequestId && i.falRequestId === job.falRequestId))
+              || (Number.isFinite(jobMs) && list.find(i => Date.parse(i.createdAt) === jobMs))
+              || undefined
+
+            /*
+             * The webhook marks the job completed and writes the image in the
+             * same handler, so a poll can land between the two. Giving up here
+             * would blank the tile for a result that is a second away; try
+             * again on the next tick instead, and only stop after ~30s.
+             */
+            if (!claimed) {
+              claimAttempts.current[queueId] = (claimAttempts.current[queueId] ?? 0) + 1
+              if (claimAttempts.current[queueId] < 10) continue
+            }
+
+            pollWatchers.current.delete(queueId)
+            completedQueueIds.current.add(queueId)
+            anySettled = true
+
+            /*
+             * Attach the renderer from the QUEUE ROW. The saved image gets
+             * this from the fal webhook, which is delivered to APP_URL - i.e.
+             * production - so on localhost the row comes back without it.
+             */
+            const endpoint = String((job.parameters as any)?.falEndpoint ?? "")
+            if (claimed && endpoint.includes("/gpt-image-2.5/")) {
+              claimed.videoMetadata = {
+                ...(claimed.videoMetadata ?? {}),
+                gptVariant: endpoint.includes("/flare/") ? "flare" : "sunburst",
+                gptQuality: (job.parameters as any)?.falQuality ?? undefined,
+                gptImageSize: (job.parameters as any)?.falImageSize ?? undefined,
+              }
+            }
+
+            if (claimed) {
+              /*
+               * Fill the slot IN PLACE rather than prepending a copy and
+               * deleting the card. The slot is what holds this generation's
+               * position in the feed.
+               */
+              handleUpdatePending(slotId, { status: "done", doneImage: claimed })
+            } else {
+              handleRemovePending(slotId)
+            }
+          }
+          if (!anySettled && failed.length === 0) return
+        } else if (failed.length === 0) {
+          return
+        }
+
+        // Once per tick, not once per job: a hundred finishing together used
+        // to mean a hundred balance reads of the same number.
+        const uid = userRef.current?.id
+        if (uid) {
+          const ticketRes = await fetch(`/api/user/tickets?userId=${uid}`)
+          const ticketData = await ticketRes.json()
+          if (ticketData.success) handleBalanceChange(ticketData.balance)
+        }
       } catch { /* ignore transient polling errors */ }
-    }, 3000)
-    pollingIntervals.current[queueId] = interval
+    }
+
+    sharedPollTimer.current = setInterval(tick, 3000)
   }, [handlePrependImage, handleRemovePending, handleUpdatePending, handleBalanceChange])
 
   // Start/resume polling whenever pending slots change (handles new generations + page refresh restore).
@@ -29330,7 +29377,7 @@ export default function PortalV2Page() {
             clearInterval(nb2PollingIntervals.current[j.falRequestId])
             delete nb2PollingIntervals.current[j.falRequestId]
           }
-          if (pollingIntervals.current[j.id]) { clearInterval(pollingIntervals.current[j.id]); delete pollingIntervals.current[j.id] }
+          pollWatchers.current.delete(j.id)
           if (queuePollingIntervals.current[j.id]) { clearInterval(queuePollingIntervals.current[j.id]); delete queuePollingIntervals.current[j.id] }
           if (j.status === "failed") {
             matching.forEach(s => handleUpdatePending(s.slotId, { status: "failed", error: j.errorMessage || "Generation failed" }))
@@ -30702,17 +30749,47 @@ export default function PortalV2Page() {
 
             const queuedImageSlots = currentSlots.filter(s => s.queueJobId && !s.nb2RequestId && !completedQueueSlotIds.has(s.slotId))
 
+            /*
+             * Slots this answer said nothing about.
+             *
+             * The rebuild below REPLACES the list, so anything missing from
+             * the jobs response disappears. That is right for work that
+             * finished - which is recorded separately, in completedQueueSlotIds
+             * and the nb2 done list - and wrong for everything else: a slow,
+             * partial or failed response is not evidence that a generation
+             * stopped existing. Under a large batch it is simply evidence that
+             * the server was busy, and dropping the tiles made it look like
+             * the run had been lost.
+             */
+            const accountedFor = new Set<string>([
+              ...slotAssignments.map(sa => sa.slotId),
+              ...localNb2Slots.map(s => s.slotId),
+              ...crossDeviceNb2Slots.map(s => s.slotId),
+              ...queuedImageSlots.map(s => s.slotId),
+            ])
+            const unheardOf = currentSlots.filter(s =>
+              s.status === "loading"
+              && !accountedFor.has(s.slotId)
+              && !completedQueueSlotIds.has(s.slotId)
+              && !(s.nb2RequestId && doneNb2Ids.has(s.nb2RequestId)))
+
             // Rebuild: queue-backed + local nb2 + cross-device nb2 + queued slots
             setPendingSlots(() => [
+              // Merged onto the stored slot, not built fresh: a four-key
+              // rebuild threw away queuedAtMs - which is what orders the feed,
+              // so restored tiles jumped to the front - along with the aspect
+              // ratio the tile reserves space with and the run's own settings.
               ...slotAssignments.map(sa => ({
+                ...(byQueueId.get(sa.queueId) ?? {}),
                 slotId: sa.slotId,
                 status: "loading" as const,
                 prompt: sa.prompt,
                 queueId: sa.queueId,
-              })),
+              } as PendingSlot)),
               ...localNb2Slots,
               ...crossDeviceNb2Slots,
               ...queuedImageSlots,
+              ...unheardOf,
             ])
 
             for (const sa of slotAssignments) {
