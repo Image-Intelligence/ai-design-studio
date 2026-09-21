@@ -18981,6 +18981,14 @@ function PromptBox({
    * LoRA's.
    */
   const [loraDefaults, setLoraDefaults] = useState<Record<string, { scale: number }>>({})
+  /*
+   * What is in each row's box WHILE it is being typed in.
+   *
+   * Without this the field reads from the saved value on every keystroke, so
+   * a half-typed "0." is parsed, rejected and rewritten under the cursor.
+   * Cleared on commit, at which point the saved value takes over again.
+   */
+  const [loraDefaultDraft, setLoraDefaultDraft] = useState<Record<string, string>>({})
   const loraDefaultsLoadedFor = useRef<number | null>(null)
   useEffect(() => {
     if (!userId || loraDefaultsLoadedFor.current === userId) return
@@ -19001,13 +19009,29 @@ function PromptBox({
       })
       .catch(() => { /* no defaults is a fine state to be in */ })
   }, [userId])
-  const saveLoraDefaults = useCallback((next: Record<string, { scale: number }>) => {
-    setLoraDefaults(next)
-    fetch("/api/user/preferences", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ loraDefaults: next }),
-    }).catch(() => { /* the next save retries; nothing is lost but the write */ })
+  /*
+   * Take what was typed. Empty means "no default"; anything unparseable or
+   * outside fal's 0-4 is discarded and the box falls back to what is stored,
+   * so a typo cannot silently become the scale every run uses.
+   */
+  const commitLoraDefault = useCallback((url: string, text: string) => {
+    setLoraDefaultDraft(d => { const n = { ...d }; delete n[url]; return n })
+    const trimmed = text.trim()
+    setLoraDefaults(prev => {
+      const next = { ...prev }
+      if (trimmed === "") delete next[url]
+      else {
+        const n = Number(trimmed)
+        if (!Number.isFinite(n) || n < 0 || n > 4) return prev
+        next[url] = { scale: Math.round(n * 100) / 100 }
+      }
+      fetch("/api/user/preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ loraDefaults: next }),
+      }).catch(() => { /* the next edit retries */ })
+      return next
+    })
   }, [])
   // fal's speed/fidelity trade-off. 'regular' is fal's own default on
   // z-image and FLUX 2, and what this route has always sent.
@@ -22587,7 +22611,8 @@ function PromptBox({
                         No LoRA
                       </button>
                       {loraJobs.map(j => (
-                        <div key={j.id} className="flex items-center group">
+                        <div key={j.id} className="group">
+                         <div className="flex items-center">
                           <button
                             onClick={() => {
                               /*
@@ -22650,53 +22675,7 @@ function PromptBox({
                                 </div>
                               )
                             })()}
-                            {loraDefaults[j.loraUrl] !== undefined && (
-                              <div className="text-[10px] mt-0.5 text-violet-400/70">
-                                loads at <span className="font-mono">{loraDefaults[j.loraUrl].scale.toFixed(2)}</span>
-                              </div>
-                            )}
                           </button>
-                          {(() => {
-                            /*
-                             * Set or clear this LoRA's remembered scale.
-                             *
-                             * Only offered while the LoRA is actually selected,
-                             * because that is the only moment there is a
-                             * current scale to remember - "save the default"
-                             * on an unselected row would have to invent one.
-                             */
-                            const def = loraDefaults[j.loraUrl]?.scale
-                            const cur = selectedLoraUrl === j.loraUrl
-                              ? loraScale
-                              : extraLoras.find(e => e.url === j.loraUrl)?.scale
-                            if (cur !== undefined && cur !== def) {
-                              return (
-                                <button
-                                  title={`Always load this LoRA at ${cur.toFixed(2)}`}
-                                  onClick={() => saveLoraDefaults({ ...loraDefaults, [j.loraUrl]: { scale: cur } })}
-                                  className="px-2 py-2 text-[10px] font-mono text-slate-500 hover:text-violet-300 transition-colors whitespace-nowrap"
-                                >
-                                  set {cur.toFixed(2)}
-                                </button>
-                              )
-                            }
-                            if (def !== undefined) {
-                              return (
-                                <button
-                                  title="Forget this LoRA's default scale"
-                                  onClick={() => {
-                                    const next = { ...loraDefaults }
-                                    delete next[j.loraUrl]
-                                    saveLoraDefaults(next)
-                                  }}
-                                  className="px-2 py-2 text-slate-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                                >
-                                  <X size={10} />
-                                </button>
-                              )
-                            }
-                            return null
-                          })()}
                           {j.custom && (
                             <button
                               onClick={() => {
@@ -22712,6 +22691,50 @@ function PromptBox({
                               <X size={10} />
                             </button>
                           )}
+                         </div>
+                          {/* Its default scale — always editable, whether or
+                              not this LoRA is selected, so every one can be set
+                              from here rather than by selecting each in turn. */}
+                          {(() => {
+                            const def = loraDefaults[j.loraUrl]?.scale
+                            const cur = selectedLoraUrl === j.loraUrl
+                              ? loraScale
+                              : extraLoras.find(e => e.url === j.loraUrl)?.scale
+                            const shown = loraDefaultDraft[j.loraUrl] ?? (def !== undefined ? String(def) : "")
+                            return (
+                              <div className="flex items-center gap-1.5 px-3 pb-1.5 text-[10px] text-slate-600">
+                                loads at
+                                <input
+                                  value={shown}
+                                  inputMode="decimal"
+                                  placeholder="—"
+                                  onChange={e => setLoraDefaultDraft(d => ({ ...d, [j.loraUrl]: e.target.value }))}
+                                  onBlur={e => commitLoraDefault(j.loraUrl, e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                                    if (e.key === "Escape") {
+                                      setLoraDefaultDraft(d => { const n = { ...d }; delete n[j.loraUrl]; return n })
+                                      ;(e.target as HTMLInputElement).blur()
+                                    }
+                                  }}
+                                  className={`w-11 px-1 py-0.5 rounded bg-white/[0.04] border text-center font-mono text-[10px] focus:outline-none ${
+                                    def !== undefined
+                                      ? "border-violet-500/30 text-violet-200 focus:border-violet-400/60"
+                                      : "border-white/[0.08] text-slate-400 focus:border-white/30"}`}
+                                />
+                                {/* Dialled in on the slider and worth keeping. */}
+                                {cur !== undefined && cur !== def && (
+                                  <button
+                                    title={`Always load this LoRA at ${cur.toFixed(2)}`}
+                                    onClick={() => commitLoraDefault(j.loraUrl, String(cur))}
+                                    className="text-[10px] font-mono text-slate-500 hover:text-violet-300 transition-colors"
+                                  >
+                                    use {cur.toFixed(2)}
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })()}
                         </div>
                       ))}
                       <div className="border-t border-white/[0.06] mt-1 pt-1">
