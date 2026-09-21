@@ -2633,6 +2633,40 @@ function sameJob(a: PendingSlot, b: PendingSlot): boolean {
   return !!a.nb2RequestId && a.nb2RequestId === b.nb2RequestId
 }
 
+/**
+ * Every identity a feed item can be recognised by, including the object path.
+ *
+ * The same generation reaches the feed under different ids and different urls
+ * depending on which path got there first: a placeholder id from a status
+ * poll versus the saved row's id, and an unsigned bucket url versus the same
+ * object served signed through the Worker. Only the path survives both, so
+ * raw equality alone will always miss - which is how one picture ends up
+ * drawn twice.
+ *
+ * Empty urls are skipped deliberately: a failed tile has none, and adding ""
+ * would make every such tile match every other.
+ */
+function itemHeldKeys(items: ImageItem[]): { ids: Set<number>; urls: Set<string>; keys: Set<string> } {
+  const ids = new Set<number>()
+  const urls = new Set<string>()
+  const keys = new Set<string>()
+  for (const i of items) {
+    if (typeof i.id === "number") ids.add(i.id)
+    if (i.imageUrl) { urls.add(i.imageUrl); keys.add(mediaPathKey(i.imageUrl)) }
+    if (i.r2Key) keys.add(mediaPathKey(i.r2Key))
+  }
+  return { ids, urls, keys }
+}
+
+/** Is this item the same generation as one of those? */
+function sameAsAny(held: { ids: Set<number>; urls: Set<string>; keys: Set<string> }, img: ImageItem): boolean {
+  if (typeof img.id === "number" && held.ids.has(img.id)) return true
+  if (img.imageUrl && held.urls.has(img.imageUrl)) return true
+  if (img.imageUrl && held.keys.has(mediaPathKey(img.imageUrl))) return true
+  if (img.r2Key && held.keys.has(mediaPathKey(img.r2Key))) return true
+  return false
+}
+
 function slotHeldKeys(slots: PendingSlot[]): { ids: Set<number>; urls: Set<string>; keys: Set<string> } {
   const ids = new Set<number>()
   const urls = new Set<string>()
@@ -10609,18 +10643,17 @@ function ImageGrid({
       onNavListChange(images)
       return
     }
-    const freshIds = new Set(freshImages.map(i => i.id))
     const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
-    // Match on URL as well as id: a just-finished generation sits in
-    // freshImages under a TEMPORARY id while the DB row it was saved to has a
-    // real one, so an id-only check rendered the same picture twice.
-    const freshUrls = new Set(freshImages.map(i => i.imageUrl).filter(Boolean))
+    /*
+     * A just-finished generation sits in freshImages under a temporary id
+     * while the row it was saved to has a real one - and, since media is
+     * signed, under a different url as well. Matching on the object path is
+     * what catches both.
+     */
+    const fresh = itemHeldKeys(freshImages)
     // A generation still held by its own "done" slot is already on screen.
     const held = slotHeldKeys(pendingSlots)
-    const dbFiltered = images.filter(img =>
-      !freshIds.has(img.id) && !freshUrls.has(img.imageUrl)
-      && !held.ids.has(img.id) && !held.urls.has(img.imageUrl)
-      && !(img.imageUrl && held.keys.has(mediaPathKey(img.imageUrl))))
+    const dbFiltered = images.filter(img => !sameAsAny(fresh, img) && !sameAsAny(held, img))
     // Fails paginate WITH the images: only merge errors newer than the oldest
     // loaded image while more pages remain — older errors reveal themselves as
     // the user scrolls, instead of stacking into a wall at the bottom that
@@ -10773,10 +10806,7 @@ function ImageGrid({
            */
           const heldByHead = slotHeldKeys(pendingSlots)
           freshImages.forEach((img) => {
-            if (img.imageUrl && heldByHead.urls.has(img.imageUrl)) return
-            if (typeof img.id === "number" && heldByHead.ids.has(img.id)) return
-            if (img.r2Key && heldByHead.keys.has(mediaPathKey(img.r2Key))) return
-            if (img.imageUrl && heldByHead.keys.has(mediaPathKey(img.imageUrl))) return
+            if (sameAsAny(heldByHead, img)) return
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
@@ -10809,17 +10839,12 @@ function ImageGrid({
           }))
         } else {
           // DB images merged with restored fails, sorted by createdAt so fails land in place
-          const freshIds = new Set(freshImages.map(i => i.id))
           const liveFailIds = new Set(freshImages.filter(i => i.failed).map(i => i.id))
-          // See the nav-list effect: URL match kills the temp-id/real-id double
-          const freshUrls = new Set(freshImages.map(i => i.imageUrl).filter(Boolean))
-          // Same rule as the head: a slot showing its finished image owns that
-          // generation, so the body must not draw it again.
+          // Same rule as the nav list, and as the head: one generation, one
+          // tile, whichever identity each copy happens to carry.
+          const fresh = itemHeldKeys(freshImages)
           const held = slotHeldKeys(pendingSlots)
-          const dbFiltered = images.filter(img =>
-            !freshIds.has(img.id) && !freshUrls.has(img.imageUrl)
-            && !held.ids.has(img.id) && !held.urls.has(img.imageUrl)
-            && !(img.imageUrl && held.keys.has(mediaPathKey(img.imageUrl))))
+          const dbFiltered = images.filter(img => !sameAsAny(fresh, img) && !sameAsAny(held, img))
           // Same pagination gate as the nav-list effect (see comment there)
           const failFrontier = hasMoreRef.current && images.length > 0
             ? Math.min(...images.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
@@ -27576,7 +27601,13 @@ export default function PortalV2Page() {
   // multiple polling intervals complete and each fetches /api/my-images
   const handlePrependImage = useCallback((img: ImageItem) => {
     setFreshImages(p => {
-      if (p.some(i => i.id === img.id || i.imageUrl === img.imageUrl)) return p
+      /*
+       * By path as well as by id and url. The same generation arrives here
+       * twice - from the status poll under a placeholder id and an unsigned
+       * url, and from the recovery poll under the saved row's id and a signed
+       * one - and raw equality recognises neither as the other.
+       */
+      if (sameAsAny(itemHeldKeys(p), img)) return p
       // (Generations no longer auto-append themselves as layers on the refs
       // that guided them — the gen-over-ref canvas is opt-in now, via the
       // info panel's Edit button. Auto layers polluted the ref editor.)
