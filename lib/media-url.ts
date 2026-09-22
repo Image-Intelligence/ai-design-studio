@@ -64,6 +64,22 @@ export function isPrivateMedia(value: unknown): value is string {
   return typeof value === 'string' && !!LEGACY_PREFIX && value.startsWith(`${LEGACY_PREFIX}/`)
 }
 
+/**
+ * True for anything that is ours to sign: the stored form, or a link already
+ * on the Worker host - signed or not, fresh or expired.
+ *
+ * Signed links get persisted. Not by design: a client is handed one, hands it
+ * back in a request, and a writer somewhere stores it as it came. Once its
+ * hour is up it is a dead string in the database, and every reader that
+ * passed it through as "already signed" showed a broken image for an object
+ * that was there all along. Treating the Worker host as ours means it is
+ * canonicalised and re-signed on every read instead.
+ */
+export function isOurMedia(value: unknown): value is string {
+  return isPrivateMedia(value)
+    || (typeof value === 'string' && !!MEDIA_HOST && value.startsWith(`${MEDIA_HOST}/`))
+}
+
 /** The R2 object key behind a stored URL, a signed URL, or a bare key. */
 export function keyFromUrl(value: string): string {
   let v = value
@@ -83,7 +99,9 @@ export function keyFromUrl(value: string): string {
  */
 export function signMediaUrl(stored: string, ttlSeconds = BROWSER_TTL): string {
   if (!stored || !MEDIA_HOST || !SECRET) return stored
-  if (!isPrivateMedia(stored)) return stored
+  // A Worker-host link is re-signed rather than returned as-is: keyFromUrl
+  // drops its query, so an expired signature is simply replaced.
+  if (!isOurMedia(stored)) return stored
   const key = keyFromUrl(stored)
   const exp = bucketedExpiry(ttlSeconds)
   return `${MEDIA_HOST}/${key}?exp=${exp}&sig=${sign(key, exp)}`
@@ -99,7 +117,7 @@ export function signMediaUrl(stored: string, ttlSeconds = BROWSER_TTL): string {
  * the safe thing automatic.
  */
 export function signPayload<T>(value: T, ttlSeconds = BROWSER_TTL): T {
-  if (isPrivateMedia(value)) return signMediaUrl(value, ttlSeconds) as unknown as T
+  if (isOurMedia(value)) return signMediaUrl(value, ttlSeconds) as unknown as T
   if (Array.isArray(value)) return value.map(v => signPayload(v, ttlSeconds)) as unknown as T
   if (value && typeof value === 'object') {
     if (value instanceof Date) return value

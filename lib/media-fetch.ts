@@ -1,4 +1,4 @@
-import { isPrivateMedia, signMediaUrl, FAL_TTL } from './media-url'
+import { isPrivateMedia, isOurMedia, signMediaUrl, FAL_TTL } from './media-url'
 
 /**
  * Fetching our own private media from the server.
@@ -22,7 +22,9 @@ const MARK = '__privateMediaPatched'
 
 /** Sign our own URLs, then fetch. No global state involved. */
 export function fetchMedia(input: string, init?: RequestInit): Promise<Response> {
-  return fetch(isPrivateMedia(input) ? signMediaUrl(input, FAL_TTL) : input, init)
+  // isOurMedia, not isPrivateMedia: a stored Worker link with a dead
+  // signature is re-signed here too, rather than fetched as-is into a 403.
+  return fetch(isOurMedia(input) ? signMediaUrl(input, FAL_TTL) : input, init)
 }
 
 /**
