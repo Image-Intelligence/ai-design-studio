@@ -9,6 +9,7 @@ import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { enforceContentFilter } from '@/lib/content-filter'
+import { canonicalisePayload } from '@/lib/media-url'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Admin only' }, { status: 403 })
     }
 
-    const { prompt, aspect_ratio = '1:1', loras } = await req.json()
+    const { prompt, aspect_ratio = '1:1', loras } = canonicalisePayload(await req.json())
     if (!prompt?.trim()) return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
 
     // Only OUR trained LoRA artifacts may be loaded — never arbitrary URLs

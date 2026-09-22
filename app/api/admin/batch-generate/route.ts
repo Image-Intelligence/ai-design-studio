@@ -7,6 +7,7 @@ import { promoteNextQueuedJob } from '@/lib/fal-queue'
 import { resolveFalImageModelSpec, buildFalImageInput } from '@/lib/fal-image-models'
 import { getModelById } from '@/config/ai-models.config'
 import { jsonPrivate } from '@/lib/api-json'
+import { canonicalisePayload } from '@/lib/media-url'
 
 // POST /api/admin/batch-generate
 //
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
 
   let body: any
   try {
-    body = await req.json()
+    body = canonicalisePayload(await req.json())
   } catch {
     return jsonPrivate({ error: 'Invalid JSON body' }, { status: 400 })
   }

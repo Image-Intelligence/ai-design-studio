@@ -6,6 +6,7 @@ import prisma from '@/lib/prisma'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { enforceContentFilter } from '@/lib/content-filter'
+import { canonicalisePayload } from '@/lib/media-url'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
-    const body = await req.json()
+    const body = canonicalisePayload(await req.json())
     const { prompt, aspectRatio = '1:1' } = body
     // CCBill compliance: non-admins ALWAYS get the safety checker on and can't turn it
     // off. Admins default off and may toggle via enable_safety_checker in the body.

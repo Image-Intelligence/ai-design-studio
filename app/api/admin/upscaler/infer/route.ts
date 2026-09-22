@@ -10,6 +10,7 @@ import path from 'path'
 import os from 'os'
 import { jsonPrivate } from '@/lib/api-json'
 import { fetchMedia } from '@/lib/media-fetch'
+import { canonicalisePayload } from '@/lib/media-url'
 
 const FALLBACK_ADMIN_EMAILS = ['promptandprotocol@gmail.com', 'dirtysecretai@gmail.com']
 
@@ -145,7 +146,7 @@ export async function POST(req: Request) {
   const user = await getAdminUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
-  const { imageUrl, modelPath, scale = 4, prompt = 'Local ESRGAN upscale' } = await req.json()
+  const { imageUrl, modelPath, scale = 4, prompt = 'Local ESRGAN upscale' } = canonicalisePayload(await req.json())
   if (!imageUrl || !modelPath) return jsonPrivate({ error: 'imageUrl and modelPath required' }, { status: 400 })
   if (!existsSync(modelPath)) return jsonPrivate({ error: `Model not found: ${modelPath}` }, { status: 400 })
 

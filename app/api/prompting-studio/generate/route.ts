@@ -11,6 +11,7 @@ import { cookies } from 'next/headers';
 import { isGenerationBlocked } from '@/lib/generation-guard';
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
+import { canonicalisePayload } from '@/lib/media-url'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -42,7 +43,7 @@ export async function POST(req: NextRequest) {
       return jsonPrivate({ success: false, error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
-    const body = await req.json();
+    const body = canonicalisePayload(await req.json());
     const {
       celebrityName,
       enhancement,

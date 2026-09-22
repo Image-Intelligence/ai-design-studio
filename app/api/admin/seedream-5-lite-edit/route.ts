@@ -7,6 +7,7 @@ import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
+import { canonicalisePayload } from '@/lib/media-url'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -26,7 +27,7 @@ export async function POST(req: Request) {
     }
 
     step = 'parse-body'
-    const body = await req.json()
+    const body = canonicalisePayload(await req.json())
     const {
       prompt,
       images_base64 = [],        // Array of base64 data URIs from client

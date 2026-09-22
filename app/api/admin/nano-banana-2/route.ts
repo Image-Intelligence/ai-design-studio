@@ -7,6 +7,7 @@ import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
+import { canonicalisePayload } from '@/lib/media-url'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -24,7 +25,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
-    const body = await req.json()
+    const body = canonicalisePayload(await req.json())
     const {
       prompt,
       num_images = 1,

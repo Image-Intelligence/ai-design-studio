@@ -10,6 +10,7 @@ import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { fetchMedia } from '@/lib/media-fetch'
+import { canonicalisePayload } from '@/lib/media-url'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -62,7 +63,7 @@ export async function POST(req: Request) {
       aspect_ratio = '16:9',
       num_images = 1,
       enable_safety_checker = true,
-    } = await req.json()
+    } = canonicalisePayload(await req.json())
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
