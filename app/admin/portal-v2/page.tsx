@@ -20852,6 +20852,16 @@ function PromptBox({
             queueId: job.id,
             queuedAtMs: queuedAtMsOf(job),
             referenceImageUrls: Array.isArray(job.refs) ? job.refs : [],
+            /*
+             * The run's settings, from launch. These were absent, so a batch
+             * tile reserved no shape, its ETA had no model to look up, and the
+             * pending popup had nothing to show - which is what "the panel
+             * lost its aspect ratio and resolution" was whenever a batch slot
+             * was on screen instead of its finished image.
+             */
+            modelId: model.apiId,
+            aspectRatio,
+            quality,
           } as PendingSlot)
         }
       } catch (err: any) {
@@ -29124,6 +29134,10 @@ export default function PortalV2Page() {
         const SETTLE_MS = 45_000
         const fresh = jobs.filter(j =>
           !adoptedJobIds.current.has(j.id)
+          // Settled here already: the row can lag behind the result by a
+          // webhook, and adopting it again draws a second spinner for a
+          // picture that is already on screen.
+          && !completedQueueIds.current.has(j.id)
           && Date.now() - new Date(j.createdAt).getTime() > SETTLE_MS)
         if (fresh.length === 0) return
 
@@ -30774,25 +30788,61 @@ export default function PortalV2Page() {
               && !(s.nb2RequestId && doneNb2Ids.has(s.nb2RequestId)))
 
             // Rebuild: queue-backed + local nb2 + cross-device nb2 + queued slots
-            setPendingSlots(() => [
-              // Merged onto the stored slot, not built fresh: a four-key
-              // rebuild threw away queuedAtMs - which is what orders the feed,
-              // so restored tiles jumped to the front - along with the aspect
-              // ratio the tile reserves space with and the run's own settings.
-              ...slotAssignments.map(sa => ({
-                ...(byQueueId.get(sa.queueId) ?? {}),
-                slotId: sa.slotId,
-                status: "loading" as const,
-                prompt: sa.prompt,
-                queueId: sa.queueId,
-              } as PendingSlot)),
-              ...localNb2Slots,
-              ...crossDeviceNb2Slots,
-              ...queuedImageSlots,
-              ...unheardOf,
-            ])
+            /*
+             * Rebuild from the LIVE list, and never downgrade a finished slot.
+             *
+             * currentSlots is a snapshot of localStorage taken before this
+             * fetch went out. A reload made while tiles are finishing - which
+             * is what "kept refreshing" is - lets the poller mark slots done in
+             * the meantime, and a rebuild from the snapshot then overwrites
+             * those with their stale loading copies. The spinner comes back,
+             * and since the job is already in completedQueueIds the poller
+             * drops it on the first tick and never fills it: a spinner that
+             * never ends, next to the picture it was for.
+             */
+            const settledBeforeRebuild = new Set<string>()
+            setPendingSlots(prev => {
+              const liveById = new Map(prev.map(sl => [sl.slotId, sl]))
+              // The same job can be live under another slot id (batch-<id>,
+              // adopted-<id>), so a job is looked up by queue id as well.
+              const liveByQueue = new Map<number, PendingSlot>()
+              for (const sl of prev) {
+                if (typeof sl.queueId === "number") liveByQueue.set(sl.queueId, sl)
+                if (typeof sl.queueJobId === "number") liveByQueue.set(sl.queueJobId, sl)
+              }
+              const keepIfFinished = (slotId: string, queueId?: number): PendingSlot | null => {
+                const live = liveById.get(slotId) ?? (queueId !== undefined ? liveByQueue.get(queueId) : undefined)
+                if (live && (live.status === "done" || live.status === "failed")) {
+                  settledBeforeRebuild.add(slotId)
+                  settledBeforeRebuild.add(live.slotId)
+                  return live
+                }
+                return null
+              }
+              return [
+                // Merged onto the stored slot, not built fresh: a four-key
+                // rebuild threw away queuedAtMs - which is what orders the
+                // feed - along with the aspect ratio the tile reserves space
+                // with and the run's own settings.
+                ...slotAssignments.map(sa => keepIfFinished(sa.slotId, sa.queueId) ?? ({
+                  ...(liveById.get(sa.slotId) ?? liveByQueue.get(sa.queueId) ?? byQueueId.get(sa.queueId) ?? {}),
+                  // Keep the live slot's own id when it has one, so the tile
+                  // is updated in place rather than replaced under a new key.
+                  slotId: liveByQueue.get(sa.queueId)?.slotId ?? sa.slotId,
+                  status: "loading" as const,
+                  prompt: sa.prompt,
+                  queueId: sa.queueId,
+                } as PendingSlot)),
+                ...localNb2Slots.map(sl => keepIfFinished(sl.slotId) ?? sl),
+                ...crossDeviceNb2Slots,
+                ...queuedImageSlots.map(sl => keepIfFinished(sl.slotId) ?? sl),
+                ...unheardOf.map(sl => keepIfFinished(sl.slotId) ?? liveById.get(sl.slotId) ?? sl),
+              ]
+            })
 
             for (const sa of slotAssignments) {
+              // A job this tab already settled has nothing left to poll for.
+              if (settledBeforeRebuild.has(sa.slotId) || completedQueueIds.current.has(sa.queueId)) continue
               startPolling(sa.slotId, sa.queueId, sa.prompt)
             }
 
