@@ -8451,6 +8451,19 @@ function LoadingSlot({ onClick, startedAtMs, modelId, coldStart, durVariant, dur
 
 // The generation's shape for a pending slot: flux dims from the stored config,
 // other models from their requested aspect ratio
+/**
+ * The queue row a synthetic slot id stands for.
+ *
+ * Restore, adoption and the reconciler name slots `restored-<id>`,
+ * `adopted-<id>` and `batch-<id>`. A report against one of those must reach
+ * the job's REAL slot when this tab has one under another name, or the
+ * failure handler synthesises a second tile for a job already on screen.
+ */
+function jobIdFromSlotId(slotId: string): number | null {
+  const m = /^(?:adopted|restored|batch|db)-(\d+)$/.exec(slotId)
+  return m ? Number(m[1]) : null
+}
+
 function slotAspectRatio(slot: PendingSlot): string | undefined {
   const vm = slot.videoMetadata
   const w = vm && typeof vm.fluxWidth === 'number' ? vm.fluxWidth : null
@@ -27545,7 +27558,8 @@ export default function PortalV2Page() {
   // repeat failure reports for the same slot (double-firing pollers, races)
   // must only update the slot, never mint another card or POST another row
   const failHandledRef = useRef<Set<string>>(new Set())
-  const handleUpdatePending = useCallback((slotId: string, update: Partial<PendingSlot>) => {
+  const handleUpdatePending = useCallback((slotIdIn: string, update: Partial<PendingSlot>) => {
+    let slotId = slotIdIn
     if (update.status === "failed" && failHandledRef.current.has(slotId)) {
       setPendingSlots(p => p.map(s => s.slotId === slotId ? { ...s, ...update, status: "failed" as const } : s))
       return
@@ -27563,7 +27577,19 @@ export default function PortalV2Page() {
         // by a refresh or a competing path) — the error must STILL be recorded.
         // "if (slot)" alone silently swallowed these failures: the tile just
         // vanished until the next reload pulled the server-side fail row.
-        const slot = prev.find(s => s.slotId === slotId) ?? (update.prompt || update.error ? update as PendingSlot : null)
+        /*
+         * By slot id first; then by the JOB the slot id names. A failure
+         * reported against `adopted-<id>` for a job this tab tracks as
+         * `slot-…` must land on that slot, not become a second tile beside
+         * it. Only when no slot holds the job at all is one synthesised.
+         */
+        const byId = prev.find(s => s.slotId === slotId)
+        const jobId = update.queueId ?? update.queueJobId ?? jobIdFromSlotId(slotId)
+        const byJob = byId ?? (jobId != null
+          ? prev.find(s => s.queueId === jobId || s.queueJobId === jobId)
+          : undefined)
+        if (byJob && byJob.slotId !== slotId) slotId = byJob.slotId
+        const slot = byJob ?? (update.prompt || update.error ? update as PendingSlot : null)
         if (slot) {
           // Identity linking the optimistic tile to its server GenerationQueue row —
           // fails persist per-account until dismissed (see /api/user/failed-generations)
@@ -27625,7 +27651,16 @@ export default function PortalV2Page() {
           : s)
       })
     } else {
-      setPendingSlots(p => p.map(s => {
+      setPendingSlots(p => {
+        // Resolve a synthetic id to the job's real slot here as well, so a
+        // completion reported against `adopted-<id>` fills the tile that is
+        // actually on screen instead of updating nothing.
+        if (!p.some(s => s.slotId === slotId)) {
+          const jobId = update.queueId ?? update.queueJobId ?? jobIdFromSlotId(slotId)
+          const real = jobId != null ? p.find(s => s.queueId === jobId || s.queueJobId === jobId) : undefined
+          if (real) slotId = real.slotId
+        }
+        return p.map(s => {
         if (s.slotId !== slotId) return s
         /*
          * A finished image inherits the slot's settings.
@@ -27649,7 +27684,8 @@ export default function PortalV2Page() {
           }
         }
         return { ...s, ...update }
-      }))
+      })
+      })
     }
   }, [])
   const handleRemovePending = useCallback((slotId: string) => {
@@ -29165,19 +29201,34 @@ export default function PortalV2Page() {
           && Date.now() - new Date(j.createdAt).getTime() > SETTLE_MS)
         if (fresh.length === 0) return
 
+        /*
+         * Decide what to add OUTSIDE the state updater, from the live ref,
+         * so the same list drives both the slots and the watchers below.
+         *
+         * A slot this tab created already tracks the job - under EITHER id:
+         * the sync path stores the queue row in queueId, the async image
+         * models store it in queueJobId. Those are not adopted. They used to
+         * be WATCHED anyway: startPolling was called for every fresh job, so
+         * a known job got a watcher under `adopted-<id>` - a slot id that
+         * did not exist - and when the job failed, the report against that id
+         * synthesised a second fail tile with no aspect ratio. That is the
+         * 1:1 duplicate that appears on failure and vanishes on reload.
+         */
+        const known = new Set<number>()
+        for (const sl of pendingSlotsRef.current) {
+          if (typeof sl.queueId === "number") known.add(sl.queueId)
+          if (typeof sl.queueJobId === "number") known.add(sl.queueJobId)
+        }
+        const toAdopt = fresh.filter(j => !known.has(j.id))
+        // Remember every fresh job either way, so a known one is not
+        // reconsidered on every tick.
+        for (const j of fresh) adoptedJobIds.current.add(j.id)
+        if (toAdopt.length === 0) return
+
         setPendingSlots(prev => {
-          // A slot this tab created already tracks the job — but under EITHER
-          // id: the sync path stores the queue row in queueId, the async image
-          // models (NanoBanana 2, Kling, GPT-Image, Wan) store it in
-          // queueJobId. Checking only one of them adopted a duplicate tile for
-          // every job the other path had created, so a batch of 4 looked like 8.
-          const known = new Set<number>()
-          for (const sl of prev) {
-            if (typeof sl.queueId === "number") known.add(sl.queueId)
-            if (typeof sl.queueJobId === "number") known.add(sl.queueJobId)
-          }
-          const additions = fresh
-            .filter(j => !known.has(j.id))
+          const already = new Set(prev.flatMap(sl => [sl.queueId, sl.queueJobId].filter((v): v is number => v != null)))
+          const additions = toAdopt
+            .filter(j => !already.has(j.id))
             .map(j => ({
               slotId: `adopted-${j.id}`,
               status: "loading" as const,
@@ -29193,11 +29244,9 @@ export default function PortalV2Page() {
           return additions.length > 0 ? [...additions, ...prev] : prev
         })
 
-        // startPolling de-dupes on queueId, so re-adopting is harmless
-        for (const j of fresh) {
-          adoptedJobIds.current.add(j.id)
-          startPolling(`adopted-${j.id}`, j.id, j.prompt)
-        }
+        // Watchers only for slots this pass created. A job this tab already
+        // tracks has a watcher under its own slot id.
+        for (const j of toAdopt) startPolling(`adopted-${j.id}`, j.id, j.prompt)
       } catch {
         // a failed poll is not worth surfacing — the next tick retries
       }
@@ -29600,6 +29649,11 @@ export default function PortalV2Page() {
             queueId: j.id,
             queuedAtMs: queuedAtMsOf(j),
             referenceImageUrls: params?.referenceImageUrls || params?.permanentReferenceUrls || [],
+            // The row's own settings, so a placeholder drawn for queued work
+            // reserves the right shape instead of a square.
+            modelId: j.modelId,
+            aspectRatio: typeof params?.aspectRatio === "string" ? params.aspectRatio : undefined,
+            quality: typeof params?.quality === "string" ? params.quality : undefined,
           } as PendingSlot)
         }
 
