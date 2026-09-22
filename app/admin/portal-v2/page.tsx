@@ -28547,6 +28547,61 @@ export default function PortalV2Page() {
   }, [])
   // NB2 polling keyed by requestId (not DB-backed) — same pattern as videoPollingIntervals
   const nb2PollingIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({})
+  /*
+   * The shared pre-check for fal-backed tiles.
+   *
+   * nb2Watch: every pending fal job this tab is polling, requestId -> endpoint.
+   * nb2BatchStatus: the last answer from /api/admin/fal-status-batch, with
+   * when it was taken. A tile's own tick consults this first and only calls
+   * its heavy per-job route when the answer says the job has finished - or
+   * when there is no fresh answer, which is the old behaviour and the
+   * fallback for RunPod jobs the batch route cannot see.
+   */
+  const nb2Watch = useRef<Map<string, string>>(new Map())
+  const nb2BatchStatus = useRef<{ at: number; statuses: Record<string, string> }>({ at: 0, statuses: {} })
+  const nb2BatchTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const nb2BatchInFlight = useRef(false)
+  // Bounded completion: at most this many heavy per-job calls at once. The
+  // rest wait their turn, in the order their ticks came due.
+  const NB2_HEAVY_MAX = 3
+  const nb2HeavyRunning = useRef(0)
+  const nb2HeavyQueue = useRef<(() => void)[]>([])
+  const acquireHeavy = () => new Promise<void>(resolve => {
+    if (nb2HeavyRunning.current < NB2_HEAVY_MAX) { nb2HeavyRunning.current++; resolve() }
+    else nb2HeavyQueue.current.push(() => { nb2HeavyRunning.current++; resolve() })
+  })
+  const releaseHeavy = () => {
+    nb2HeavyRunning.current = Math.max(0, nb2HeavyRunning.current - 1)
+    const next = nb2HeavyQueue.current.shift()
+    if (next) next()
+  }
+  const ensureNb2BatchTicker = () => {
+    if (nb2BatchTimer.current) return
+    const tick = async () => {
+      if (nb2Watch.current.size === 0) {
+        if (nb2BatchTimer.current) clearInterval(nb2BatchTimer.current)
+        nb2BatchTimer.current = null
+        return
+      }
+      if (nb2BatchInFlight.current) return
+      nb2BatchInFlight.current = true
+      try {
+        const items = [...nb2Watch.current].map(([requestId, falEndpoint]) => ({ requestId, falEndpoint }))
+        const r = await fetch("/api/admin/fal-status-batch", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }), signal: AbortSignal.timeout(25_000),
+        })
+        if (r.ok) {
+          const d = await r.json()
+          if (d && typeof d.statuses === "object") nb2BatchStatus.current = { at: Date.now(), statuses: d.statuses }
+        }
+      } catch { /* the next tick retries; ticks fall back to the per-job route meanwhile */ }
+      finally { nb2BatchInFlight.current = false }
+    }
+    void tick()
+    nb2BatchTimer.current = setInterval(tick, 4000)
+  }
+  useEffect(() => () => { if (nb2BatchTimer.current) clearInterval(nb2BatchTimer.current) }, [])
   useEffect(() => () => {
     Object.entries(nb2PollingIntervals.current).forEach(([id, interval]) => {
       clearInterval(interval)
@@ -28572,6 +28627,10 @@ export default function PortalV2Page() {
     videoMetadata?: Record<string, unknown>,
   ) => {
     if (nb2PollingIntervals.current[requestId]) return
+    // RunPod flux has its own status service the batch route cannot ask;
+    // everything else here is a fal queue job.
+    const falBacked = !!falEndpoint && !statusUrl.includes("flux-inference")
+    if (falBacked) { nb2Watch.current.set(requestId, falEndpoint); ensureNb2BatchTicker() }
     let pollCount = 0
     let pollInFlight = false
     // Random phase so striding (below) doesn't sync every poller onto the
@@ -28607,15 +28666,41 @@ export default function PortalV2Page() {
       // requests/second — enough to jam the tab and the server. Stride the
       // polls so the TOTAL rate stays roughly capped (~8 jobs' worth); each
       // job still polls, just proportionally less often while the queue is big.
-      const activePollers = Object.keys(nb2PollingIntervals.current).length
-      const stride = Math.max(1, Math.ceil(activePollers / 8))
-      if (stride > 1 && (pollCount + pollPhase) % stride !== 0 && pollCount <= maxPolls) {
-        pollInFlight = false
-        return
+      /*
+       * Ask the shared answer first. If it is fresh and says this job is still
+       * running, apply the queue/executing flags and stop here - no per-job
+       * request at all. The old striding capped the total rate by looking at
+       * each job less often as the batch grew (every ~105s at 165), which is
+       * what left finished tiles on "loading". A missing or stale answer falls
+       * through to the per-job route, which is the old behaviour.
+       */
+      if (falBacked && pollCount <= maxPolls) {
+        const snap = nb2BatchStatus.current
+        const st = snap.statuses[requestId]
+        if (st && Date.now() - snap.at < 12_000 && (st === "IN_QUEUE" || st === "IN_PROGRESS")) {
+          try {
+            const cur = pendingSlotsRef.current.find(sl => slotIds.includes(sl.slotId))
+            if (st === "IN_QUEUE") {
+              if (cur && !cur.inQueue) slotIds.forEach(sid => handleUpdatePending(sid, { inQueue: true }))
+            } else if (cur && (cur.inQueue || !cur.execStartMs)) {
+              slotIds.forEach(sid => handleUpdatePending(sid, { inQueue: false, execStartMs: cur.execStartMs ?? Date.now() }))
+            }
+          } catch {}
+          pollInFlight = false
+          return
+        }
+      } else {
+        // RunPod keeps the old striding: no batch answer exists for it.
+        const activePollers = Object.keys(nb2PollingIntervals.current).length
+        const stride = Math.max(1, Math.ceil(activePollers / 8))
+        if (stride > 1 && (pollCount + pollPhase) % stride !== 0 && pollCount <= maxPolls) {
+          pollInFlight = false
+          return
+        }
       }
       if (pollCount > maxPolls) {
         clearInterval(interval)
-        delete nb2PollingIntervals.current[requestId]
+        delete nb2PollingIntervals.current[requestId]; nb2Watch.current.delete(requestId)
         if (ticketCost > 0) {
           setUser(prev => prev ? { ...prev, ticketBalance: prev.ticketBalance + ticketCost } : prev)
           fetch("/api/admin/use-tickets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "refund", amount: ticketCost }) }).catch(() => {})
@@ -28637,13 +28722,20 @@ export default function PortalV2Page() {
         // (a) backdate createdAt to QUEUE time — the feed's ordering key —
         // and (b) record the generation settings for the info panel
         const pollSlot = pendingSlotsRef.current.find(s => slotIds.includes(s.slotId))
-        const statusRes = await fetch(statusUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requestId, falEndpoint, prompt, outputFormat, aspectRatio, quality, referenceImageUrls, ticketCost, queuedAt: pollSlot?.queuedAtMs, videoMetadata }),
-          signal: AbortSignal.timeout(15000),
-        })
-        const statusData = await statusRes.json()
+        // At most NB2_HEAVY_MAX of these at once: on completion this route
+        // downloads and re-hosts the result, and 165 finishing inside three
+        // minutes must drain in order rather than all at once.
+        await acquireHeavy()
+        let statusData: any
+        try {
+          const statusRes = await fetch(statusUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ requestId, falEndpoint, prompt, outputFormat, aspectRatio, quality, referenceImageUrls, ticketCost, queuedAt: pollSlot?.queuedAtMs, videoMetadata }),
+            signal: AbortSignal.timeout(60000),
+          })
+          statusData = await statusRes.json()
+        } finally { releaseHeavy() }
         // Cold-start detection: a workerId we haven't seen on this endpoint
         // means a fresh worker (full model load ahead) — flag the slot ONCE so
         // its tile switches to the cold-start ETA
@@ -28697,7 +28789,7 @@ export default function PortalV2Page() {
           notFoundStreak++
           if (notFoundStreak >= 8 && pollCount > 24) {
             clearInterval(interval)
-            delete nb2PollingIntervals.current[requestId]
+            delete nb2PollingIntervals.current[requestId]; nb2Watch.current.delete(requestId)
             try {
               const stored = localStorage.getItem("pv2-pending-slots")
               if (stored) {
@@ -28714,7 +28806,7 @@ export default function PortalV2Page() {
         }
         if (statusData.status === "completed") {
           clearInterval(interval)
-          delete nb2PollingIntervals.current[requestId]
+          delete nb2PollingIntervals.current[requestId]; nb2Watch.current.delete(requestId)
           // Mark as processed so future page loads don't re-poll and duplicate DB records
           try {
             const done = JSON.parse(localStorage.getItem("pv2-nb2-done") || "[]") as string[]
@@ -28795,7 +28887,7 @@ export default function PortalV2Page() {
           slotIds.slice(completedImgs.length).forEach(sid => handleRemovePending(sid))
         } else if (statusData.status === "failed") {
           clearInterval(interval)
-          delete nb2PollingIntervals.current[requestId]
+          delete nb2PollingIntervals.current[requestId]; nb2Watch.current.delete(requestId)
           if (ticketCost > 0) {
             setUser(prev => prev ? { ...prev, ticketBalance: prev.ticketBalance + ticketCost } : prev)
             fetch("/api/admin/use-tickets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "refund", amount: ticketCost }) }).catch(() => {})
@@ -28818,7 +28910,7 @@ export default function PortalV2Page() {
     const interval = nb2PollingIntervals.current[requestId]
     if (interval) {
       clearInterval(interval)
-      delete nb2PollingIntervals.current[requestId]
+      delete nb2PollingIntervals.current[requestId]; nb2Watch.current.delete(requestId)
     }
   }, [])
 

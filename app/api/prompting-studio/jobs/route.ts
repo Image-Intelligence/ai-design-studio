@@ -129,7 +129,29 @@ export async function GET(request: Request) {
       j => j.status === 'processing' || j.status === 'queued'
     ).length
 
-    return jsonPrivate({ jobs, activeCount })
+    /*
+     * The handful of parameter keys the client reads, not the whole blob.
+     *
+     * parameters carries the full fal input for every row - 800 bytes median,
+     * and this list is polled every three seconds by every open tab. With the
+     * last hour's finished rows included it was 172 KB per poll with nothing
+     * in flight. The client reads a dozen keys; it gets those.
+     */
+    const KEEP = ['source', 'slotId', 'batch', 'falEndpoint', 'falQuality', 'falImageSize', 'quality', 'aspectRatio',
+      'size', 'referenceImageUrls', 'permanentReferenceUrls', 'completedImageIds', 'completedImageUrls',
+      'nb2AspectRatio', 'nb2Quality', 'nb2OutputFormat', 'nb2TicketCost', 'nb2StatusUrl', 'nb2FalEndpoint',
+      'model', 'loraUrl', 'loraName', 'loraScale', 'refStrength', 'renderSpeed', 'promptExpansion', 'videoMetadata']
+    const slimParameters = (p: unknown) => {
+      if (!p || typeof p !== 'object') return p
+      const src = p as Record<string, unknown>
+      const out: Record<string, unknown> = {}
+      for (const k of KEEP) if (k in src) out[k] = src[k]
+      // The one thing read off falInput is its endpoint.
+      const fi = src.falInput as { endpoint?: unknown } | undefined
+      if (fi && typeof fi === 'object' && typeof fi.endpoint === 'string') out.falInput = { endpoint: fi.endpoint }
+      return out
+    }
+    return jsonPrivate({ jobs: jobs.map(j => ({ ...j, parameters: slimParameters(j.parameters) })), activeCount })
   } catch (error: any) {
     console.error('Jobs fetch error:', error)
     return jsonPrivate({ error: 'Failed to fetch jobs' }, { status: 500 })
