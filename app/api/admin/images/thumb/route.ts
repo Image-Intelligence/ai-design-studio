@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import sharp from 'sharp'
+import { fetchMedia } from '@/lib/media-fetch'
 
 
 // Admin thumbnail endpoint — accepts ?id=<imageId> and returns a resized WebP.
@@ -17,7 +18,7 @@ export async function GET(request: NextRequest) {
 
     if (!image) return new NextResponse('Not found', { status: 404 })
 
-    const blobRes = await fetch(image.imageUrl)
+    const blobRes = await fetchMedia(image.imageUrl)
     if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
 
     const buffer = Buffer.from(await blobRes.arrayBuffer())

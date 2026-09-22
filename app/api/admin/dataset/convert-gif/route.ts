@@ -7,6 +7,7 @@ import prisma from '@/lib/prisma'
 import { checkAuth } from '@/lib/admin-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { ffmpegAvailable, gifToMp4, extractThumbnail, probeDuration } from '@/lib/video-clip'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // POST /api/admin/dataset/convert-gif { imageIds: number[] }
 //
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     const dir = await mkdtemp(path.join(tmpdir(), 'gifclip-'))
     try {
-      const srcRes = await fetch(row.imageUrl)
+      const srcRes = await fetchMedia(row.imageUrl)
       if (!srcRes.ok) throw new Error(`source fetch ${srcRes.status}`)
       const gifBytes = Buffer.from(await srcRes.arrayBuffer())
       if (gifBytes.length > MAX_GIF_BYTES) throw new Error('GIF larger than 50MB')

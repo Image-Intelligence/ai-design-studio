@@ -4,6 +4,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { PassThrough, Readable } from 'node:stream'
 import archiver from 'archiver'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // STREAMED zip of the user's selected files.
 //
@@ -73,7 +74,7 @@ export async function GET(req: NextRequest) {
   ;(async () => {
     for (const img of images) {
       try {
-        const res = await fetch(img.imageUrl, { signal: AbortSignal.timeout(30000) })
+        const res = await fetchMedia(img.imageUrl, { signal: AbortSignal.timeout(30000) })
         if (!res.ok) continue
         const buf = Buffer.from(await res.arrayBuffer())
         const ct = res.headers.get('content-type') ?? ''

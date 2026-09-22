@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import { prisma } from '@/lib/prisma'
 import { checkAuth } from '@/lib/admin-auth'
 import { composeTrainingCaption, normalizeCaptionSections } from '@/lib/caption-compose'
+import { fetchMedia } from '@/lib/media-fetch'
 
 
 // GET /api/admin/buckets/[id]/export
@@ -52,7 +53,7 @@ export async function GET(
     imageEntries.map(async (img, i) => {
       const idx = String(i + 1).padStart(4, '0')
       try {
-        const res = await fetch(img.imageUrl, { signal: AbortSignal.timeout(30_000) })
+        const res = await fetchMedia(img.imageUrl, { signal: AbortSignal.timeout(30_000) })
         if (!res.ok) return
         const buffer = Buffer.from(await res.arrayBuffer())
         const contentType = res.headers.get('content-type') || 'image/jpeg'

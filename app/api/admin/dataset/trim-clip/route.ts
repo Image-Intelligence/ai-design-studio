@@ -10,6 +10,7 @@ import prisma from '@/lib/prisma'
 import { checkAuth } from '@/lib/admin-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { extractThumbnail, probeDuration } from '@/lib/video-clip'
+import { fetchMedia } from '@/lib/media-fetch'
 
 // POST /api/admin/dataset/trim-clip { imageId, startSec, endSec }
 //
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
 
   const dir = await mkdtemp(path.join(tmpdir(), 'cliptrim-'))
   try {
-    const srcRes = await fetch(row.imageUrl)
+    const srcRes = await fetchMedia(row.imageUrl)
     if (!srcRes.ok) return NextResponse.json({ error: `Source fetch failed (${srcRes.status})` }, { status: 502 })
     const srcBytes = Buffer.from(await srcRes.arrayBuffer())
     if (srcBytes.length > 200 * 1024 * 1024) return NextResponse.json({ error: 'Source too large' }, { status: 413 })

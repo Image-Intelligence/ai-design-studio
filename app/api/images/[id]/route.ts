@@ -5,6 +5,7 @@ import { cookies } from 'next/headers'
 import { uploadToR2 } from '@/lib/r2'
 import { signMediaUrl } from '@/lib/media-url'
 import sharp from 'sharp'
+import { fetchMedia } from '@/lib/media-fetch'
 
 
 // Authenticated image proxy — serves a user's image by DB ID.
@@ -48,7 +49,7 @@ export async function GET(
       }
       // First view of this image — generate the thumbnail once, store it on R2 so
       // every future request (this route or the direct URL) is a cheap CDN-served file.
-      const blobRes = await fetch(image.imageUrl)
+      const blobRes = await fetchMedia(image.imageUrl)
       if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
       const buffer = Buffer.from(await blobRes.arrayBuffer())
       const thumb = await sharp(buffer)
@@ -72,7 +73,7 @@ export async function GET(
     }
 
     // Full image / download
-    const blobRes = await fetch(image.imageUrl)
+    const blobRes = await fetchMedia(image.imageUrl)
     if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
     const contentType = blobRes.headers.get('content-type') || 'image/png'
     const ext = contentType.includes('jpeg') ? 'jpg'
