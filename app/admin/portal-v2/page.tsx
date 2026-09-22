@@ -91,6 +91,8 @@ interface ImageItem {
   loraName?: string | null
   loraScale?: number | null
   refStrength?: number | null
+  renderSpeed?: string | null
+  promptExpansion?: string | null
   r2Key?: string
 }
 
@@ -9399,13 +9401,17 @@ function ImageDetailModal({
   const panelLoraName    = image.loraName ?? vm.loraName ?? null
   const panelLoraScale   = num(image.loraScale, vm.loraScale)
   const panelRefStrength = num(image.refStrength, vm.refStrength)
+  const str = (a: unknown, b: unknown) =>
+    typeof a === "string" && a ? a : typeof b === "string" && b ? b : null
+  const panelRenderSpeed = str(image.renderSpeed, vm.renderSpeed)
+  const panelPromptExpansion = str(image.promptExpansion, vm.promptExpansion)
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
   /*
    * ...and for anything carrying a reference strength, which would otherwise
    * be recorded, derived, and then hidden behind a row that never rendered.
    */
-  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality || panelRefStrength !== null)
+  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality || panelRefStrength !== null || panelRenderSpeed || panelPromptExpansion)
   const formattedDate = image.createdAt
     ? new Date(image.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : null
@@ -9767,7 +9773,19 @@ function ImageDetailModal({
                           {panelRefStrength.toFixed(2)}
                         </span>
                       )}
-                      {!image.aspectRatio && !image.quality && panelRefStrength === null && (
+                      {/* Render speed and prompt expansion, as they RAN: a
+                          tier that could not take the setting recorded none. */}
+                      {panelRenderSpeed && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
+                          <span className="text-slate-500">render</span>{panelRenderSpeed.toLowerCase()}
+                        </span>
+                      )}
+                      {panelPromptExpansion && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
+                          <span className="text-slate-500">prompt</span>{panelPromptExpansion === "None" ? "verbatim" : panelPromptExpansion.toLowerCase()}
+                        </span>
+                      )}
+                      {!image.aspectRatio && !image.quality && panelRefStrength === null && !panelRenderSpeed && !panelPromptExpansion && (
                         <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
                       )}
                     </>
@@ -10622,6 +10640,8 @@ function ImageGrid({
             loraName: img.loraName ?? undefined,
             loraScale: img.loraScale ?? undefined,
             refStrength: img.refStrength ?? undefined,
+            renderSpeed: img.renderSpeed ?? undefined,
+            promptExpansion: img.promptExpansion ?? undefined,
           }))
         return [...prev, ...newItems]
       })
@@ -20052,6 +20072,10 @@ function PromptBox({
       // Only edits have one, matching what the server records.
       ...(model.id.startsWith("ideogram-v4") && permanentRefUrls.length > 0
         ? { refStrength: ideogramStrength } : {}),
+      // The dials as set. The saved row records what actually RAN and wins
+      // on merge, so a tier that narrowed a setting corrects this on completion.
+      ...(model.id.startsWith("ideogram-v4")
+        ? { renderSpeed: ideogramRenderingSpeed, promptExpansion: ideogramExpansion } : {}),
     }
     slotIds.forEach(sid => onAddPending({
       slotId: sid, status: "loading", prompt: currentPrompt, modelId: model.apiId,

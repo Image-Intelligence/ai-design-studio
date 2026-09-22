@@ -1357,6 +1357,10 @@ export async function POST(request: Request) {
                   // How far an edit was allowed to depart from its reference.
                   // Inside falInput too, but nothing reads that back.
                   refStrength: permanentReferenceUrls.length > 0 ? (body.ideogramStrength ?? null) : null,
+                  // From the BUILT input, not the dial: a tier that cannot take a
+                  // setting sends none, and the panel must say what ran.
+                  renderSpeed: typeof newFalInput?.rendering_speed === 'string' ? newFalInput.rendering_speed : null,
+                  promptExpansion: typeof newFalInput?.expansion_model === 'string' ? newFalInput.expansion_model : null,
                   // Stored so promoteNextQueuedJob can replay this job later
                   falEndpoint: modelEndpoint,
                   falInput: inputParams,
@@ -1415,6 +1419,10 @@ export async function POST(request: Request) {
                 loraName: loraName || null,
                 loraScale: loraUrl ? (loraScale ?? 1) : null,
                 refStrength: permanentReferenceUrls.length > 0 ? (body.ideogramStrength ?? null) : null,
+                  // From the BUILT input, not the dial: a tier that cannot take a
+                  // setting sends none, and the panel must say what ran.
+                  renderSpeed: typeof newFalInput?.rendering_speed === 'string' ? newFalInput.rendering_speed : null,
+                  promptExpansion: typeof newFalInput?.expansion_model === 'string' ? newFalInput.expansion_model : null,
                 // What was ACTUALLY sent, so the info panel reports the run
                 // rather than the request. For families served by sibling
                 // endpoints (GPT Image 2.5's sunburst/flare) the endpoint is

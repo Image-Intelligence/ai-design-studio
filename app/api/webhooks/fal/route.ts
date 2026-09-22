@@ -299,6 +299,8 @@ export async function POST(request: Request) {
                     loraName: params.loraName ?? undefined,
                     loraScale: params.loraScale ?? undefined,
                     refStrength: params.refStrength ?? undefined,
+                    renderSpeed: params.renderSpeed ?? undefined,
+                    promptExpansion: params.promptExpansion ?? undefined,
                   }
                 : queueItem.modelId === 'gpt-image-2.5'
                   ? {
