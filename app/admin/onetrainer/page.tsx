@@ -283,8 +283,15 @@ type RecipeSize = keyof typeof RECIPE_SIZES
  * of the three 6000-step runs and 182 the most — which is what batch size 1
  * implies. The spread at 6000 is about +/- 10 min, so it is shown as a range.
  */
-const TRAIN_FIXED_MIN = 10
-const TRAIN_MIN_PER_STEP = 0.0081
+/*
+ * Wall clock, submission to completion, measured over twelve completed
+ * Ideogram runs: 45-47 minutes per 1000 steps on every one of them, from 28
+ * images to 200. The image count does not move it. The previous 0.0081 was
+ * six times too optimistic - it was reading fal's inference metric, not the
+ * time a person waits.
+ */
+const TRAIN_FIXED_MIN = 2
+const TRAIN_MIN_PER_STEP = 0.0465
 
 const FAL_STEPS_PER_ITEM: Record<RecipeSubject, number> = {
   character: 100,   // a single identity has to be locked in hard
@@ -3574,8 +3581,13 @@ export default function OneTrainerPage() {
     // What the download phase left out, and why. Empty for older runs, which
     // were never recorded - only counted.
     skipped?: { id: number; reason: string }[]
+    // Steps live in config; the row comes back whole from the jobs route.
+    config?: { steps?: number | string }
   }
   const [falJobs, setFalJobs] = useState<FalJob[]>([])
+  // Read by the poller without being a dependency of it - see loadFalJobs.
+  const falJobsRef = useRef<FalJob[]>([])
+  useEffect(() => { falJobsRef.current = falJobs }, [falJobs])
   const [falJobsLoading, setFalJobsLoading] = useState(false)
   // The value this last put in the Steps box. If the box still holds it, the
   // number is ours to update; if it holds anything else, someone typed it.
@@ -4238,6 +4250,24 @@ export default function OneTrainerPage() {
   const loadFalJobs = useCallback(async () => {
     setFalJobsLoading(true)
     try {
+      /*
+       * Advance every unfinished run before listing.
+       *
+       * The status route is what asks fal and writes the answer back - queued
+       * to in_progress, and completed with the weights and the finalize kick.
+       * Nothing on this page called it, so a row sat at "queued" from
+       * submission until the completion webhook, hours later, while fal had
+       * it running the whole time. Calling it here also means a missed
+       * webhook still lands: the next poll harvests the result itself.
+       *
+       * Best effort and in parallel; a failed status read must not stop the
+       * list from loading.
+       */
+      const refreshUnfinished = falJobsRef.current
+        .filter(j => (j.status === 'queued' || j.status === 'in_progress') && j.requestId)
+        .map(j => fetch(`/api/admin/lora-training/status?jobId=${j.id}`, { headers: ah() }).catch(() => null))
+      if (refreshUnfinished.length > 0) await Promise.all(refreshUnfinished)
+
       const res = await fetch('/api/admin/lora-training/jobs', { headers: ah() })
       if (res.ok) {
         const d = await res.json() as { jobs?: FalJob[] }
@@ -6127,6 +6157,24 @@ export default function OneTrainerPage() {
                         #{j.id} · {j.imageCount} item{j.imageCount === 1 ? '' : 's'} · {j.status}
                         {j.createdAt && ` · ${new Date(j.createdAt).toLocaleTimeString()}`}
                       </p>
+                      {/* Elapsed against the measured rate, so "is it stuck?"
+                          is answerable from the card. A run past its estimate
+                          is flagged rather than silently overrunning. */}
+                      {running && j.createdAt && (() => {
+                        const steps = Number(j.config?.steps) || 0
+                        const elapsedMin = (Date.now() - new Date(j.createdAt).getTime()) / 60000
+                        const expectMin = steps > 0 ? TRAIN_FIXED_MIN + steps * TRAIN_MIN_PER_STEP : 0
+                        const leftMin = expectMin - elapsedMin
+                        const fmt = (m: number) => m >= 90 ? `${(m / 60).toFixed(1)}h` : `${Math.round(m)}m`
+                        return (
+                          <p className={`text-[10px] font-mono mt-0.5 ${leftMin < -expectMin * 0.25 ? 'text-amber-300/80' : 'text-slate-600'}`}>
+                            {fmt(elapsedMin)} elapsed
+                            {expectMin > 0 && (leftMin > 0
+                              ? ` · ~${fmt(leftMin)} left of ~${fmt(expectMin)}`
+                              : ` · ${fmt(-leftMin)} past the ~${fmt(expectMin)} estimate`)}
+                          </p>
+                        )
+                      })()}
                     </div>
                     {running && (
                       <button onClick={() => cancelFalJob(j.id)} disabled={cancellingJob === j.id}
