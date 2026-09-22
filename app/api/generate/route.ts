@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { after } from 'next/server'
+import { ensureThumbnail } from '@/lib/thumbnail'
 import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
@@ -1761,6 +1762,8 @@ export async function POST(request: Request) {
       })
 
       uploadedImages.push({ url: blobUrl, id: String(savedImage.id) })
+      // Thumbnail and real dimensions, off the request path.
+      after(() => { void ensureThumbnail(savedImage.id) })
       console.log(`Image ${i + 1} saved to database: ${savedImage.id}`)
     }
 

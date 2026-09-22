@@ -6,6 +6,7 @@ import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
 import { releaseReservedTickets } from '@/lib/ticket-gate'
 import { getTrainerFamily } from '@/lib/trainer-families'
 import { falDetailMessage } from '@/lib/fal-error'
+import { ensureThumbnail } from '@/lib/thumbnail'
 
 // FAL.ai calls this endpoint when an async job completes or fails.
 // We must return 200 quickly — FAL.ai will retry on non-200 responses.
@@ -343,6 +344,9 @@ export async function POST(request: Request) {
           })
 
           uploadedImages.push({ url, id: savedImage.id })
+          // Thumbnail and real dimensions, off the request path. The first
+          // view of this tile is then a cached webp, not a full-size decode.
+          after(() => { void ensureThumbnail(savedImage.id) })
           console.log(`Saved GeneratedImage #${savedImage.id}`)
         } catch (imgError) {
           console.error(`Error processing image ${i + 1}:`, imgError)

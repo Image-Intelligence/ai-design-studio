@@ -2527,7 +2527,17 @@ const FEED_MASONRY_CLASS: Record<number, string> = {
 // Estimate a tile's relative height from its known aspect ratio ("2:3" / "1024x1536" →
 // height per unit column width). Lets us balance columns BEFORE images load, so tiles
 // don't move as images fill in.
-const arHeightWeight = (ar?: string): number => {
+const arHeightWeight = (ar?: string, vm?: Record<string, unknown> | null): number => {
+  /*
+   * Real dimensions first. The aspect a run was ASKED for is a hint; "auto"
+   * is no hint at all and used to reserve a square, so an auto-aspect
+   * portrait grew when its image landed and pushed everything below it down.
+   * Save paths record width and height now, and the backfill did for the
+   * rest.
+   */
+  const w0 = vm && typeof vm.width === "number" ? vm.width : 0
+  const h0 = vm && typeof vm.height === "number" ? vm.height : 0
+  if (w0 > 0 && h0 > 0) return h0 / w0
   if (!ar || ar === "auto") return 1
   const [w, h] = ar.replace(/x/i, ":").split(":").map(parseFloat)
   return w > 0 && h > 0 ? h / w : 1
@@ -10810,7 +10820,7 @@ function ImageGrid({
             if (slot.status === "done" && slot.doneImage) {
               const img = slot.doneImage
               headNodes.push({
-                weight: arHeightWeight(img.aspectRatio),
+                weight: arHeightWeight(img.aspectRatio, img.videoMetadata),
                 key: slot.slotId,
                 dbId: typeof img.id === "number" && img.id > 0 ? img.id : undefined,
                 t: slot.queuedAtMs ?? (img.createdAt ? Date.parse(img.createdAt) : undefined),
@@ -10883,7 +10893,7 @@ function ImageGrid({
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} />
               : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
-            headNodes.push({ weight: arHeightWeight(img.aspectRatio), node, key: `fresh-${img.id}`, t: img.createdAt ? Date.parse(img.createdAt) : undefined })
+            headNodes.push({ weight: arHeightWeight(img.aspectRatio, img.videoMetadata), node, key: `fresh-${img.id}`, t: img.createdAt ? Date.parse(img.createdAt) : undefined })
           })
           // Strict queue order, newest first. Entries without a timestamp keep
           // their relative insertion order (stable sort) at the front.
@@ -10899,14 +10909,14 @@ function ImageGrid({
         if (adminFilters) {
           // Admin-filtered view: exactly the API results, in API order
           images.forEach((img) => nodes.push({
-            weight: arHeightWeight(img.aspectRatio),
+            weight: arHeightWeight(img.aspectRatio, img.videoMetadata),
             key: `af-${img.id}`,
             node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} adminThumb silverRim={tileBorders} />,
           }))
         } else if (showHidden) {
           // Hidden view: exactly the API results (user's hidden items)
           images.forEach((img) => nodes.push({
-            weight: arHeightWeight(img.aspectRatio),
+            weight: arHeightWeight(img.aspectRatio, img.videoMetadata),
             key: `h-${img.id}`,
             node: <GridImage key={`h-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />,
           }))
@@ -10971,12 +10981,12 @@ function ImageGrid({
               : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} silverRim={tileBorders} />
             const imgT = img.createdAt ? new Date(img.createdAt).getTime() : 0
             if (layoutCols.has(img.id) && imgT >= cutoffT) {
-              restoredById.set(img.id, { weight: arHeightWeight(img.aspectRatio), node, key: `db-${img.id}`, presetCol: layoutCols.get(img.id), t: imgT })
+              restoredById.set(img.id, { weight: arHeightWeight(img.aspectRatio, img.videoMetadata), node, key: `db-${img.id}`, presetCol: layoutCols.get(img.id), t: imgT })
             } else if (rowsMode && imgT > headFloor) {
               // Newer than a tile that is still generating: it belongs above it.
-              forcedHead.push({ weight: arHeightWeight(img.aspectRatio), node, key: `db-${img.id}`, t: imgT })
+              forcedHead.push({ weight: arHeightWeight(img.aspectRatio, img.videoMetadata), node, key: `db-${img.id}`, t: imgT })
             } else {
-              nodes.push({ weight: arHeightWeight(img.aspectRatio), node, key: img.failed ? `sf-${img.id}` : `db-${img.id}`, t: img.createdAt ? Date.parse(img.createdAt) : undefined })
+              nodes.push({ weight: arHeightWeight(img.aspectRatio, img.videoMetadata), node, key: img.failed ? `sf-${img.id}` : `db-${img.id}`, t: img.createdAt ? Date.parse(img.createdAt) : undefined })
             }
           })
           /*

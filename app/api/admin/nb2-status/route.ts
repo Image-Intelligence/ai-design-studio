@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
+import { ensureThumbnail } from '@/lib/thumbnail'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
@@ -160,6 +161,8 @@ export async function POST(req: Request) {
             ))
           })
           created.forEach(r => savedIds.push(r.id))
+          // Thumbnail and real dimensions for each, off the request path.
+          for (const id of savedIds) after(() => { void ensureThumbnail(id) })
         }
       } catch (dbErr) {
         console.error('nb2-status: DB save failed (non-fatal):', dbErr)
