@@ -19174,6 +19174,8 @@ function PromptBox({
    * default of Medium and had its prompt rewritten.
    */
   const [ideogramExpansion, setIdeogramExpansion] = useState<"None" | "Medium" | "Large">("Medium")
+  // The six Ideogram rows fold behind one summary line, like SUPIR's do.
+  const [ideogramConfigOpen, setIdeogramConfigOpen] = useState(false)
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -21350,7 +21352,10 @@ function PromptBox({
 
   return (
     <div className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
-      <div className="max-w-3xl mx-auto pointer-events-auto space-y-2" style={{ zoom: promptScale }}>
+      {/* 48rem suits a laptop and is a third of a 21:9 monitor. Widened by
+          breakpoint rather than unbounded, so the textarea keeps a readable
+          measure everywhere. */}
+      <div className="max-w-3xl xl:max-w-5xl 2xl:max-w-6xl [@media(min-width:1900px)]:max-w-[88rem] mx-auto pointer-events-auto space-y-2" style={{ zoom: promptScale }}>
 
         {/* Active reference image previews — click to edit */}
         {activeRefImages.length > 0 && (
@@ -21910,7 +21915,30 @@ function PromptBox({
           )}
 
           {/* LoRA config row — visible when a LoRA is active */}
-          {(model.id === "ideogram-v4" || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling") && (
+          {/* One line for all of Ideogram's settings; the rows below open
+              under it. The summary reads the live values, so it says what the
+              run will do even while closed. */}
+          {model.id.startsWith("ideogram-v4") && (
+            <div className="border-t border-white/[0.06] px-4 py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">Ideogram</span>
+              <button onClick={() => setIdeogramConfigOpen(v => !v)}
+                className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-slate-400 hover:text-white hover:border-white/20 transition-all">
+                <SlidersHorizontal size={9} className="shrink-0" />
+                <span className="truncate">
+                  {model.id !== "ideogram-v4-instant" && <>{ideogramRenderingSpeed.toLowerCase()}{" \u00b7 "}</>}
+                  {ideogramExpansion === "None" ? "verbatim" : ideogramExpansion.toLowerCase()}
+                  {activeRefImages.length > 0 && (ideogramMode === "remove-text"
+                    ? " \u00b7 remove text"
+                    : ` \u00b7 ref ${ideogramStrength.toFixed(2)}`)}
+                  {model.id === "ideogram-v4-tiling" && ` \u00b7 tile ${tilingMode}`}
+                  {selectedLoraUrl && ` \u00b7 lora ${loraScale.toFixed(2)}`}
+                </span>
+                <ChevronDown size={9} className={`shrink-0 transition-transform ${ideogramConfigOpen ? "rotate-180" : ""}`} />
+              </button>
+            </div>
+          )}
+
+          {ideogramConfigOpen && (model.id === "ideogram-v4" || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling") && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Render</span>
@@ -21932,7 +21960,7 @@ function PromptBox({
 
           {/* Mode. Only with a reference attached: there is nothing to take the
               text off otherwise, and the server treats the mode as inert. */}
-          {model.id.startsWith("ideogram-v4") && (() => {
+          {ideogramConfigOpen && model.id.startsWith("ideogram-v4") && (() => {
             // Large only where the resolved endpoint takes it — the same
             // rule the request builder applies, read from one place.
             const choices = expansionChoices({
@@ -21966,7 +21994,7 @@ function PromptBox({
             )
           })()}
 
-          {model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && (
+          {ideogramConfigOpen && model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Mode</span>
@@ -21991,7 +22019,7 @@ function PromptBox({
             </div>
           )}
 
-          {model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && ideogramMode === "edit" && (
+          {ideogramConfigOpen && model.id.startsWith("ideogram-v4") && activeRefImages.length > 0 && ideogramMode === "edit" && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
                 <span className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
@@ -22021,7 +22049,7 @@ function PromptBox({
             </div>
           )}
 
-          {model.id === "ideogram-v4-tiling" && (
+          {ideogramConfigOpen && model.id === "ideogram-v4-tiling" && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
                 <span className="text-[10px] font-mono text-slate-500">Tiling</span>
@@ -22074,7 +22102,7 @@ function PromptBox({
             </div>
           )}
 
-          {modelTakesLora && selectedLoraUrl && (
+          {modelTakesLora && selectedLoraUrl && (!model.id.startsWith("ideogram-v4") || ideogramConfigOpen) && (
             <div className="px-4 py-3 border-t border-violet-500/10 space-y-2">
               {model.id === "z-image-base" && (
                 <p className="text-[10px] leading-snug text-amber-300/90 mb-1">
