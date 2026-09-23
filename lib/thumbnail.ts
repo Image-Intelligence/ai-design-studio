@@ -3,6 +3,8 @@ import { uploadToR2 } from '@/lib/r2'
 import { fetchMedia } from '@/lib/media-fetch'
 
 const VIDEO_RE = /\.(mp4|webm|mov|m4v|avi|mkv)(\?|#|$)/i
+// Meshes and archives have no picture in them to thumbnail.
+const MESH_RE = /\.(glb|gltf|obj|fbx|stl|usdz|zip)(\?|#|$)/i
 
 /**
  * Give a saved image its thumbnail and its real dimensions.
@@ -32,7 +34,7 @@ export async function ensureThumbnail(imageId: number): Promise<'made' | 'had' |
     const vm = (row.videoMetadata ?? {}) as Record<string, unknown>
     const hasDims = typeof vm.width === 'number' && typeof vm.height === 'number'
     if (row.thumbnailUrl && hasDims) return 'had'
-    if (VIDEO_RE.test(row.imageUrl) || vm.isVideo === true) return 'skipped'
+    if (VIDEO_RE.test(row.imageUrl) || MESH_RE.test(row.imageUrl) || vm.isVideo === true) return 'skipped'
 
     const res = await fetchMedia(row.imageUrl, { signal: AbortSignal.timeout(60_000) })
     if (!res.ok) return 'failed'
