@@ -19163,6 +19163,29 @@ function PromptBox({
    * outside fal's 0-4 is discarded and the box falls back to what is stored,
    * so a typo cannot silently become the scale every run uses.
    */
+  /*
+   * Move one LoRA up or down the stack.
+   *
+   * The stack is [first, ...extras], but the first is held apart from the
+   * rest - selectedLoraUrl and loraScale, not an entry in extraLoras - so a
+   * move across that boundary carries the scale with it: the LoRA that
+   * becomes first takes its own scale into loraScale, and the one it
+   * displaces takes its scale into the extras. Order matters because the
+   * deltas add in sequence; the panel numbers them for the same reason.
+   */
+  const moveLoraInStack = useCallback((url: string, dir: -1 | 1) => {
+    if (!selectedLoraUrl) return
+    const stack = [{ url: selectedLoraUrl, scale: loraScale }, ...extraLoras]
+    const i = stack.findIndex(e => e.url === url)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= stack.length) return
+    const next = [...stack]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setSelectedLoraUrl(next[0].url)
+    setLoraScale(next[0].scale)
+    setExtraLoras(next.slice(1))
+  }, [selectedLoraUrl, loraScale, extraLoras])
+
   const commitLoraDefault = useCallback((url: string, text: string) => {
     setLoraDefaultDraft(d => { const n = { ...d }; delete n[url]; return n })
     const trimmed = text.trim()
@@ -22989,6 +23012,32 @@ function PromptBox({
                                     </span>
                                   )}
                                 </button>
+                                {/* Up and down the stack. Only when this one
+                                    is in it and there is somewhere to go. */}
+                                {on && multiLoraMax > 1 && (1 + extraLoras.length) > 1 && (() => {
+                                  const pos = active ? 0 : extraAt + 1
+                                  const last = extraLoras.length
+                                  return (
+                                    <span className="flex flex-col shrink-0 -my-1">
+                                      <button
+                                        title="Move up the stack"
+                                        disabled={pos === 0}
+                                        onClick={() => moveLoraInStack(j.loraUrl, -1)}
+                                        className="h-3.5 px-0.5 text-slate-500 hover:text-violet-200 disabled:opacity-20 disabled:hover:text-slate-500 transition-colors"
+                                      >
+                                        <ChevronDown size={10} className="rotate-180" />
+                                      </button>
+                                      <button
+                                        title="Move down the stack"
+                                        disabled={pos === last}
+                                        onClick={() => moveLoraInStack(j.loraUrl, 1)}
+                                        className="h-3.5 px-0.5 text-slate-500 hover:text-violet-200 disabled:opacity-20 disabled:hover:text-slate-500 transition-colors"
+                                      >
+                                        <ChevronDown size={10} />
+                                      </button>
+                                    </span>
+                                  )
+                                })()}
                                 {/* Its default scale, on the same row as the
                                     name. Typed, not captured: see the commit
                                     rule in commitLoraDefault. */}
