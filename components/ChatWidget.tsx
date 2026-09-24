@@ -43,6 +43,23 @@ const WELCOME: Message = {
 // no longer changes behavior.
 export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: boolean }) {
   void sideTabOnly
+  /*
+   * Site-wide admin switch. The widget gates itself, so every page that
+   * mounts it obeys. Starts hidden and appears once the answer is in, rather
+   * than flashing in and vanishing when it is off. The admin toggle fires
+   * `ai-guide-changed` so the admin's own tab follows at once.
+   */
+  const [guideEnabled, setGuideEnabled] = useState<boolean | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/site/ai-guide', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : { enabled: true }))
+      .then(d => { if (!cancelled) setGuideEnabled(d?.enabled !== false) })
+      .catch(() => { if (!cancelled) setGuideEnabled(true) })
+    const onChange = (e: Event) => setGuideEnabled((e as CustomEvent<boolean>).detail !== false)
+    window.addEventListener('ai-guide-changed', onChange)
+    return () => { cancelled = true; window.removeEventListener('ai-guide-changed', onChange) }
+  }, [])
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([WELCOME])
   const [input, setInput] = useState('')
@@ -272,6 +289,8 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
       </div>
     </>
   )
+
+  if (guideEnabled !== true) return null
 
   return (
     <>

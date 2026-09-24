@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAiGuideEnabled } from '@/lib/ai-guide'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
@@ -227,6 +228,11 @@ interface ChatMessage {
 }
 
 export async function POST(request: NextRequest) {
+  // Switched off by an admin: refuse, so a tab opened before the switch
+  // cannot keep using it.
+  if (!await getAiGuideEnabled()) {
+    return NextResponse.json({ error: 'The AI Guide is currently turned off.' }, { status: 403 })
+  }
   if (!GEMINI_API_KEY) {
     return NextResponse.json({ error: 'Chat not configured' }, { status: 500 })
   }

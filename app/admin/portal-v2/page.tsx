@@ -3058,6 +3058,8 @@ function FeedDropdown({
   adminFilterCount = 0,
   adminFilters = null,
   onApplyAdminFilters,
+  aiGuideEnabled = true,
+  onAiGuideChange,
   imageModelGroups,
   videoModelGroups,
   adminImageModelGroups = [],
@@ -3099,6 +3101,9 @@ function FeedDropdown({
   adminFilterCount?: number
   adminFilters?: AdminFeedFilters | null
   onApplyAdminFilters?: (filters: AdminFeedFilters | null) => void
+  /** Site-wide AI Guide switch - admin only, applies to every account. */
+  aiGuideEnabled?: boolean
+  onAiGuideChange?: (on: boolean) => void
   // Per-model feed filter (taskbar model lists; exclusion-based).
   // admin* lists are passed ONLY for admin accounts — regular users never see
   // models they can't use.
@@ -3389,6 +3394,19 @@ function FeedDropdown({
                   </span>
                   <ChevronDown size={12} className={`text-violet-400/70 transition-transform ${adminOpen ? "rotate-180" : ""}`} />
                 </button>
+
+                {/* Site-wide, not a feed filter - so it sits outside the
+                    collapsible filters and is always one tap away. */}
+                {onAiGuideChange && (
+                  <div className="space-y-1">
+                    <FeedToggleRow label="AI Guide" icon={<Sparkles size={11} />} on={aiGuideEnabled} onChange={onAiGuideChange} />
+                    <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">
+                      {aiGuideEnabled
+                        ? "Shown to every account."
+                        : "Off for every account — hidden everywhere, and its chat is refused."}
+                    </p>
+                  </div>
+                )}
 
                 {!adminOpen && (
                   <p className="text-[9px] text-slate-600 leading-relaxed">Filters the feed via the dataset system — models, buckets, tags, users and more.</p>
@@ -30968,6 +30986,29 @@ export default function PortalV2Page() {
     })
   }, [])
 
+  // AI Guide — global flag, admin-toggled from the Feed dropdown. The widget
+  // reads the server itself; this copy only drives the toggle's state.
+  const [aiGuideEnabled, setAiGuideEnabledState] = useState(true)
+  useEffect(() => {
+    fetch("/api/site/ai-guide", { cache: "no-store" }).then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setAiGuideEnabledState(d.enabled !== false) }).catch(() => {})
+  }, [])
+  const handleAiGuideChange = useCallback((on: boolean) => {
+    setAiGuideEnabledState(on)
+    window.dispatchEvent(new CustomEvent("ai-guide-changed", { detail: on }))
+    fetch("/api/site/ai-guide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: on }),
+    }).then(r => {
+      // Not saved: put the switch and the widget back the way they were.
+      if (!r.ok) {
+        setAiGuideEnabledState(!on)
+        window.dispatchEvent(new CustomEvent("ai-guide-changed", { detail: !on }))
+      }
+    }).catch(() => {})
+  }, [])
+
   // Shop dropdown animations — global flag, admin-toggled from inside the dropdown
   const [shopEffects, setShopEffects] = useState(true)
   const handleToggleShopEffects = useCallback(() => {
@@ -31656,6 +31697,8 @@ function employeePending(
               adminFilterCount={adminFeedFilterCount}
               adminFilters={adminFeedFilters}
               onApplyAdminFilters={applyAdminFeedFilters}
+              aiGuideEnabled={aiGuideEnabled}
+              onAiGuideChange={isAdminAccount ? handleAiGuideChange : undefined}
               imageModelGroups={IMAGE_MODEL_GROUPS}
               videoModelGroups={VIDEO_MODEL_GROUPS}
               adminImageModelGroups={isAdminAccount ? ADMIN_IMAGE_MODEL_GROUPS : []}
