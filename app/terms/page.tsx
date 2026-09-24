@@ -210,7 +210,7 @@ export default function TermsPage() {
           </section>
 
           <section className="border-2 border-red-500/30 bg-red-500/5 p-6 rounded-lg">
-            <h2 className="text-2xl font-bold mb-4 text-red-400">6. Prohibited Use Policy</h2>
+            <h2 id="prohibited" className="text-2xl font-bold mb-4 text-red-400 scroll-mt-24">6. Prohibited Use Policy</h2>
             <p className="mb-4">
               This Service operates under requirements established by our payment processor (CCBill) and the applicable card brand
               standards of Visa, Mastercard, and Discover. The following prohibitions apply to all users without exception.

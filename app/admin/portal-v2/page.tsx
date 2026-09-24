@@ -4894,6 +4894,23 @@ function RefConsentModal({ onAgree, onDecline }: { onAgree: () => void; onDeclin
           </div>
         </div>
 
+        {/* Not a confirmation - a rule. Kept visually apart from the two
+            statements above so it reads as the site's policy rather than
+            something the user is asserting. Wording follows the payment
+            processor's compliance request. */}
+        <div className="mb-5 p-3 rounded-xl border border-red-500/25 bg-red-500/[0.06]">
+          <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-red-300/80 mb-1.5">Prohibited content</p>
+          <p className="text-[11.5px] text-slate-300 leading-relaxed">
+            The creation, upload, distribution, or use of deepfake content, non-consensual
+            impersonation of any real person, and any illegal or policy-violating AI-generated
+            content is <span className="font-semibold text-white">strictly prohibited</span> on
+            this site. Violations result in account termination and may be reported to
+            authorities.{" "}
+            <a href="/terms#prohibited" target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+              className="text-red-200 hover:underline whitespace-nowrap">Read the full policy</a>
+          </p>
+        </div>
+
         {/* Checkbox — must be checked to enable I Agree */}
         <label className="flex items-start gap-2.5 mb-4 cursor-pointer group" onClick={e => e.stopPropagation()}>
           <div
