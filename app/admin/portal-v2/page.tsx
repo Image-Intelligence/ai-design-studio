@@ -1700,7 +1700,7 @@ function TaskbarDropdown({
       </button>
 
       {open && (
-        <div className="fixed w-52 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]" style={{ top: menuPos.top, left: menuPos.left }}>
+        <div className="fixed w-52 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999]" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left }}>
           {items.length === 0 ? (
             <div className="px-4 py-3 text-sm text-slate-500 italic">Coming soon</div>
           ) : (
@@ -2286,8 +2286,8 @@ function GroupedTaskbarDropdown({
 
       {open && (
         <div
-          className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden"
-          style={{ top: menuPos.top, left: menuPos.left, width: Math.min(720, (window.innerWidth - 16) / menuPos.z) }}
+          className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain"
+          style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(720, (window.innerWidth - 16) / menuPos.z) }}
         >
           <ModelMenuPanel
             label={label}
@@ -2301,7 +2301,7 @@ function GroupedTaskbarDropdown({
             menuDescription={menuDescription}
             cardMedia={cardMedia}
             cardPrefix={cardPrefix}
-            bodyMaxHeight={`calc(100vh - ${menuPos.top + 100}px)`}
+            bodyMaxHeight={`${Math.max(160, window.innerHeight / (menuPos.z || 1) - menuPos.top - 110)}px`}
           />
         </div>
       )}
@@ -3252,7 +3252,7 @@ function FeedDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(540, (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(540, (window.innerWidth - 16) / menuPos.z) }}>
           {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center gap-2.5 px-3 py-2.5 border-b border-white/[0.06]">
             <SiteLogoBox size={22} rounded={7} />
@@ -4422,6 +4422,66 @@ function AvatarCropModal({ src, uploading, onCancel, onConfirm, title = "Positio
 // Shows the site logo to everyone. For ADMIN accounts it's a dropdown button whose
 // only action (for now) is uploading/replacing the logo — routed through the same
 // framing crop modal, exporting a transparent PNG. Non-admins see a static logo.
+/**
+ * The taskbar's model strip, reachable with a mouse.
+ *
+ * It scrolls sideways with its scrollbar hidden, which is fine for a finger
+ * and useless for a wheel: a wheel scrolls vertically, so on a narrow desktop
+ * every button past the first was out of reach. Vertical wheel movement is
+ * turned into sideways scrolling while the strip has somewhere to go, and an
+ * arrow appears at whichever edge has more.
+ */
+function TaskbarScroller({ className, children }: { className: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [edges, setEdges] = useState({ left: false, right: false })
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => setEdges({
+      left: el.scrollLeft > 2,
+      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2,
+    })
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth + 1) return
+      if (Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return // a trackpad already scrolls sideways
+      // Non-passive so the page does not scroll underneath at the same time.
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    update()
+    el.addEventListener("wheel", onWheel, { passive: false })
+    el.addEventListener("scroll", update, { passive: true })
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => {
+      el.removeEventListener("wheel", onWheel)
+      el.removeEventListener("scroll", update)
+      ro.disconnect()
+    }
+  }, [])
+  const nudge = (dir: -1 | 1) => {
+    const el = ref.current
+    if (el) el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: "smooth" })
+  }
+  const arrow = (dir: -1 | 1) => (
+    <button
+      type="button"
+      aria-label={dir < 0 ? "Scroll left" : "Scroll right"}
+      onClick={() => nudge(dir)}
+      className={`absolute inset-y-[1.5px] ${dir < 0 ? "left-[1.5px] rounded-l-[10px] bg-gradient-to-r" : "right-[1.5px] rounded-r-[10px] bg-gradient-to-l"} z-10 w-7 flex items-center justify-center from-[#0a0f1a] via-[#0a0f1a]/90 to-transparent text-slate-300 hover:text-white`}
+    >
+      <ChevronDown size={14} className={dir < 0 ? "rotate-90" : "-rotate-90"} />
+    </button>
+  )
+  return (
+    <>
+      {edges.left && arrow(-1)}
+      <div ref={ref} className={className}>{children}</div>
+      {edges.right && arrow(1)}
+    </>
+  )
+}
+
 function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGoChat, size = 36, openUp = false }: {
   logoUrl: string | null
   isAdmin: boolean
@@ -4438,6 +4498,36 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
   const ref = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [cropSrc, setCropSrc] = useState<string | null>(null)
+  /*
+   * Fullscreen: the browser hides its address bar and tabs. Offered only where
+   * the API exists (not iPhone Safari), and tracked from the browser's own
+   * event so Esc and F11 keep the label honest.
+   */
+  const [fsAvailable, setFsAvailable] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  useEffect(() => {
+    const d = document as Document & { webkitFullscreenEnabled?: boolean; webkitFullscreenElement?: Element | null }
+    setFsAvailable(!!(document.fullscreenEnabled || d.webkitFullscreenEnabled))
+    const sync = () => setIsFullscreen(!!(document.fullscreenElement || d.webkitFullscreenElement))
+    sync()
+    document.addEventListener("fullscreenchange", sync)
+    document.addEventListener("webkitfullscreenchange", sync)
+    return () => {
+      document.removeEventListener("fullscreenchange", sync)
+      document.removeEventListener("webkitfullscreenchange", sync)
+    }
+  }, [])
+  const toggleFullscreen = async () => {
+    const d = document as Document & { webkitExitFullscreen?: () => Promise<void>; webkitFullscreenElement?: Element | null }
+    const root = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> }
+    try {
+      if (document.fullscreenElement || d.webkitFullscreenElement) {
+        await (document.exitFullscreen?.() ?? d.webkitExitFullscreen?.())
+      } else {
+        await (root.requestFullscreen?.() ?? root.webkitRequestFullscreen?.())
+      }
+    } catch { /* refused - e.g. not from a click; nothing to undo */ }
+  }
   const [uploading, setUploading] = useState(false)
 
   useEffect(() => {
@@ -4536,6 +4626,21 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
             <Layers size={13} className="text-slate-300 shrink-0" />
             <span className="flex-1 text-left">Regular feed</span>
           </button>
+          {fsAvailable && (
+            <button
+              onClick={() => { void toggleFullscreen(); setOpen(false) }}
+              className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors border-t border-white/5"
+            >
+              {isFullscreen
+                ? <Minimize2 size={13} className="text-slate-300 shrink-0" />
+                : <Maximize2 size={13} className="text-slate-300 shrink-0" />}
+              <span className="flex-1 text-left">{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span>
+              {/* A toggle, so it reads like one. */}
+              <span className={`w-7 h-4 rounded-full p-0.5 transition-colors ${isFullscreen ? "bg-white/70" : "bg-white/15"}`}>
+                <span className={`block w-3 h-3 rounded-full bg-[#070b14] transition-transform ${isFullscreen ? "translate-x-3" : ""}`} />
+              </span>
+            </button>
+          )}
 
           {/* Admin-only section: chat hub + site logo management */}
           {isAdmin && (
@@ -6484,7 +6589,7 @@ function RefDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(refsPanelWidth(wide), (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999]" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(refsPanelWidth(wide), (window.innerWidth - 16) / menuPos.z) }}>
           {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
             <div className="flex items-center gap-2.5">
@@ -7382,7 +7487,7 @@ function TextDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(1080, (window.innerWidth - 8) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(1080, (window.innerWidth - 8) / menuPos.z) }}>
           {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-white/[0.06]">
             <SiteLogoBox size={22} rounded={7} />
@@ -22001,6 +22106,11 @@ function PromptBox({
             </div>
           )}
 
+          {/* Model settings, capped to what the screen can spare. Six Ideogram
+              rows plus LoRA scales pushed the prompt box off the top of a
+              768px screen; here they scroll instead. On a tall screen the cap
+              never binds. */}
+          <div className="max-h-[max(9rem,calc(100dvh-26rem))] overflow-y-auto overscroll-contain [scrollbar-width:thin]">
           {ideogramConfigOpen && (model.id === "ideogram-v4" || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling") && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
@@ -22265,6 +22375,8 @@ function PromptBox({
               )}
             </div>
           )}
+
+          </div>
 
           {/* AuraSR config — checkpoint + overlapping tiles */}
           {model.id === "aura-sr" && (
@@ -26729,7 +26841,7 @@ function ShopDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left, width: Math.min(340, (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(340, (window.innerWidth - 16) / menuPos.z) }}>
           {effectsEnabled && (
             <style>{`
               @keyframes pv2ShopPulse {
@@ -31386,7 +31498,8 @@ function employeePending(
           {/* Wordmark — desktop only. Logo (admin-uploadable dropdown) + title centered over the links. */}
           <div className="hidden sm:flex items-center gap-3 shrink-0 mr-3">
             <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} onGoChat={() => setScannerMode("chat")} size={40} />
-            <div className="flex flex-col items-center leading-none gap-1">
+            {/* The wordmark gives its width to the model strip below xl. */}
+            <div className="hidden xl:flex flex-col items-center leading-none gap-1">
               <span className="text-[13px] font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60">AI Design Studio</span>
               <div className="flex items-center gap-1.5">
                 <a href="/policies" target="_blank" className="text-[8px] text-white/25 hover:text-white/50 transition-colors">Policies</a>
@@ -31402,10 +31515,10 @@ function employeePending(
               open, letting a huge composited spinner escape the overflow clip
               and flash across the whole screen. A static border can't escape. */}
           <div
-            className="flex-1 min-w-0 rounded-xl p-[1.5px] mr-1"
+            className="relative flex-1 min-w-0 rounded-xl p-[1.5px] mr-1"
             style={{ background: "linear-gradient(100deg,#64748b,#e2e8f0,#94a3b8,#f8fafc,#94a3b8,#e2e8f0,#64748b)" }}
           >
-            <div className="rounded-[10px] bg-[#0a0f1a] flex items-center min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden divide-x divide-white/[0.07]">
+            <TaskbarScroller className="rounded-[10px] bg-[#0a0f1a] flex items-center min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden divide-x divide-white/[0.07]">
             <GroupedTaskbarDropdown
               label="Image"
               icon={Image}
@@ -31582,12 +31695,15 @@ function employeePending(
             </div>
             )}
             {/* AI Chat Hub moved to the logo dropdown's admin-only section */}
-            </div>
+            </TaskbarScroller>
           </div>
           {/* Desktop-only right group */}
           <div className="hidden sm:flex items-center gap-2 shrink-0">
-            <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
-            <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
+            {/* Queue counters also yield below xl; the tiles show the same. */}
+            <div className="hidden xl:flex items-center gap-2">
+              <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
+              <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
+            </div>
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" style={{ boxShadow: "0 0 8px rgba(255,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
               <Ticket size={11} className="text-slate-400" />
               <span className="text-white tabular-nums tracking-wider">
