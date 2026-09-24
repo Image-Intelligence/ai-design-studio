@@ -302,6 +302,7 @@ export async function POST(request: Request) {
                     refStrength: params.refStrength ?? undefined,
                     renderSpeed: params.renderSpeed ?? undefined,
                     promptExpansion: params.promptExpansion ?? undefined,
+                    extraLoras: params.extraLoras ?? undefined,
                   }
                 : queueItem.modelId === 'gpt-image-2.5'
                   ? {

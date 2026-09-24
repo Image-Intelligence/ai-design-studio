@@ -93,6 +93,7 @@ interface ImageItem {
   refStrength?: number | null
   renderSpeed?: string | null
   promptExpansion?: string | null
+  extraLoras?: { url: string; name?: string | null; scale: number }[] | null
   r2Key?: string
 }
 
@@ -9445,6 +9446,8 @@ function ImageDetailModal({
     typeof a === "string" && a ? a : typeof b === "string" && b ? b : null
   const panelRenderSpeed = str(image.renderSpeed, vm.renderSpeed)
   const panelPromptExpansion = str(image.promptExpansion, vm.promptExpansion)
+  const panelExtraLoras = (Array.isArray(image.extraLoras) ? image.extraLoras
+    : Array.isArray(vm.extraLoras) ? vm.extraLoras : []) as { url: string; name?: string | null; scale: number }[]
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
   const isUpscalerImage = modelConfig?.isUpscaler
   /*
@@ -9835,16 +9838,31 @@ function ImageDetailModal({
             )}
             {panelLoraUrl && (
               <div>
-                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">LoRA</p>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
-                  <Sparkles size={9} />
-                  {panelLoraName || "Custom LoRA"}
-                  {/* Strength, when it was recorded. Older generations have
-                      none, and a missing value must not read as 0. */}
-                  {panelLoraScale !== null && (
-                    <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>
-                  )}
-                </span>
+                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">
+                  {panelExtraLoras.length > 0 ? `LoRAs (${1 + panelExtraLoras.length})` : "LoRA"}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
+                    <Sparkles size={9} />
+                    {panelLoraName || "Custom LoRA"}
+                    {/* Strength, when it was recorded. Older generations have
+                        none, and a missing value must not read as 0. */}
+                    {panelLoraScale !== null && (
+                      <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>
+                    )}
+                  </span>
+                  {/* The second and third, in stacking order. Their deltas
+                      ADD to the first's, which is why every scale is shown. */}
+                  {panelExtraLoras.map((e, i) => (
+                    <span key={`${e.url}-${i}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] font-mono">
+                      <span className="text-amber-300/50">{i + 2}</span>
+                      {e.name || "Custom LoRA"}
+                      {typeof e.scale === "number" && (
+                        <span className="text-amber-300/60">· {e.scale.toFixed(2)}</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
             {image.referenceImageUrls && image.referenceImageUrls.length > 0 && (
@@ -9876,7 +9894,7 @@ function ImageDetailModal({
               {isUpscalerImage && image.videoMetadata?.upscaleFactor != null && <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] font-mono">{image.videoMetadata.upscaleFactor}x upscale</span>}
               {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.aspectRatio}</span>}
               {!isUpscalerImage && image.quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.quality.toUpperCase()}</span>}
-              {panelLoraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{panelLoraName || "LoRA"}{panelLoraScale !== null && <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>}</span>}
+              {panelLoraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{panelLoraName || "LoRA"}{panelLoraScale !== null && <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>}</span>}{panelLoraUrl && panelExtraLoras.map((e, i) => <span key={`c-${e.url}-${i}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono">{e.name || "LoRA"}{typeof e.scale === "number" && <span className="text-amber-300/60">· {e.scale.toFixed(2)}</span>}</span>)}
               {measuredSize && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono tabular-nums">{measuredSize.w}&times;{measuredSize.h}</span>}
               {formattedDate && <span className="text-[10px] text-slate-600">{formattedDate}</span>}
             </div>
@@ -10682,6 +10700,7 @@ function ImageGrid({
             refStrength: img.refStrength ?? undefined,
             renderSpeed: img.renderSpeed ?? undefined,
             promptExpansion: img.promptExpansion ?? undefined,
+            extraLoras: img.extraLoras ?? undefined,
           }))
         return [...prev, ...newItems]
       })
@@ -20110,6 +20129,10 @@ function PromptBox({
         loraUrl: selectedLoraUrl,
         loraName: loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name,
         loraScale,
+        // The second and third, when stacked. Same shape the row records.
+        ...(extraLoras.length > 0 ? {
+          extraLoras: extraLoras.map(e => ({ url: e.url, scale: e.scale, name: loraJobs.find(j => j.loraUrl === e.url)?.name ?? null })),
+        } : {}),
       } : {}),
       // Only edits have one, matching what the server records.
       ...(model.id.startsWith("ideogram-v4") && permanentRefUrls.length > 0
@@ -20767,7 +20790,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -20789,7 +20812,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {

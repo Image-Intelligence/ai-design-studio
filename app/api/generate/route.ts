@@ -1187,6 +1187,22 @@ export async function POST(request: Request) {
 
         // Handle reference images (upload to FAL storage first)
         const permanentReferenceUrls: string[] = newFalSpec ? [...newFalPermanentRefs] : []
+    /*
+     * The second and third LoRAs, as sent - the body is canonicalised, so
+     * these are the stored urls, not the signed ones fal was handed. Null when
+     * none, so a single-LoRA run records the same shape it always did.
+     */
+    const recordedExtraLoras = Array.isArray(body.extraLoras)
+      ? body.extraLoras
+          .filter((e: any) => typeof e?.url === 'string' && e.url)
+          .slice(0, 2)
+          .map((e: any) => ({
+            url: e.url,
+            name: typeof e.name === 'string' ? e.name : null,
+            scale: Number.isFinite(Number(e.scale)) ? Number(e.scale) : 1,
+          }))
+      : []
+    const recordedExtraLorasOrNull = recordedExtraLoras.length > 0 ? recordedExtraLoras : null
         if (!newFalSpec && referenceImages && referenceImages.length > 0) {
           console.log(`Processing ${referenceImages.length} reference images for ${selectedModel.displayName} edit mode`)
 
@@ -1362,6 +1378,7 @@ export async function POST(request: Request) {
                   // setting sends none, and the panel must say what ran.
                   renderSpeed: typeof newFalInput?.rendering_speed === 'string' ? newFalInput.rendering_speed : null,
                   promptExpansion: typeof newFalInput?.expansion_model === 'string' ? newFalInput.expansion_model : null,
+                  extraLoras: recordedExtraLorasOrNull,
                   // Stored so promoteNextQueuedJob can replay this job later
                   falEndpoint: modelEndpoint,
                   falInput: inputParams,
@@ -1424,6 +1441,7 @@ export async function POST(request: Request) {
                   // setting sends none, and the panel must say what ran.
                   renderSpeed: typeof newFalInput?.rendering_speed === 'string' ? newFalInput.rendering_speed : null,
                   promptExpansion: typeof newFalInput?.expansion_model === 'string' ? newFalInput.expansion_model : null,
+                  extraLoras: recordedExtraLorasOrNull,
                 // What was ACTUALLY sent, so the info panel reports the run
                 // rather than the request. For families served by sibling
                 // endpoints (GPT Image 2.5's sunburst/flare) the endpoint is

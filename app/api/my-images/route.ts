@@ -105,6 +105,7 @@ export async function GET(request: Request) {
         refStrength: (img.videoMetadata as any)?.refStrength ?? null,
         renderSpeed: (img.videoMetadata as any)?.renderSpeed ?? null,
         promptExpansion: (img.videoMetadata as any)?.promptExpansion ?? null,
+        extraLoras: (img.videoMetadata as any)?.extraLoras ?? null,
         falRequestId: img.falRequestId || null,
         folderId: img.folderId ?? null,
       }))
@@ -137,6 +138,7 @@ export async function GET(request: Request) {
         refStrength: (img.videoMetadata as any)?.refStrength ?? null,
         renderSpeed: (img.videoMetadata as any)?.renderSpeed ?? null,
         promptExpansion: (img.videoMetadata as any)?.promptExpansion ?? null,
+        extraLoras: (img.videoMetadata as any)?.extraLoras ?? null,
           falRequestId: img.falRequestId || null,
           folderId: img.folderId ?? null,
       }))
@@ -227,6 +229,7 @@ export async function GET(request: Request) {
         refStrength: (img.videoMetadata as any)?.refStrength ?? null,
         renderSpeed: (img.videoMetadata as any)?.renderSpeed ?? null,
         promptExpansion: (img.videoMetadata as any)?.promptExpansion ?? null,
+        extraLoras: (img.videoMetadata as any)?.extraLoras ?? null,
       folderId: img.folderId ?? null,
     }))
 
