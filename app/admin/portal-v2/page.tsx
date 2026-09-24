@@ -10955,11 +10955,22 @@ function ImageGrid({
 
         // Pending + fresh (top of feed) — only in the normal (non-admin, non-hidden) view
         if (!adminFilters && !showHidden) {
+          // Pictures already drawn by a done slot this pass - see the guard below.
+          const drawnDone = { ids: new Set<number>(), urls: new Set<string>(), keys: new Set<string>() }
           pendingSlots.forEach((slot) => {
             // FINISHED, rendered inside the SAME card (same React key, same
             // position) — the whole point of the "done" state
             if (slot.status === "done" && slot.doneImage) {
               const img = slot.doneImage
+              /*
+               * Two done slots holding the same picture draw ONE tile. Every
+               * path that has ever created a second slot for a job ends here,
+               * so this is the backstop for all of them, present and future.
+               */
+              if (sameAsAny(drawnDone, img)) return
+              drawnDone.ids.add(img.id)
+              if (img.imageUrl) { drawnDone.urls.add(img.imageUrl); drawnDone.keys.add(mediaPathKey(img.imageUrl)) }
+              if (img.r2Key) drawnDone.keys.add(mediaPathKey(img.r2Key))
               headNodes.push({
                 weight: arHeightWeight(img.aspectRatio, img.videoMetadata),
                 key: slot.slotId,
@@ -29514,6 +29525,7 @@ export default function PortalV2Page() {
         const jobs: {
           id: number; modelId: string; prompt: string; createdAt: string
           aspectRatio?: string; quality?: string; referenceImageUrls?: string[]
+          falRequestId?: string | null
         }[] = Array.isArray(data.jobs) ? data.jobs : []
         if (cancelled || jobs.length === 0) return
 
@@ -29546,11 +29558,19 @@ export default function PortalV2Page() {
          * 1:1 duplicate that appears on failure and vanishes on reload.
          */
         const known = new Set<number>()
+        /*
+         * And by fal request id. A NanoBanana run submitted straight to fal
+         * has no queue id on its tile - only the request id - so a queue-id
+         * check missed it and every direct NB2 run was adopted a second time
+         * at the 45s mark: two tiles, one picture.
+         */
+        const knownReqs = new Set<string>()
         for (const sl of pendingSlotsRef.current) {
           if (typeof sl.queueId === "number") known.add(sl.queueId)
           if (typeof sl.queueJobId === "number") known.add(sl.queueJobId)
+          if (sl.nb2RequestId) knownReqs.add(sl.nb2RequestId)
         }
-        const toAdopt = fresh.filter(j => !known.has(j.id))
+        const toAdopt = fresh.filter(j => !known.has(j.id) && !(j.falRequestId && knownReqs.has(j.falRequestId)))
         // Remember every fresh job either way, so a known one is not
         // reconsidered on every tick.
         for (const j of fresh) adoptedJobIds.current.add(j.id)

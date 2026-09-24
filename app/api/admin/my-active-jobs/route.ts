@@ -33,7 +33,7 @@ export async function GET() {
     },
     select: {
       id: true, modelId: true, prompt: true, status: true,
-      createdAt: true, parameters: true,
+      createdAt: true, parameters: true, falRequestId: true,
     },
     orderBy: { createdAt: 'asc' },
     take: MAX_JOBS,
@@ -44,6 +44,8 @@ export async function GET() {
       const p = (j.parameters ?? {}) as Record<string, unknown>
       return {
         id: j.id,
+        // A tile submitted straight to fal knows its job only by this id.
+        falRequestId: j.falRequestId ?? null,
         modelId: typeof p.model === 'string' ? p.model : j.modelId,
         prompt: j.prompt,
         status: j.status,
