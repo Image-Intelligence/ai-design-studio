@@ -26,6 +26,7 @@ export function HomeMediaCard({
   className = "",
   aspect = "aspect-[4/3]",
   frameAspect = 4 / 3,
+  badge,
 }: {
   cardKey: string
   title: string
@@ -40,6 +41,8 @@ export function HomeMediaCard({
   className?: string
   aspect?: string
   frameAspect?: number
+  /** Top-left, always visible (the admin controls take top-right on hover). */
+  badge?: React.ReactNode
 }) {
   const router = useRouter()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -195,6 +198,8 @@ export function HomeMediaCard({
 
       {/* Animated silver rim */}
       <SilverRimOverlay />
+
+      {badge && <div className="absolute top-2 left-2 z-20 pointer-events-none">{badge}</div>}
 
       {/* Foreground label */}
       <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2">

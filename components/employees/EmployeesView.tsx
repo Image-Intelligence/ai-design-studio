@@ -120,8 +120,8 @@ const ACCENTS: Record<string, { ring: string; icon: string; glow: string }> = {
   },
 }
 
-/** The red marker on anything not yet released. */
-function AdminModelBadge() {
+/** The red marker on anything not yet released. Shared with the home page. */
+export function AdminModelBadge() {
   return (
     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-red-500/35 bg-red-500/10 text-[9px] font-bold uppercase tracking-wider text-red-300">
       <ShieldAlert size={9} className="text-red-400" />

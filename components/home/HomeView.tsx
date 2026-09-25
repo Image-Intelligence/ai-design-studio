@@ -1,9 +1,11 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { Image as ImageIcon, Video, FolderOpen, Shield, Wand2, Boxes, Film, Users } from "lucide-react"
+import { Image as ImageIcon, Video, FolderOpen, Shield, Wand2 } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { GenerationsCarousel } from "./GenerationsCarousel"
+import { SITE_EMPLOYEES, AdminModelBadge } from "@/components/employees/EmployeesView"
+import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
 
 // Model group shape (matches IMAGE_MODEL_GROUPS / VIDEO_MODEL_GROUPS in portal-v2).
 export type ModelGroup = { label: string; type: string; accent: string; dot: string; items: string[] }
@@ -79,39 +81,6 @@ function ModelRow({ models, kind, cards, isAdmin, costByName, onSelect, onCardMe
         </div>
       ))}
     </div>
-  )
-}
-
-/**
- * A studio: a whole workspace rather than a single model.
- *
- * Deliberately not a HomeMediaCard. Those are media-led and admin-uploadable,
- * which suits "pick a model"; a studio is picked for what it DOES, so it reads
- * as an icon, a name and a line about the job.
- */
-function StudioCard({ icon, title, blurb, accent, onClick }: {
-  icon: ReactNode
-  title: string
-  blurb: string
-  accent: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`group relative w-full overflow-hidden rounded-2xl border bg-white/[0.02] p-3 text-left transition-all hover:bg-white/[0.05] ${accent}`}
-    >
-      <div className="flex items-start gap-2.5">
-        <span className="mt-0.5 shrink-0">{icon}</span>
-        <span className="min-w-0">
-          <span className="block text-[13px] font-bold leading-tight text-white">{title}</span>
-          {/* Two lines on a phone, three once there is room: the blurb is the
-              thing that tells you which studio you want, so it should not be
-              cut to a single line on small screens. */}
-          <span className="mt-0.5 block text-[10px] leading-snug text-slate-400 line-clamp-2 sm:line-clamp-3">{blurb}</span>
-        </span>
-      </div>
-    </button>
   )
 }
 
@@ -205,47 +174,38 @@ export function HomeView({
         everything else below the fold. `landscape:grid-cols-2` gives it two
         columns as soon as the phone turns, independent of width.
       */}
-      {isAdmin && (
-        <Section icon={<Wand2 size={17} />} title="Studios" subtitle="Guided workspaces">
-          <div className="grid grid-cols-1 landscape:grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 sm:gap-3">
-            <StudioCard
-              icon={<Film size={16} className="text-fuchsia-400" />}
-              title="Movie Studio"
-              blurb="Characters and a story in, a cut and scored film out."
-              accent="border-fuchsia-500/25 hover:border-fuchsia-400/50"
-              onClick={() => onGoEmployee("movie-studio")}
-            />
-            <StudioCard
-              icon={<Users size={16} className="text-violet-400" />}
-              title="Character Design"
-              blurb="Lock one character down: canon description, turnarounds, expressions, wardrobe."
-              accent="border-violet-500/25 hover:border-violet-400/50"
-              onClick={() => onGoEmployee("character-design")}
-            />
-            <StudioCard
-              icon={<Users size={16} className="text-cyan-400" />}
-              title="Face Swap"
-              blurb="One face, one body. No prompt, no settings."
-              accent="border-cyan-500/25 hover:border-cyan-400/50"
-              onClick={() => onGoEmployee("face-swap")}
-            />
-            <StudioCard
-              icon={<Boxes size={16} className="text-emerald-400" />}
-              title="3D Studio"
-              blurb="Meshes, scenes and rigs from the fal 3D suite."
-              accent="border-emerald-500/25 hover:border-emerald-400/50"
-              onClick={onGoThreeD}
-            />
-            <StudioCard
-              icon={<Film size={16} className="text-red-400" />}
-              title="Frames"
-              blurb="Pull stills and clips out of a video, auto-ranked by sharpness."
-              accent="border-red-500/25 hover:border-red-400/50"
-              onClick={onOpenFrames}
-            />
-          </div>
-        </Section>
-      )}
+      {/*
+        STUDIOS - thumbnail cards in the same scrolling row as the models, so
+        the section looks like the rest of the page. Driven by SITE_EMPLOYEES:
+        a released studio shows for everyone, a gated one for admins only,
+        badged. Admins upload each card's thumbnail as for a model.
+      */}
+      {(() => {
+        const studios = SITE_EMPLOYEES.filter(e => employeeVisibleTo(e.id, isAdmin))
+        if (studios.length === 0) return null
+        return (
+          <Section icon={<Wand2 size={17} />} title="Studios" subtitle="Guided workspaces">
+            <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 snap-x [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+              {studios.map(emp => (
+                <div key={emp.id} className="w-40 sm:w-52 shrink-0 snap-start">
+                  <HomeMediaCard
+                    cardKey={`studio:${emp.id}`}
+                    title={emp.name}
+                    subtitle={emp.tagline}
+                    media={cards[`studio:${emp.id}`]}
+                    isAdmin={isAdmin}
+                    badge={EMPLOYEE_ADMIN_ONLY[emp.id] ? <AdminModelBadge /> : undefined}
+                    onClick={() => emp.opensOverlay ? onOpenFrames()
+                      : emp.id === "3d-studio" ? onGoThreeD()
+                      : onGoEmployee(emp.id)}
+                    onMediaChange={onCardMediaChange}
+                  />
+                </div>
+              ))}
+            </div>
+          </Section>
+        )
+      })()}
 
       {/*
         IMAGE — generating models and upscalers are different jobs, so they get
