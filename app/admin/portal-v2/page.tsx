@@ -1173,6 +1173,9 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 1 Dev", "FLUX 2"] },
   { label: "OpenAI",            type: "text to image · edit",      accent: "text-green-400",   dot: "bg-green-400",   items: ["ChatGPT Images 2.0", "ChatGPT Images 2.5"] },
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
+  // Public since 2026-09-25. The tier (v4, Fast, Instant, Tiling) is picked
+  // inside the model, so one item stands for all four.
+  { label: "Ideogram",          type: "text in images",            accent: "text-amber-400",   dot: "bg-amber-400",   items: ["Ideogram v4"] },
   // Google, distinct from the Gemini row above: Virtual Try-On is a Google
   // model but not a Gemini one, and filing it under Gemini would be wrong.
   { label: "Google",            type: "virtual try-on",            accent: "text-emerald-400", dot: "bg-emerald-400", items: ["Virtual Try-On"] },
@@ -1207,7 +1210,6 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   { label: "Google",    type: "text to image · try-on",     accent: "text-emerald-400", dot: "bg-emerald-400", items: ["NanoBanana 2 Lite"] },
   { label: "Meta",      type: "text to image · edit",       accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Meta Muse"] },
   { label: "Bria",      type: "text to image · edit",       accent: "text-teal-400",  dot: "bg-teal-400",  items: ["Bria Fibo 1.5"] },
-  { label: "Ideogram",  type: "text in images",             accent: "text-amber-400", dot: "bg-amber-400", items: ["Ideogram v4"] },
   { label: "Recraft V4", type: "styles · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4"] },
   // Gemini scanners retired from the public offering 2026-07-29 — admin only now
   { label: "Gemini",    type: "text to image",              accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Flash Scanner v2.5", "Pro Scanner v3"] },

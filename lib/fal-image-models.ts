@@ -1363,6 +1363,14 @@ export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
   'gpt-image-2.5-edit',
   'google-virtual-try-on',
   'seedvr2-upscale',
+  // Ideogram v4, all four tiers, promoted 2026-09-25. One picker entry, so one
+  // decision: every tier goes public together, priced per run by
+  // ideogramTicketCost. Remove-text and the LoRA/reference siblings are routes
+  // these tiers take, not separate models, so they follow automatically.
+  'ideogram-v4',
+  'ideogram-v4-fast',
+  'ideogram-v4-instant',
+  'ideogram-v4-tiling',
 ])
 
 /** FAL_IMAGE_MODEL_IDS minus the ones that have been promoted. */
