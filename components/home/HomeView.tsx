@@ -64,9 +64,9 @@ function ModelRow({ models, kind, cards, isAdmin, costByName, onSelect, onCardMe
 }) {
   if (models.length === 0) return null
   return (
-    <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 snap-x [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+    <div className="flex gap-3 2xl:gap-4 overflow-x-auto pb-2 -mx-[var(--home-gutter)] px-[var(--home-gutter)] scroll-px-[var(--home-gutter)] snap-x [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
       {models.map(m => (
-        <div key={`${kind}:${m.name}`} className="w-40 sm:w-52 shrink-0 snap-start">
+        <div key={`${kind}:${m.name}`} className="w-40 sm:w-52 xl:w-56 2xl:w-64 min-[2200px]:w-72 shrink-0 snap-start">
           <HomeMediaCard
             cardKey={`${kind}:${m.name}`}
             title={m.name}
@@ -133,9 +133,14 @@ export function HomeView({
   const adminVideoModels = flatten(adminVideoGroups)
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6 pb-32">
+    /*
+     * Full width, to a 2560px cap for ultrawides. The gutter lives in one
+     * variable so the scrolling rows can bleed to the screen edge by exactly
+     * the same amount at every breakpoint.
+     */
+    <div className="w-full max-w-[2560px] mx-auto py-6 pb-32 px-[var(--home-gutter)] [--home-gutter:1rem] sm:[--home-gutter:1.5rem] lg:[--home-gutter:2rem] 2xl:[--home-gutter:3rem]">
       {/* SHOP — top of the page, no header, just the two cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-7 sm:mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 2xl:gap-6 mb-7 sm:mb-8">
         <HomeMediaCard
           cardKey="shop:tickets"
           title="Buy Tickets"
@@ -145,7 +150,9 @@ export function HomeView({
           isAdmin={isAdmin}
           href="/buy-tickets"
           onMediaChange={onCardMediaChange}
-          aspect="aspect-video"
+          // Wider and shorter on big screens, or the two cards fill the whole
+          // first view on their own at 1920px.
+          aspect="aspect-video xl:aspect-[2/1] 2xl:aspect-[21/9]"
           frameAspect={16 / 9}
         />
         <HomeMediaCard
@@ -157,23 +164,13 @@ export function HomeView({
           isAdmin={isAdmin}
           href="/prompting-studio/subscribe"
           onMediaChange={onCardMediaChange}
-          aspect="aspect-video"
+          // Wider and shorter on big screens, or the two cards fill the whole
+          // first view on their own at 1920px.
+          aspect="aspect-video xl:aspect-[2/1] 2xl:aspect-[21/9]"
           frameAspect={16 / 9}
         />
       </div>
 
-      {/*
-        STUDIOS — whole workspaces, not single models.
-
-        Admin-gated to match the app: portal-v2 sends non-admins straight back
-        out of the employees and 3D modes, and the frames tool is admin-only,
-        so showing these to everyone would be five cards that bounce you.
-
-        The grid is deliberately not just `sm:grid-cols-2 lg:grid-cols-3`: a
-        phone held sideways is wide but SHORT, and one-column cards there push
-        everything else below the fold. `landscape:grid-cols-2` gives it two
-        columns as soon as the phone turns, independent of width.
-      */}
       {/*
         STUDIOS - thumbnail cards in the same scrolling row as the models, so
         the section looks like the rest of the page. Driven by SITE_EMPLOYEES:
@@ -185,9 +182,9 @@ export function HomeView({
         if (studios.length === 0) return null
         return (
           <Section icon={<Wand2 size={17} />} title="Studios" subtitle="Guided workspaces">
-            <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 snap-x [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+            <div className="flex gap-3 2xl:gap-4 overflow-x-auto pb-2 -mx-[var(--home-gutter)] px-[var(--home-gutter)] scroll-px-[var(--home-gutter)] snap-x [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
               {studios.map(emp => (
-                <div key={emp.id} className="w-40 sm:w-52 shrink-0 snap-start">
+                <div key={emp.id} className="w-40 sm:w-52 xl:w-56 2xl:w-64 min-[2200px]:w-72 shrink-0 snap-start">
                   <HomeMediaCard
                     cardKey={`studio:${emp.id}`}
                     title={emp.name}
@@ -231,7 +228,8 @@ export function HomeView({
 
       {/* LIBRARY — full width now that the news card is gone */}
       <Section icon={<FolderOpen size={17} />} title="Your Library">
-        <GenerationsCarousel signedIn={signedIn} />
+        {/* 4:3 at full width would be taller than a 1920px screen. */}
+        <GenerationsCarousel signedIn={signedIn} aspect="aspect-[4/3] sm:aspect-video xl:aspect-[21/9] 2xl:aspect-[3/1]" />
       </Section>
 
       {/* Content policy notice. Compact and always present: the payment
@@ -266,7 +264,7 @@ export function HomeView({
           )}
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Tools</p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
               <HomeMediaCard
                 cardKey="admin:chat"
                 title="AI Chat Hub"
