@@ -102,6 +102,9 @@ export async function GET(request: Request) {
         thumbnailUrl: r!.thumbnailUrl ?? null,
         // A video is shown on the wall by its poster frame.
         videoThumbnailUrl: typeof vm.thumbnailUrl === 'string' ? vm.thumbnailUrl : null,
+        // The screen-sized copy, once made (lib/display-image.ts); until then the
+        // slideshow asks /api/images/[id]?display=1, which makes it.
+        displayUrl: typeof vm.displayUrl === 'string' ? vm.displayUrl : null,
         isVideo: vm.isVideo === true || /\.(mp4|webm|mov)(\?|$)/i.test(r!.imageUrl),
         score: r!.imageRating?.score ?? null,
       }

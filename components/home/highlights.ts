@@ -10,6 +10,8 @@ export interface Highlight {
   imageUrl: string
   thumbnailUrl: string | null
   videoThumbnailUrl: string | null
+  /** Screen-sized copy, when already made. */
+  displayUrl?: string | null
   isVideo: boolean
   score: number | null
 }
@@ -21,7 +23,10 @@ export type Tile = {
   id: number
   /** Small, for the wall. */
   thumb: string
-  /** Full size (or the video itself), for the slideshow. */
+  /**
+   * For the slideshow: the screen-sized copy (2048px WebP, a few hundred KB)
+   * rather than the ~20MB original, or the video itself.
+   */
   full: string
   isVideo: boolean
   aspect: number
@@ -57,7 +62,7 @@ export function loadTile(h: Highlight): Promise<Tile | null> {
         key: `t${++tileSeq}`,
         id: h.id,
         thumb,
-        full: h.imageUrl || thumb,
+        full: h.isVideo ? h.imageUrl : (h.displayUrl || `/api/images/${h.id}?display=1`),
         isVideo: h.isVideo,
         // Clamp freak shapes (a 1px strip) so they cannot wreck a layout.
         aspect: Math.min(Math.max(aspect, 0.4), 3),

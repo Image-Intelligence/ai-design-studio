@@ -297,7 +297,7 @@ export function MyGenFeed({
         selected={selectedIds?.has(img.id)}
         onSelect={onSelectToggle}
         fullWidth={fullSize}
-        isVideo={!!img.videoMetadata || isVideoUrl(img.imageUrl)}
+        isVideo={img.videoMetadata?.isVideo === true || isVideoUrl(img.imageUrl)}
       />
     ),
   }))

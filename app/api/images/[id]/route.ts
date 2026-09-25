@@ -6,6 +6,7 @@ import { uploadToR2 } from '@/lib/r2'
 import { signMediaUrl } from '@/lib/media-url'
 import sharp from 'sharp'
 import { fetchMedia } from '@/lib/media-fetch'
+import { ensureDisplayImage } from '@/lib/display-image'
 
 
 // Authenticated image proxy — serves a user's image by DB ID.
@@ -29,7 +30,7 @@ export async function GET(
     // Only serve images that belong to this user and are not deleted
     const image = await prisma.generatedImage.findFirst({
       where: { id, userId: user.id, isDeleted: false },
-      select: { imageUrl: true, thumbnailUrl: true },
+      select: { imageUrl: true, thumbnailUrl: true, videoMetadata: true },
     })
 
     if (!image) return new NextResponse('Not found', { status: 404 })
@@ -37,6 +38,19 @@ export async function GET(
     const searchParams = new URL(request.url).searchParams
     const isDownload = searchParams.get('download') === '1'
     const isThumb = searchParams.get('thumb') === '1'
+    const isDisplay = searchParams.get('display') === '1'
+
+    if (isDisplay) {
+      // The screen-sized copy (lib/display-image.ts): made on first request,
+      // then a redirect to the stored file. Anything without one (a video) gets
+      // the original.
+      const vm = (image.videoMetadata ?? {}) as Record<string, unknown>
+      const displayUrl = typeof vm.displayUrl === 'string' ? vm.displayUrl : await ensureDisplayImage(id)
+      const res = NextResponse.redirect(signMediaUrl(displayUrl ?? image.imageUrl), 302)
+      // The redirect itself may be cached briefly; the signature inside lasts far longer.
+      res.headers.set('Cache-Control', 'private, max-age=3600')
+      return res
+    }
 
     if (isThumb) {
       // Fast path: a thumbnail was already generated and stored on public R2 — the

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ChevronLeft, ChevronRight, EyeOff, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, Star, X } from "lucide-react"
 import { loadTiles, packRow, resetHidden, setHidden, type HighlightSource, type Tile } from "./highlights"
@@ -16,17 +16,20 @@ import { loadTiles, packRow, resetHidden, setHidden, type HighlightSource, type 
  *   exact shape. (An earlier version panned and zoomed, and cover-cropped
  *   pages; both cut parts of the image off and magnified it past its pixels.)
  *
- *   FULL QUALITY ONLY. Slides are drawn from the full-size files, which are
- *   preloaded and decoded ahead of time. Auto-advance waits for the next
- *   slide to be ready rather than showing a blurry thumbnail that sharpens
- *   later; the thumbnail is only a stand-in when someone skips ahead faster
- *   than the network.
+ *   SHARP, AND IN TIME. Slides are drawn from each image's screen-sized copy
+ *   (2048px WebP, a few hundred KB - see lib/display-image.ts), preloaded and
+ *   decoded ahead. The originals are ~20MB PNGs: a Gallery page of three was
+ *   a 60MB download, so at normal speed images arrived late or not at all,
+ *   and a long run piled decoded 17-megapixel images up in memory.
+ *   Auto-advance waits for the next slide to be ready; the thumbnail is only
+ *   a stand-in when someone skips ahead faster than the network.
  *
  * Themes (several images on screen at once, laid out for the screen's shape):
  *   Carousel   a rotating strip: the current image large in the centre, its
  *              neighbours at the sides, the whole strip gliding along
- *   Gallery    a page of images packed edge to edge in exact proportion: one
- *              tall row on a landscape screen, two rows on a portrait one
+ *   Gallery    a wall of images packed edge to edge in exact proportion (one
+ *              tall row on a landscape screen, two rows on a portrait one)
+ *              that changes one or two images at a time rather than the page
  *   Spotlight  one image, as large as it fits, crossfading
  *   Prints     prints dropped onto a pile, the older ones dimming
  *
@@ -194,11 +197,11 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
 
   const stage = stageRect(vp)
 
-  const slides: Slide[] = useMemo(
-    () => theme === "gallery" ? galleryPages(tiles, stage) : tiles.map(t => [[t]]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tiles, theme, stage.w, stage.h],
-  )
+  // One image per slide. (Gallery keeps its own wall - see LivingGallery - and
+  // only uses this list as its supply.)
+  const slides: Slide[] = useMemo(() => tiles.map(t => [[t]]), [tiles])
+  const galleryRef = useRef<GalleryHandle>(null)
+  const [galleryTick, setGalleryTick] = useState(0)
 
   // Repacking (theme change, resize, more tiles) can move the image on screen to another index.
   useEffect(() => {
@@ -242,8 +245,9 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pos, slides.length, exhausted])
 
-  // Warm the full-size files of what comes next (the carousel shows its neighbours too).
+  // Warm the display files of what comes next (the carousel shows its neighbours too).
   useEffect(() => {
+    if (theme === "gallery") return
     const ahead = theme === "carousel" ? [-2, -1, 0, 1, 2, 3] : [0, 1, 2]
     ahead.forEach(d => preloadSlide(slides[pos + d]))
   }, [pos, slides, theme])
@@ -261,6 +265,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
   }
 
   const go = (d: 1 | -1) => {
+    if (theme === "gallery") { galleryRef.current?.step(d); return }
     if (slides.length === 0) return
     setPos(p => {
       const n = p + d
@@ -276,7 +281,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
    * waiting after ten seconds and moves on regardless.
    */
   useEffect(() => {
-    if (!playing || slides.length < 2) return
+    if (!playing || slides.length < 2 || theme === "gallery") return
     let tries = 0
     let t: ReturnType<typeof setTimeout>
     const tick = () => {
@@ -295,7 +300,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
     const slide = slides[pos]
     if (!slide) return
     anchor.current = slide[0][0].key
-    if (theme === "carousel") { lastTheme.current = theme; setLayers([]); return }
+    if (theme === "carousel" || theme === "gallery") { lastTheme.current = theme; setLayers([]); return }
     const key = tilesOf(slide).map(t => t.key).join("|")
     const themeChanged = lastTheme.current !== theme
     lastTheme.current = theme
@@ -377,7 +382,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
   const swipeX = useRef<number | null>(null)
 
   const current = slides[pos]
-  const single = current && current.length === 1 && current[0].length === 1 ? current[0][0] : null
+  const single = theme !== "gallery" && current && current.length === 1 && current[0].length === 1 ? current[0][0] : null
   const bg = theme === "prints"
     ? "bg-[radial-gradient(ellipse_at_center,#2a2320_0%,#120f0d_70%)]"
     : "bg-[radial-gradient(ellipse_at_center,#161a22_0%,#050608_75%)]"
@@ -402,6 +407,18 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
       <div className="absolute inset-0 overflow-hidden" onClick={() => setChrome(c => !c)}>
         {theme === "carousel" ? (
           <Carousel tiles={tiles} pos={pos} stage={stage} vp={vp} onPick={i => { setPos(i); poke() }} />
+        ) : theme === "gallery" ? (
+          <LivingGallery
+            key={source}
+            ref={galleryRef}
+            tiles={tiles}
+            stage={stage}
+            speed={speed}
+            playing={playing}
+            onHide={hide}
+            onNeedMore={() => { if (!exhausted) loadMore(source, false) }}
+            onSwap={() => setGalleryTick(n => n + 1)}
+          />
         ) : (
           layers.map((l, i) => (
             <SlideLayer key={l.key} layer={l} top={i === layers.length - 1} theme={theme} stage={stage} vp={vp} onHide={hide} />
@@ -469,7 +486,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
       {slides.length > 1 && (
         <div className="absolute inset-x-0 bottom-0 h-0.5 bg-white/10">
           <div
-            key={`${pos}-${speed}-${theme}`}
+            key={`${pos}-${speed}-${theme}-${galleryTick}`}
             className="h-full bg-white/70 origin-left"
             style={{ animation: `ss-progress ${speed}ms linear forwards`, animationPlayState: playing ? "running" : "paused" }}
           />
@@ -597,7 +614,209 @@ function Carousel({ tiles, pos, stage, vp, onPick }: {
   return <>{items}</>
 }
 
-/** Gallery, Spotlight and Prints: one slide on the stage, with its entrance and exit. */
+type GalleryHandle = { step: (d: 1 | -1) => void }
+type GSlot = { id: string; box: number; tile: Tile; since: number }
+
+/**
+ * Gallery: a wall that changes a little at a time.
+ *
+ * The layout is packed once for the screen (one tall row on landscape, two
+ * rows on portrait) and then stays put. Each tick replaces one image - two
+ * once the wall holds five or more - so every image stays up for several
+ * ticks and only one or two new files are needed at a time, instead of a
+ * whole page at once.
+ *
+ * A replacement must already be loaded, and is chosen from the next dozen in
+ * line as the one closest in shape to the space it fills - usually an exact
+ * match, since most generations share a handful of aspect ratios. When it is
+ * not exact the image is fitted whole (never cropped) over a blurred copy of
+ * itself. The slots changed are the ones shown longest, never two side by side.
+ *
+ * Next swaps at once; Previous puts back the last image replaced.
+ */
+const LivingGallery = forwardRef<GalleryHandle, {
+  tiles: Tile[]
+  stage: Rect
+  speed: number
+  playing: boolean
+  onHide: (t: Tile) => void
+  onNeedMore: () => void
+  onSwap: () => void
+}>(function LivingGallery({ tiles, stage, speed, playing, onHide, onNeedMore, onSwap }, ref) {
+  const [rows, setRows] = useState<GSlot[][]>([])
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const tilesRef = useRef(tiles)
+  tilesRef.current = tiles
+  // Every tile key the wall has used, so it moves on through the supply.
+  const used = useRef(new Set<string>())
+  const history = useRef<{ id: string; tile: Tile }[]>([])
+  const layoutKey = `${Math.round(stage.w)}x${Math.round(stage.h)}`
+
+  const candidates = () => {
+    const onWall = new Set(rowsRef.current.flat().map(s => s.tile.id))
+    let list = tilesRef.current.filter(t => !used.current.has(t.key) && !onWall.has(t.id))
+    if (list.length < 10) onNeedMore()
+    if (list.length === 0 && tilesRef.current.length > onWall.size) {
+      // Through the whole supply: start again, minus what is up now.
+      used.current = new Set(rowsRef.current.flat().map(s => s.tile.key))
+      list = tilesRef.current.filter(t => !onWall.has(t.id))
+    }
+    return list
+  }
+
+  /*
+   * Lay the wall out once there is something to show, again on a resize, and
+   * again while it is under-filled and more images arrive (opened from one
+   * tile, the first layout has only that one to work with).
+   */
+  const hasTiles = tiles.length > 0
+  const rowTarget = rows.length ? stage.w / (stage.h / rows.length) : 1
+  const fill = rows.length ? Math.min(...rows.map(r => r.reduce((a, s) => a + s.box, 0))) / rowTarget : 0
+  const relayoutSig = fill < 0.75 ? tiles.length : -1
+  useEffect(() => {
+    if (!hasTiles) return
+    const keep = rowsRef.current.flat().map(s => s.tile)
+    const pool = [...keep, ...candidates().filter(t => !keep.some(k => k.key === t.key))]
+    const page = galleryPages(pool, stage)[0] ?? []
+    const now = Date.now()
+    let n = 0
+    const next = page.map((row, ri) => row.map((t, ci) => {
+      used.current.add(t.key)
+      // Staggered "ages", so the first swaps do not all hit one side.
+      return { id: `${layoutKey}:${ri}:${ci}`, box: t.aspect, tile: t, since: now - ((n++ * 7919) % 5) * 1000 }
+    }))
+    rowsRef.current = next
+    setRows(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutKey, hasTiles, relayoutSig])
+
+  // Keep the next few replacements downloading.
+  useEffect(() => {
+    candidates().slice(0, 6).forEach(t => { if (!t.isVideo) preloadFull(t.full) })
+  })
+
+  const swapIn = (slotIds: string[], force = false) => {
+    const pool = candidates().slice(0, 12)
+    const taken = new Set<string>()
+    let changed = false
+    const next = rowsRef.current.map(row => row.map(slot => {
+      if (!slotIds.includes(slot.id)) return slot
+      const ready = pool.filter(t => !taken.has(t.key) && (force || t.isVideo || fullState.get(t.full) === "ok"))
+      if (ready.length === 0) return slot
+      const pick = ready.reduce((best, t) =>
+        Math.abs(Math.log(t.aspect / slot.box)) < Math.abs(Math.log(best.aspect / slot.box)) ? t : best)
+      taken.add(pick.key)
+      used.current.add(pick.key)
+      history.current.push({ id: slot.id, tile: slot.tile })
+      if (history.current.length > 40) history.current.shift()
+      changed = true
+      return { ...slot, tile: pick, since: Date.now() }
+    }))
+    if (changed) { rowsRef.current = next; setRows(next); onSwap() }
+  }
+
+  /** The slots shown longest, never two neighbours in one row. */
+  const pickSlots = (k: number) => {
+    const all = rowsRef.current.flatMap((row, ri) => row.map((s, ci) => ({ s, ri, ci })))
+    all.sort((a, b) => a.s.since - b.s.since)
+    const chosen: typeof all = []
+    for (const c of all) {
+      if (chosen.length >= k) break
+      if (chosen.some(x => x.ri === c.ri && Math.abs(x.ci - c.ci) === 1)) continue
+      chosen.push(c)
+    }
+    return chosen.map(c => c.s.id)
+  }
+
+  const perTick = () => (rowsRef.current.flat().length >= 5 ? 2 : 1)
+
+  useImperativeHandle(ref, () => ({
+    step: (d: 1 | -1) => {
+      if (d === 1) { swapIn(pickSlots(perTick())); return }
+      const last = history.current.pop()
+      if (!last) return
+      const next = rowsRef.current.map(row => row.map(s => s.id === last.id ? { ...s, tile: last.tile, since: Date.now() } : s))
+      rowsRef.current = next
+      setRows(next)
+      onSwap()
+    },
+  }))
+
+  useEffect(() => {
+    if (!playing || rows.length === 0) return
+    const t = setInterval(() => swapIn(pickSlots(perTick())), speed)
+    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, speed, rows.length > 0])
+
+  // Each row filled to the stage's width at its own height, then the block
+  // scaled to fit the stage's height: exact proportions, no crop.
+  const gap = Math.max(6, Math.min(stage.w, stage.h) * 0.012)
+  const sized = rows.map(row => {
+    const sum = row.reduce((a, s) => a + s.box, 0)
+    return { row, h: (stage.w - gap * (row.length - 1)) / sum }
+  })
+  const total = sized.reduce((a, r) => a + r.h, 0) + gap * (sized.length - 1)
+  const k = total > 0 ? Math.min(1, stage.h / total) : 1
+
+  return (
+    <div className="absolute flex flex-col items-center justify-center" style={{ left: stage.x, top: stage.y, width: stage.w, height: stage.h, gap }}>
+      {sized.map((r, ri) => (
+        <div key={ri} className="flex justify-center" style={{ gap }}>
+          {r.row.map(slot => (
+            <GallerySlot
+              key={slot.id}
+              slot={slot}
+              w={slot.box * r.h * k}
+              h={r.h * k}
+              onHide={t => { onHide(t); swapIn([slot.id], true) }}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+})
+
+/** One space on the wall: the new image fades in over the old one. */
+function GallerySlot({ slot, w, h, onHide }: { slot: GSlot; w: number; h: number; onHide: (t: Tile) => void }) {
+  const [stack, setStack] = useState<Tile[]>([slot.tile])
+  useEffect(() => {
+    setStack(prev => (prev[prev.length - 1]?.key === slot.tile.key ? prev : [...prev.slice(-1), slot.tile]))
+    const t = setTimeout(() => setStack(prev => prev.slice(-1)), 1200)
+    return () => clearTimeout(t)
+  }, [slot.tile])
+  return (
+    <div className="group relative rounded-md overflow-hidden shadow-xl shadow-black/60 bg-white/5" style={{ width: w, height: h }}>
+      {stack.map((t, i) => (
+        <SlotLayer key={t.key} tile={t} box={slot.box} fadeIn={i > 0} />
+      ))}
+      <HideChip tile={slot.tile} onHide={onHide} />
+    </div>
+  )
+}
+
+function SlotLayer({ tile, box, fadeIn }: { tile: Tile; box: number; fadeIn: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (fadeIn) ref.current?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1000, easing: "ease-in-out", fill: "both" })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  // An image not quite the space's shape is fitted whole over a blurred copy of itself.
+  const exact = Math.abs(Math.log(tile.aspect / box)) < 0.03
+  return (
+    <div ref={ref} className="absolute inset-0 bg-[#0b0d12]">
+      {!exact && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={tile.thumb} alt="" className="absolute inset-0 w-full h-full object-cover blur-xl scale-110 opacity-50" />
+      )}
+      <FullImage tile={tile} video={false} />
+    </div>
+  )
+}
+
+/** Spotlight and Prints: one slide on the stage, with its entrance and exit. */
 function SlideLayer({ layer, top, theme, stage, vp, onHide }: {
   layer: Layer
   /** The newest layer; on the prints pile, everything under it dims. */
@@ -616,7 +835,6 @@ function SlideLayer({ layer, top, theme, stage, vp, onHide }: {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    const ease = "cubic-bezier(.22,.61,.36,1)"
     if (theme === "prints") {
       const card = printRef.current
       if (card) {
@@ -628,12 +846,7 @@ function SlideLayer({ layer, top, theme, stage, vp, onHide }: {
         ], { duration: 900, easing: "cubic-bezier(.2,.8,.2,1)", fill: "both" })
       }
     } else {
-      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: theme === "gallery" ? 700 : 1100, easing: "ease-in-out", fill: "both" })
-      if (theme === "gallery") {
-        Array.from(el.querySelectorAll<HTMLElement>("[data-tile]")).forEach((t, i) =>
-          t.animate([{ transform: "translateY(24px)", opacity: 0 }, { transform: "none", opacity: 1 }],
-            { duration: 800, delay: 80 + i * 110, easing: ease, fill: "both" }))
-      }
+      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1100, easing: "ease-in-out", fill: "both" })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -644,32 +857,6 @@ function SlideLayer({ layer, top, theme, stage, vp, onHide }: {
     ref.current.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 700, delay: theme === "prints" ? 0 : 350, easing: "ease-in-out", fill: "both" })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leaving])
-
-  if (theme === "gallery") {
-    // Each row filled to the stage's width at its own height, then the block
-    // scaled to fit the stage's height: exact proportions, no crop.
-    const gap = Math.max(6, Math.min(stage.w, stage.h) * 0.012)
-    const rows = slide.map(row => {
-      const sum = row.reduce((a, t) => a + t.aspect, 0)
-      return { row, h: (stage.w - gap * (row.length - 1)) / sum }
-    })
-    const total = rows.reduce((a, r) => a + r.h, 0) + gap * (rows.length - 1)
-    const k = Math.min(1, stage.h / total)
-    return (
-      <div ref={ref} className="absolute flex flex-col items-center justify-center" style={{ left: stage.x, top: stage.y, width: stage.w, height: stage.h, gap }}>
-        {rows.map((r, ri) => (
-          <div key={ri} className="flex justify-center" style={{ gap }}>
-            {r.row.map(t => (
-              <div key={t.key} data-tile className="group relative rounded-md overflow-hidden shadow-xl shadow-black/60 bg-white/5" style={{ width: t.aspect * r.h * k, height: r.h * k }}>
-                <FullImage tile={t} video />
-                <HideChip tile={t} onHide={onHide} />
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    )
-  }
 
   const t = slide[0][0]
 
