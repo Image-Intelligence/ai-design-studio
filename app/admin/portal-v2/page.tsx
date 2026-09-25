@@ -12,6 +12,7 @@ import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/A
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
 import { EmployeesView, type EmployeeId } from "@/components/employees/EmployeesView"
+import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/employees"
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
 import { ThreeDStudioWorkspace } from "@/components/employees/ThreeDStudioWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
@@ -27707,7 +27708,7 @@ export default function PortalV2Page() {
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem("pv2-employee")
-      if (saved === "movie-studio" || saved === "face-swap" || saved === "character-design") setActiveEmployee(saved)
+      if (isEmployeeId(saved) && saved !== "frames") setActiveEmployee(saved)
     } catch {}
   }, [])
   useEffect(() => {
@@ -27721,10 +27722,18 @@ export default function PortalV2Page() {
   // but only once the admin check has actually resolved (it's async on load)
   useEffect(() => {
     if (scannerMode === "chat" && adminChecked && !isAdminAccount) setScannerMode("image")
-    // Employees is admin-only for now (the work is not priced yet)
-    if (scannerMode === "employees" && adminChecked && !isAdminAccount) setScannerMode("image")
-    if (scannerMode === "threed" && adminChecked && !isAdminAccount) setScannerMode("image")
-  }, [scannerMode, adminChecked, isAdminAccount])
+    // Employees open to everyone once any one is released (lib/employees.ts);
+    // until then, admin-only.
+    if (scannerMode === "employees" && adminChecked && !isAdminAccount && !ANY_PUBLIC_EMPLOYEE) setScannerMode("image")
+    // A workspace this account may not open drops back to the picker.
+    if (activeEmployee && adminChecked && !employeeVisibleTo(activeEmployee, isAdminAccount)) setActiveEmployee(null)
+    /*
+     * 3D Studio used to be its own view mode. It lives inside Employees now;
+     * a restored or Back-navigated "threed" lands there instead of on a view
+     * that no longer exists.
+     */
+    if (scannerMode === "threed") { setActiveEmployee("3d-studio"); setScannerMode("employees") }
+  }, [scannerMode, adminChecked, isAdminAccount, activeEmployee])
   const [selectedVideoModel, setSelectedVideoModel] = useState<VideoModelConfig>(() => VIDEO_MODEL_CONFIGS[0])
   const [videoDuration, setVideoDuration] = useState("5")
   const [videoAspectRatio, setVideoAspectRatio] = useState("16:9")
@@ -31634,7 +31643,7 @@ function employeePending(
               onToggle={() => toggle("refs")}
               library={refLibrary}
               activeIds={videoRefsEnabled ? videoActiveRefIds : motionRefsEnabled ? motionActiveRefIds : activeRefIds}
-              modelMaxRefs={scannerMode === "threed" ? 8 : scannerMode === "employees" && activeEmployee === "movie-studio" ? 16 : scannerMode === "chat" ? (chatRefCap ?? 20) : videoRefsEnabled ? 12 : motionRefsEnabled ? 1 : selectedModel.maxReferenceImages}
+              modelMaxRefs={scannerMode === "threed" || (scannerMode === "employees" && activeEmployee === "3d-studio") ? 8 : scannerMode === "employees" && activeEmployee === "movie-studio" ? 16 : scannerMode === "chat" ? (chatRefCap ?? 20) : videoRefsEnabled ? 12 : motionRefsEnabled ? 1 : selectedModel.maxReferenceImages}
               // Movie Studio alone counts the user's own clips separately —
               // they are cut into the film rather than shown to a model.
               modelMaxVideos={scannerMode === "employees" && activeEmployee === "movie-studio" ? 4 : undefined}
@@ -31723,25 +31732,11 @@ function employeePending(
               }
               onClearErrors={handleClearAllErrors}
             />
-            {/* Frame Extractor — pull the sharpest frames out of a video.
-                ADMIN ONLY for now: not yet tested/priced for regular users. */}
             {/* ADMIN-ONLY TASKBAR ENTRIES ARE RED, not silver. The bar's own
                 rim is silver, so red text + icon is what separates "everyone
-                gets this" from "this is not shipped yet" at a glance. */}
-            {isAdminAccount && (
-            <div className="relative flex-none min-w-[90px] sm:flex-1">
-              <button
-                onClick={() => setFramesOpen(true)}
-                title="Extract frames from a video — auto-ranked by sharpness (admin only)"
-                className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
-                  framesOpen ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
-              >
-                <Film size={15} className="text-red-400" />
-                Frames
-              </button>
-            </div>
-            )}
-            {isAdminAccount && (
+                gets this" from "this is not shipped yet" at a glance.
+                Frames and 3D Studio live inside Employees now. */}
+            {(isAdminAccount || ANY_PUBLIC_EMPLOYEE) && (
             <div className="relative flex-none min-w-[110px] sm:flex-1">
               <button
                 onClick={() => { setScannerMode("employees"); setOpenDropdown(null) }}
@@ -31751,19 +31746,6 @@ function employeePending(
               >
                 <UsersRound size={15} className="text-red-400" />
                 Employees
-              </button>
-            </div>
-            )}
-            {isAdminAccount && (
-            <div className="relative flex-none min-w-[110px] sm:flex-1">
-              <button
-                onClick={() => { setScannerMode("threed"); setOpenDropdown(null) }}
-                title="3D Studio — meshes, scenes and rigs from the fal 3D suite (admin only)"
-                className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
-                  scannerMode === "threed" ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
-              >
-                <Box size={15} className="text-red-400" />
-                3D Studio
               </button>
             </div>
             )}
@@ -31943,34 +31925,7 @@ function employeePending(
         />
       )}
 
-      {scannerMode === "threed" ? (
-        // Same viewport pinning as the other full-page modes: the library and
-        // the viewer must not grow the document, or the window scrollbar
-        // appears and disappears and the taskbar reflows with it.
-        <div style={{ height: "calc(100vh - 48px)" }} className="flex flex-col overflow-hidden">
-          <div className="shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2">
-            <LogoDropdown
-              logoUrl={siteLogoUrl}
-              isAdmin={isAdminAccount}
-              onLogoChange={setSiteLogoUrl}
-              onGoHome={() => setScannerMode("home")}
-              onGoFeed={() => setScannerMode("image")}
-              onGoChat={() => setScannerMode("chat")}
-              size={22}
-            />
-            <Box size={13} className="text-red-400" />
-            <span className="text-[12px] font-bold tracking-wide text-red-300">3D Studio</span>
-            <span className="text-[10px] text-slate-600">meshes, scenes and rigs</span>
-          </div>
-          <ThreeDStudioWorkspace
-            signedIn={user !== null}
-            activeRefs={refLibrary
-              .filter(img => activeRefIds.includes(img.id))
-              .map(r => ({ id: r.id, url: r.url }))}
-            onRemoveRef={handleDeactivateRef}
-          />
-        </div>
-      ) : scannerMode === "employees" ? (
+      {scannerMode === "employees" ? (
         // Fixed to the viewport, like the chat branch. Unconstrained, the two
         // feeds grew the PAGE as they loaded, so the window scrollbar appeared
         // and disappeared — each toggle changed the viewport width, flipped the
@@ -31979,7 +31934,9 @@ function employeePending(
         <EmployeesView
           isAdmin={isAdminAccount}
           active={activeEmployee}
-          onSelect={setActiveEmployee}
+          // Frames opens its extractor over the picker; the rest open as
+          // workspaces inside it.
+          onSelect={(id) => { if (id === "frames") setFramesOpen(true); else setActiveEmployee(id) }}
           logo={
             <LogoDropdown
               logoUrl={siteLogoUrl}
@@ -32020,6 +31977,14 @@ function employeePending(
               onUploadRefs={handleUploadRef}
               onEditRef={(id, url) => setEditingRef({ id, url })}
             />
+          ) : activeEmployee === "3d-studio" ? (
+            <ThreeDStudioWorkspace
+              signedIn={user !== null}
+              activeRefs={refLibrary
+                .filter(img => activeRefIds.includes(img.id))
+                .map(r => ({ id: r.id, url: r.url }))}
+              onRemoveRef={handleDeactivateRef}
+            />
           ) : null}
         </EmployeesView>
         </div>
@@ -32039,7 +32004,7 @@ function employeePending(
           onSelectVideoModel={handleSelectVideoModel}
           onGoChat={() => setScannerMode("chat")}
           onGoEmployee={(id) => { setActiveEmployee(id); setScannerMode("employees") }}
-          onGoThreeD={() => setScannerMode("threed")}
+          onGoThreeD={() => { setActiveEmployee("3d-studio"); setScannerMode("employees") }}
           onOpenFrames={() => setFramesOpen(true)}
           onCardMediaChange={handleCardMediaChange}
         />

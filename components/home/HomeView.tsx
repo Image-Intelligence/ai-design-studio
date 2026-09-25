@@ -147,7 +147,7 @@ export function HomeView({
   onSelectImageModel: (name: string) => void
   onSelectVideoModel: (name: string) => void
   onGoChat: () => void
-  onGoEmployee: (id: "movie-studio" | "face-swap" | "character-design") => void
+  onGoEmployee: (id: import("@/lib/employees").EmployeeId) => void
   onGoThreeD: () => void
   onOpenFrames: () => void
   onCardMediaChange: (key: string, media: CardMedia | null) => void

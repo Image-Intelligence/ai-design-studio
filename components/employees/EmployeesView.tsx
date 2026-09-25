@@ -1,8 +1,11 @@
 "use client"
 
 import { useState } from "react"
-import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound } from "lucide-react"
+import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert } from "lucide-react"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/employees"
+
+export type { EmployeeId }
 
 /**
  * The Employees section of portal-v2.
@@ -12,11 +15,11 @@ import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
  * each with a purpose-built UI that hides the conversation and asks only for
  * what that job needs. The employee behind it is the same one the hub runs.
  *
- * ADMIN ONLY while the work is unpriced — the taskbar entry is gated too, and
- * this component fails closed on top of that.
+ * Released one at a time: each employee's admin-only flag lives in
+ * lib/employees.ts. A gated one is shown to admins alone, with a red
+ * "Admin model" badge; everyone else never sees it. This component fails
+ * closed on top of the taskbar gate.
  */
-
-export type EmployeeId = "movie-studio" | "face-swap" | "character-design"
 
 export type EmployeeDef = {
   id: EmployeeId
@@ -26,6 +29,12 @@ export type EmployeeDef = {
   icon: typeof Clapperboard
   /** Tailwind accent used for the card edge and icon. */
   accent: string
+  /**
+   * Opens over the picker instead of as a workspace inside it. The frame
+   * extractor is a modal already; wrapping it in a second shell would give it
+   * two headers and two close buttons.
+   */
+  opensOverlay?: boolean
 }
 
 export const SITE_EMPLOYEES: EmployeeDef[] = [
@@ -60,6 +69,27 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
     icon: UsersRound,
     accent: "violet",
   },
+  {
+    id: "3d-studio",
+    name: "3D Studio",
+    tagline: "Meshes, scenes and rigs",
+    blurb:
+      "Turn a reference or a prompt into a 3D model, then texture, rig and animate it across the fal 3D suite. "
+      + "Every result opens in the viewer and saves to your library.",
+    icon: Box,
+    accent: "emerald",
+  },
+  {
+    id: "frames",
+    name: "Frames Studio",
+    tagline: "The best stills out of any video",
+    blurb:
+      "Drop in a video and it pulls every frame, ranks them by sharpness and flags motion blur, so the frames "
+      + "worth keeping are at the top. Send them to your references or download them as a ZIP.",
+    icon: Film,
+    accent: "amber",
+    opensOverlay: true,
+  },
 ]
 
 const ACCENTS: Record<string, { ring: string; icon: string; glow: string }> = {
@@ -78,6 +108,26 @@ const ACCENTS: Record<string, { ring: string; icon: string; glow: string }> = {
     icon: "text-violet-400",
     glow: "from-violet-500/[0.10]",
   },
+  emerald: {
+    ring: "border-emerald-500/30 hover:border-emerald-400/60",
+    icon: "text-emerald-400",
+    glow: "from-emerald-500/[0.10]",
+  },
+  amber: {
+    ring: "border-amber-500/30 hover:border-amber-400/60",
+    icon: "text-amber-400",
+    glow: "from-amber-500/[0.10]",
+  },
+}
+
+/** The red marker on anything not yet released. */
+function AdminModelBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-red-500/35 bg-red-500/10 text-[9px] font-bold uppercase tracking-wider text-red-300">
+      <ShieldAlert size={9} className="text-red-400" />
+      Admin model
+    </span>
+  )
 }
 
 export function EmployeesView({
@@ -97,9 +147,11 @@ export function EmployeesView({
   children?: React.ReactNode
 }) {
   const [hovered, setHovered] = useState<EmployeeId | null>(null)
+  // Only what this account may open. Admins see everything, badged.
+  const visible = SITE_EMPLOYEES.filter(e => employeeVisibleTo(e.id, isAdmin))
 
-  // Fails closed: the taskbar entry is admin-gated, and so is this.
-  if (!isAdmin) {
+  // Fails closed: nothing released and not an admin means nothing to show.
+  if (visible.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
         <Lock size={22} className="text-slate-600" />
@@ -108,7 +160,7 @@ export function EmployeesView({
     )
   }
 
-  if (active) {
+  if (active && employeeVisibleTo(active, isAdmin)) {
     const def = SITE_EMPLOYEES.find(e => e.id === active)
     return (
       <div className="flex flex-col min-h-0 flex-1">
@@ -129,9 +181,7 @@ export function EmployeesView({
               </span>
             </>
           )}
-          <span className="ml-auto text-[9px] font-semibold uppercase tracking-wider text-red-400/80">
-            Admin only
-          </span>
+          {EMPLOYEE_ADMIN_ONLY[active] && <span className="ml-auto"><AdminModelBadge /></span>}
         </div>
         <div className="flex-1 min-h-0">{children}</div>
       </div>
@@ -144,14 +194,13 @@ export function EmployeesView({
         <div className="flex items-center gap-3 mb-1">
           {logo}
           <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-100">Employees</h1>
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-red-400/80">Admin only</span>
         </div>
         <p className="text-xs text-slate-500 mb-6">
           Specialists with a workspace built for one job. Pick one to start.
         </p>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          {SITE_EMPLOYEES.map(emp => {
+          {visible.map(emp => {
             const a = ACCENTS[emp.accent] ?? ACCENTS.cyan
             return (
               <button
@@ -170,8 +219,12 @@ export function EmployeesView({
                   <span className="shrink-0 w-10 h-10 rounded-xl border border-white/10 bg-black/40 flex items-center justify-center">
                     <emp.icon size={18} className={a.icon} />
                   </span>
-                  <div className="min-w-0">
-                    <div className="text-sm font-bold text-slate-100">{emp.name}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-bold text-slate-100">{emp.name}</div>
+                      {/* Per employee, so they can be released one at a time. */}
+                      {EMPLOYEE_ADMIN_ONLY[emp.id] && <AdminModelBadge />}
+                    </div>
                     <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">{emp.tagline}</div>
                     <p className="text-[11px] leading-relaxed text-slate-400">{emp.blurb}</p>
                   </div>
