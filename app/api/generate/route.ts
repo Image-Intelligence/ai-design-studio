@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
+import { ideogramTicketCost } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
@@ -287,7 +288,17 @@ export async function POST(request: Request) {
         ? 1
         : model === 'drct'
           ? 1 // minimum; actual cost computed server-side after fetching image dimensions
-          : getTicketCost(model, quality)
+          : typeof model === 'string' && model.startsWith('ideogram-v4')
+            // Priced from the endpoint the run will really hit - size, speed,
+            // LoRA, reference and mode - not a flat per-tier figure.
+            ? ideogramTicketCost({
+                tier: model, quality, aspectRatio: body.aspectRatio,
+                lora: !!body.loraUrl,
+                ref: Array.isArray(body.referenceImages) && body.referenceImages.length > 0,
+                speed: body.ideogramRenderingSpeed, mode: body.ideogramMode,
+                expansion: body.ideogramExpansionModel,
+              })
+            : getTicketCost(model, quality)
     console.log('Selected model:', selectedModel.displayName, '- Quality:', quality, '- Cost:', ticketCost, 'ticket(s)')
 
     // Per-user concurrency cap — this route creates GenerationQueue rows but never

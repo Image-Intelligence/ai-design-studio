@@ -263,3 +263,72 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'topaz-interpolate',        label: 'Topaz Interpolate',         kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'topaz-sdr-to-hdr',         label: 'Topaz SDR to HDR',          kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
 ]
+
+
+// ── Ideogram v4 ──────────────────────────────────────────────────────────────
+/**
+ * Every Ideogram request priced from fal's own numbers, not a flat per-tier
+ * guess. See ideogramRunCostUsd for the table; tickets keep TARGET_MARGIN of
+ * each ticket as margin even on the cheapest pack on the buy-tickets page.
+ */
+export const IDEOGRAM_TARGET_MARGIN = 0.5
+/** The lowest price a ticket is ever sold for on the buy-tickets page. */
+export const CHEAPEST_USD_PER_TICKET = Math.min(...TICKET_PACKAGES.map(p => usdPerTicket(p, 'dev')))
+/** Budgeted for Magic Prompt: fal charges it but does not publish the figure. */
+export const IDEOGRAM_EXPANSION_FEE_USD = 0.01
+
+export interface IdeogramPriceInput {
+  tier: string                 // ideogram-v4 | ideogram-v4-fast | ideogram-v4-instant | ideogram-v4-tiling
+  quality?: string             // 1k | 2k (4k is capped to 2048 by the endpoint)
+  aspectRatio?: string         // "3:4", "1024x1536", or "auto"
+  lora?: boolean
+  ref?: boolean
+  speed?: string               // TURBO | BALANCED | QUALITY
+  mode?: string                // edit | remove-text
+  expansion?: string           // None | Medium | Large
+}
+
+const SPEED_FACTOR: Record<string, number> = { TURBO: 0.75, BALANCED: 1.5, QUALITY: 2.5 }
+
+/** Megapixels the request will render. "auto" is priced as a square: the upper bound. */
+function ideogramMegapixels(quality?: string, aspectRatio?: string): number {
+  const long = quality === '1k' ? 1024 : 2048
+  let r = 1
+  if (aspectRatio && aspectRatio !== 'auto') {
+    const [w, h] = aspectRatio.replace(/x/i, ':').split(':').map(Number)
+    if (w > 0 && h > 0) r = Math.min(w, h) / Math.max(w, h)
+  }
+  return (long * long * r) / 1_000_000
+}
+
+/** What fal charges for one Ideogram image with these settings, in USD. */
+export function ideogramRunCostUsd(o: IdeogramPriceInput): number {
+  if (o.mode === 'remove-text' && o.ref) return 0.09 // layerize-text, flat, no expansion
+  const mp = ideogramMegapixels(o.quality, o.aspectRatio)
+  const chosen = SPEED_FACTOR[o.speed ?? 'BALANCED'] ?? 1.5
+  let unit: number
+  let factor = chosen
+  if (o.tier === 'ideogram-v4-tiling') {
+    unit = o.lora ? 0.045 : 0.04
+  } else if (o.lora || o.ref) {
+    // The sibling a LoRA or a reference moves the request to. Instant goes
+    // there at TURBO; the others keep the speed they were given.
+    unit = o.lora ? 0.015 : 0.01
+    if (o.tier === 'ideogram-v4-instant') factor = SPEED_FACTOR.TURBO
+  } else if (o.tier === 'ideogram-v4-instant') {
+    unit = 0.005; factor = 1.5 // no speed setting on Instant itself
+  } else if (o.tier === 'ideogram-v4-fast') {
+    unit = 0.007
+  } else {
+    unit = 0.01
+  }
+  const expansion = o.expansion === 'None' ? 0 : IDEOGRAM_EXPANSION_FEE_USD
+  return mp * factor * unit + expansion
+}
+
+/** Tickets for one Ideogram image: cost over the margin-adjusted cheapest ticket. */
+export function ideogramTicketCost(o: IdeogramPriceInput): number {
+  const perTicket = CHEAPEST_USD_PER_TICKET * (1 - IDEOGRAM_TARGET_MARGIN)
+  // The small epsilon stops float noise turning an exact 1.0 into 2.
+  return Math.max(1, Math.ceil(ideogramRunCostUsd(o) / perTicket - 1e-9))
+}

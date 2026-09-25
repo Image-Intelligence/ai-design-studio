@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
+import { ideogramTicketCost } from "@/lib/ticket-pricing"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -20026,6 +20027,13 @@ function PromptBox({
     ? seedvrTicketCost
     : model.isUpscaler && !model.isTryOn && usesFactorPricing
     ? upscaleTicketCost
+    : model.id.startsWith("ideogram-v4")
+    // The same function the server charges with, fed the same settings.
+    ? ideogramTicketCost({
+        tier: model.id, quality, aspectRatio, lora: !!selectedLoraUrl,
+        ref: activeRefImages.length > 0, speed: ideogramRenderingSpeed,
+        mode: ideogramMode, expansion: ideogramExpansion,
+      })
     : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
   const needsRefImage = !!model.requiresReferenceImage && activeRefImages.length === 0
