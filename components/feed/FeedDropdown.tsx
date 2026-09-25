@@ -4,8 +4,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Layers, EyeOff, ChevronDown } from "lucide-react"
 
 // Feed settings dropdown for the my-generations page. Copied from the portal-v2
-// FeedDropdown with the admin feed-filter section removed (regular users only).
-// Exposes: Columns, View Hidden, Full Size, Layout, Packing, Quality.
+// FeedDropdown with the admin feed-filter section removed.
+// Exposes: Columns, Page Size, View Hidden (optional), Full Size, Layout, Packing, Quality.
+// On /my-generations it is admin-only and edits the layout for every account
+// (see lib/mygen-feed-settings.ts); `scope` and `status` say so in its header.
 
 // Segmented pill control.
 function FeedSeg<T extends string>({ value, options, onChange }: {
@@ -84,6 +86,8 @@ export function FeedDropdown({
   onShowHiddenChange,
   pageSize,
   onPageSizeChange,
+  scope,
+  status,
 }: {
   open: boolean
   onToggle: () => void
@@ -97,10 +101,15 @@ export function FeedDropdown({
   onMasonryModeChange: (mode: "flow" | "rows") => void
   tileRes: "thumb" | "full"
   onTileResChange: (res: "thumb" | "full") => void
-  showHidden: boolean
-  onShowHiddenChange: (on: boolean) => void
+  /** Omit both to leave out the View Hidden row. */
+  showHidden?: boolean
+  onShowHiddenChange?: (on: boolean) => void
   pageSize: number
   onPageSizeChange: (n: number) => void
+  /** A note beside the title, e.g. "All users". */
+  scope?: string
+  /** Right side of the header, e.g. a saving indicator. */
+  status?: ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -151,6 +160,8 @@ export function FeedDropdown({
           <div className="flex items-center gap-2 px-3 py-2.5 border-b border-white/5">
             <Layers size={13} className="text-cyan-400" />
             <span className="text-[12px] font-semibold text-white">Feed Settings</span>
+            {scope && <span className="px-1.5 py-0.5 rounded-md bg-red-500/15 border border-red-500/30 text-[9px] font-bold uppercase tracking-wider text-red-300">{scope}</span>}
+            {status && <span className="ml-auto text-[10px] text-slate-400">{status}</span>}
           </div>
 
           <div className="p-3 space-y-3 max-h-[calc(100vh-140px)] overflow-y-auto">
@@ -198,11 +209,13 @@ export function FeedDropdown({
                 </section>
 
                 {/* VIEW */}
-                <section className="border-t border-white/5 pt-3 space-y-1.5">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">View</span>
-                  <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={showHidden} onChange={onShowHiddenChange} accent="amber" />
-                  {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
-                </section>
+                {onShowHiddenChange && (
+                  <section className="border-t border-white/5 pt-3 space-y-1.5">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">View</span>
+                    <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={!!showHidden} onChange={onShowHiddenChange} accent="amber" />
+                    {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
+                  </section>
+                )}
               </div>
 
               {/* DISPLAY */}

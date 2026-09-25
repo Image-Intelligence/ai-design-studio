@@ -297,6 +297,7 @@ model HomeCard {
 model SystemState {
   id                       Int      @id @default(autoincrement())
   logoUrl                  String?  // Site logo (admin-uploaded, shown to everyone in the portal-v2 header)
+  myGenFeed                Json?    // /my-generations feed layout for ALL users, admin-set (lib/mygen-feed-settings.ts; DDL out-of-band via add-mygen-feed.cjs, read via raw SQL)
   adminContentFilterOn     Boolean  @default(false) // CCBill prompt filter also applies to ADMIN accounts (users always filtered; toggled on portal-v2; DDL out-of-band via add-content-filter-flag.js, read via raw SQL)
   contentFilterMode        String   @default("gemini") // 'gemini' (lists + LLM check) | 'static' (lists only, free) — DDL out-of-band, raw SQL
   isShopOpen               Boolean  @default(true)

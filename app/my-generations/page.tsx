@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Download, ExternalLink, Copy, Sparkles, AlertTriangle, Trash2, X, Square,
   Image as ImageIcon, LayoutDashboard, Folder, FolderPlus, MoreVertical,
@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { FeedDropdown } from "@/components/feed/FeedDropdown"
 import { MyGenFeed, type MyGenImage } from "@/components/feed/MyGenFeed"
+import { MYGEN_FEED_DEFAULTS, sanitizeMyGenFeed, type MyGenFeedSettings } from "@/lib/mygen-feed-settings"
 
 interface GeneratedImage extends MyGenImage {
   prompt: string
@@ -22,13 +23,18 @@ interface GeneratedImage extends MyGenImage {
 
 type GenFolder = { id: number; name: string; parentId: number | null }
 
-// --- Feed-style persistence (independent from portal-v2's pv2-feed-* keys) ---
-const readLS = (key: string, fallback: string): string => {
-  if (typeof window === "undefined") return fallback
-  try { return localStorage.getItem(key) ?? fallback } catch { return fallback }
+/*
+ * The feed layout is site-wide: admins set it in the Feed dropdown for every
+ * account (/api/site/mygen-feed). The last copy seen is kept in localStorage
+ * only so the feed can start with the right page size before the request
+ * returns; the server's copy always wins.
+ */
+const FEED_CACHE_KEY = "mg-feed-global"
+const readFeedCache = (): MyGenFeedSettings | null => {
+  try { const v = localStorage.getItem(FEED_CACHE_KEY); return v ? sanitizeMyGenFeed(JSON.parse(v)) : null } catch { return null }
 }
-const writeLS = (key: string, value: string) => {
-  try { localStorage.setItem(key, value) } catch {}
+const writeFeedCache = (v: MyGenFeedSettings) => {
+  try { localStorage.setItem(FEED_CACHE_KEY, JSON.stringify(v)) } catch {}
 }
 
 /*
@@ -58,36 +64,54 @@ export default function MyGenerationsPage() {
   const [refreshKey, setRefreshKey] = useState(0)
   const bumpFeed = useCallback(() => setRefreshKey(k => k + 1), [])
 
-  // --- Feed-style state (hydrated from mg-feed-*) ---
+  // --- Feed layout (site-wide; admins edit it) ---
   const [feedOpen, setFeedOpen] = useState(false)
-  const [feedCols, setFeedCols] = useState<number | null>(null)
-  const [feedFullSize, setFeedFullSize] = useState(true)
-  const [feedFullSizeLayout, setFeedFullSizeLayout] = useState<"grid" | "masonry">("masonry")
-  const [feedMasonryMode, setFeedMasonryMode] = useState<"flow" | "rows">("rows")
-  const [feedTileRes, setFeedTileRes] = useState<"thumb" | "full">("thumb")
-  const [feedShowHidden, setFeedShowHidden] = useState(false) // session-only
-  const [feedPageSize, setFeedPageSize] = useState(24)
-  const [feedHydrated, setFeedHydrated] = useState(false)
+  const [feed, setFeed] = useState<MyGenFeedSettings>(MYGEN_FEED_DEFAULTS)
+  const [feedReady, setFeedReady] = useState(false)
+  const [canEditFeed, setCanEditFeed] = useState(false)
+  const [feedSave, setFeedSave] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const feedRef = useRef(feed)
+  feedRef.current = feed
+  // Personal, per visit: viewing your own hidden generations is not a layout choice.
+  const [feedShowHidden, setFeedShowHidden] = useState(false)
 
   useEffect(() => {
-    const colsRaw = readLS("mg-feed-cols", "auto")
-    setFeedCols(colsRaw === "auto" || colsRaw === "" ? null : parseInt(colsRaw))
-    setFeedFullSize(readLS("mg-feed-fullsize", "1") !== "0")
-    setFeedFullSizeLayout(readLS("mg-feed-fullsize-layout", "masonry") === "grid" ? "grid" : "masonry")
-    setFeedMasonryMode(readLS("mg-feed-masonry-mode", "rows") === "flow" ? "flow" : "rows")
-    setFeedTileRes(readLS("mg-feed-tile-res", "thumb") === "full" ? "full" : "thumb")
-    const sizeRaw = parseInt(readLS("mg-feed-page-size", "24"))
-    setFeedPageSize([8, 12, 24, 48, 96].includes(sizeRaw) ? sizeRaw : 24)
-    setFeedHydrated(true)
+    const cached = readFeedCache()
+    if (cached) setFeed(cached)
+    setFeedReady(true)
+    fetch("/api/site/mygen-feed", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        const s = sanitizeMyGenFeed(d.settings)
+        setFeed(s)
+        writeFeedCache(s)
+        setCanEditFeed(!!d.canEdit)
+      })
+      .catch(() => {})
   }, [])
 
-  // Persist feed-style changes (only after hydration, so we don't clobber saved prefs)
-  useEffect(() => { if (feedHydrated) writeLS("mg-feed-cols", feedCols == null ? "auto" : String(feedCols)) }, [feedCols, feedHydrated])
-  useEffect(() => { if (feedHydrated) writeLS("mg-feed-fullsize", feedFullSize ? "1" : "0") }, [feedFullSize, feedHydrated])
-  useEffect(() => { if (feedHydrated) writeLS("mg-feed-fullsize-layout", feedFullSizeLayout) }, [feedFullSizeLayout, feedHydrated])
-  useEffect(() => { if (feedHydrated) writeLS("mg-feed-masonry-mode", feedMasonryMode) }, [feedMasonryMode, feedHydrated])
-  useEffect(() => { if (feedHydrated) writeLS("mg-feed-tile-res", feedTileRes) }, [feedTileRes, feedHydrated])
-  useEffect(() => { if (feedHydrated) writeLS("mg-feed-page-size", String(feedPageSize)) }, [feedPageSize, feedHydrated])
+  /** An admin's change: applied here at once, saved for everyone shortly after. */
+  const updateFeed = (patch: Partial<MyGenFeedSettings>) => {
+    if (!canEditFeed) return
+    const next = { ...feedRef.current, ...patch }
+    feedRef.current = next
+    setFeed(next)
+    writeFeedCache(next)
+    // One save for a burst of changes (dragging the column slider).
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    setFeedSave("saving")
+    saveTimer.current = setTimeout(() => {
+      fetch("/api/site/mygen-feed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: feedRef.current }),
+      })
+        .then(r => setFeedSave(r.ok ? "saved" : "error"))
+        .catch(() => setFeedSave("error"))
+    }, 500)
+  }
 
   // --- Folder state ---
   const [folders, setFolders] = useState<GenFolder[]>([])
@@ -511,27 +535,38 @@ export default function MyGenerationsPage() {
             ))}
           </div>
 
-          {/* Feed settings */}
-          <div className="w-[104px]">
-            <FeedDropdown
-              open={feedOpen}
-              onToggle={() => setFeedOpen(o => !o)}
-              cols={feedCols}
-              onColsChange={setFeedCols}
-              fullSize={feedFullSize}
-              onFullSizeChange={setFeedFullSize}
-              fullSizeLayout={feedFullSizeLayout}
-              onFullSizeLayoutChange={setFeedFullSizeLayout}
-              masonryMode={feedMasonryMode}
-              onMasonryModeChange={setFeedMasonryMode}
-              tileRes={feedTileRes}
-              onTileResChange={setFeedTileRes}
-              showHidden={feedShowHidden}
-              onShowHiddenChange={setFeedShowHidden}
-              pageSize={feedPageSize}
-              onPageSizeChange={setFeedPageSize}
-            />
-          </div>
+          {/* Your hidden generations (personal). */}
+          <button
+            onClick={() => setFeedShowHidden(v => !v)}
+            title={feedShowHidden ? "Back to your generations" : "View the generations you have hidden"}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs transition-all ${feedShowHidden ? "border-amber-500/40 bg-amber-500/15 text-amber-300" : "border-white/6 bg-white/2 text-slate-400 hover:bg-white/5 hover:text-white"}`}
+          >
+            <EyeOff size={12} /> <span className="hidden sm:inline">Hidden</span>
+          </button>
+
+          {/* Feed layout - admins only, and it changes the page for every account. */}
+          {canEditFeed && (
+            <div className="w-[104px]">
+              <FeedDropdown
+                open={feedOpen}
+                onToggle={() => setFeedOpen(o => !o)}
+                cols={feed.cols}
+                onColsChange={cols => updateFeed({ cols })}
+                fullSize={feed.fullSize}
+                onFullSizeChange={fullSize => updateFeed({ fullSize })}
+                fullSizeLayout={feed.fullSizeLayout}
+                onFullSizeLayoutChange={fullSizeLayout => updateFeed({ fullSizeLayout })}
+                masonryMode={feed.masonryMode}
+                onMasonryModeChange={masonryMode => updateFeed({ masonryMode })}
+                tileRes={feed.tileRes}
+                onTileResChange={tileRes => updateFeed({ tileRes })}
+                pageSize={feed.pageSize}
+                onPageSizeChange={pageSize => updateFeed({ pageSize })}
+                scope="All users"
+                status={feedSave === "saving" ? "Saving…" : feedSave === "saved" ? "Saved for everyone" : feedSave === "error" ? <span className="text-red-400">Not saved</span> : null}
+              />
+            </div>
+          )}
 
           {/* Select toggle */}
           {isSelectMode ? (
@@ -674,16 +709,16 @@ export default function MyGenerationsPage() {
 
           {/* Feed - starts loading at once, alongside the session check. */}
           <MyGenFeed
-            signedIn={signedIn}
-            cols={feedCols}
-            fullSize={feedFullSize}
-            fullSizeLayout={feedFullSizeLayout}
-            masonryMode={feedMasonryMode}
-            tileRes={feedTileRes}
+            signedIn={signedIn && feedReady}
+            cols={feed.cols}
+            fullSize={feed.fullSize}
+            fullSizeLayout={feed.fullSizeLayout}
+            masonryMode={feed.masonryMode}
+            tileRes={feed.tileRes}
             showHidden={feedShowHidden}
             typeFilter={typeFilter}
             folderId={currentFolderId}
-            pageSize={feedPageSize}
+            pageSize={feed.pageSize}
             selectMode={isSelectMode}
             selectedIds={selectedIds}
             onSelectToggle={toggleSelect}
