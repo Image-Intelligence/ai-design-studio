@@ -93,34 +93,39 @@ export async function resetHidden() {
 }
 
 /**
- * Group tiles into rows whose combined aspect is close to `target`.
+ * Take one row from the front of `pool` (mutating it) whose combined aspect is
+ * close to `target`.
  *
- * Greedy with a short look-ahead: each row starts from the next tile in order
+ * Greedy with a short look-ahead: the row starts from the next tile in order
  * (which keeps favourites and random picks mixed), then adds whichever of the
  * next few tiles brings it closest to the target without overshooting by
  * much, stopping once it is nearly full.
  */
+export function packRow(pool: Tile[], target: number, maxPerRow = 3): Tile[] {
+  if (pool.length === 0) return []
+  const group = [pool.shift()!]
+  let sum = group[0].aspect
+  while (group.length < maxPerRow && sum < target * 0.85) {
+    let best = -1
+    let bestGap = Infinity
+    for (let i = 0; i < Math.min(pool.length, 8); i++) {
+      const next = sum + pool[i].aspect
+      if (next > target * 1.25) continue
+      const gap = Math.abs(target - next)
+      if (gap < bestGap) { bestGap = gap; best = i }
+    }
+    if (best < 0) break
+    const [t] = pool.splice(best, 1)
+    group.push(t)
+    sum += t.aspect
+  }
+  return group
+}
+
+/** Split tiles into rows whose combined aspect is close to `target`. */
 export function pack(tiles: Tile[], target: number, maxPerRow = 3): Tile[][] {
   const pool = [...tiles]
   const rows: Tile[][] = []
-  while (pool.length > 0) {
-    const group = [pool.shift()!]
-    let sum = group[0].aspect
-    while (group.length < maxPerRow && sum < target * 0.85) {
-      let best = -1
-      let bestGap = Infinity
-      for (let i = 0; i < Math.min(pool.length, 8); i++) {
-        const next = sum + pool[i].aspect
-        if (next > target * 1.25) continue
-        const gap = Math.abs(target - next)
-        if (gap < bestGap) { bestGap = gap; best = i }
-      }
-      if (best < 0) break
-      const [t] = pool.splice(best, 1)
-      group.push(t)
-      sum += t.aspect
-    }
-    rows.push(group)
-  }
+  while (pool.length > 0) rows.push(packRow(pool, target, maxPerRow))
   return rows
 }

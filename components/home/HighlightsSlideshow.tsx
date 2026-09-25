@@ -3,61 +3,137 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ChevronLeft, ChevronRight, EyeOff, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, Star, X } from "lucide-react"
-import { loadTiles, pack, resetHidden, setHidden, type HighlightSource, type Tile } from "./highlights"
+import { loadTiles, packRow, resetHidden, setHidden, type HighlightSource, type Tile } from "./highlights"
 
 /*
  * Fullscreen slideshow of the user's own work, opened from the home page's
  * My Generations wall - either from a tile (it starts there) or from the
  * card's Slideshow button.
  *
- * Themes, after the ones in Apple Photos:
- *   Ken Burns       slow pan and zoom on each image
- *   Dissolve        a still image, soft crossfade
- *   Sliding Panels  each image slides in over the last
- *   Magazine        two or three images per page, packed to the screen
- *   Vintage Prints  prints dropped onto a pile, the older ones dimming
+ * Two rules every theme keeps:
  *
- * It streams from the same /api/user/highlights sample as the wall (Mix,
- * Favourites or Everything), asking for more before it runs out, so a long
- * slideshow keeps going through the whole history instead of looping.
+ *   NOTHING IS CROPPED OR ZOOMED. Every image is drawn in a box of its own
+ *   exact shape. (An earlier version panned and zoomed, and cover-cropped
+ *   pages; both cut parts of the image off and magnified it past its pixels.)
  *
- * Each slide becomes a "layer". A new layer animates in on top; the one it
- * replaces animates out and is dropped once its exit is done. Animations use
- * the Web Animations API rather than CSS classes, so a layer's enter and
- * exit can differ per theme and per direction without a stylesheet.
+ *   FULL QUALITY ONLY. Slides are drawn from the full-size files, which are
+ *   preloaded and decoded ahead of time. Auto-advance waits for the next
+ *   slide to be ready rather than showing a blurry thumbnail that sharpens
+ *   later; the thumbnail is only a stand-in when someone skips ahead faster
+ *   than the network.
+ *
+ * Themes (several images on screen at once, laid out for the screen's shape):
+ *   Carousel   a rotating strip: the current image large in the centre, its
+ *              neighbours at the sides, the whole strip gliding along
+ *   Gallery    a page of images packed edge to edge in exact proportion: one
+ *              tall row on a landscape screen, two rows on a portrait one
+ *   Spotlight  one image, as large as it fits, crossfading
+ *   Prints     prints dropped onto a pile, the older ones dimming
+ *
+ * Every layout is computed from the viewport, so the same code serves a
+ * phone held either way, a tablet and a wide monitor.
+ *
+ * It streams from /api/user/highlights (Mix, Favourites or Everything),
+ * fetching more before it runs out, so it keeps going through the whole
+ * history instead of looping.
  */
 
-type Theme = "kenburns" | "dissolve" | "sliding" | "magazine" | "prints"
+type Theme = "carousel" | "gallery" | "spotlight" | "prints"
 
 const THEMES: { id: Theme; label: string }[] = [
-  { id: "kenburns", label: "Ken Burns" },
-  { id: "dissolve", label: "Dissolve" },
-  { id: "sliding", label: "Sliding Panels" },
-  { id: "magazine", label: "Magazine" },
-  { id: "prints", label: "Vintage Prints" },
+  { id: "carousel", label: "Carousel" },
+  { id: "gallery", label: "Gallery" },
+  { id: "spotlight", label: "Spotlight" },
+  { id: "prints", label: "Prints" },
 ]
-const SPEEDS = [{ ms: 3000, label: "Fast" }, { ms: 5000, label: "Normal" }, { ms: 8000, label: "Slow" }]
+const SPEEDS = [{ ms: 3500, label: "Fast" }, { ms: 5500, label: "Normal" }, { ms: 9000, label: "Slow" }]
 const SOURCES: { id: HighlightSource; label: string }[] = [
   { id: "mix", label: "Mix" }, { id: "fav", label: "Favourites" }, { id: "all", label: "Everything" },
 ]
-const PREF_KEY = "home-slideshow"
-/** Vintage Prints keeps this many prints on the pile. */
+const PREF_KEY = "home-slideshow-v2"
+/** Prints keeps this many prints on the pile. */
 const PILE = 5
 
-type Layer = { key: string; slide: Tile[]; leaving: boolean; dir: 1 | -1; seed: number }
+/** A slide: rows of tiles (one row of one tile for everything but Gallery). */
+type Slide = Tile[][]
+type Layer = { key: string; slide: Slide; leaving: boolean; seed: number }
+type Rect = { x: number; y: number; w: number; h: number }
+
+// ── Full-size preloading ────────────────────────────────────────────────────
+
+const fullState = new Map<string, "loading" | "ok" | "err">()
+
+/** Load and decode a full-size image once; later draws of it are instant. */
+function preloadFull(url: string) {
+  if (fullState.has(url)) return
+  fullState.set(url, "loading")
+  const img = new Image()
+  img.decoding = "async"
+  img.onload = () => {
+    const done = () => fullState.set(url, "ok")
+    if (img.decode) img.decode().then(done, done)
+    else done()
+  }
+  img.onerror = () => fullState.set(url, "err")
+  img.src = url
+}
+
+const tilesOf = (s: Slide | undefined) => (s ? s.flat() : [])
+const preloadSlide = (s: Slide | undefined) => tilesOf(s).forEach(t => { if (!t.isVideo) preloadFull(t.full) })
+/** Ready = every image in it has finished (a failed one counts, it will show its thumbnail). */
+const slideReady = (s: Slide | undefined) =>
+  tilesOf(s).every(t => t.isVideo || (fullState.get(t.full) ?? "loading") !== "loading")
+
+// ── Layout ──────────────────────────────────────────────────────────────────
+
+/**
+ * The area slides are laid out in: the screen minus room for the controls, so
+ * nothing jumps when the controls fade in and out.
+ */
+function stageRect(vp: { w: number; h: number }): Rect {
+  const phone = Math.min(vp.w, vp.h) < 600
+  const portrait = vp.h > vp.w
+  const top = phone ? 60 : 72
+  const bottom = phone ? (portrait ? 150 : 76) : 112
+  const x = phone ? 10 : Math.max(24, vp.w * 0.025)
+  return { x, y: top, w: Math.max(100, vp.w - x * 2), h: Math.max(100, vp.h - top - bottom) }
+}
+
+/**
+ * Gallery pages. A landscape screen gets one tall row (three or four
+ * portraits at full height, or two landscapes and a portrait); a portrait
+ * screen gets two rows stacked. Rows are filled to the page's shape, then
+ * scaled as a block to fit, so every image keeps its exact proportions.
+ */
+function galleryPages(tiles: Tile[], stage: Rect): Slide[] {
+  const portrait = stage.h > stage.w
+  const rows = portrait ? 2 : 1
+  const target = stage.w / (stage.h / rows)
+  // Rows stop by themselves once full; the cap only stops a run of slim
+  // portraits turning a wide screen into a picket fence.
+  const maxPerRow = portrait ? 3 : 5
+  const pool = [...tiles]
+  const pages: Slide[] = []
+  while (pool.length > 0) {
+    const page: Tile[][] = []
+    for (let r = 0; r < rows && pool.length > 0; r++) page.push(packRow(pool, target, maxPerRow))
+    pages.push(page)
+  }
+  return pages
+}
 
 function readPrefs(): { theme: Theme; speed: number; source: HighlightSource } {
   try {
     const p = JSON.parse(localStorage.getItem(PREF_KEY) || "{}")
     return {
-      theme: THEMES.some(t => t.id === p.theme) ? p.theme : "kenburns",
-      speed: SPEEDS.some(s => s.ms === p.speed) ? p.speed : 5000,
+      theme: THEMES.some(t => t.id === p.theme) ? p.theme : "carousel",
+      speed: SPEEDS.some(s => s.ms === p.speed) ? p.speed : 5500,
       source: SOURCES.some(s => s.id === p.source) ? p.source : "mix",
     }
-  } catch { return { theme: "kenburns", speed: 5000, source: "mix" } }
+  } catch { return { theme: "carousel", speed: 5500, source: "mix" } }
 }
 
-/** Deterministic pseudo-random in [0, 1) per layer, so re-renders do not reshuffle motion. */
+/** Deterministic pseudo-random in [0, 1) per layer, so re-renders do not reshuffle. */
 const rnd = (seed: number, k: number) => {
   const x = Math.sin(seed * 9301 + k * 49297) * 233280
   return x - Math.floor(x)
@@ -80,13 +156,13 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
   const [layers, setLayers] = useState<Layer[]>([])
   const [chrome, setChrome] = useState(true)
   const [full, setFull] = useState(false)
+  const [canFull, setCanFull] = useState(false)
   const [loading, setLoading] = useState(false)
   const [exhausted, setExhausted] = useState(false)
   const [hiddenCount, setHiddenCount] = useState(0)
   const [toast, setToast] = useState<{ text: string; undo?: Tile } | null>(null)
   const [vp, setVp] = useState({ w: 1600, h: 900 })
 
-  const dir = useRef<1 | -1>(1)
   const anchor = useRef<string | null>(start?.key ?? null)
   const seedRef = useRef(1)
   const chromeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -102,6 +178,8 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
     const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight })
     onResize()
     window.addEventListener("resize", onResize)
+    // iPhone Safari cannot put a page element into full screen.
+    setCanFull(!!document.fullscreenEnabled)
     const onFs = () => setFull(!!document.fullscreenElement)
     document.addEventListener("fullscreenchange", onFs)
     const prevOverflow = document.body.style.overflow
@@ -114,21 +192,26 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
     }
   }, [])
 
-  const screenAspect = vp.w / Math.max(vp.h, 1)
+  const stage = stageRect(vp)
 
-  // Magazine packs several images per page; every other theme shows one.
-  const slides = useMemo(
-    () => theme === "magazine" ? pack(tiles, screenAspect * 0.95, 3) : tiles.map(t => [t]),
-    [tiles, theme, screenAspect],
+  const slides: Slide[] = useMemo(
+    () => theme === "gallery" ? galleryPages(tiles, stage) : tiles.map(t => [[t]]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tiles, theme, stage.w, stage.h],
   )
 
-  // Repacking (theme change, more tiles) can move the image on screen to another index.
+  // Repacking (theme change, resize, more tiles) can move the image on screen to another index.
   useEffect(() => {
     if (!anchor.current) return
-    const i = slides.findIndex(s => s.some(t => t.key === anchor.current))
+    const i = slides.findIndex(s => tilesOf(s).some(t => t.key === anchor.current))
     if (i >= 0 && i !== pos) setPos(i)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slides])
+
+  // A hide can take away the last slide; stay in range.
+  useEffect(() => {
+    if (slides.length > 0 && pos >= slides.length) setPos(slides.length - 1)
+  }, [pos, slides.length])
 
   const loadMore = (src: HighlightSource, replace: boolean) => {
     if (loadingRef.current) return
@@ -153,16 +236,17 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
   // First batch (after the tile it was opened from, if any).
   useEffect(() => { loadMore(source, false) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A hide can take away the last slide; stay in range.
-  useEffect(() => {
-    if (slides.length > 0 && pos >= slides.length) setPos(slides.length - 1)
-  }, [pos, slides.length])
-
   // Keep ahead of the viewer.
   useEffect(() => {
-    if (!exhausted && slides.length > 0 && slides.length - pos <= 3) loadMore(source, false)
+    if (!exhausted && slides.length > 0 && slides.length - pos <= 4) loadMore(source, false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pos, slides.length, exhausted])
+
+  // Warm the full-size files of what comes next (the carousel shows its neighbours too).
+  useEffect(() => {
+    const ahead = theme === "carousel" ? [-2, -1, 0, 1, 2, 3] : [0, 1, 2]
+    ahead.forEach(d => preloadSlide(slides[pos + d]))
+  }, [pos, slides, theme])
 
   const changeSource = (s: HighlightSource) => {
     if (s === source) return
@@ -178,7 +262,6 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
 
   const go = (d: 1 | -1) => {
     if (slides.length === 0) return
-    dir.current = d
     setPos(p => {
       const n = p + d
       if (n >= slides.length) return exhausted || !loading ? 0 : p
@@ -187,44 +270,52 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
     })
   }
 
-  // Auto-advance.
+  /*
+   * Auto-advance - but only onto a slide whose full-size files are ready, so
+   * a slow connection shows each image late rather than blurry. It gives up
+   * waiting after ten seconds and moves on regardless.
+   */
   useEffect(() => {
     if (!playing || slides.length < 2) return
-    const t = setTimeout(() => go(1), speed)
+    let tries = 0
+    let t: ReturnType<typeof setTimeout>
+    const tick = () => {
+      const next = slides[(pos + 1) % slides.length]
+      if (!slideReady(next) && tries++ < 25) { preloadSlide(next); t = setTimeout(tick, 400); return }
+      go(1)
+    }
+    t = setTimeout(tick, speed)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pos, playing, speed, slides.length, theme])
 
-  // A new slide becomes a new layer; the previous one leaves.
+  // Layered themes: a new slide becomes a new layer; the previous one leaves.
   const lastTheme = useRef(theme)
   useEffect(() => {
     const slide = slides[pos]
     if (!slide) return
-    anchor.current = slide[0].key
-    const key = slide.map(t => t.key).join("|")
+    anchor.current = slide[0][0].key
+    if (theme === "carousel") { lastTheme.current = theme; setLayers([]); return }
+    const key = tilesOf(slide).map(t => t.key).join("|")
     const themeChanged = lastTheme.current !== theme
     lastTheme.current = theme
     setLayers(prev => {
-      if (!themeChanged && prev.length && prev[prev.length - 1].key === key) return prev
-      const layer: Layer = { key: `${key}#${seedRef.current}`, slide, leaving: false, dir: dir.current, seed: seedRef.current++ }
+      if (!themeChanged && prev.length && prev[prev.length - 1].key.startsWith(key + "#")) return prev
+      const layer: Layer = { key: `${key}#${seedRef.current}`, slide, leaving: false, seed: seedRef.current++ }
       if (themeChanged) return [layer]
       if (theme === "prints") {
         // The pile: older prints stay, the oldest past PILE fade away.
         const kept = prev.filter(l => !l.leaving)
         return [...kept.map((l, i) => i < kept.length - (PILE - 1) ? { ...l, leaving: true } : l), layer]
       }
-      // The outgoing slide leaves in the direction of travel (Sliding Panels).
-      return [...prev.map(l => ({ ...l, leaving: true, dir: dir.current })), layer]
+      return [...prev.map(l => ({ ...l, leaving: true })), layer]
     })
-    // Warm the next slide's full-size images.
-    slides[(pos + 1) % slides.length]?.forEach(t => { if (!t.isVideo) { const i = new Image(); i.src = t.full } })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pos, slides, theme])
 
-  // Drop layers once their exit animation is done.
+  // Drop layers once their exit is done.
   useEffect(() => {
     if (!layers.some(l => l.leaving)) return
-    const t = setTimeout(() => setLayers(prev => prev.filter(l => !l.leaving)), 1300)
+    const t = setTimeout(() => setLayers(prev => prev.filter(l => !l.leaving)), 1400)
     return () => clearTimeout(t)
   }, [layers])
 
@@ -276,7 +367,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
       else if (e.key === "ArrowRight") { go(1); poke() }
       else if (e.key === "ArrowLeft") { go(-1); poke() }
       else if (e.key === " ") { e.preventDefault(); setPlaying(p => !p); poke() }
-      else if (e.key === "f" || e.key === "F") toggleFull()
+      else if ((e.key === "f" || e.key === "F") && canFull) toggleFull()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
@@ -286,22 +377,22 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
   const swipeX = useRef<number | null>(null)
 
   const current = slides[pos]
-  const single = current && current.length === 1 ? current[0] : null
+  const single = current && current.length === 1 && current[0].length === 1 ? current[0][0] : null
   const bg = theme === "prints"
     ? "bg-[radial-gradient(ellipse_at_center,#2a2320_0%,#120f0d_70%)]"
-    : "bg-black"
+    : "bg-[radial-gradient(ellipse_at_center,#161a22_0%,#050608_75%)]"
 
   return createPortal(
     <div
       ref={rootRef}
-      className={`fixed inset-0 z-[300] ${bg} select-none ${showChrome ? "" : "cursor-none"}`}
+      className={`fixed inset-0 z-[300] ${bg} select-none overscroll-none touch-pan-y ${showChrome ? "" : "cursor-none"}`}
       onMouseMove={poke}
       onPointerDown={e => { swipeX.current = e.clientX }}
       onPointerUp={e => {
         if (swipeX.current === null) return
         const dx = e.clientX - swipeX.current
         swipeX.current = null
-        if (Math.abs(dx) > 60) go(dx < 0 ? 1 : -1)
+        if (Math.abs(dx) > 50) { go(dx < 0 ? 1 : -1); poke() }
       }}
       onClick={e => e.stopPropagation()}
     >
@@ -309,9 +400,13 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
 
       {/* Stage */}
       <div className="absolute inset-0 overflow-hidden" onClick={() => setChrome(c => !c)}>
-        {layers.map((l, i) => (
-          <SlideLayer key={l.key} layer={l} top={i === layers.length - 1} theme={theme} speed={speed} vp={vp} onHide={hide} />
-        ))}
+        {theme === "carousel" ? (
+          <Carousel tiles={tiles} pos={pos} stage={stage} vp={vp} onPick={i => { setPos(i); poke() }} />
+        ) : (
+          layers.map((l, i) => (
+            <SlideLayer key={l.key} layer={l} top={i === layers.length - 1} theme={theme} stage={stage} vp={vp} onHide={hide} />
+          ))
+        )}
         {tiles.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-white/50 text-sm gap-2">
             {loading ? <><Loader2 size={16} className="animate-spin" /> Gathering your work…</> : "Nothing to show here yet."}
@@ -320,42 +415,36 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
       </div>
 
       {/* Top bar */}
-      <div className={`absolute inset-x-0 top-0 p-3 sm:p-4 flex items-center gap-2 sm:gap-3 bg-gradient-to-b from-black/70 to-transparent transition-opacity duration-300 ${showChrome ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+      <div className={`absolute inset-x-0 top-0 px-3 sm:px-5 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3 flex items-center gap-2 sm:gap-3 bg-gradient-to-b from-black/70 to-transparent transition-opacity duration-300 ${showChrome ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
         <div className="min-w-0 mr-auto">
           <p className="text-sm font-bold text-white truncate">My Generations</p>
-          <p className="text-[11px] text-white/50 flex items-center gap-1">
+          <p className="text-[11px] text-white/50 flex items-center gap-1 truncate">
             {single?.score ? <><Star size={10} className="text-amber-300 fill-amber-300" /> {single.score} · </> : null}
             {SOURCES.find(s => s.id === source)?.label}
           </p>
         </div>
         <Seg options={SOURCES.map(s => ({ id: s.id, label: s.label }))} value={source} onChange={v => changeSource(v as HighlightSource)} />
         {hiddenCount > 0 && (
-          <button onClick={restoreAll} title="Show every hidden image in this section again" className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] text-white/85">
+          <button onClick={restoreAll} title="Show every hidden image in this section again" className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] text-white/85">
             <RotateCcw size={12} /> Restore {hiddenCount} hidden
           </button>
         )}
-        <IconBtn title={full ? "Exit full screen (F)" : "Full screen (F)"} onClick={toggleFull}>{full ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</IconBtn>
+        {canFull && <IconBtn title={full ? "Exit full screen (F)" : "Full screen (F)"} onClick={toggleFull}>{full ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</IconBtn>}
         <IconBtn title="Close (Esc)" onClick={onClose}><X size={18} /></IconBtn>
       </div>
 
       {/* Bottom bar */}
-      <div className={`absolute inset-x-0 bottom-0 px-3 sm:px-5 pt-10 pb-4 bg-gradient-to-t from-black/80 to-transparent transition-opacity duration-300 ${showChrome ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
-        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-3">
-          <div className="flex flex-wrap justify-center gap-1 order-2 lg:order-1 lg:flex-1 lg:justify-start">
-            {THEMES.map(t => (
-              <button
-                key={t.id}
-                onClick={() => setTheme(t.id)}
-                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${theme === t.id ? "bg-white text-black" : "bg-white/10 text-white/80 hover:bg-white/20"}`}
-              >{t.label}</button>
-            ))}
+      <div className={`absolute inset-x-0 bottom-0 px-3 sm:px-5 pt-8 pb-[max(1rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-black/80 to-transparent transition-opacity duration-300 ${showChrome ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2.5">
+          <div className="flex justify-center gap-1 order-2 lg:order-1 lg:flex-1 lg:justify-start">
+            <Seg options={THEMES.map(t => ({ id: t.id, label: t.label }))} value={theme} onChange={v => setTheme(v as Theme)} />
           </div>
           <div className="flex items-center gap-2 order-1 lg:order-2">
             <IconBtn title="Previous (←)" onClick={() => go(-1)}><ChevronLeft size={20} /></IconBtn>
             <button
               onClick={() => setPlaying(p => !p)}
               title={playing ? "Pause (Space)" : "Play (Space)"}
-              className="w-12 h-12 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-transform"
+              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-transform"
             >
               {playing ? <Pause size={20} className="fill-black" /> : <Play size={20} className="fill-black ml-0.5" />}
             </button>
@@ -369,7 +458,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
                 title="Don't show this image in My Generations"
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-red-500/70 text-[11px] font-semibold text-white/85 transition-colors"
               >
-                <EyeOff size={12} /> Don&apos;t show
+                <EyeOff size={12} /> <span className="hidden sm:inline">Don&apos;t show</span>
               </button>
             )}
           </div>
@@ -388,7 +477,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
       )}
 
       {toast && (
-        <div className="absolute left-1/2 -translate-x-1/2 bottom-28 flex items-center gap-2 pl-3.5 pr-1.5 py-1.5 rounded-xl bg-slate-900/95 border border-white/15 shadow-2xl text-xs text-white/85">
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-36 sm:bottom-28 flex items-center gap-2 pl-3.5 pr-1.5 py-1.5 rounded-xl bg-slate-900/95 border border-white/15 shadow-2xl text-xs text-white/85 whitespace-nowrap">
           {toast.text}
           {toast.undo && (
             <button onClick={() => undoHide(toast.undo!)} className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 font-semibold text-white">Undo</button>
@@ -402,7 +491,7 @@ export function HighlightsSlideshow({ start, onClose, onHidden }: {
 
 function IconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button title={title} onClick={onClick} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+    <button title={title} onClick={onClick} className="w-9 h-9 shrink-0 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
       {children}
     </button>
   )
@@ -410,148 +499,248 @@ function IconBtn({ title, onClick, children }: { title: string; onClick: () => v
 
 function Seg({ options, value, onChange }: { options: { id: string; label: string }[]; value: string; onChange: (v: string) => void }) {
   return (
-    <div className="flex p-0.5 rounded-lg bg-white/10">
+    <div className="flex p-0.5 rounded-lg bg-white/10 shrink-0">
       {options.map(o => (
         <button
           key={o.id}
           onClick={() => onChange(o.id)}
-          className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${value === o.id ? "bg-white text-black" : "text-white/75 hover:text-white"}`}
+          className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors whitespace-nowrap ${value === o.id ? "bg-white text-black" : "text-white/75 hover:text-white"}`}
         >{o.label}</button>
       ))}
     </div>
   )
 }
 
-/** One slide on the stage, with its theme's entrance and exit. */
-function SlideLayer({ layer, top, theme, speed, vp, onHide }: {
+/**
+ * Carousel: a strip of images gliding sideways, the current one large in the
+ * middle and its neighbours smaller and dimmer at the sides.
+ *
+ * Every image in the window is placed by its offset from the current one, and
+ * keeps its key as the index moves, so a change of index animates the whole
+ * strip along instead of swapping pictures. On a landscape screen the centre
+ * image takes up to 60% of the width, so several neighbours show; on a
+ * portrait one it takes most of the width with just a peek either side.
+ */
+function Carousel({ tiles, pos, stage, vp, onPick }: {
+  tiles: Tile[]
+  pos: number
+  stage: Rect
+  vp: { w: number; h: number }
+  onPick: (i: number) => void
+}) {
+  const portrait = vp.h > vp.w
+  const phone = Math.min(vp.w, vp.h) < 600
+  if (pos >= tiles.length) return null
+  // Landscape keeps room under the strip for its reflection.
+  const maxH = stage.h * (portrait ? 0.92 : 0.84)
+  const maxW = stage.w * (portrait ? 0.84 : phone ? 0.5 : 0.6)
+  const gap = portrait ? 14 : phone ? 18 : 34
+  const side = portrait ? 0.86 : 0.8
+
+  const box = (t: Tile) => {
+    const w = Math.min(t.aspect * maxH, maxW)
+    return { w, h: w / t.aspect }
+  }
+  const scaleOf = (i: number) => (i === pos ? 1 : side)
+
+  // Centre offsets from the current image, walking outwards.
+  const lo = Math.max(0, pos - 6)
+  const hi = Math.min(tiles.length - 1, pos + 6)
+  const offs = new Map<number, number>([[pos, 0]])
+  for (let i = pos + 1; i <= hi; i++) {
+    const a = box(tiles[i - 1]).w * scaleOf(i - 1), b = box(tiles[i]).w * scaleOf(i)
+    offs.set(i, offs.get(i - 1)! + a / 2 + gap + b / 2)
+  }
+  for (let i = pos - 1; i >= lo; i--) {
+    const a = box(tiles[i + 1]).w * scaleOf(i + 1), b = box(tiles[i]).w * scaleOf(i)
+    offs.set(i, offs.get(i + 1)! - a / 2 - gap - b / 2)
+  }
+
+  const cx = stage.x + stage.w / 2
+  const cy = stage.y + (portrait ? stage.h / 2 : maxH / 2 + stage.h * 0.04)
+
+  // Mount only what is on screen, plus one beyond each edge so the next image
+  // glides in from off-screen rather than appearing - and so the carousel
+  // loads a handful of full-size files, not thirteen.
+  const onScreen = (i: number) => Math.abs(offs.get(i)!) - (box(tiles[i]).w * scaleOf(i)) / 2 < vp.w / 2
+  let first = pos, last = pos
+  while (first > lo && onScreen(first - 1)) first--
+  while (last < hi && onScreen(last + 1)) last++
+  first = Math.max(lo, first - 1)
+  last = Math.min(hi, last + 1)
+
+  const items = []
+  for (let i = first; i <= last; i++) {
+    const t = tiles[i]
+    const { w, h } = box(t)
+    const on = i === pos
+    const dist = Math.abs(i - pos)
+    items.push(
+      <div
+        key={t.key}
+        onClick={e => { if (!on) { e.stopPropagation(); onPick(i) } }}
+        className={`absolute rounded-lg overflow-hidden bg-white/5 transition-[transform,opacity,filter] duration-[900ms] ease-[cubic-bezier(.22,.61,.36,1)] ${on ? "shadow-2xl shadow-black/70" : "cursor-pointer"}`}
+        style={{
+          width: w, height: h, left: cx - w / 2, top: cy - h / 2,
+          transform: `translateX(${offs.get(i)}px) scale(${scaleOf(i)})`,
+          opacity: on ? 1 : Math.max(0, 0.55 - (dist - 1) * 0.15),
+          filter: on ? "none" : "saturate(.7)",
+          zIndex: 10 - dist,
+          // A soft reflection on landscape screens, where there is room under the strip.
+          WebkitBoxReflect: portrait ? undefined : "below 6px linear-gradient(transparent 78%, rgba(255,255,255,.14))",
+        } as React.CSSProperties}
+      >
+        <FullImage tile={t} video={on} />
+      </div>,
+    )
+  }
+  return <>{items}</>
+}
+
+/** Gallery, Spotlight and Prints: one slide on the stage, with its entrance and exit. */
+function SlideLayer({ layer, top, theme, stage, vp, onHide }: {
   layer: Layer
   /** The newest layer; on the prints pile, everything under it dims. */
   top: boolean
   theme: Theme
-  speed: number
+  stage: Rect
   vp: { w: number; h: number }
   onHide: (t: Tile) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const motionRef = useRef<HTMLDivElement>(null)
-  const { slide, seed, dir, leaving } = layer
-  const screenAspect = vp.w / Math.max(vp.h, 1)
+  const printRef = useRef<HTMLDivElement>(null)
+  const { slide, seed, leaving } = layer
+  const portrait = vp.h > vp.w
 
-  // Entrance.
+  // Entrance: fades and slides only, never a zoom.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     const ease = "cubic-bezier(.22,.61,.36,1)"
-    if (theme === "sliding") {
-      el.animate([{ transform: `translateX(${dir * 100}%)` }, { transform: "translateX(0)" }], { duration: 900, easing: ease, fill: "both" })
-    } else if (theme === "prints") {
-      const card = motionRef.current
+    if (theme === "prints") {
+      const card = printRef.current
       if (card) {
-        const r = (rnd(seed, 3) - 0.5) * 14
+        const r = (rnd(seed, 3) - 0.5) * 12
+        const fromX = (rnd(seed, 7) > 0.5 ? 1 : -1) * 40
         card.animate([
-          { transform: `translate(-50%, -50%) translate(${(rnd(seed, 1) - 0.5) * 8}vw, ${(rnd(seed, 2) - 0.5) * 6}vh) rotate(${r * 2.5}deg) scale(1.35)`, opacity: 0 },
-          { transform: `translate(-50%, -50%) translate(${(rnd(seed, 1) - 0.5) * 8}vw, ${(rnd(seed, 2) - 0.5) * 6}vh) rotate(${r}deg) scale(1)`, opacity: 1 },
-        ], { duration: 800, easing: "cubic-bezier(.2,.8,.2,1)", fill: "both" })
+          { transform: `translate(${fromX}vw, 30vh) rotate(${r * 3}deg)`, opacity: 0 },
+          { transform: `translate(0, 0) rotate(${r}deg)`, opacity: 1 },
+        ], { duration: 900, easing: "cubic-bezier(.2,.8,.2,1)", fill: "both" })
       }
     } else {
-      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: theme === "magazine" ? 800 : 1200, easing: "ease-in-out", fill: "both" })
-      if (theme === "magazine") {
+      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: theme === "gallery" ? 700 : 1100, easing: "ease-in-out", fill: "both" })
+      if (theme === "gallery") {
         Array.from(el.querySelectorAll<HTMLElement>("[data-tile]")).forEach((t, i) =>
-          t.animate([{ transform: "translateY(18px) scale(.97)", opacity: 0 }, { transform: "none", opacity: 1 }],
-            { duration: 700, delay: 120 + i * 140, easing: ease, fill: "both" }))
+          t.animate([{ transform: "translateY(24px)", opacity: 0 }, { transform: "none", opacity: 1 }],
+            { duration: 800, delay: 80 + i * 110, easing: ease, fill: "both" }))
       }
-    }
-    // Ken Burns: the motion runs across the whole time on screen, plus the fades.
-    if (theme === "kenburns" && motionRef.current && !slide[0].isVideo) {
-      const zoomIn = rnd(seed, 4) > 0.4
-      const s0 = zoomIn ? 1.02 : 1.16
-      const s1 = zoomIn ? 1.16 : 1.02
-      const x = (rnd(seed, 5) - 0.5) * 5
-      const y = (rnd(seed, 6) - 0.5) * 5
-      motionRef.current.animate([
-        { transform: `scale(${s0}) translate(${-x}%, ${-y}%)` },
-        { transform: `scale(${s1}) translate(${x}%, ${y}%)` },
-      ], { duration: speed + 2500, easing: "linear", fill: "both" })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Exit.
   useEffect(() => {
-    if (!leaving) return
-    const el = ref.current
-    if (!el) return
-    if (theme === "sliding") {
-      el.animate([{ transform: "translateX(0)" }, { transform: `translateX(${-dir * 100}%)` }], { duration: 900, easing: "cubic-bezier(.22,.61,.36,1)", fill: "both" })
-    } else {
-      el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 800, delay: theme === "prints" ? 0 : 400, easing: "ease-in-out", fill: "both" })
-    }
+    if (!leaving || !ref.current) return
+    ref.current.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 700, delay: theme === "prints" ? 0 : 350, easing: "ease-in-out", fill: "both" })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leaving])
 
-  if (theme === "magazine") {
-    const gap = Math.max(8, vp.w * 0.012)
-    const sum = slide.reduce((a, t) => a + t.aspect, 0)
-    const rowH = Math.min(vp.h * 0.8, (vp.w * 0.9 - gap * (slide.length - 1)) / sum)
+  if (theme === "gallery") {
+    // Each row filled to the stage's width at its own height, then the block
+    // scaled to fit the stage's height: exact proportions, no crop.
+    const gap = Math.max(6, Math.min(stage.w, stage.h) * 0.012)
+    const rows = slide.map(row => {
+      const sum = row.reduce((a, t) => a + t.aspect, 0)
+      return { row, h: (stage.w - gap * (row.length - 1)) / sum }
+    })
+    const total = rows.reduce((a, r) => a + r.h, 0) + gap * (rows.length - 1)
+    const k = Math.min(1, stage.h / total)
     return (
-      <div ref={ref} className="absolute inset-0 flex items-center justify-center" style={{ gap }}>
-        {slide.map(t => (
-          <div key={t.key} data-tile className="group relative rounded-md overflow-hidden shadow-2xl shadow-black/60 bg-white/5" style={{ width: t.aspect * rowH, height: rowH }}>
-            <FullImage tile={t} fit="cover" video={false} />
-            <HideChip tile={t} onHide={onHide} />
+      <div ref={ref} className="absolute flex flex-col items-center justify-center" style={{ left: stage.x, top: stage.y, width: stage.w, height: stage.h, gap }}>
+        {rows.map((r, ri) => (
+          <div key={ri} className="flex justify-center" style={{ gap }}>
+            {r.row.map(t => (
+              <div key={t.key} data-tile className="group relative rounded-md overflow-hidden shadow-xl shadow-black/60 bg-white/5" style={{ width: t.aspect * r.h * k, height: r.h * k }}>
+                <FullImage tile={t} video />
+                <HideChip tile={t} onHide={onHide} />
+              </div>
+            ))}
           </div>
         ))}
       </div>
     )
   }
 
+  const t = slide[0][0]
+
   if (theme === "prints") {
-    const t = slide[0]
-    const ph = Math.min(vp.h * 0.7, (vp.w * 0.6) / t.aspect)
+    const frame = portrait ? 10 : 14
+    const ph = Math.min(stage.h * 0.8 - frame * 4, (stage.w * (portrait ? 0.84 : 0.55)) / t.aspect)
+    const dx = (rnd(seed, 1) - 0.5) * stage.w * 0.12
+    const dy = (rnd(seed, 2) - 0.5) * stage.h * 0.06
     return (
       <div ref={ref} className="absolute inset-0 pointer-events-none">
         <div
-          ref={motionRef}
-          className="absolute left-1/2 top-1/2 bg-[#f3efe6] p-[10px] pb-[44px] shadow-[0_18px_50px_rgba(0,0,0,.6)] transition-[filter] duration-700"
-          style={{ filter: top ? undefined : "brightness(.5)" }}
+          className="absolute"
+          style={{ left: stage.x + stage.w / 2 + dx, top: stage.y + stage.h / 2 + dy, transform: "translate(-50%, -50%)" }}
         >
-          <div className="relative overflow-hidden" style={{ width: t.aspect * ph, height: ph }}>
-            <FullImage tile={t} fit="cover" video={false} />
+          <div
+            ref={printRef}
+            className="bg-[#f3efe6] shadow-[0_18px_50px_rgba(0,0,0,.6)] transition-[filter] duration-700"
+            style={{ padding: frame, paddingBottom: frame * 3.6, filter: top ? undefined : "brightness(.5)" }}
+          >
+            <div className="relative overflow-hidden" style={{ width: t.aspect * ph, height: ph }}>
+              <FullImage tile={t} video={false} />
+            </div>
           </div>
         </div>
       </div>
     )
   }
 
-  // Ken Burns, Dissolve, Sliding Panels: one image over a blurred copy of itself.
-  const t = slide[0]
-  // Ken Burns fills the screen when the shape is close; far off (a portrait on
-  // a landscape screen) it would crop too much, so it moves the fitted image.
-  const cover = theme === "kenburns" && Math.abs(Math.log(t.aspect / screenAspect)) < 0.35
+  // Spotlight: the image as large as the screen allows, over a blurred copy.
+  const w = Math.min(stage.w, (stage.h + 40) * t.aspect)
+  const h = w / t.aspect
   return (
-    <div ref={ref} className="absolute inset-0 overflow-hidden bg-black">
+    <div ref={ref} className="absolute inset-0 overflow-hidden">
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={t.thumb} alt="" className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-40" />
-      <div ref={motionRef} className="absolute inset-0">
-        <FullImage tile={t} fit={cover ? "cover" : "contain"} video />
+      <img src={t.thumb} alt="" className="absolute inset-0 w-full h-full object-cover blur-3xl scale-110 opacity-30" />
+      <div className="absolute rounded-md overflow-hidden shadow-2xl shadow-black/70" style={{ width: w, height: h, left: stage.x + (stage.w - w) / 2, top: stage.y + (stage.h - h) / 2 }}>
+        <FullImage tile={t} video />
       </div>
     </div>
   )
 }
 
-/** The thumbnail at once, the full-size image fading in over it when loaded. */
-function FullImage({ tile, fit, video }: { tile: Tile; fit: "cover" | "contain"; video: boolean }) {
-  const [loaded, setLoaded] = useState(false)
-  const cls = `absolute inset-0 w-full h-full ${fit === "cover" ? "object-cover" : "object-contain"}`
+/**
+ * The full-size file, filling a box of its exact shape. If it has already
+ * been preloaded it draws at once; otherwise the thumbnail stands in until
+ * it arrives. Videos play (muted) where `video` is set, and show their
+ * poster elsewhere.
+ */
+function FullImage({ tile, video }: { tile: Tile; video: boolean }) {
+  const ready = !tile.isVideo && fullState.get(tile.full) === "ok"
+  const [loaded, setLoaded] = useState(ready)
+  useEffect(() => { if (!tile.isVideo) preloadFull(tile.full) }, [tile])
+  const cls = "absolute inset-0 w-full h-full object-contain"
   return (
     <>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={tile.thumb} alt="" draggable={false} className={cls} />
+      {!loaded && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={tile.thumb} alt="" draggable={false} className={cls} />
+      )}
       {tile.isVideo ? (
         video && <video src={tile.full} autoPlay muted loop playsInline className={`${cls} transition-opacity duration-500 ${loaded ? "opacity-100" : "opacity-0"}`} onLoadedData={() => setLoaded(true)} />
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={tile.full} alt="" draggable={false} onLoad={() => setLoaded(true)} className={`${cls} transition-opacity duration-500 ${loaded ? "opacity-100" : "opacity-0"}`} />
+        <img
+          src={tile.full}
+          alt=""
+          draggable={false}
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          className={`${cls} ${ready ? "" : "transition-opacity duration-500"} ${loaded ? "opacity-100" : "opacity-0"}`}
+        />
       )}
     </>
   )
