@@ -201,6 +201,19 @@ export async function GET(request: Request) {
       ? { AND: [baseWhere, cursorWhere, uploadWhere, modelFilter] }
       : { AND: [baseWhere, uploadWhere, modelFilter] }
 
+    /*
+     * Page mode's total count runs alongside the page instead of after it.
+     * Each Accelerate round trip costs ~100-150ms regardless of how cheap the
+     * query is (the count itself is ~30ms in the database), so running them in
+     * sequence was most of the time the my-generations page spent waiting.
+     * A caller that already knows the total for this filter (the pager, turning
+     * pages) passes count=0 and skips it entirely.
+     */
+    const wantCount = !cursorMode && searchParams.get('count') !== '0'
+    const countPromise = wantCount
+      ? prisma.generatedImage.count({ where: { AND: [baseWhere, uploadWhere, modelFilter] } })
+      : null
+
     const images = await prisma.generatedImage.findMany({
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -233,8 +246,7 @@ export async function GET(request: Request) {
       folderId: img.folderId ?? null,
     }))
 
-    await attachGptRenderer(mapped, user.id)
-    await attachSeedvrSettings(mapped, user.id)
+    await Promise.all([attachGptRenderer(mapped, user.id), attachSeedvrSettings(mapped, user.id)])
 
     // Cursor mode: no expensive total count; "more" = we filled a full page. Also
     // hand back the next cursor so the client doesn't have to reconstruct it.
@@ -248,10 +260,12 @@ export async function GET(request: Request) {
       })
     }
 
-    // Page mode (unchanged) — used by callers that still pass ?page=.
-    // Count with the SAME filter as the list, or totalPages overshoots by the
-    // number of excluded dataset uploads.
-    const total = await prisma.generatedImage.count({ where: { AND: [baseWhere, uploadWhere, modelFilter] } })
+    // Page mode — used by callers that pass ?page=. The count uses the SAME
+    // filter as the list, or totalPages overshoots by the number of excluded
+    // dataset uploads. With count=0 there is no pagination block; the caller
+    // keeps the one it has.
+    if (!countPromise) return jsonPrivate({ success: true, images: mapped, pagination: null })
+    const total = await countPromise
     return jsonPrivate({
       success: true,
       images: mapped,

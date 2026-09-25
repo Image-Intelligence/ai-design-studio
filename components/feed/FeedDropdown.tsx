@@ -165,14 +165,14 @@ export function FeedDropdown({
                   </div>
                   <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
                     <button onClick={() => onColsChange(null)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${cols === null ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>Auto</button>
-                    {[1, 2, 3, 4, 5, 6].map(n => (
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map(n => (
                       <button key={n} onClick={() => onColsChange(n)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>{n}</button>
                     ))}
                   </div>
                   <div className="flex items-center gap-2.5 px-0.5">
                     <span className="text-[10px] font-mono text-slate-600">1</span>
-                    <input type="range" min={1} max={6} step={1} value={cols ?? 4} onChange={e => onColsChange(+e.target.value)} className="flex-1 accent-cyan-400 cursor-pointer" />
-                    <span className="text-[10px] font-mono text-slate-600">6</span>
+                    <input type="range" min={1} max={8} step={1} value={cols ?? 4} onChange={e => onColsChange(+e.target.value)} className="flex-1 accent-cyan-400 cursor-pointer" />
+                    <span className="text-[10px] font-mono text-slate-600">8</span>
                   </div>
                   <p className="text-[9.5px] text-slate-600 leading-relaxed"><span className="text-slate-400">Auto</span> adapts to your screen size.</p>
                 </section>

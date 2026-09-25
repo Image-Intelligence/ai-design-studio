@@ -3,12 +3,24 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react"
 import { GridImage } from "./GridImage"
-import { FEED_COL_CLASS, FEED_MASONRY_CLASS, arHeightWeight, distributeMasonry, isVideoUrl } from "./feedHelpers"
+import {
+  FEED_AUTO_COL_CLASS, FEED_AUTO_MASONRY_CLASS, FEED_COL_CLASS, FEED_MASONRY_CLASS,
+  arHeightWeight, autoColsFor, distributeMasonry, isVideoUrl, tileAspect,
+} from "./feedHelpers"
 
 // Paginated feed for the my-generations page. Renders one page at a time (page size
 // chosen in the Feed dropdown) with a numbered nav bar at the top and bottom — the
 // classic pager, not infinite scroll. Layout (grid / masonry-flow / masonry-rows) is
 // applied to the current page's items.
+//
+// SPEED. Turning pages should feel instant:
+//   - pages are cached per filter, so going back is immediate
+//   - once a page lands, the next one (and the previous) is fetched in the
+//     background, with its thumbnails warmed, so "next" is usually instant too
+//   - the total only needs counting once per filter; later pages send count=0
+//     and skip that query (see /api/my-images)
+//   - tiles reserve their height from the stored pixel size, so a page lays out
+//     once instead of jumping as each image arrives
 
 export interface MyGenImage {
   id: number
@@ -101,6 +113,7 @@ export function MyGenFeed({
   onSelectToggle,
   onImageClick,
   onNavListChange,
+  onTotalChange,
   refreshKey = 0,
 }: {
   signedIn: boolean
@@ -119,13 +132,15 @@ export function MyGenFeed({
   onSelectToggle?: (id: number) => void
   onImageClick: (img: MyGenImage) => void
   onNavListChange?: (list: MyGenImage[]) => void
+  /** The number of items under the current filter, once counted. */
+  onTotalChange?: (total: number | null) => void
   // Bump to force a reload of the current page (after move / delete / hide).
   refreshKey?: number
 }) {
   const fullRes = tileRes === "full"
   const [autoCols, setAutoCols] = useState(4)
   useEffect(() => {
-    const compute = () => setAutoCols(window.innerWidth < 640 ? 2 : 4)
+    const compute = () => setAutoCols(autoColsFor(window.innerWidth))
     compute()
     window.addEventListener("resize", compute)
     return () => window.removeEventListener("resize", compute)
@@ -134,43 +149,96 @@ export function MyGenFeed({
   const [images, setImages] = useState<MyGenImage[]>([])
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: pageSize, total: 0, totalPages: 0 })
   const [page, setPage] = useState(1)
-  const [loading, setLoading] = useState(false)
+  // Starts true, or the empty-state message flashes before the first page arrives.
+  const [loading, setLoading] = useState(true)
   // Discards stale responses when filters change mid-flight.
   const reqRef = useRef(0)
 
+  // Everything that selects which rows a page holds.
+  const filterKey = `${typeFilter}|${folderId ?? "root"}|${showHidden ? 1 : 0}|${pageSize}`
+  const cache = useRef(new Map<string, { images: MyGenImage[]; pagination: Pagination | null }>())
+  const totals = useRef(new Map<string, Pagination>())
+  const inflight = useRef(new Map<string, Promise<void>>())
+
+  /** Fetch one page into the cache (shared by the visible load and the prefetch). */
+  const fetchPage = useCallback((p: number): Promise<void> => {
+    const key = `${filterKey}#${p}`
+    if (cache.current.has(key)) return Promise.resolve()
+    const running = inflight.current.get(key)
+    if (running) return running
+    const typeQs = typeFilter !== "all" ? `&type=${typeFilter}` : ""
+    // Root (folderId null) shows unfiled only; a folder shows its own contents.
+    const folderQs = `&folderId=${folderId == null ? "root" : folderId}`
+    const countQs = totals.current.has(filterKey) ? "&count=0" : ""
+    const job = fetch(`/api/my-images?page=${p}&limit=${pageSize}${typeQs}${folderQs}${showHidden ? "&hidden=true" : ""}${countQs}`)
+      .then(async res => {
+        if (res.status === 401) { window.location.href = "/login"; return }
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.success) return
+        const items: MyGenImage[] = (data.images || []).map((img: any) => ({
+          id: img.id,
+          imageUrl: img.imageUrl,
+          thumbnailUrl: img.thumbnailUrl ?? undefined,
+          prompt: img.prompt,
+          model: img.model,
+          createdAt: img.createdAt,
+          referenceImageUrls: img.referenceImageUrls ?? [],
+          aspectRatio: img.aspectRatio ?? undefined,
+          quality: img.quality ?? undefined,
+          videoMetadata: img.videoMetadata ?? undefined,
+          loraUrl: img.loraUrl ?? undefined,
+          loraName: img.loraName ?? undefined,
+          folderId: img.folderId ?? null,
+        }))
+        if (data.pagination) totals.current.set(filterKey, data.pagination)
+        cache.current.set(key, { images: items, pagination: data.pagination ?? null })
+      })
+      .catch(() => {})
+      .finally(() => { inflight.current.delete(key) })
+    inflight.current.set(key, job)
+    return job
+  }, [filterKey, typeFilter, folderId, showHidden, pageSize])
+
+  /** Warm the next page's thumbnails, so its tiles paint at once. */
+  const warm = (list: MyGenImage[]) => {
+    for (const img of list) {
+      const src = img.thumbnailUrl || img.videoMetadata?.thumbnailUrl
+      if (src) { const i = new Image(); i.decoding = "async"; i.src = src }
+    }
+  }
+
   const load = useCallback(async (p: number) => {
     const rid = ++reqRef.current
-    setLoading(true)
-    try {
-      const typeQs = typeFilter !== "all" ? `&type=${typeFilter}` : ""
-      // Root (folderId null) shows unfiled only; a folder shows its own contents.
-      const folderQs = `&folderId=${folderId == null ? "root" : folderId}`
-      const res = await fetch(`/api/my-images?page=${p}&limit=${pageSize}${typeQs}${folderQs}${showHidden ? "&hidden=true" : ""}`)
-      if (!res.ok) { if (rid === reqRef.current) { setImages([]); setPagination({ page: p, limit: pageSize, total: 0, totalPages: 0 }) } ; return }
-      const data = await res.json()
-      if (rid !== reqRef.current) return // filters changed mid-flight — discard
-      if (!data.success) return
-      const items: MyGenImage[] = (data.images || []).map((img: any) => ({
-        id: img.id,
-        imageUrl: img.imageUrl,
-        thumbnailUrl: img.thumbnailUrl ?? undefined,
-        prompt: img.prompt,
-        model: img.model,
-        createdAt: img.createdAt,
-        referenceImageUrls: img.referenceImageUrls ?? [],
-        aspectRatio: img.aspectRatio ?? undefined,
-        quality: img.quality ?? undefined,
-        videoMetadata: img.videoMetadata ?? undefined,
-        loraUrl: img.loraUrl ?? undefined,
-        loraName: img.loraName ?? undefined,
-        folderId: img.folderId ?? null,
-      }))
-      setImages(items)
-      if (data.pagination) setPagination(data.pagination)
-    } finally {
-      if (rid === reqRef.current) setLoading(false)
+    const key = `${filterKey}#${p}`
+    const show = () => {
+      const hit = cache.current.get(key)
+      if (!hit || rid !== reqRef.current) return false
+      setImages(hit.images)
+      const total = hit.pagination ?? totals.current.get(filterKey)
+      if (total) setPagination({ ...total, page: p })
+      return true
     }
-  }, [pageSize, typeFilter, folderId, showHidden])
+    if (!show()) {
+      setLoading(true)
+      await fetchPage(p)
+      if (rid !== reqRef.current) return // filters changed mid-flight — discard
+      if (!show()) { setImages([]); setPagination({ page: p, limit: pageSize, total: 0, totalPages: 0 }) }
+      setLoading(false)
+    }
+    // Then quietly fetch the neighbours.
+    const totalPages = totals.current.get(filterKey)?.totalPages ?? 0
+    for (const q of [p + 1, p - 1]) {
+      if (q < 1 || q > totalPages) continue
+      fetchPage(q).then(() => { if (q === p + 1) warm(cache.current.get(`${filterKey}#${q}`)?.images ?? []) })
+    }
+  }, [filterKey, fetchPage, pageSize])
+
+  // A move / delete / hide (refreshKey) or a new filter invalidates what is cached.
+  useEffect(() => {
+    cache.current.clear()
+    totals.current.clear()
+  }, [refreshKey])
 
   // Reset to page 1 whenever the filter set (or refreshKey) changes.
   useEffect(() => { setPage(1) }, [typeFilter, folderId, showHidden, pageSize, refreshKey])
@@ -180,6 +248,10 @@ export function MyGenFeed({
     if (signedIn) load(page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn, page, load, refreshKey])
+
+  useEffect(() => {
+    onTotalChange?.(loading && pagination.total === 0 ? null : pagination.total)
+  }, [pagination.total, loading, onTotalChange])
 
   // Emit the current page's images for the preview modal's prev/next.
   useEffect(() => {
@@ -208,7 +280,7 @@ export function MyGenFeed({
   }
 
   const nodes = images.map((img) => ({
-    weight: arHeightWeight(img.aspectRatio),
+    weight: (() => { const a = tileAspect(img); return a ? 1 / a : arHeightWeight(img.aspectRatio) })(),
     node: (
       <GridImage
         key={img.id}
@@ -218,6 +290,8 @@ export function MyGenFeed({
         imageId={img.id}
         thumbUrl={img.thumbnailUrl}
         aspectRatio={img.aspectRatio}
+        aspect={tileAspect(img)}
+        posterUrl={img.videoMetadata?.thumbnailUrl ?? null}
         fullRes={fullRes}
         selectMode={selectMode}
         selected={selectedIds?.has(img.id)}
@@ -256,7 +330,7 @@ export function MyGenFeed({
           // Masonry "Flow": CSS multi-column.
           if (fullSize && fullSizeLayout === "masonry") {
             return (
-              <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? "columns-2 sm:columns-4" : "columns-2 sm:columns-4"} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
+              <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? FEED_AUTO_MASONRY_CLASS : FEED_AUTO_MASONRY_CLASS} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
                 {nodes.map(it => it.node)}
               </div>
             )
@@ -264,7 +338,7 @@ export function MyGenFeed({
 
           // Grid / normal
           return (
-            <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
+            <div className={`grid ${fullSize ? "gap-2 items-start" : "gap-0.5"} ${cols ? FEED_COL_CLASS[cols] ?? FEED_AUTO_COL_CLASS : FEED_AUTO_COL_CLASS}`}>
               {nodes.map(it => it.node)}
             </div>
           )
