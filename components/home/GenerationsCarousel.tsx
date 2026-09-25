@@ -1,98 +1,45 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { FolderOpen, Star } from "lucide-react"
+import { ArrowRight, EyeOff, FolderOpen, Play, Star } from "lucide-react"
 import { SilverRimOverlay } from "./SilverRimOverlay"
+import { HighlightsSlideshow } from "./HighlightsSlideshow"
+import { loadTiles, setHidden, type Tile } from "./highlights"
 
 /*
- * The "My Generations" home card: a live slideshow of the signed-in user's own
- * work. Clicking opens /my-generations; logged out or empty, it falls back to
- * a placeholder.
+ * The "My Generations" home card: a living masonry wall of the signed-in
+ * user's own work.
  *
  * WHAT IT SHOWS. /api/user/highlights samples the whole history, half from
- * generations rated 4-5 stars and half at random, interleaved. When the
- * slideshow reaches its last pass it asks for a fresh sample, so it keeps
- * surfacing different work instead of looping the newest dozen.
+ * generations rated 4-5 stars and half at random. The wall keeps a queue of
+ * those and asks for more as it runs low, so it keeps surfacing different
+ * work rather than looping the newest dozen.
  *
- * HOW IT FITS PORTRAITS. The card is landscape, and a single cover-cropped
- * portrait showed only a thin band across its middle. So each pass is a row of
- * tiles packed to the card's own shape: three 9:16 portraits side by side make
- * a 27:16 row, which is almost exactly a 16:9 card. Tiles are packed from each
- * image's real aspect (measured when it preloads), so a mix of portraits and
- * landscapes still lands close to the card's width and nothing is cropped by
- * more than a sliver. A pass that falls short is centred over a blurred copy
- * of itself instead of leaving bars.
+ * HOW IT MOVES. Each column drifts upward at its own slow speed. When a tile
+ * has scrolled fully out of the top it is dropped and a new one is appended at
+ * the bottom, so the wall is endless and always changing, and every image
+ * keeps its own shape - portraits are shown whole, not cropped to a band.
+ *
+ * The drift is driven by requestAnimationFrame writing transforms straight to
+ * the column elements, never through React state, so it costs one style
+ * write per column per frame. React only re-renders when a tile enters or
+ * leaves. The tricky part is that moment: dropping the top tile makes the
+ * column's content jump up by that tile's height, so the offset has to shrink
+ * by the same amount in the same paint. The frame loop records that amount as
+ * "pending", and a layout effect applies it after React commits and before
+ * the browser paints.
+ *
+ * INTERACTION. Hovering pauses the wall. Each tile offers "don't show here"
+ * (with undo) and opens the slideshow from that image; the label opens the
+ * full library.
  */
 
-interface Highlight {
-  id: number
-  imageUrl: string
-  thumbnailUrl: string | null
-  videoThumbnailUrl: string | null
-  isVideo: boolean
-  score: number | null
-}
-
-type Tile = { key: string; id: number; src: string; aspect: number; score: number | null }
-
-const PASS_MS = 5000
-/** No pass holds more tiles than this, or each gets too narrow to read. */
-const MAX_PER_PASS = 4
-
-const srcOf = (h: Highlight) =>
-  h.thumbnailUrl || h.videoThumbnailUrl || (h.isVideo ? null : `/api/images/${h.id}?thumb=1`)
-
-/** Preload one thumbnail and read its real shape; null if it will not draw. */
-function loadTile(h: Highlight, batch: number): Promise<Tile | null> {
-  const src = srcOf(h)
-  if (!src) return Promise.resolve(null)
-  return new Promise(resolve => {
-    const img = new Image()
-    const t = setTimeout(() => resolve(null), 10000)
-    img.onload = () => {
-      clearTimeout(t)
-      const aspect = img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 0
-      // Clamp freak shapes (a 1px strip) so they cannot wreck a pass.
-      resolve(aspect > 0 ? { key: `${batch}:${h.id}`, id: h.id, src, aspect: Math.min(Math.max(aspect, 0.4), 3), score: h.score } : null)
-    }
-    img.onerror = () => { clearTimeout(t); resolve(null) }
-    img.src = src
-  })
-}
-
-/**
- * Group tiles into passes whose combined aspect is close to the card's.
- *
- * Greedy with a short look-ahead: each pass starts from the next tile in the
- * sample's order (which keeps favourites and random picks mixed), then adds
- * whichever of the next few tiles brings the row closest to the card's shape
- * without overshooting it by much. It stops once the row is nearly full.
- */
-function pack(tiles: Tile[], target: number): Tile[][] {
-  const pool = [...tiles]
-  const passes: Tile[][] = []
-  while (pool.length > 0) {
-    const group = [pool.shift()!]
-    let sum = group[0].aspect
-    while (group.length < MAX_PER_PASS && sum < target * 0.85) {
-      let best = -1
-      let bestGap = Infinity
-      for (let i = 0; i < Math.min(pool.length, 8); i++) {
-        const next = sum + pool[i].aspect
-        if (next > target * 1.25) continue
-        const gap = Math.abs(target - next)
-        if (gap < bestGap) { bestGap = gap; best = i }
-      }
-      if (best < 0) break
-      const [t] = pool.splice(best, 1)
-      group.push(t)
-      sum += t.aspect
-    }
-    passes.push(group)
-  }
-  return passes
-}
+const GAP = 4
+/** Aim for columns about this wide; the count follows the card's width. */
+const COL_TARGET_PX = 150
+/** Pixels per second, per column, so neighbours never move in lockstep. */
+const SPEEDS = [10, 14, 8, 12, 9, 13]
 
 export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect-[4/3]" }: {
   signedIn: boolean
@@ -101,147 +48,268 @@ export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect
 }) {
   const router = useRouter()
   const rootRef = useRef<HTMLDivElement>(null)
-  // The card's own width:height, measured, since its aspect class changes by breakpoint.
-  const [target, setTarget] = useState(16 / 9)
-  const targetRef = useRef(target)
-  targetRef.current = target
-  /*
-   * At most two samples: the one playing, and the next. Keeping the old one
-   * while the new one starts lets the last pass crossfade into the first new
-   * pass instead of cutting.
-   */
-  const [batches, setBatches] = useState<Tile[][]>([])
-  const batchesRef = useRef(batches)
-  batchesRef.current = batches
-  const [idx, setIdx] = useState(0)
-  const fetching = useRef(false)
-  const batchNo = useRef(0)
-  const paused = useRef(false)
+  const colEls = useRef<(HTMLDivElement | null)[]>([])
 
+  const [cols, setCols] = useState<Tile[][]>([])
+  const colsRef = useRef<Tile[][]>([])
+  const [colCount, setColCount] = useState(0)
+  const size = useRef({ w: 0, h: 0 })
+
+  // Tiles waiting to be shown, and ones already shown (recycled if the queue runs dry).
+  const pool = useRef<Tile[]>([])
+  const spent = useRef<Tile[]>([])
+  const fetching = useRef(false)
+  const hiddenIds = useRef(new Set<number>())
+
+  const offsets = useRef<number[]>([])
+  const pending = useRef<number[]>([])
+  const paused = useRef(false)
+  const visible = useRef(true)
+  const slideshowOpen = useRef(false)
+
+  const [ready, setReady] = useState(false)
+  const [empty, setEmpty] = useState(false)
+  const [slideshow, setSlideshow] = useState<{ start: Tile | null } | null>(null)
+  const [undo, setUndo] = useState<Tile | null>(null)
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // The wall holds still behind the slideshow.
+  slideshowOpen.current = !!slideshow
+
+  const colWidth = () => {
+    const n = colsRef.current.length || 1
+    return (size.current.w - GAP * (n - 1)) / n
+  }
+  const tileH = (t: Tile) => colWidth() / t.aspect + GAP
+  const colHeight = (col: Tile[]) => col.reduce((a, t) => a + tileH(t), 0)
+
+  const refill = () => {
+    if (fetching.current || !signedIn) return
+    fetching.current = true
+    loadTiles(24)
+      .then(({ tiles }) => { pool.current.push(...tiles.filter(t => !hiddenIds.current.has(t.id))) })
+      .catch(() => {})
+      .finally(() => { fetching.current = false })
+  }
+
+  /** The next tile to show: new work first, preferring images not already on the wall. */
+  const takeNext = (onWall: Set<number>): Tile | null => {
+    if (pool.current.length < 10) refill()
+    const pick = (list: Tile[]) => {
+      let i = list.findIndex(t => !onWall.has(t.id) && !hiddenIds.current.has(t.id))
+      if (i < 0) i = list.findIndex(t => !hiddenIds.current.has(t.id))
+      return i < 0 ? null : list.splice(i, 1)[0]
+    }
+    const t = pick(pool.current) ?? pick(spent.current)
+    // A fresh key: the same image may come round again while its old copy is still leaving.
+    return t ? { ...t, key: `${t.key}~${Math.random().toString(36).slice(2, 7)}` } : null
+  }
+
+  /** Top every column up so it runs at least a card and a half below the view. */
+  const topUp = (next: Tile[][]) => {
+    const need = size.current.h * 1.5 + 200
+    const onWall = new Set(next.flat().map(t => t.id))
+    next.forEach((col, c) => {
+      let guard = 0
+      while (colHeight(col) - (offsets.current[c] ?? 0) < need && guard++ < 12) {
+        const t = takeNext(onWall)
+        if (!t) break
+        col.push(t)
+        onWall.add(t.id)
+      }
+    })
+    return next
+  }
+
+  const commit = (next: Tile[][]) => {
+    colsRef.current = next
+    setCols(next)
+  }
+
+  // Measure: the column count follows the width; a new count lays the wall out afresh.
   useEffect(() => {
     const el = rootRef.current
     if (!el) return
     const ro = new ResizeObserver(([e]) => {
       const { width, height } = e.contentRect
-      if (width > 0 && height > 0) setTarget(Math.round((width / height) * 20) / 20)
+      size.current = { w: width, h: height }
+      setColCount(Math.min(6, Math.max(2, Math.round(width / COL_TARGET_PX))))
     })
     ro.observe(el)
-    return () => ro.disconnect()
+    const io = new IntersectionObserver(([e]) => { visible.current = e.isIntersecting })
+    io.observe(el)
+    return () => { ro.disconnect(); io.disconnect() }
   }, [])
-
-  const fetchBatch = async (): Promise<Tile[]> => {
-    const r = await fetch("/api/user/highlights?n=20", { cache: "no-store" })
-    const d = r.ok ? await r.json() : null
-    const items: Highlight[] = d?.items ?? []
-    const n = ++batchNo.current
-    const tiles = await Promise.all(items.map(h => loadTile(h, n)))
-    return tiles.filter((t): t is Tile => !!t)
-  }
 
   // First sample.
   useEffect(() => {
-    if (!signedIn) { setBatches([]); return }
+    if (!signedIn) { setReady(false); setEmpty(false); return }
     let alive = true
     fetching.current = true
-    fetchBatch()
-      .then(tiles => { if (alive) { setBatches(tiles.length ? [tiles] : []); setIdx(0) } })
-      .catch(() => {})
-      .finally(() => { fetching.current = false })
-    return () => { alive = false }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signedIn])
-
-  const passes = useMemo(
-    () => batches.flatMap(b => pack(b, target).map(tiles => ({ key: tiles[0].key, tiles }))),
-    [batches, target],
-  )
-
-  /*
-   * Reaching the last pass fetches the next sample. The pass on screen is kept
-   * as the new first pass (its batch stays as batches[0]), so the index is
-   * moved to it and the next tick crossfades into fresh work.
-   */
-  useEffect(() => {
-    if (!signedIn || passes.length === 0 || fetching.current) return
-    if (idx !== passes.length - 1) return
-    fetching.current = true
-    fetchBatch()
-      .then(tiles => {
-        if (tiles.length === 0) return
-        const kept = batchesRef.current[batchesRef.current.length - 1]
-        if (!kept) return
-        setBatches([kept, tiles])
-        setIdx(pack(kept, targetRef.current).length - 1)
+    loadTiles(30)
+      .then(({ tiles }) => {
+        if (!alive) return
+        pool.current = tiles
+        setEmpty(tiles.length === 0)
+        setReady(true)
       })
       .catch(() => {})
       .finally(() => { fetching.current = false })
+    return () => { alive = false }
+  }, [signedIn])
+
+  // Lay out (again) once there are tiles and a column count.
+  useEffect(() => {
+    if (!ready || colCount === 0 || size.current.w === 0) return
+    // Anything on the wall goes back to the front of the queue.
+    pool.current.unshift(...colsRef.current.flat())
+    const next: Tile[][] = Array.from({ length: colCount }, () => [])
+    colsRef.current = next
+    // Deal tiles to the shortest column, like a masonry grid.
+    const onWall = new Set<number>()
+    for (let guard = 0; guard < 80; guard++) {
+      const heights = next.map(colHeight)
+      const c = heights.indexOf(Math.min(...heights))
+      if (heights[c] >= size.current.h * 1.5 + 200) break
+      const t = takeNext(onWall)
+      if (!t) break
+      next[c].push(t)
+      onWall.add(t.id)
+    }
+    // Staggered start, so columns do not line up.
+    offsets.current = next.map((_, c) => (c % 2 ? 40 : 0) + c * 7)
+    pending.current = next.map(() => 0)
+    commit(next.map(col => [...col]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, passes.length, signedIn])
+  }, [ready, colCount])
 
-  // A resize repacks the passes; keep the index inside the new count.
+  // After a commit: apply any pending top-tile drop in the same paint.
+  useLayoutEffect(() => {
+    colEls.current.forEach((el, c) => {
+      if (!el) return
+      if (pending.current[c]) {
+        offsets.current[c] = Math.max(0, offsets.current[c] - pending.current[c])
+        pending.current[c] = 0
+      }
+      el.style.transform = `translate3d(0, ${-offsets.current[c]}px, 0)`
+    })
+  }, [cols])
+
+  // The drift.
   useEffect(() => {
-    if (idx >= passes.length && passes.length > 0) setIdx(0)
-  }, [idx, passes.length])
+    if (cols.length === 0) return
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    if (still) return
+    let raf = 0
+    let last = performance.now()
+    const step = (now: number) => {
+      const dt = Math.min(now - last, 100) / 1000
+      last = now
+      if (!paused.current && visible.current && !document.hidden && !slideshowOpen.current) {
+        let shift = false
+        const cur = colsRef.current
+        cur.forEach((col, c) => {
+          const el = colEls.current[c]
+          if (!el) return
+          offsets.current[c] += SPEEDS[c % SPEEDS.length] * dt
+          el.style.transform = `translate3d(0, ${-offsets.current[c]}px, 0)`
+          if (!pending.current[c] && col[0] && offsets.current[c] > tileH(col[0])) shift = true
+        })
+        if (shift) {
+          const next = cur.map(col => [...col])
+          next.forEach((col, c) => {
+            if (!pending.current[c] && col[0] && offsets.current[c] > tileH(col[0])) {
+              pending.current[c] = tileH(col[0])
+              spent.current.push(col.shift()!)
+            }
+          })
+          if (spent.current.length > 60) spent.current.splice(0, spent.current.length - 60)
+          commit(topUp(next))
+        }
+      }
+      raf = requestAnimationFrame(step)
+    }
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cols.length > 0])
 
-  useEffect(() => {
-    if (passes.length < 2) return
-    const t = setInterval(() => {
-      if (paused.current || document.hidden) return
-      setIdx(i => (i + 1) % passes.length)
-    }, PASS_MS)
-    return () => clearInterval(t)
-  }, [passes.length])
+  /** Take every copy of an image off the wall and out of the queue. */
+  const removeFromWall = (id: number) => {
+    hiddenIds.current.add(id)
+    const next = colsRef.current.map((col, c) => {
+      const i = col.findIndex(x => x.id === id)
+      if (i < 0) return [...col]
+      // Dropping the top tile moves the content up; move the offset with it.
+      if (i === 0) pending.current[c] = (pending.current[c] || 0) + Math.min(tileH(col[0]), offsets.current[c])
+      return col.filter(x => x.id !== id)
+    })
+    pool.current = pool.current.filter(x => x.id !== id)
+    commit(topUp(next))
+  }
 
-  const hasFavourites = batches.some(b => b.some(t => (t.score ?? 0) >= 4))
+  const hide = (t: Tile) => {
+    setHidden(t.id, true)
+    removeFromWall(t.id)
+    setUndo(t)
+    if (undoTimer.current) clearTimeout(undoTimer.current)
+    undoTimer.current = setTimeout(() => setUndo(null), 5000)
+  }
+
+  const restore = (t: Tile) => {
+    hiddenIds.current.delete(t.id)
+    setHidden(t.id, false)
+    pool.current.unshift(t)
+    setUndo(null)
+  }
+
+  const showWall = signedIn && !empty && cols.length > 0
 
   return (
     <div
       ref={rootRef}
-      onClick={() => router.push("/my-generations")}
       onMouseEnter={() => { paused.current = true }}
       onMouseLeave={() => { paused.current = false }}
-      className={`group relative ${aspect} rounded-2xl overflow-hidden border border-white/10 bg-slate-950 cursor-pointer transition-all hover:border-white/25 hover:shadow-xl hover:shadow-black/40 ${className}`}
+      onClick={showWall ? undefined : () => router.push("/my-generations")}
+      className={`group/card relative ${aspect} rounded-2xl overflow-hidden border border-white/10 bg-slate-950 transition-all hover:border-white/25 hover:shadow-xl hover:shadow-black/40 ${showWall ? "" : "cursor-pointer"} ${className}`}
     >
-      {passes.length > 0 ? (
-        passes.map((p, i) => {
-          const sum = p.tiles.reduce((a, t) => a + t.aspect, 0)
-          const short = sum < target * 0.98
-          const on = i === idx
-          return (
-            <div
-              key={p.key}
-              aria-hidden={!on}
-              // Fade, plus a slow settle from a hair larger while showing.
-              className={`absolute inset-0 transition-[opacity,transform] [transition-duration:900ms,6000ms] ease-out ${on ? "opacity-100 scale-100" : "opacity-0 scale-[1.03]"}`}
-            >
-              {/* Behind a pass that does not fill the width: a blurred copy of it. */}
-              {short && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={p.tiles[0].src} alt="" className="absolute inset-0 w-full h-full object-cover blur-2xl scale-125 opacity-40" />
-              )}
-              <div className="absolute inset-0 flex justify-center gap-0.5">
-                {p.tiles.map(t => (
+      {showWall ? (
+        <div className="absolute inset-0 flex" style={{ gap: GAP }}>
+          {cols.map((col, c) => (
+            <div key={c} className="relative flex-1 min-w-0 overflow-hidden">
+              <div ref={el => { colEls.current[c] = el }} className="flex flex-col will-change-transform" style={{ gap: GAP }}>
+                {col.map(t => (
                   <div
                     key={t.key}
-                    className="relative h-full min-w-0 overflow-hidden"
-                    // Width in proportion to the tile's shape. When the row is
-                    // narrower than the card the tiles stop at their true width
-                    // and centre; when wider, they share it and crop a sliver.
-                    style={{ flex: `${t.aspect} 1 0%`, maxWidth: short ? `${(t.aspect / target) * 100}%` : undefined }}
+                    onClick={() => setSlideshow({ start: t })}
+                    className="group/tile relative w-full shrink-0 overflow-hidden rounded-[3px] bg-white/[0.03] cursor-pointer"
+                    style={{ aspectRatio: t.aspect }}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={t.src} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                    <img src={t.thumb} alt="" draggable={false} className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover/tile:scale-[1.04]" />
                     {(t.score ?? 0) >= 4 && (
-                      <span className="absolute top-2 right-2 flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-black/55 backdrop-blur-sm text-[9px] font-semibold text-amber-300">
-                        <Star size={9} className="fill-amber-300" />{t.score}
+                      <span className="absolute top-1 left-1 flex items-center gap-0.5 px-1 py-px rounded bg-black/55 backdrop-blur-sm text-[8px] font-semibold text-amber-300">
+                        <Star size={8} className="fill-amber-300" />{t.score}
                       </span>
                     )}
+                    {/* Hover: slideshow from here, or never show here again. */}
+                    <div className="absolute inset-0 bg-black/35 opacity-0 group-hover/tile:opacity-100 transition-opacity flex items-center justify-center">
+                      <span className="w-8 h-8 rounded-full bg-white/15 backdrop-blur-sm border border-white/25 flex items-center justify-center">
+                        <Play size={13} className="text-white fill-white ml-0.5" />
+                      </span>
+                      <button
+                        title="Don't show in this section"
+                        onClick={e => { e.stopPropagation(); hide(t) }}
+                        className="absolute top-1 right-1 flex items-center gap-1 px-1.5 py-1 rounded-md bg-black/70 border border-white/15 text-[9px] font-medium text-white/90 hover:bg-red-500/80 hover:border-red-400/50 transition-colors"
+                      >
+                        <EyeOff size={10} /> Hide
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
-          )
-        })
+          ))}
+        </div>
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-white/[0.05] via-transparent to-black/50 flex items-center justify-center">
           <FolderOpen size={26} className="text-white/25" />
@@ -249,22 +317,50 @@ export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect
       )}
 
       {/* Legibility scrim */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/5 to-transparent pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent pointer-events-none" />
 
       {/* Animated silver rim */}
       <SilverRimOverlay />
 
-      {/* Label */}
-      <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2 pointer-events-none">
-        <div className="min-w-0">
-          <p className="text-sm font-bold tracking-tight text-white drop-shadow truncate">My Generations</p>
-          <p className="text-[11px] text-white/60 truncate">
-            {passes.length === 0 ? "All your images & videos"
-              : hasFavourites ? "Your top-rated work, and some from the archive"
-              : "Rediscovered from your whole history"}
-          </p>
+      {/* Slideshow, top-right. */}
+      {showWall && (
+        <button
+          onClick={() => setSlideshow({ start: null })}
+          className="absolute top-2 right-2 z-10 flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/15 text-[11px] font-semibold text-white opacity-0 group-hover/card:opacity-100 transition-opacity hover:bg-black/80"
+        >
+          <Play size={11} className="fill-white" /> Slideshow
+        </button>
+      )}
+
+      {/* Label: opens the full library. */}
+      <button
+        onClick={e => { e.stopPropagation(); router.push("/my-generations") }}
+        className="absolute left-0 bottom-0 z-10 p-3 text-left group/label max-w-full"
+      >
+        <p className="text-sm font-bold tracking-tight text-white drop-shadow flex items-center gap-1">
+          My Generations
+          <ArrowRight size={13} className="opacity-60 group-hover/label:translate-x-0.5 group-hover/label:opacity-100 transition-all" />
+        </p>
+        <p className="text-[11px] text-white/60 truncate">
+          {showWall ? "Favourites and rediscoveries · hover to pause" : "All your images & videos"}
+        </p>
+      </button>
+
+      {/* Undo a hide. */}
+      {undo && (
+        <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2 pl-3 pr-1 py-1 rounded-lg bg-slate-900/95 border border-white/15 shadow-xl text-[11px] text-white/85">
+          Hidden from this section
+          <button onClick={e => { e.stopPropagation(); restore(undo) }} className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/20 font-semibold text-white">Undo</button>
         </div>
-      </div>
+      )}
+
+      {slideshow && (
+        <HighlightsSlideshow
+          start={slideshow.start}
+          onClose={() => setSlideshow(null)}
+          onHidden={removeFromWall}
+        />
+      )}
     </div>
   )
 }
