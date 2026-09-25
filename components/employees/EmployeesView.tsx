@@ -155,7 +155,7 @@ export function EmployeesView({
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
         <Lock size={22} className="text-slate-600" />
-        <p className="text-sm text-slate-400">Employees are not available on this account yet.</p>
+        <p className="text-sm text-slate-400">Studios are not available on this account yet.</p>
       </div>
     )
   }
@@ -170,7 +170,7 @@ export function EmployeesView({
             onClick={() => onSelect(null)}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
           >
-            <ArrowLeft size={13} /> Employees
+            <ArrowLeft size={13} /> Studios
           </button>
           {def && (
             <>
@@ -193,10 +193,10 @@ export function EmployeesView({
       <div className="max-w-5xl mx-auto">
         <div className="flex items-center gap-3 mb-1">
           {logo}
-          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-100">Employees</h1>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-100">Studios</h1>
         </div>
         <p className="text-xs text-slate-500 mb-6">
-          Specialists with a workspace built for one job. Pick one to start.
+          Workspaces built for one job each. Pick one to start.
         </p>
 
         <div className="grid gap-3 sm:grid-cols-2">

@@ -31735,17 +31735,17 @@ function employeePending(
             {/* ADMIN-ONLY TASKBAR ENTRIES ARE RED, not silver. The bar's own
                 rim is silver, so red text + icon is what separates "everyone
                 gets this" from "this is not shipped yet" at a glance.
-                Frames and 3D Studio live inside Employees now. */}
+                Frames and 3D Studio live inside Studios now. */}
             {(isAdminAccount || ANY_PUBLIC_EMPLOYEE) && (
             <div className="relative flex-none min-w-[110px] sm:flex-1">
               <button
                 onClick={() => { setScannerMode("employees"); setOpenDropdown(null) }}
-                title="Employees — specialists with a workspace built for one job (admin only)"
+                title="Studios — workspaces built for one job each (admin only)"
                 className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
                   scannerMode === "employees" ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
               >
-                <UsersRound size={15} className="text-red-400" />
-                Employees
+                <Wand2 size={15} className="text-red-400" />
+                Studios
               </button>
             </div>
             )}
