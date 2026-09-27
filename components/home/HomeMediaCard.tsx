@@ -51,11 +51,11 @@ export function HomeMediaCard({
    */
   altMedia?: CardMedia | null
   /**
-   * A portrait card for a grid of landscape ones: it fills two grid rows, shows
-   * its media in an exact 3:4 frame, and puts the title in a strip underneath
-   * that takes up the rest of the height - so nothing is cropped and no gap is
-   * left, whatever the column width. (Two 4:3 rows are a little taller than one
-   * 3:4 frame of the same width.)
+   * A portrait card for a grid of landscape ones: it fills the height of the
+   * cell it is given (two grid rows) instead of taking a fixed aspect, with the
+   * media covering it and the title floating over it like every other card.
+   * Two 4:3 rows are a little taller than 3:4, so 3:4 media loses a sliver at
+   * each side.
    */
   tall?: boolean
 }) {
@@ -194,10 +194,10 @@ export function HomeMediaCard({
   return (
     <div
       onClick={activate}
-      className={`group relative ${tall ? "h-full flex flex-col" : aspect} rounded-2xl overflow-hidden border border-white/10 bg-slate-900 cursor-pointer transition-all hover:border-white/25 hover:shadow-xl hover:shadow-black/40 ${className}`}
+      className={`group relative ${tall ? "h-full min-h-[240px]" : aspect} rounded-2xl overflow-hidden border border-white/10 bg-slate-900 cursor-pointer transition-all hover:border-white/25 hover:shadow-xl hover:shadow-black/40 ${className}`}
     >
-      {/* Media: the whole card, or (tall) an exact 3:4 frame at the top */}
-      <div className={tall ? "relative w-full aspect-[3/4] shrink-0 overflow-hidden" : "absolute inset-0"}>
+      {/* Media */}
+      <div className="absolute inset-0">
       {media?.mediaType === "video" ? (
         // eslint-disable-next-line jsx-a11y/media-has-caption
         <video
@@ -226,8 +226,8 @@ export function HomeMediaCard({
         </div>
       )}
 
-      {/* Legibility scrim (a tall card's title sits below the media, so it only needs a soft edge) */}
-      <div className={`absolute inset-0 bg-gradient-to-t ${tall ? "from-black/40 via-transparent" : "from-black/80 via-black/10"} to-transparent`} />
+      {/* Legibility scrim */}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
       </div>
 
       {/* Hover sheen — the site's travelling band of silver light */}
@@ -241,8 +241,8 @@ export function HomeMediaCard({
 
       {badge && <div className="absolute top-2 left-2 z-20 pointer-events-none">{badge}</div>}
 
-      {/* Foreground label: over the media, or (tall) in the strip below it */}
-      <div className={tall ? "relative flex-1 min-h-[40px] px-3 py-2 flex items-center justify-between gap-2 bg-gradient-to-b from-slate-900 to-black" : "absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2"}>
+      {/* Foreground label */}
+      <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2">
         <div className="min-w-0">
           <p className="text-sm font-bold tracking-tight truncate drop-shadow text-white">{title}</p>
           {subtitle && <p className="text-[11px] text-white/60 truncate">{subtitle}</p>}
