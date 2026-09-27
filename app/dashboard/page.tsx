@@ -378,8 +378,10 @@ export default function DashboardPage() {
         </Link>
         </div>
 
-        {/* Content policy notice (CCBill) - the same one as on the Home page. */}
-        <ProhibitedContentNotice />
+        {/* Content policy notice (CCBill) - the same one as on the Home page.
+            Here below the launchers on narrower screens; on wide ones it sits
+            at the foot of the right-hand column instead (below). */}
+        <div className="xl:hidden"><ProhibitedContentNotice /></div>
 
         </div>
 
@@ -492,6 +494,9 @@ export default function DashboardPage() {
             ))}
           </div>
         </div>
+
+        {/* The policy notice, at the foot of the sidebar on wide screens. */}
+        <div className="hidden xl:block shrink-0"><ProhibitedContentNotice /></div>
 
         </div>
         </div>
