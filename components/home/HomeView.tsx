@@ -243,11 +243,19 @@ export function HomeView({
         around it on a wide screen; the lead spans the row on a phone.
         Each card shares its thumbnail with the same model's card below, so
         one upload covers both.
+
+        A portrait card (Virtual Try-On) gets its own column spanning both
+        rows, between the lead and the 2x2 block. That column is 0.84 of a
+        small card's width: two 16:9 rows plus the gap are ~1.13 widths tall,
+        so 0.84 of a width across comes out at ~3:4 and its video is barely
+        cropped. On a phone it sits beside two of the small cards.
       */}
       {featured.length > 0 && (
         <Section icon={<Star size={17} />} title="Featured Models" subtitle="The best place to start">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 2xl:gap-4">
-            {featured.map((m, i) => (
+          <div className={`grid grid-cols-2 ${featured.some(m => TALL_CARDS.has(`${m.kind}:${m.name}`)) ? "lg:grid-cols-[1fr_1fr_0.84fr_1fr_1fr]" : "lg:grid-cols-4"} gap-3 2xl:gap-4`}>
+            {featured.map((m, i) => {
+              const tall = i > 0 && TALL_CARDS.has(`${m.kind}:${m.name}`)
+              return (
               <HomeMediaCard
                 key={`featured:${m.kind}:${m.name}`}
                 cardKey={`${m.kind}:${m.name}`}
@@ -261,10 +269,13 @@ export function HomeView({
                 badge={m.admin ? <AdminModelBadge /> : undefined}
                 onClick={() => (m.kind === "image" ? onSelectImageModel : onSelectVideoModel)(m.name)}
                 onMediaChange={onCardMediaChange}
-                className={i === 0 ? "col-span-2 lg:row-span-2" : ""}
+                tall={tall}
+                frameAspect={tall ? 3 / 4 : 4 / 3}
+                className={i === 0 ? "col-span-2 lg:row-span-2" : tall ? "row-span-2" : ""}
                 aspect={i === 0 ? "aspect-[4/3] lg:aspect-auto lg:h-full" : "aspect-[4/3] lg:aspect-video"}
               />
-            ))}
+              )
+            })}
           </div>
         </Section>
       )}
