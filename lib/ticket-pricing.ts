@@ -127,6 +127,26 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     const sec = Math.max(1, Math.ceil(editVideoDurationSec || 5));
     const factor = Math.max(1, Math.min(4, parseFloat(videoUpscaleFactor) || 2));
     ticketCost = Math.ceil(sec * 2 * factor);
+  } else if (model === 'seedance-2.5') {
+    /*
+     * Priced from fal's published rates (2026-09-27): $0.2205/s at 480p,
+     * $0.473/s at 720p, $1.164/s at 1080p. The target is a 50% gross margin
+     * even on the cheapest ticket anyone can buy - a subscription ticket,
+     * $20 / 250 = $0.08 - which is ~64% on pack tickets, before processor
+     * fees. The old placeholder (4.5/s at 1080p) lost ~$0.68 a second.
+     *   480p   6/s  = $0.48/s at $0.08   (cost $0.2205)
+     *   720p  12/s  = $0.96/s            (cost $0.473)
+     *   1080p 30/s  = $2.40/s            (cost $1.164)
+     * Video references are billed by fal too (their seconds added to the
+     * output's, the total at 0.6x), exactly as SeeDance 2.0 is here. 'auto'
+     * lets fal pick the length, so it is billed as 10s rather than a
+     * 5s that it can overrun. Durations follow the route's 4-12s clamp.
+     */
+    const perSec = resolution === '480p' ? 6 : resolution === '720p' ? 12 : 30
+    const hasVideoRefs = effectiveSd20Mode === 'r2v' && referenceVideoCount > 0
+    const outputDurSec = duration === 'auto' ? 10 : Math.min(12, Math.max(4, parseInt(duration) || 5))
+    const effectiveDur = outputDurSec + (hasVideoRefs ? (referenceVideoDurationSec || 0) : 0)
+    ticketCost = Math.ceil(effectiveDur * perSec * (hasVideoRefs ? 0.6 : 1.0))
   } else if (INPUT_ROUTED_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Scaled by resolution the same
     // way the other per-second models are.
@@ -241,7 +261,7 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'seedance-1.5',       label: 'SeeDance 1.5 Pro',       kind: 'generator', durations: ['3','5','8','10','12'],          resolutions: RES_STD,                  supportsAudio: true,  durationSource: 'none' },
   { id: 'seedance-2.0',       label: 'SeeDance 2.0',           kind: 'generator', durations: ['auto','3','5','8','10','12'],   resolutions: ['480p', '720p'],         supportsAudio: false, durationSource: 'none', note: 'r2v with video references: 0.6x multiplier, but the reference seconds are added to the billed duration.' },
   { id: 'seedance-2.0-fast',  label: 'SeeDance 2.0 Fast',      kind: 'generator', durations: ['auto','3','5','8','10','12'],   resolutions: ['480p', '720p'],         supportsAudio: false, durationSource: 'none', note: 'Same shape as SeeDance 2.0 at 12 tickets/sec.' },
-  { id: 'seedance-2.5',       label: 'SeeDance 2.5',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p', '1440p', '2160p', '4k'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
+  { id: 'seedance-2.5',       label: 'SeeDance 2.5',           kind: 'generator', durations: ['auto', '4', '5', '8', '10', '12'], resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'Public. 6 / 12 / 30 tickets per second at 480p / 720p / 1080p (50% margin at a $0.08 subscription ticket). Video refs: their seconds added, total x0.6. auto billed as 10s.' },
   { id: 'gemini-omni-flash',  label: 'Gemini Omni Flash',      kind: 'generator', durations: ['4', '6', '8', '10', '12'],      resolutions: [],                       supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER 15 tickets/sec. In edit mode the SOURCE clip length is billed (min 3s, 8s when unknown).' },
   { id: 'gemini-omni-1.1',    label: 'Gemini Omni Flash 1.1',  kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p', '1440p', '2160p', '4k'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
   { id: 'minimax-h3-max',     label: 'MiniMax H3 Max',         kind: 'generator', durations: ['5', '8', '10', '15'],           resolutions: ['480p', '768p'],         supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER — seconds clamped to 5-15.' },

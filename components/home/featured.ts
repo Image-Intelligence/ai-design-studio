@@ -10,6 +10,6 @@ export const FEATURED_MODELS: { name: string; kind: "image" | "video" }[] = [
   { name: "Virtual Try-On", kind: "image" },
   { name: "ChatGPT Images 2.5", kind: "image" },
   { name: "Ideogram v4", kind: "image" },
-  { name: "SeeDance 2.0", kind: "video" },
+  { name: "SeeDance 2.5", kind: "video" },
   { name: "Kling 3.0", kind: "video" },
 ]

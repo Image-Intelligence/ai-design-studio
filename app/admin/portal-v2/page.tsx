@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { ideogramTicketCost } from "@/lib/ticket-pricing"
+import { ideogramTicketCost, videoTicketCost } from "@/lib/ticket-pricing"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -854,7 +854,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     textToVideo: true,
   },
   {
-    // ADMIN ONLY — bytedance/seedance-2.5. NOTE: no text-only endpoint, so an
+    // PUBLIC — bytedance/seedance-2.5. NOTE: no text-only endpoint, so an
     // image or references are required (textToVideo intentionally omitted).
     id: "seedance-2.5",
     name: "SeeDance 2.5",
@@ -1061,7 +1061,7 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "minimax-h3-max":     "$$",
   "wan-3.0":            "$$$",
   "wan-3.0-prime":      "$$$+",
-  "seedance-2.5":       "$$$",
+  "seedance-2.5":       "$$$+",
   "gemini-omni-1.1":    "$$$+",
   "ltx-2.5-pro":        "$$$",
   "ltx-2.5-fast":       "$$",
@@ -1225,14 +1225,13 @@ const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Ob
 )
 const VIDEO_MODEL_GROUPS = [
   { label: "Kling",       type: "image to video",        accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling 3.0", "Kling V3 Motion"] },
-  { label: "ByteDance",   type: "image & text to video", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast"] },
+  { label: "ByteDance",   type: "image & text to video", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.5"] },
   { label: "Wan",         type: "image to video",        accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5"] },
   { label: "Lipsync",     type: "lip sync video",        accent: "text-pink-400",    dot: "bg-pink-400",    items: ["Lipsync v3"] },
   { label: "Alibaba",     type: "image to video",        accent: "text-yellow-400",  dot: "bg-yellow-400",  items: ["Happy Horse"] },
 ]
 const ADMIN_VIDEO_MODEL_GROUPS = [
   { label: "Alibaba", type: "text · image · refs · with audio · pricing TBD",  accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
-  { label: "ByteDance", type: "image & refs to video · pricing TBD",           accent: "text-sky-400",    dot: "bg-sky-400",    items: ["SeeDance 2.5"] },
   { label: "Google", type: "text · image · ref · edit to video · pricing TBD", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
   { label: "Lightricks", type: "text & image to video · up to 4K · pricing TBD", accent: "text-lime-400", dot: "bg-lime-400",   items: ["LTX 2.5 Pro", "LTX 2.5 Fast"] },
   { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max"] },
@@ -1246,7 +1245,7 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
   "gemini-omni-flash", "wan-2.7", "wan-2.2-lora", "minimax-h3-max", "flux-3",
-  "wan-3.0", "wan-3.0-prime", "seedance-2.5", "gemini-omni-1.1", "ltx-2.5-pro", "ltx-2.5-fast",
+  "wan-3.0", "wan-3.0-prime", "gemini-omni-1.1", "ltx-2.5-pro", "ltx-2.5-fast",
   "flux-video-upscale", "topaz-upscale-precision", "topaz-upscale-creative", "topaz-upscale-generative",
   "seedvr2-video", "flashvsr-video", "bytedance-video-upscale",
   "topaz-interpolate", "topaz-colorize", "topaz-deblur", "topaz-sdr-to-hdr",
@@ -24510,6 +24509,9 @@ function VideoCustomizationPanel({
     ? parseInt(duration) * (audioEnabled ? 8 : 6)
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
+    // SeeDance 2.5: the billing function itself, so the price shown is the price charged
+    : model.id === "seedance-2.5"
+    ? videoTicketCost({ model: "seedance-2.5", duration, resolution })
     : isSD20Family
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * sd20ResMultiplier)
     : model.id === "happy-horse"
@@ -25861,6 +25863,9 @@ function VideoPromptBar({
     ? parseInt(duration) * (audioEnabled ? 8 : 6)
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
+    // SeeDance 2.5: the billing function itself, so the price shown is the price charged
+    : model.id === "seedance-2.5"
+    ? videoTicketCost({ model: "seedance-2.5", duration, resolution })
     : isSD20FamilyBar
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
     : model.id === "happy-horse"

@@ -50,7 +50,7 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'wan-3.0-r2v':                'alibaba/wan-3.0/reference-to-video',
   'wan-3.0-prime-t2v':          'alibaba/wan-3.0-prime/text-to-video',
   'wan-3.0-prime-i2v':          'alibaba/wan-3.0-prime/image-to-video',
-  // SeeDance 2.5 (ADMIN ONLY) — i2v + r2v only, no text-only endpoint
+  // SeeDance 2.5 — i2v + r2v only, no text-only endpoint
   'seedance-2.5-i2v':           'bytedance/seedance-2.5/image-to-video',
   'seedance-2.5-r2v':           'bytedance/seedance-2.5/reference-to-video',
   // Gemini Omni Flash 1.1 (ADMIN ONLY) — adds 4K, drops the edit endpoint
@@ -129,7 +129,7 @@ export const VIDEO_FILE_EXTS = ['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']
  */
 export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   'gemini-omni-flash', 'wan-2.7', 'wan-2.2-lora', 'minimax-h3-max', 'flux-3',
-  'wan-3.0', 'wan-3.0-prime', 'seedance-2.5', 'gemini-omni-1.1', 'ltx-2.5-pro', 'ltx-2.5-fast',
+  'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-pro', 'ltx-2.5-fast',
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
   'bytedance-video-upscale', 'topaz-colorize', 'topaz-deblur',

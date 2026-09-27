@@ -23,7 +23,7 @@ export type ModelSection = { label: string; note?: string; groups: ModelGroup[] 
 // Home-page card order (overrides the group order). Listed models come first in this
 // exact order; any model not listed follows in its original order.
 const HOME_IMAGE_ORDER = ["NanoBanana Pro 2", "ChatGPT Images 2.5", "ChatGPT Images 2.0", "Kling O3", "SeeDream 5.0 Pro", "Recraft v4.1", "SeeDream 4.5", "Wan 2.7 Pro", "SeeDream 5.0 Lite"]
-const HOME_VIDEO_ORDER = ["SeeDance 2.0", "Kling 3.0", "Wan 2.5", "Happy Horse", "Kling V3 Motion", "SeeDance 1.5", "SeeDance 2.0 Fast", "Lipsync v3"]
+const HOME_VIDEO_ORDER = ["SeeDance 2.5", "SeeDance 2.0", "Kling 3.0", "Wan 2.5", "Happy Horse", "Kling V3 Motion", "SeeDance 1.5", "SeeDance 2.0 Fast", "Lipsync v3"]
 
 function reorder<T extends { name: string }>(models: T[], order: string[]): T[] {
   const front = order.map(n => models.find(m => m.name === n)).filter((m): m is T => !!m)

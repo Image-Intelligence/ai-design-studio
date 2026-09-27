@@ -530,6 +530,9 @@ export async function POST(request: NextRequest) {
         duration: duration === 'auto' ? 'auto' : String(Math.min(12, Math.max(4, parseInt(duration) || 5))),
         generate_audio: generateAudio,
         bitrate_mode: 'standard',
+        // fal's default for 2.5 is HEVC (Main 10), which desktop Chrome cannot
+        // decode - the result would play black in the feed. H.264 plays everywhere.
+        codec: 'H264',
       };
       if (['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(klingAspectRatio)) {
         falInput.aspect_ratio = klingAspectRatio;
