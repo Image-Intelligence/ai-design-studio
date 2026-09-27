@@ -109,7 +109,11 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
           onClick={() => onSelect(m.name)}
           onMediaChange={onCardMediaChange}
           tall={tall}
-          className={tall ? "row-span-2" : ""}
+          // Two 4:3 rows are ~2:3 tall. The 2:3 floor keeps a tall card two rows
+          // tall even at the end of the grid, where nothing beside it sets the
+          // second row's height (that row collapsed and the card came out one
+          // row tall); with neighbours, it fills the two rows exactly.
+          className={tall ? "row-span-2 aspect-[2/3]" : ""}
           frameAspect={tall ? 3 / 4 : 4 / 3}
         />
         )
