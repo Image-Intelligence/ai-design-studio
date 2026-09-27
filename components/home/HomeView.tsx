@@ -298,11 +298,49 @@ export function HomeView({
         so 0.84 of a width across comes out at ~3:4 and its video is barely
         cropped. On a phone it sits beside two of the small cards.
       */}
-      {featured.length > 0 && (
+      {featured.length > 0 && (() => {
+        const isTall = (m: { kind: string; name: string }) => TALL_CARDS.has(`${m.kind}:${m.name}`)
+        const [lead, ...rest] = featured
+        const talls = rest.filter(isTall)
+        const regs = rest.filter(m => !isTall(m))
+        /*
+         * The gallery band (a lead, three portrait cards, four regular ones):
+         *   wide   one band two rows tall, portraits and pairs alternating -
+         *          lead | tall | pair | tall | pair | tall. A pair is two 16:9
+         *          cards stacked, so the band is 1.125 of a pair's width tall
+         *          (plus the gap); a 0.84 column at that height is ~3:4, and
+         *          the lead's 1.5 column makes it ~4:3.
+         *   phone  two columns, five rows, no holes -
+         *            tall  | reg          rows 1-2
+         *            reg   | tall         rows 3-4 (starts on row 3)
+         *            tall  | reg          rows 4-5
+         *          which is exactly the DOM order below under normal flow.
+         * Any other mix of cards falls back to a simple lead-plus-grid.
+         */
+        const band = talls.length === 3 && regs.length === 4
+        const order = band ? [lead, talls[0], regs[0], regs[1], regs[2], talls[1], talls[2], regs[3]] : featured
+        // Literal class strings, so Tailwind sees every one of them
+        const TALL_COL = ["lg:col-start-2", "lg:col-start-4", "lg:col-start-6"]
+        const REG_CELL = [
+          "lg:col-start-3 lg:row-start-1", "lg:col-start-3 lg:row-start-2",
+          "lg:col-start-5 lg:row-start-1", "lg:col-start-5 lg:row-start-2",
+        ]
+        const place = (m: typeof featured[number]): { className: string; aspect: string; tall: boolean } => {
+          if (m === lead) return band
+            ? { className: "col-span-2 lg:col-span-1 lg:col-start-1 lg:row-start-1 lg:row-span-2", aspect: "aspect-[4/3] lg:aspect-auto lg:h-full", tall: false }
+            : { className: "col-span-2 lg:row-span-2", aspect: "aspect-[4/3] lg:aspect-auto lg:h-full", tall: false }
+          if (!band) return isTall(m)
+            ? { className: "row-span-2", aspect: "", tall: true }
+            : { className: "", aspect: "aspect-[4/3] lg:aspect-video", tall: false }
+          const t = talls.indexOf(m)
+          if (t >= 0) return { className: `row-span-2 lg:row-start-1 ${TALL_COL[t]}`, aspect: "", tall: true }
+          return { className: REG_CELL[regs.indexOf(m)], aspect: "aspect-[4/3] lg:aspect-video", tall: false }
+        }
+        return (
         <Section icon={<Star size={17} />} title="Featured Models" subtitle="The best place to start">
-          <div className={`grid grid-cols-2 ${featured.some(m => TALL_CARDS.has(`${m.kind}:${m.name}`)) ? "lg:grid-cols-[1fr_1fr_0.84fr_1fr_1fr]" : "lg:grid-cols-4"} gap-3 2xl:gap-4`}>
-            {featured.map((m, i) => {
-              const tall = i > 0 && TALL_CARDS.has(`${m.kind}:${m.name}`)
+          <div className={`grid grid-cols-2 ${band ? "lg:grid-cols-[1.5fr_0.84fr_1fr_0.84fr_1fr_0.84fr]" : talls.length ? "lg:grid-cols-[1fr_1fr_0.84fr_1fr_1fr]" : "lg:grid-cols-4"} gap-3 2xl:gap-4`}>
+            {order.map(m => {
+              const pl = place(m)
               return (
               <HomeMediaCard
                 key={`featured:${m.kind}:${m.name}`}
@@ -317,16 +355,17 @@ export function HomeView({
                 badge={m.admin ? <AdminModelBadge /> : undefined}
                 onClick={() => (m.kind === "image" ? onSelectImageModel : onSelectVideoModel)(m.name)}
                 onMediaChange={onCardMediaChange}
-                tall={tall}
-                frameAspect={tall ? 3 / 4 : 4 / 3}
-                className={i === 0 ? "col-span-2 lg:row-span-2" : tall ? "row-span-2" : ""}
-                aspect={i === 0 ? "aspect-[4/3] lg:aspect-auto lg:h-full" : "aspect-[4/3] lg:aspect-video"}
+                tall={pl.tall}
+                frameAspect={pl.tall ? 3 / 4 : 4 / 3}
+                className={pl.className}
+                aspect={pl.aspect || undefined}
               />
               )
             })}
           </div>
         </Section>
-      )}
+        )
+      })()}
 
       {/*
         STUDIOS - driven by SITE_EMPLOYEES: a released studio shows for

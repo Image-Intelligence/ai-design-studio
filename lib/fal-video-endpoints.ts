@@ -58,7 +58,7 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'gemini-omni-1.1-i2v':        'google/gemini-omni-flash/v1.1/image-to-video',
   'gemini-omni-1.1-r2v':        'google/gemini-omni-flash/v1.1/reference-to-video',
   'gemini-omni-1.1-edit':       'google/gemini-omni-flash/v1.1/edit',
-  // LTX 2.5 (ADMIN ONLY) — Pro tops out at 1080p, Fast reaches 2160p and
+  // LTX 2.5 (Pro is public, Fast ADMIN ONLY) — Pro tops out at 1080p, Fast reaches 2160p and
   // longer durations. Both take an fps choice and a camera_motion hint.
   'ltx-2.5-pro-t2v':            'lightricks/ltx-2.5/text-to-video/pro',
   'ltx-2.5-pro-i2v':            'lightricks/ltx-2.5/image-to-video/pro',
@@ -129,7 +129,7 @@ export const VIDEO_FILE_EXTS = ['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']
  */
 export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   'gemini-omni-flash', 'wan-2.7', 'wan-2.2-lora', 'minimax-h3-max', 'flux-3',
-  'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-pro', 'ltx-2.5-fast',
+  'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-fast',
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
   'bytedance-video-upscale', 'topaz-colorize', 'topaz-deblur',

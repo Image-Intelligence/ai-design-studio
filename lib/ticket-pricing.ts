@@ -147,6 +147,23 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     const outputDurSec = duration === 'auto' ? 10 : Math.min(12, Math.max(4, parseInt(duration) || 5))
     const effectiveDur = outputDurSec + (hasVideoRefs ? (referenceVideoDurationSec || 0) : 0)
     ticketCost = Math.ceil(effectiveDur * perSec * (hasVideoRefs ? 0.6 : 1.0))
+  } else if (model === 'ltx-2.5-pro') {
+    /*
+     * Priced from fal's published rates (2026-09-27): $0.12/s at 720p and
+     * $0.17/s at 1080p, native audio included. Against the cheapest ticket
+     * anyone can buy ($0.08, a subscription ticket) these rates clear a 50%
+     * margin; on pack tickets it is ~55-65%:
+     *   720p   3/s   = $0.24/s at $0.08   (cost $0.12)
+     *   1080p  4.5/s = $0.36/s            (cost $0.17)
+     * The route snaps the length to the 6/8/10s the endpoint accepts, so
+     * this bills the SNAPPED length - a "5s" request renders (and costs) 6s.
+     * 'auto' lets LTX pick, anywhere up to 10s (a test clip came back 4.2s),
+     * so it is billed as 8s: still ~41% margin if it runs the full 10s.
+     */
+    const wanted = parseInt(duration) || 0
+    const sec = duration === 'auto' || !wanted ? 8
+      : [6, 8, 10].reduce((best, d) => Math.abs(d - wanted) < Math.abs(best - wanted) ? d : best, 6)
+    ticketCost = Math.ceil(sec * (resolution === '720p' ? 3 : 4.5))
   } else if (INPUT_ROUTED_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Scaled by resolution the same
     // way the other per-second models are.
@@ -266,7 +283,7 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'gemini-omni-1.1',    label: 'Gemini Omni Flash 1.1',  kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p', '1440p', '2160p', '4k'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
   { id: 'minimax-h3-max',     label: 'MiniMax H3 Max',         kind: 'generator', durations: ['5', '8', '10', '15'],           resolutions: ['480p', '768p'],         supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER — seconds clamped to 5-15.' },
   { id: 'flux-3',             label: 'FLUX 3 Video',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER — seconds clamped to 5-20.' },
-  { id: 'ltx-2.5-pro',        label: 'LTX 2.5 Pro',            kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
+  { id: 'ltx-2.5-pro',        label: 'LTX 2.5 Pro',            kind: 'generator', durations: ['auto', '6', '8', '10'],         resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: 'fal $0.12/s 720p, $0.17/s 1080p (audio included). Length snapped to 6/8/10s; auto billed as 8s.' },
   { id: 'ltx-2.5-fast',       label: 'LTX 2.5 Fast',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p', '1440p', '2160p'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
   { id: 'happy-horse',        label: 'Happy Horse',            kind: 'generator', durations: DUR_5_10,                         resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none' },
   { id: 'lipsync-v3',         label: 'Lipsync v3',             kind: 'generator', durations: [],                               resolutions: [],                       supportsAudio: false, durationSource: 'lipsync', note: '6 tickets/sec of the source video, floor of 10 tickets.' },

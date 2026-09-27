@@ -6,10 +6,12 @@
  */
 export const FEATURED_MODELS: { name: string; kind: "image" | "video" }[] = [
   { name: "NanoBanana Pro 2", kind: "image" },
-  // Portrait (a TALL_CARDS entry): it takes its own two-row column beside the lead.
+  // Portrait cards (TALL_CARDS) get full-height columns; the rest stack in one.
   { name: "Virtual Try-On", kind: "image" },
   { name: "ChatGPT Images 2.5", kind: "image" },
   { name: "Ideogram v4", kind: "image" },
+  { name: "Pixelcut Product Photo", kind: "image" },
+  { name: "Kling V3 Motion", kind: "video" },
+  { name: "LTX 2.5 Pro", kind: "video" },
   { name: "SeeDance 2.5", kind: "video" },
-  { name: "Kling 3.0", kind: "video" },
 ]
