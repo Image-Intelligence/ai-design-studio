@@ -19,6 +19,10 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     '/api/user/references/trim-video': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/frames-gif': ['./node_modules/ffmpeg-static/**'],
+    // Card videos are converted to a card-sized H.264 rendition on upload.
+    // Without the binary the route silently kept the original - which is how a
+    // 4K HEVC master ended up on a home card.
+    '/api/admin/home-cards': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/frames-clips': ['./node_modules/ffmpeg-static/**'],
     '/api/video/assemble': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/dataset/thumb/[id]': ['./node_modules/ffmpeg-static/**'],

@@ -8,6 +8,54 @@ import { SilverRimOverlay } from "./SilverRimOverlay"
 
 export type CardMedia = { mediaUrl: string; mediaType: string }
 
+/*
+ * CARD VIDEO PLAYBACK BUDGET - shared by every card on the page.
+ *
+ * Phones have a handful of hardware video decoders. The home page holds more
+ * than a dozen video cards, and with every visible one playing at once iPhone
+ * Safari stuttered, froze frames and stopped videos outright (iPad and desktop
+ * less often, but the same way). So at most MAX_PLAYING() card videos play at
+ * a time - the ones most in view - and the rest pause on their current frame
+ * until they are among the most visible again. A video the budget wants
+ * playing that the browser pauses or stalls on its own is nudged to play again.
+ */
+const cardVideos = new Map<HTMLVideoElement, number>() // video -> visible ratio
+const wanted = new Set<HTMLVideoElement>()
+let rebalanceQueued = false
+
+function maxPlaying(): number {
+  if (typeof navigator === "undefined") return 6
+  const ua = navigator.userAgent
+  const phone = /iPhone|iPod|Android.+Mobile/i.test(ua)
+  const tablet = /iPad|Android(?!.+Mobile)/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+  return phone ? 3 : tablet ? 5 : 8
+}
+
+function rebalance() {
+  rebalanceQueued = false
+  const visible = [...cardVideos].filter(([, r]) => r >= 0.2).sort((a, b) => b[1] - a[1])
+  const allowed = new Set(visible.slice(0, maxPlaying()).map(([v]) => v))
+  wanted.clear()
+  for (const [v] of cardVideos) {
+    if (allowed.has(v) && !document.hidden) {
+      wanted.add(v)
+      v.muted = true // the property, not the attribute: desktop blocks unmuted autoplay
+      if (v.preload !== "auto") v.preload = "auto"
+      if (v.paused) v.play()?.catch(() => {})
+    } else if (!v.paused) {
+      v.pause()
+    }
+  }
+}
+
+function queueRebalance() {
+  if (rebalanceQueued || typeof window === "undefined") return
+  rebalanceQueued = true
+  requestAnimationFrame(rebalance)
+}
+
+if (typeof document !== "undefined") document.addEventListener("visibilitychange", queueRebalance)
+
 // A single home-page section card. Admin-uploaded image/video fills it (cover);
 // otherwise a themed gradient placeholder. The whole card is clickable (onClick or
 // href); admin upload/remove controls float on top and stop propagation so they
@@ -66,27 +114,40 @@ export function HomeMediaCard({
   const [frameSrc, setFrameSrc] = useState<string | null>(null) // image awaiting framing
   const videoRef = useRef<HTMLVideoElement>(null)
 
-  // Only play the card's video while it's on-screen. Desktop browsers cap how many
-  // videos can decode at once, so autoplaying every card (including the ones scrolled
-  // off in the horizontal rows) starves the decoders and leaves some stuck/black or
-  // stuttering. Gating playback to visible cards — what iOS Safari does on its own —
-  // lets them all load and play smoothly.
+  // Card videos play under the shared budget above: only the few most in view
+  // play at once, so the decoders are never oversubscribed.
   const isVideo = media?.mediaType === "video"
   useEffect(() => {
     const v = videoRef.current
     if (!v || !isVideo) return
     v.muted = true // React's `muted` attribute is unreliable; set the property so desktop autoplay isn't blocked
+    cardVideos.set(v, 0)
     const io = new IntersectionObserver(
       entries => {
-        for (const e of entries) {
-          if (e.isIntersecting) { v.muted = true; const p = v.play(); if (p) p.catch(() => {}) }
-          else v.pause()
-        }
+        for (const e of entries) cardVideos.set(v, e.isIntersecting ? e.intersectionRatio : 0)
+        queueRebalance()
       },
-      { threshold: 0.1 }
+      { threshold: [0, 0.2, 0.4, 0.6, 0.8, 1] }
     )
     io.observe(v)
-    return () => io.disconnect()
+    // The browser pausing or starving a video the budget wants playing (iOS does
+    // both under load): try again shortly.
+    let retry: ReturnType<typeof setTimeout> | null = null
+    const nudge = () => {
+      if (retry) clearTimeout(retry)
+      retry = setTimeout(() => { if (wanted.has(v) && v.paused) v.play()?.catch(() => {}) }, 800)
+    }
+    v.addEventListener("pause", nudge)
+    v.addEventListener("stalled", nudge)
+    return () => {
+      io.disconnect()
+      v.removeEventListener("pause", nudge)
+      v.removeEventListener("stalled", nudge)
+      if (retry) clearTimeout(retry)
+      cardVideos.delete(v)
+      wanted.delete(v)
+      queueRebalance()
+    }
   }, [isVideo, media?.mediaUrl])
 
   const activate = () => {

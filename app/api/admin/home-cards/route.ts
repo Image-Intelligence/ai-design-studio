@@ -26,13 +26,24 @@ const pExecFile = promisify(execFile)
 // File). Both are streamed to R2 server-side with uploadToR2.
 
 export const runtime = 'nodejs'
-// Video uploads may be transcoded (HEVC → H.264), which takes time for large clips.
+// Video uploads are re-encoded to a card rendition, which takes time for large clips.
 export const maxDuration = 300
 
-// Apple devices record/export video as HEVC (H.265), which Safari plays but desktop
-// Chrome cannot decode — the card would go black on desktop. Detect non-H.264 video
-// and transcode it to H.264 so it plays everywhere. Falls back to the original bytes
-// if ffmpeg is unavailable or anything fails (never blocks the upload).
+/*
+ * Every card video becomes a card-sized H.264 rendition.
+ *
+ * A card is a few hundred pixels wide, but uploads arrived as 3326x2494 and 4K
+ * masters at 19-29 Mbps. A phone playing several of those at once runs out of
+ * hardware decoders, so the home page stuttered, froze and stopped on iPhone.
+ * The rendition: H.264 High (plays everywhere - Apple devices export HEVC,
+ * which desktop Chrome cannot decode), long side at most 1280, at most 30 fps,
+ * ~3 Mbps cap, faststart, no audio (cards are muted). A clip that is already
+ * small H.264 is left alone. Falls back to the original bytes if ffmpeg is
+ * unavailable or anything fails (never blocks the upload).
+ */
+const CARD_MAX_SIDE = 1280
+const CARD_MAX_KBPS = 4000
+
 async function ensureH264(buffer: Buffer): Promise<Buffer> {
   if (!ffmpegPath) return buffer
   let dir: string | null = null
@@ -42,16 +53,23 @@ async function ensureH264(buffer: Buffer): Promise<Buffer> {
     const outFile = join(dir, 'out.mp4')
     writeFileSync(inFile, buffer)
 
-    // Detect the video codec (ffmpeg -i prints stream info to stderr and exits non-zero).
-    let codec = ''
+    // Probe (ffmpeg -i prints stream info to stderr and exits non-zero).
+    let info = ''
     try { await pExecFile(ffmpegPath, ['-i', inFile]) }
-    catch (e: any) { codec = (String(e?.stderr || '').match(/Video:\s*(\w+)/) || [])[1] || '' }
-    if (codec === 'h264') return buffer // already web-safe
+    catch (e: any) { info = String(e?.stderr || '') }
+    const codec = (info.match(/Video:\s*(\w+)/) || [])[1] || ''
+    const [, w, h] = info.match(/Video:.*?\b(\d{2,5})x(\d{2,5})\b/) || []
+    const kbps = parseInt((info.match(/bitrate:\s*(\d+)\s*kb\/s/) || [])[1] || '0')
+    const small = Math.max(parseInt(w || '0'), parseInt(h || '0')) <= CARD_MAX_SIDE && kbps > 0 && kbps <= CARD_MAX_KBPS
+    if (codec === 'h264' && small) return buffer // already a card rendition
 
     await pExecFile(ffmpegPath, [
       '-y', '-i', inFile,
-      '-c:v', 'libx264', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
-      '-crf', '20', '-preset', 'fast', '-movflags', '+faststart',
+      '-vf', `scale=w='if(gte(iw,ih),min(iw,${CARD_MAX_SIDE}),-2)':h='if(gte(iw,ih),-2,min(ih,${CARD_MAX_SIDE}))'`,
+      '-fpsmax', '30',
+      '-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-pix_fmt', 'yuv420p',
+      '-crf', '23', '-maxrate', '3M', '-bufsize', '6M', '-preset', 'medium', '-g', '60',
+      '-movflags', '+faststart',
       '-an', // cards are muted — drop audio to keep it small
       outFile,
     ], { maxBuffer: 1 << 30 })
