@@ -75,6 +75,8 @@ type HomeModel = { name: string; accent: string; group: string; admin: boolean }
 const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Product Photo"])
 /** The model grids' widest column count (min-[2200px]:grid-cols-8). */
 const MAX_GRID_COLS = 8
+/** The fewest regular cards between two tall ones, so they never sit side by side. */
+const TALL_CARD_GAP = 6
 
 /**
  * A wrapping grid of model cards. The long single-file scrolling rows made a
@@ -92,21 +94,43 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
 }) {
   if (models.length === 0) return null
   /*
-   * A two-row card near the end of the list leaves its second row mostly
-   * empty (Pixelcut, then an admin model, came second to last and opened a near-
-   * empty extra row). So each tall card is moved up until at least a full row
-   * of the widest layout (8 columns) follows it; dense packing then fills the
-   * space beside it at every width. Cards already far enough up stay put.
+   * Placing the tall (two-row) cards.
+   *
+   * Near the end of the list a tall card leaves its second row mostly empty
+   * (Pixelcut, then an admin model, came second to last and opened a near-
+   * empty extra row), and two tall cards side by side read as one lopsided
+   * block (Virtual Try-On and Pixelcut are neighbours in the list). So, in
+   * terms of how many regular cards come before each tall one:
+   *   - the last tall card has at least a full row of the widest layout
+   *     (MAX_GRID_COLS) after it
+   *   - any two tall cards have at least TALL_CARD_GAP regular cards between
+   * A tall card keeps its own place when that already holds and only moves up
+   * when it must. Dense packing fills the space beside each at every width.
    */
-  const ordered = [...models]
-  for (let i = ordered.length - 1; i >= 0; i--) {
-    if (!TALL_CARDS.has(`${kind}:${ordered[i].name}`)) continue
-    const target = ordered.length - 1 - MAX_GRID_COLS
-    if (i > target) {
-      const [card] = ordered.splice(i, 1)
-      ordered.splice(Math.max(0, target), 0, card)
-    }
+  const regular = models.filter(m => !TALL_CARDS.has(`${kind}:${m.name}`))
+  const tallCards: { card: HomeModel; before: number }[] = []
+  let seen = 0
+  for (const m of models) {
+    if (TALL_CARDS.has(`${kind}:${m.name}`)) tallCards.push({ card: m, before: seen })
+    else seen++
   }
+  for (let j = tallCards.length - 1; j >= 0; j--) {
+    const limit = j === tallCards.length - 1
+      ? regular.length - MAX_GRID_COLS
+      : tallCards[j + 1].before - TALL_CARD_GAP
+    tallCards[j].before = Math.max(0, Math.min(tallCards[j].before, limit))
+  }
+  // A short list may not fit both rules; keep the gap going forward as far as it can.
+  for (let j = 1; j < tallCards.length; j++) {
+    tallCards[j].before = Math.min(regular.length, Math.max(tallCards[j].before, tallCards[j - 1].before + TALL_CARD_GAP))
+  }
+  const ordered: HomeModel[] = []
+  let t = 0
+  regular.forEach((m, i) => {
+    while (t < tallCards.length && tallCards[t].before === i) ordered.push(tallCards[t++].card)
+    ordered.push(m)
+  })
+  while (t < tallCards.length) ordered.push(tallCards[t++].card)
   return (
     // dense packing: a two-row card leaves no hole beside it
     <div className="grid grid-flow-row-dense grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 min-[2200px]:grid-cols-8 gap-3 2xl:gap-4">
