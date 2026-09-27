@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail } from "lucide-react"
+import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail, LayoutGrid } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
+import { FEATURED_MODELS } from "@/components/home/featured"
 
 interface UserData {
   id: number
@@ -170,6 +171,27 @@ export default function DashboardPage() {
     }
   }
 
+  /*
+   * The studio (/) opens on whichever view sessionStorage "pv2-view-mode"
+   * names - the key it writes itself as you switch views - so each launcher
+   * sets it first: Catalog opens the Home page, Open Studio the feed.
+   */
+  const openStudioAt = (mode: "home" | "image") => {
+    try { sessionStorage.setItem("pv2-view-mode", mode) } catch {}
+  }
+
+  // The featured models' card pictures, for the Catalog card's strip.
+  const [catalogMedia, setCatalogMedia] = useState<{ url: string; type: string; name: string }[]>([])
+  useEffect(() => {
+    fetch("/api/admin/home-cards").then(r => r.ok ? r.json() : null).then(d => {
+      const cards = d?.cards ?? {}
+      setCatalogMedia(FEATURED_MODELS
+        .map(m => ({ card: cards[`${m.kind}:${m.name}`], name: m.name }))
+        .filter(x => x.card?.mediaUrl)
+        .map(x => ({ url: x.card.mediaUrl, type: x.card.mediaType, name: x.name })))
+    }).catch(() => {})
+  }, [])
+
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' })
     router.push('/')
@@ -333,9 +355,53 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {/* Launchers: Catalog (the Home page) and the Studio (the feed). Side by
+            side from md up, stacked on phones. */}
+        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 gap-2.5 sm:gap-3">
+
+        {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
+        <Link href="/" onClick={() => openStudioAt("home")} className="block group">
+          <div className="relative h-full min-h-[104px] rounded-2xl overflow-hidden border border-white/10 bg-[#0a0f1a] transition-all duration-200 group-hover:border-white/25 group-hover:scale-[1.004]">
+            {/* A strip of the featured models' card pictures, as on the Home page. */}
+            {catalogMedia.length > 0 ? (
+              <div className="absolute inset-0 flex">
+                {catalogMedia.map(m => (
+                  <div key={m.name} className="relative flex-1 min-w-0 overflow-hidden">
+                    {m.type === "video" ? (
+                      <video src={`${m.url}#t=0.5`} muted playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover opacity-70 transition-transform duration-700 group-hover:scale-105" />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={m.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-70 transition-transform duration-700 group-hover:scale-105" />
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="absolute inset-0 bg-gradient-to-br from-white/[0.06] via-transparent to-black/40" />
+            )}
+            {/* Legibility */}
+            <div className="absolute inset-0 bg-gradient-to-r from-[#0a0f1a] via-[#0a0f1a]/80 to-[#0a0f1a]/20" />
+            <div className="relative h-full px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
+              <div className="w-12 h-12 shrink-0 rounded-[14px] border border-white/15 bg-white/[0.06] flex items-center justify-center">
+                <LayoutGrid size={20} className="text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mb-1">Home</p>
+                <p className="text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Catalog</p>
+                <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
+                  Browse every model and studio, see what&apos;s featured, and pick up where your library left off.
+                </p>
+              </div>
+              <span className="shrink-0 flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-bold group-hover:bg-white/15 group-hover:border-white/40 transition-all">
+                Open Home <ArrowRight size={13} />
+              </span>
+            </div>
+          </div>
+        </Link>
+
         {/* AI Design Studio — launcher with the animated silver rim (natural height) */}
-        <Link href="/" className="shrink-0 block group">
-          <div className="relative rounded-2xl overflow-hidden p-[2px] transition-transform duration-200 group-hover:scale-[1.004]">
+        <Link href="/" onClick={() => openStudioAt("image")} className="block group">
+          <div className="relative h-full rounded-2xl overflow-hidden p-[2px] transition-transform duration-200 group-hover:scale-[1.004]">
             {/* Rotating silver rim (oversized square so the sweep covers the wide card) */}
             <span
               className="absolute left-1/2 top-1/2 w-[250%] aspect-square -translate-x-1/2 -translate-y-1/2 animate-spin pointer-events-none"
@@ -345,7 +411,7 @@ export default function DashboardPage() {
                 animationDuration: "6s",
               }}
             />
-            <div className="relative rounded-[14px] bg-[#0a0f1a] px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
+            <div className="relative h-full rounded-[14px] bg-[#0a0f1a] px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
               {/* Synced site logo */}
               <SiteLogoBox size={48} rounded={14} />
               <div className="flex-1 min-w-0">
@@ -374,6 +440,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </Link>
+        </div>
 
         {/* Bottom row: Account + Shop — side by side on all sizes */}
         <div className="shrink-0 grid grid-cols-2 gap-2 sm:gap-3">

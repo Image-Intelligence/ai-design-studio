@@ -4,6 +4,7 @@ import type { ReactNode } from "react"
 import { Image as ImageIcon, Video, Shield, Wand2, Star } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { GenerationsCarousel } from "./GenerationsCarousel"
+import { FEATURED_MODELS } from "./featured"
 import { SITE_EMPLOYEES, AdminModelBadge } from "@/components/employees/EmployeesView"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
 
@@ -52,14 +53,6 @@ function SubHead({ label, note }: { label: string; note?: string }) {
   )
 }
 
-/** Top models, shown first. Order matters: the first is the lead card. */
-const FEATURED_MODELS: { name: string; kind: "image" | "video" }[] = [
-  { name: "NanoBanana Pro 2", kind: "image" },
-  { name: "ChatGPT Images 2.5", kind: "image" },
-  { name: "Ideogram v4", kind: "image" },
-  { name: "SeeDance 2.0", kind: "video" },
-  { name: "Kling 3.0", kind: "video" },
-]
 
 /*
  * Which admin-only groups are upscalers rather than generators, so an admin
