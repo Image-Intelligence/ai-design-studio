@@ -214,6 +214,7 @@ export function HomeView({
           subtitle="Top up your balance"
           accent="text-cyan-300"
           media={cards["shop:tickets"]}
+          altMedia={cards["shop:tickets::alt"]}
           isAdmin={isAdmin}
           href="/buy-tickets"
           onMediaChange={onCardMediaChange}
@@ -226,6 +227,7 @@ export function HomeView({
           subtitle="Save with a monthly plan"
           accent="text-fuchsia-300"
           media={cards["shop:subscriptions"]}
+          altMedia={cards["shop:subscriptions::alt"]}
           isAdmin={isAdmin}
           href="/prompting-studio/subscribe"
           onMediaChange={onCardMediaChange}
