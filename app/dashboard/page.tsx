@@ -9,6 +9,7 @@ import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
 import { FEATURED_MODELS } from "@/components/home/featured"
 import { CatalogCard, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
+import { GenerationsCarousel } from "@/components/home/GenerationsCarousel"
 
 interface UserData {
   id: number
@@ -17,20 +18,6 @@ interface UserData {
   avatarUrl?: string | null
 }
 
-interface GeneratedImage {
-  id: number
-  prompt: string
-  imageUrl: string
-  model: string
-  createdAt: string
-  expiresAt: string
-  videoMetadata?: {
-    isVideo?: boolean
-    thumbnailUrl?: string
-    duration?: string
-    resolution?: string
-  } | null
-}
 
 interface Purchase {
   id: number
@@ -46,7 +33,6 @@ export default function DashboardPage() {
   const router = useRouter()
   const [user, setUser] = useState<UserData | null>(null)
   const [loading, setLoading] = useState(true)
-  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([])
   const [totalImageCount, setTotalImageCount] = useState(0)
   const [hasPromptStudioDev, setHasPromptStudioDev] = useState(false)
   const [isGrandfathered, setIsGrandfathered] = useState(false)
@@ -124,13 +110,10 @@ export default function DashboardPage() {
 
   const fetchGeneratedImages = async () => {
     try {
-      // Up to 12: the strip shows 5 on a phone and more as the screen widens.
-      const res = await fetch('/api/my-images?page=1&limit=12')
+      // Just the count, for the library heading; the wall fetches its own images.
+      const res = await fetch('/api/my-images?page=1&limit=1')
       const data = await res.json()
-      if (data.success) {
-        setGeneratedImages(data.images)
-        setTotalImageCount(data.pagination?.total || data.images.length)
-      }
+      if (data.success) setTotalImageCount(data.pagination?.total || data.images.length)
     } catch {}
   }
 
@@ -226,12 +209,15 @@ export default function DashboardPage() {
       <div className="fixed bottom-0 right-1/4 w-[400px] h-[300px] bg-white/[0.03] rounded-full blur-3xl pointer-events-none" />
 
       {/*
-        Full width to 2200px, with a gutter that grows with the screen. It was
-        a 1024px column, which left most of a 16:9 monitor empty. From xl up
-        the page splits in two: generations and the launchers on the left, the
-        account, shop and documents in a sidebar on the right.
+        Fills the window. On wide screens (xl+) it is a full-height layout:
+        header across the top; on the left the library wall takes all the
+        height left over, with the launchers and the policy notice under it;
+        account, shop and documents in a sidebar on the right. The page used
+        to be a fixed-height block centred in the window, which left bands of
+        empty space above and below on a 16:9 monitor. Narrower screens stack
+        the same sections and scroll.
       */}
-      <div className="relative z-10 flex-1 w-full max-w-[2200px] mx-auto px-3 sm:px-6 lg:px-8 2xl:px-12 py-3 sm:py-5 xl:py-8 flex flex-col justify-center gap-2.5 sm:gap-3 xl:gap-4">
+      <div className="relative z-10 flex-1 w-full max-w-[2560px] mx-auto px-3 sm:px-6 lg:px-8 2xl:px-12 py-3 sm:py-5 xl:py-6 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Generation maintenance banner — admin emails bypass this */}
         {isGenerationMaintenance && user !== null && !['dirtysecretai@gmail.com', 'promptandprotocol@gmail.com'].includes(user.email) && (
@@ -246,7 +232,12 @@ export default function DashboardPage() {
 
         {/* Header row: brand + user actions */}
         <div className="shrink-0 flex items-center justify-between gap-2">
-          <SiteBrandMark size={38} />
+          <div className="flex items-center gap-5 min-w-0">
+            <SiteBrandMark size={38} />
+            <p className="hidden xl:block text-sm font-semibold text-white truncate">
+              Welcome back, <span className="bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">{user.email.split('@')[0]}</span>
+            </p>
+          </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-black/40 font-mono text-xs">
               <Ticket size={11} className="text-slate-500" />
@@ -288,7 +279,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Welcome bar — hidden on very short screens (landscape phones) */}
-        <div className="shrink-0 flex items-center justify-between px-3 py-2 rounded-xl border border-white/6 bg-white/2 [@media(max-height:460px)]:hidden">
+        <div className="shrink-0 xl:hidden flex items-center justify-between px-3 py-2 rounded-xl border border-white/6 bg-white/2 [@media(max-height:460px)]:hidden">
           <p className="text-xs sm:text-sm font-semibold text-white">Welcome back, <span className="bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">{user.email.split('@')[0]}</span></p>
           <div className="hidden sm:flex items-center gap-1.5">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -296,87 +287,44 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(340px,400px)] 2xl:grid-cols-[minmax(0,1fr)_440px] gap-2.5 sm:gap-3 xl:gap-4 items-start">
+        <div className="xl:flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(340px,380px)] 2xl:grid-cols-[minmax(0,1fr)_420px] gap-2.5 sm:gap-3 xl:gap-4">
         <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
-        {/* Recent Generations — slim strip, hidden on very short screens */}
-        <div className="shrink-0 rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 [@media(max-height:460px)]:hidden">
-          <div className="flex items-center justify-between mb-2">
+        {/*
+          Your library - the home page's living masonry wall (drifting columns,
+          new work flowing in, hover to hide or start a slideshow). It replaces
+          a fixed strip of thumbnails that wrapped 12 into rows of 10 and 2. On
+          wide screens it takes all the height the page has left over.
+        */}
+        <section className="xl:flex-1 xl:min-h-[320px] flex flex-col gap-2 min-w-0">
+          <div className="shrink-0 flex items-center justify-between px-0.5">
             <div className="flex items-center gap-2">
               <ImageIcon size={13} className="text-slate-300" />
-              <span className="text-xs font-semibold text-white">Recent Generations</span>
+              <span className="text-xs font-semibold text-white">Your Library</span>
               {totalImageCount > 0 && (
                 <span className="text-[9px] font-mono text-slate-500 bg-white/5 px-1.5 py-0.5 rounded-full">{totalImageCount.toLocaleString()}</span>
               )}
+              <span className="hidden sm:inline text-[10px] text-slate-600">favourites and rediscoveries · hover to pause</span>
             </div>
-            <Link href="/my-generations">
-              <button className="flex items-center gap-1 text-[11px] text-slate-300 hover:text-white transition-colors">
-                View All <ArrowRight size={10} />
-              </button>
+            <Link href="/my-generations" className="flex items-center gap-1 text-[11px] text-slate-300 hover:text-white transition-colors">
+              View All <ArrowRight size={10} />
             </Link>
           </div>
-
-          {generatedImages.length === 0 ? (
-            <div className="flex items-center justify-center h-24 rounded-lg border border-dashed border-white/8 text-slate-600 text-sm">
-              No generations yet
-            </div>
-          ) : (
-            <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 2xl:grid-cols-10 min-[2000px]:grid-cols-12 gap-2">
-              {generatedImages.slice(0, 12).map((img, idx) => (
-                <Link
-                  href="/my-generations"
-                  key={img.id || idx}
-                  // Only as many as the row holds at this width.
-                  className={idx >= 10 ? "hidden min-[2000px]:block" : idx >= 8 ? "hidden 2xl:block" : idx >= 6 ? "hidden lg:block" : idx >= 5 ? "hidden sm:block" : ""}
-                >
-                  <div className="aspect-square rounded-lg overflow-hidden border border-white/6 hover:border-white/30 transition-all group relative">
-                    {img.videoMetadata?.isVideo ? (() => {
-                      const thumb = img.videoMetadata?.thumbnailUrl
-                      const videoUrl = img.imageUrl
-                      const needsVideoThumb = !thumb || thumb === videoUrl || /\.(mp4|webm|mov)(\?|$)/i.test(thumb)
-                      return needsVideoThumb ? (
-                        // Autoplaying muted loop (like the home cards); #t=0.001 guarantees a
-                        // first frame renders even before playback starts. The callback ref
-                        // sets the muted PROPERTY — React's JSX attribute alone is unreliable
-                        // and unmuted autoplay gets blocked (which showed as blank tiles).
-                        <video
-                          src={`${videoUrl}#t=0.001`}
-                          autoPlay
-                          muted
-                          loop
-                          playsInline
-                          preload="metadata"
-                          ref={el => { if (el) { el.muted = true; el.play().catch(() => {}) } }}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <img src={thumb} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                      )
-                    })() : (
-                      <img src={(img as GeneratedImage & { thumbnailUrl?: string | null }).thumbnailUrl || `/api/images/${img.id}?thumb=1`} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                    )}
-                    {img.videoMetadata?.isVideo && (
-                      <div className="absolute bottom-0.5 left-0.5 flex items-center bg-black/70 rounded px-0.5 py-0.5 pointer-events-none">
-                        <svg className="w-2 h-2 text-white/80" fill="currentColor" viewBox="0 0 24 24">
-                          <polygon points="5 3 19 12 5 21 5 3" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-                </Link>
-              ))}
-              {generatedImages.length < 5 && [...Array(5 - generatedImages.length)].map((_, idx) => (
-                <div key={`empty-${idx}`} className="aspect-square rounded-lg border border-white/4 bg-white/2 flex items-center justify-center">
-                  <ImageIcon className="text-slate-700" size={14} />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+          <div className="relative xl:flex-1">
+            <GenerationsCarousel
+              signedIn
+              showLabel={false}
+              colTarget={170}
+              maxCols={12}
+              aspect="aspect-[4/3] sm:aspect-video lg:aspect-[21/9] xl:aspect-auto"
+              className="xl:absolute xl:inset-0"
+            />
+          </div>
+        </section>
 
         {/* Launchers: Catalog (the Home page) and the Studio (the feed). Side by
             side from md up, stacked on phones. */}
-        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 gap-2.5 sm:gap-3">
+        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] xl:h-[200px] 2xl:h-[220px] gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
         <Link href="/" onClick={() => openStudioAt("home")} className="block group">
@@ -436,7 +384,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Sidebar from xl; below it, these follow the main column as before. */}
-        <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4 xl:sticky xl:top-6">
+        <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Account + Shop — side by side, stacked in the sidebar */}
         <div className="shrink-0 grid grid-cols-2 xl:grid-cols-1 gap-2 sm:gap-3">
@@ -524,7 +472,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Documents & Support — every page from the Policies hub, one tap away */}
-        <div className="shrink-0 rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
+        <div className="shrink-0 xl:mt-auto rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
           <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Documents &amp; Support</p>
           <div className="grid grid-cols-3 sm:grid-cols-6 xl:grid-cols-3 gap-1.5">
             {[

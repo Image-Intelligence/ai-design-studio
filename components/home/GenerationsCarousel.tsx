@@ -41,10 +41,19 @@ const COL_TARGET_PX = 150
 /** Pixels per second, per column, so neighbours never move in lockstep. */
 const SPEEDS = [10, 14, 8, 12, 9, 13]
 
-export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect-[4/3]" }: {
+export function GenerationsCarousel({
+  signedIn, className = "", aspect = "aspect-[4/3]",
+  colTarget = COL_TARGET_PX, maxCols = 6, showLabel = true,
+}: {
   signedIn: boolean
   className?: string
   aspect?: string
+  /** Aim for columns about this wide (px). */
+  colTarget?: number
+  /** At most this many columns (the dashboard's wide wall takes more than the home card). */
+  maxCols?: number
+  /** The built-in "My Generations" label; off where the page has its own heading. */
+  showLabel?: boolean
 }) {
   const router = useRouter()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -132,7 +141,7 @@ export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect
     const ro = new ResizeObserver(([e]) => {
       const { width, height } = e.contentRect
       size.current = { w: width, h: height }
-      setColCount(Math.min(6, Math.max(2, Math.round(width / COL_TARGET_PX))))
+      setColCount(Math.min(maxCols, Math.max(2, Math.round(width / colTarget))))
     })
     ro.observe(el)
     const io = new IntersectionObserver(([e]) => { visible.current = e.isIntersecting })
@@ -333,7 +342,7 @@ export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect
       )}
 
       {/* Label: opens the full library. */}
-      <button
+      {showLabel && <button
         onClick={e => { e.stopPropagation(); router.push("/my-generations") }}
         className="absolute left-0 bottom-0 z-10 p-3 text-left group/label max-w-full"
       >
@@ -344,7 +353,7 @@ export function GenerationsCarousel({ signedIn, className = "", aspect = "aspect
         <p className="text-[11px] text-white/60 truncate">
           {showWall ? "Favourites and rediscoveries · hover to pause" : "All your images & videos"}
         </p>
-      </button>
+      </button>}
 
       {/* Undo a hide. */}
       {undo && (

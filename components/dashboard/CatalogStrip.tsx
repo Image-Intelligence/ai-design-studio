@@ -30,10 +30,11 @@ const PAD = 8
 export function CatalogCard({ media }: { media: CatalogMedia[] }) {
   const ref = useRef<HTMLDivElement>(null)
   const [w, setW] = useState(0)
+  const [h, setH] = useState(0)
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    const ro = new ResizeObserver(([e]) => setW(e.contentRect.width))
+    const ro = new ResizeObserver(([e]) => { setW(e.contentRect.width); setH(e.contentRect.height) })
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
@@ -53,8 +54,9 @@ export function CatalogCard({ media }: { media: CatalogMedia[] }) {
         </div>
       )
     } else {
-      // Beside the text: frames at the card's height, as many as the space holds.
-      const frameH = (w >= 900 ? 168 : 140) - PAD * 2
+      // Beside the text: frames at the card's height (it is given a tall row on
+      // wide screens), as many as the space holds.
+      const frameH = Math.max(h, minSide(w)) - PAD * 2
       const frameW = frameH * (4 / 3)
       const room = w - textWidth(w) - PAD
       const count = Math.max(1, Math.min(3, media.length, Math.floor((room + GAP) / (frameW + GAP))))
@@ -93,12 +95,15 @@ export function CatalogCard({ media }: { media: CatalogMedia[] }) {
     <div
       ref={ref}
       className={`relative h-full ${stacked ? "flex flex-col" : "flex items-stretch"}`}
-      style={!stacked && w > 0 ? { minHeight: w >= 900 ? 168 : 140 } : { minHeight: 104 }}
+      style={!stacked && w > 0 ? { minHeight: minSide(w) } : { minHeight: 104 }}
     >
       {stacked ? <>{strip}{text}</> : <>{text}{strip}</>}
     </div>
   )
 }
+
+/** The card's least height in the wide layout. */
+const minSide = (w: number) => (w >= 900 ? 168 : 140)
 
 /** The text column's width in the wide layout. */
 const textWidth = (w: number) => (w >= 900 ? 300 : 270)
