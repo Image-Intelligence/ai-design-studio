@@ -174,7 +174,7 @@ export default function DashboardPage() {
       const featured = FEATURED_MODELS.map(m => `${m.kind}:${m.name}`)
       const keys = [
         ...featured.filter(k => cards[k]?.mediaUrl),
-        ...Object.keys(cards).filter(k => (k.startsWith("image:") || k.startsWith("video:")) && !featured.includes(k) && cards[k]?.mediaUrl),
+        ...Object.keys(cards).filter(k => (k.startsWith("image:") || k.startsWith("video:")) && !k.endsWith("::alt") && !featured.includes(k) && cards[k]?.mediaUrl),
       ]
       setCatalogMedia(keys.map(k => ({ name: k, url: cards[k].mediaUrl!, type: cards[k].mediaType || "image" })))
     }).catch(() => {})

@@ -113,9 +113,15 @@ export async function GET() {
   }
 }
 
-// POST — admin. Two shapes:
+// POST — admin. Three shapes:
 //   multipart/form-data { key, file }  → video (or image) upload, any size
 //   application/json    { key, image } → base64 data URL (framed image)
+//   application/json    { key, action: 'swap' } → swap the card with its alternative
+//
+// ALTERNATIVES. A card can hold a second piece of media under "<key>::alt" -
+// an animated card keeps its still start frame there, or the reverse. Swap
+// exchanges the two, so an admin can flip a card between still and animated
+// without re-uploading anything, and flip it back. Nothing is deleted.
 export async function POST(req: Request) {
   try {
     const admin = await getAdminUser()
@@ -146,10 +152,27 @@ export async function POST(req: Request) {
       return jsonPrivate({ card })
     }
 
-    // --- json: base64 framed image ---
+    // --- json: base64 framed image, or a swap ---
     const body = await req.json().catch(() => null)
     const key = typeof body?.key === 'string' ? body.key.trim() : ''
     if (!key) return jsonPrivate({ error: 'key required' }, { status: 400 })
+
+    if (body?.action === 'swap') {
+      const altKey = `${key}::alt`
+      const [main, alt] = await Promise.all([
+        prisma.homeCard.findUnique({ where: { key } }),
+        prisma.homeCard.findUnique({ where: { key: altKey } }),
+      ])
+      if (!main || !alt) return jsonPrivate({ error: 'This card has no alternative to swap with' }, { status: 404 })
+      await prisma.$transaction([
+        prisma.homeCard.update({ where: { key }, data: { mediaUrl: alt.mediaUrl, mediaType: alt.mediaType } }),
+        prisma.homeCard.update({ where: { key: altKey }, data: { mediaUrl: main.mediaUrl, mediaType: main.mediaType } }),
+      ])
+      return jsonPrivate({
+        card: { key, mediaUrl: alt.mediaUrl, mediaType: alt.mediaType },
+        alt: { key: altKey, mediaUrl: main.mediaUrl, mediaType: main.mediaType },
+      })
+    }
     const dataUrl: string = typeof body?.image === 'string' ? body.image : ''
     const m = dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/)
     if (!m) return jsonPrivate({ error: 'Invalid image data' }, { status: 400 })

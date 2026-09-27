@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Upload, Trash2, Loader2 } from "lucide-react"
+import { Upload, Trash2, Loader2, Film, Image as ImageIcon } from "lucide-react"
 import { FrameModal } from "./FrameModal"
 import { SilverRimOverlay } from "./SilverRimOverlay"
 
@@ -27,6 +27,7 @@ export function HomeMediaCard({
   aspect = "aspect-[4/3]",
   frameAspect = 4 / 3,
   badge,
+  altMedia,
 }: {
   cardKey: string
   title: string
@@ -43,6 +44,11 @@ export function HomeMediaCard({
   frameAspect?: number
   /** Top-left, always visible (the admin controls take top-right on hover). */
   badge?: React.ReactNode
+  /**
+   * The card's alternative (stored under "<cardKey>::alt"), e.g. the still start
+   * frame of an animated card. When present, admins get a toggle that swaps them.
+   */
+  altMedia?: CardMedia | null
 }) {
   const router = useRouter()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -144,6 +150,27 @@ export function HomeMediaCard({
     if (ok) setFrameSrc(null)
   }
 
+  // Flip between the card's media and its alternative (still <-> animated).
+  const onSwap = async () => {
+    setUploading(true)
+    setError(false)
+    try {
+      const res = await fetch("/api/admin/home-cards", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: cardKey, action: "swap" }),
+      })
+      if (!res.ok) throw new Error("swap")
+      const { card, alt } = await res.json()
+      onMediaChange?.(cardKey, { mediaUrl: card.mediaUrl, mediaType: card.mediaType })
+      onMediaChange?.(`${cardKey}::alt`, { mediaUrl: alt.mediaUrl, mediaType: alt.mediaType })
+    } catch {
+      setError(true)
+    } finally {
+      setUploading(false)
+    }
+  }
+
   const onRemove = async () => {
     setUploading(true)
     try {
@@ -225,6 +252,16 @@ export function HomeMediaCard({
             {uploading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
             {media?.mediaUrl ? "Replace" : "Upload"}
           </button>
+          {media?.mediaUrl && altMedia?.mediaUrl && !uploading && (
+            <button
+              onClick={onSwap}
+              title={isVideo ? "Show the still image" : "Show the animation"}
+              className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/70 border border-white/15 text-[10px] text-white hover:bg-black/90 transition-colors"
+            >
+              {isVideo ? <ImageIcon size={11} /> : <Film size={11} />}
+              {isVideo ? "Still" : "Animate"}
+            </button>
+          )}
           {media?.mediaUrl && !uploading && (
             <button
               onClick={onRemove}

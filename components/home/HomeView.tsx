@@ -93,6 +93,7 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
           accent={m.accent}
           cost={costByName[m.name]}
           media={cards[`${kind}:${m.name}`]}
+          altMedia={cards[`${kind}:${m.name}::alt`]}
           isAdmin={isAdmin}
           badge={m.admin ? <AdminModelBadge /> : undefined}
           onClick={() => onSelect(m.name)}
@@ -240,6 +241,7 @@ export function HomeView({
                 accent={m.accent}
                 cost={(m.kind === "image" ? imageCostByName : videoCostByName)[m.name]}
                 media={cards[`${m.kind}:${m.name}`]}
+                altMedia={cards[`${m.kind}:${m.name}::alt`]}
                 isAdmin={isAdmin}
                 badge={m.admin ? <AdminModelBadge /> : undefined}
                 onClick={() => (m.kind === "image" ? onSelectImageModel : onSelectVideoModel)(m.name)}
@@ -266,6 +268,7 @@ export function HomeView({
                 title={emp.name}
                 subtitle={emp.tagline}
                 media={cards[`studio:${emp.id}`]}
+                altMedia={cards[`studio:${emp.id}::alt`]}
                 isAdmin={isAdmin}
                 badge={EMPLOYEE_ADMIN_ONLY[emp.id] ? <AdminModelBadge /> : undefined}
                 onClick={() => emp.opensOverlay ? onOpenFrames()
