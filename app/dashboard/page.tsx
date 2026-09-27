@@ -7,6 +7,7 @@ import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
 import { FEATURED_MODELS } from "@/components/home/featured"
+import { CatalogStrip, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
 
 interface UserData {
   id: number
@@ -122,7 +123,8 @@ export default function DashboardPage() {
 
   const fetchGeneratedImages = async () => {
     try {
-      const res = await fetch('/api/my-images?page=1&limit=5')
+      // Up to 12: the strip shows 5 on a phone and more as the screen widens.
+      const res = await fetch('/api/my-images?page=1&limit=12')
       const data = await res.json()
       if (data.success) {
         setGeneratedImages(data.images)
@@ -180,15 +182,17 @@ export default function DashboardPage() {
     try { sessionStorage.setItem("pv2-view-mode", mode) } catch {}
   }
 
-  // The featured models' card pictures, for the Catalog card's strip.
-  const [catalogMedia, setCatalogMedia] = useState<{ url: string; type: string; name: string }[]>([])
+  // Every model card with a picture or clip (featured first), for the Catalog card's strip.
+  const [catalogMedia, setCatalogMedia] = useState<CatalogMedia[]>([])
   useEffect(() => {
     fetch("/api/admin/home-cards").then(r => r.ok ? r.json() : null).then(d => {
-      const cards = d?.cards ?? {}
-      setCatalogMedia(FEATURED_MODELS
-        .map(m => ({ card: cards[`${m.kind}:${m.name}`], name: m.name }))
-        .filter(x => x.card?.mediaUrl)
-        .map(x => ({ url: x.card.mediaUrl, type: x.card.mediaType, name: x.name })))
+      const cards: Record<string, { mediaUrl?: string; mediaType?: string }> = d?.cards ?? {}
+      const featured = FEATURED_MODELS.map(m => `${m.kind}:${m.name}`)
+      const keys = [
+        ...featured.filter(k => cards[k]?.mediaUrl),
+        ...Object.keys(cards).filter(k => (k.startsWith("image:") || k.startsWith("video:")) && !featured.includes(k) && cards[k]?.mediaUrl),
+      ]
+      setCatalogMedia(keys.map(k => ({ name: k, url: cards[k].mediaUrl!, type: cards[k].mediaType || "image" })))
     }).catch(() => {})
   }, [])
 
@@ -220,7 +224,13 @@ export default function DashboardPage() {
       <div className="fixed top-0 left-1/4 w-[500px] h-[300px] bg-white/[0.03] rounded-full blur-3xl pointer-events-none" />
       <div className="fixed bottom-0 right-1/4 w-[400px] h-[300px] bg-white/[0.03] rounded-full blur-3xl pointer-events-none" />
 
-      <div className="relative z-10 flex-1 w-full max-w-5xl mx-auto px-3 sm:px-5 py-3 sm:py-5 flex flex-col justify-center gap-2.5 sm:gap-3">
+      {/*
+        Full width to 2200px, with a gutter that grows with the screen. It was
+        a 1024px column, which left most of a 16:9 monitor empty. From xl up
+        the page splits in two: generations and the launchers on the left, the
+        account, shop and documents in a sidebar on the right.
+      */}
+      <div className="relative z-10 flex-1 w-full max-w-[2200px] mx-auto px-3 sm:px-6 lg:px-8 2xl:px-12 py-3 sm:py-5 xl:py-8 flex flex-col justify-center gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Generation maintenance banner — admin emails bypass this */}
         {isGenerationMaintenance && user !== null && !['dirtysecretai@gmail.com', 'promptandprotocol@gmail.com'].includes(user.email) && (
@@ -285,6 +295,9 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(340px,400px)] 2xl:grid-cols-[minmax(0,1fr)_440px] gap-2.5 sm:gap-3 xl:gap-4 items-start">
+        <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
+
         {/* Recent Generations — slim strip, hidden on very short screens */}
         <div className="shrink-0 rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 [@media(max-height:460px)]:hidden">
           <div className="flex items-center justify-between mb-2">
@@ -307,9 +320,14 @@ export default function DashboardPage() {
               No generations yet
             </div>
           ) : (
-            <div className="grid grid-cols-5 gap-2">
-              {generatedImages.slice(0, 5).map((img, idx) => (
-                <Link href="/my-generations" key={img.id || idx}>
+            <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 2xl:grid-cols-10 min-[2000px]:grid-cols-12 gap-2">
+              {generatedImages.slice(0, 12).map((img, idx) => (
+                <Link
+                  href="/my-generations"
+                  key={img.id || idx}
+                  // Only as many as the row holds at this width.
+                  className={idx >= 10 ? "hidden min-[2000px]:block" : idx >= 8 ? "hidden 2xl:block" : idx >= 6 ? "hidden lg:block" : idx >= 5 ? "hidden sm:block" : ""}
+                >
                   <div className="aspect-square rounded-lg overflow-hidden border border-white/6 hover:border-white/30 transition-all group relative">
                     {img.videoMetadata?.isVideo ? (() => {
                       const thumb = img.videoMetadata?.thumbnailUrl
@@ -334,7 +352,7 @@ export default function DashboardPage() {
                         <img src={thumb} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                       )
                     })() : (
-                      <img src={`/api/images/${img.id}?thumb=1`} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                      <img src={(img as GeneratedImage & { thumbnailUrl?: string | null }).thumbnailUrl || `/api/images/${img.id}?thumb=1`} alt={`Generation ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                     )}
                     {img.videoMetadata?.isVideo && (
                       <div className="absolute bottom-0.5 left-0.5 flex items-center bg-black/70 rounded px-0.5 py-0.5 pointer-events-none">
@@ -361,26 +379,15 @@ export default function DashboardPage() {
 
         {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
         <Link href="/" onClick={() => openStudioAt("home")} className="block group">
-          <div className="relative h-full min-h-[104px] rounded-2xl overflow-hidden border border-white/10 bg-[#0a0f1a] transition-all duration-200 group-hover:border-white/25 group-hover:scale-[1.004]">
-            {/* A strip of the featured models' card pictures, as on the Home page. */}
+          <div className="relative h-full min-h-[104px] xl:min-h-[140px] 2xl:min-h-[168px] rounded-2xl overflow-hidden border border-white/10 bg-[#0a0f1a] transition-all duration-200 group-hover:border-white/25 group-hover:scale-[1.004]">
+            {/* The model cards' own 4:3 pictures and clips, cycling (components/dashboard/CatalogStrip). */}
             {catalogMedia.length > 0 ? (
-              <div className="absolute inset-0 flex">
-                {catalogMedia.map(m => (
-                  <div key={m.name} className="relative flex-1 min-w-0 overflow-hidden">
-                    {m.type === "video" ? (
-                      <video src={`${m.url}#t=0.5`} muted playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover opacity-70 transition-transform duration-700 group-hover:scale-105" />
-                    ) : (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={m.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-70 transition-transform duration-700 group-hover:scale-105" />
-                    )}
-                  </div>
-                ))}
-              </div>
+              <CatalogStrip media={catalogMedia} />
             ) : (
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.06] via-transparent to-black/40" />
             )}
-            {/* Legibility */}
-            <div className="absolute inset-0 bg-gradient-to-r from-[#0a0f1a] via-[#0a0f1a]/80 to-[#0a0f1a]/20" />
+            {/* Legibility: solid behind the text, clear over the pictures. */}
+            <div className="absolute inset-0 bg-gradient-to-r from-[#0a0f1a] from-25% via-[#0a0f1a]/75 via-50% to-transparent" />
             <div className="relative h-full px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
               <div className="w-12 h-12 shrink-0 rounded-[14px] border border-white/15 bg-white/[0.06] flex items-center justify-center">
                 <LayoutGrid size={20} className="text-white" />
@@ -442,8 +449,13 @@ export default function DashboardPage() {
         </Link>
         </div>
 
-        {/* Bottom row: Account + Shop — side by side on all sizes */}
-        <div className="shrink-0 grid grid-cols-2 gap-2 sm:gap-3">
+        </div>
+
+        {/* Sidebar from xl; below it, these follow the main column as before. */}
+        <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4 xl:sticky xl:top-6">
+
+        {/* Account + Shop — side by side, stacked in the sidebar */}
+        <div className="shrink-0 grid grid-cols-2 xl:grid-cols-1 gap-2 sm:gap-3">
 
           {/* Account */}
           <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
@@ -530,7 +542,7 @@ export default function DashboardPage() {
         {/* Documents & Support — every page from the Policies hub, one tap away */}
         <div className="shrink-0 rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
           <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Documents &amp; Support</p>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+          <div className="grid grid-cols-3 sm:grid-cols-6 xl:grid-cols-3 gap-1.5">
             {[
               { href: "/policies", label: "Policies", icon: FileText },
               { href: "/contact", label: "Contact", icon: Mail },
@@ -547,6 +559,9 @@ export default function DashboardPage() {
               </Link>
             ))}
           </div>
+        </div>
+
+        </div>
         </div>
 
       </div>
