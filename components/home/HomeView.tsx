@@ -69,9 +69,10 @@ type HomeModel = { name: string; accent: string; group: string; admin: boolean }
 
 /**
  * Cards shown portrait (3:4) in the model grids: they span two rows. Virtual
- * Try-On is about whole outfits, which a landscape frame cuts short.
+ * Try-On is about whole outfits and Pixelcut about single products on a
+ * stand, both of which a landscape frame cuts short.
  */
-const TALL_CARDS = new Set(["image:Virtual Try-On"])
+const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Product Photo"])
 
 /**
  * A wrapping grid of model cards. The long single-file scrolling rows made a
