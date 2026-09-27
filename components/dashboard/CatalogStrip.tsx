@@ -24,6 +24,8 @@ import { ArrowRight, LayoutGrid } from "lucide-react"
 export type CatalogMedia = { name: string; url: string; type: string }
 
 const SWAP_MS = 3500
+/** Narrower than this, a frame drops out rather than shrinking further. */
+const MIN_FRAME_W = 150
 const GAP = 6
 const PAD = 8
 
@@ -54,12 +56,17 @@ export function CatalogCard({ media }: { media: CatalogMedia[] }) {
         </div>
       )
     } else {
-      // Beside the text: frames at the card's height (it is given a tall row on
-      // wide screens), as many as the space holds.
-      const frameH = Math.max(h, minSide(w)) - PAD * 2
-      const frameW = frameH * (4 / 3)
-      const room = w - textWidth(w) - PAD
-      const count = Math.max(1, Math.min(3, media.length, Math.floor((room + GAP) / (frameW + GAP))))
+      /*
+       * Beside the text: up to three frames. Each is as tall as the card allows,
+       * but narrows (keeping 4:3) so three fit across; it drops to two or one
+       * only if three would be smaller than MIN_FRAME_W.
+       */
+      const maxW = (Math.max(h, minSide(w)) - PAD * 2) * (4 / 3)
+      const room = w - textWidth(w) - PAD * 2
+      let count = Math.min(3, media.length)
+      while (count > 1 && (room - GAP * (count - 1)) / count < MIN_FRAME_W) count--
+      const frameW = Math.min(maxW, (room - GAP * (count - 1)) / count)
+      const frameH = frameW * 0.75
       strip = (
         <div className="flex-1 min-w-0 flex items-center justify-end p-2">
           <CatalogFrames media={media} count={count} frameW={frameW} frameH={frameH} />
@@ -106,7 +113,7 @@ export function CatalogCard({ media }: { media: CatalogMedia[] }) {
 const minSide = (w: number) => (w >= 900 ? 168 : 140)
 
 /** The text column's width in the wide layout. */
-const textWidth = (w: number) => (w >= 900 ? 300 : 270)
+const textWidth = (w: number) => (w >= 900 ? 260 : 240)
 
 function CatalogFrames({ media, count, frameW, frameH }: {
   media: CatalogMedia[]

@@ -324,7 +324,7 @@ export default function DashboardPage() {
 
         {/* Launchers: Catalog (the Home page) and the Studio (the feed). Side by
             side from md up, stacked on phones. */}
-        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] xl:h-[200px] 2xl:h-[220px] gap-2.5 sm:gap-3 xl:gap-4">
+        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] xl:h-[200px] 2xl:h-[220px] gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
         <Link href="/" onClick={() => openStudioAt("home")} className="block group">
@@ -385,55 +385,90 @@ export default function DashboardPage() {
 
         </div>
 
-        {/* Sidebar from xl; below it, these follow the main column as before. */}
+        {/*
+          Sidebar from xl, filling the column top to bottom: the ticket balance,
+          then Account and Shop - whose buttons grow to share the height - then
+          documents and the policy notice. Below xl these follow the main column
+          as before (Account and Shop side by side), without the balance panel,
+          since the header already shows the balance.
+        */}
         <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
-        {/* Account + Shop — side by side, stacked in the sidebar */}
-        <div className="shrink-0 grid grid-cols-2 xl:grid-cols-1 gap-2 sm:gap-3">
+        {/* Ticket balance (wide screens) */}
+        <div className="hidden xl:flex flex-col justify-between gap-4 xl:flex-[1.15] min-h-[180px] rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.07] via-white/[0.02] to-transparent p-5 2xl:p-6">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.2em]">Ticket balance</p>
+            <span className={`text-[9px] font-black px-2 py-0.5 rounded-full leading-none border ${hasPromptStudioDev ? "bg-white/10 border-white/25 text-white" : "border-white/10 text-slate-500"}`}>
+              {hasPromptStudioDev ? "DEV TIER" : "FREE PLAN"}
+            </span>
+          </div>
+          <div className="flex items-end gap-3">
+            <Ticket size={30} className="text-slate-400 mb-2 shrink-0" />
+            <p className="text-5xl 2xl:text-6xl font-black tracking-tight tabular-nums text-transparent bg-clip-text bg-gradient-to-b from-white to-white/60 leading-none">
+              {user.ticketBalance.toLocaleString()}
+            </p>
+          </div>
+          <p className="text-[11px] text-slate-500 leading-snug">
+            {hasPromptStudioDev ? "Dev tier is active: 10% off every ticket pack." : "Upgrade to Dev tier for 10% off every ticket pack."}
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <Link href="/buy-tickets" className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-white text-black text-xs font-bold hover:bg-white/90 transition-colors">
+              <Ticket size={13} /> Buy tickets
+            </Link>
+            <Link href={hasPromptStudioDev ? "/subscriptions" : "/prompting-studio/subscribe"} className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-white/20 bg-white/[0.04] text-white text-xs font-semibold hover:bg-white/10 transition-colors">
+              <Sparkles size={13} /> {hasPromptStudioDev ? "Manage plan" : "See plans"}
+            </Link>
+          </div>
+        </div>
+
+        {/* Account + Shop — side by side; stacked in the sidebar, sharing its height */}
+        <div className="shrink-0 xl:shrink xl:flex-[2.4] xl:min-h-0 grid grid-cols-2 xl:grid-cols-1 xl:grid-rows-[minmax(0,1.7fr)_minmax(0,1fr)] gap-2 sm:gap-3 xl:gap-4">
 
           {/* Account */}
-          <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
-            <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Account</p>
-            <div className="space-y-1.5">
-              <Link href="/subscriptions" className="block">
-                <button className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all">
-                  <Settings size={11} className="shrink-0" />
+          <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 xl:p-4 flex flex-col min-h-0">
+            <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2 xl:mb-3">Account</p>
+            <div className="space-y-1.5 xl:space-y-0 xl:flex-1 xl:flex xl:flex-col xl:gap-2 xl:min-h-0">
+              <Link href="/subscriptions" className="block xl:flex-1">
+                <button className="w-full flex items-center gap-2 xl:gap-3 px-2.5 xl:px-3.5 py-1.5 xl:py-0 xl:h-full xl:min-h-[40px] rounded-lg xl:rounded-xl border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] xl:text-[13px] text-slate-400 hover:text-white transition-all">
+                  <Settings size={11} className="shrink-0 xl:w-4 xl:h-4" />
                   <span className="truncate">Subscriptions</span>
                 </button>
               </Link>
-              <Link href="/purchase-history" className="block">
-                <button className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all">
-                  <Receipt size={11} className="shrink-0" />
+              <Link href="/purchase-history" className="block xl:flex-1">
+                <button className="w-full flex items-center gap-2 xl:gap-3 px-2.5 xl:px-3.5 py-1.5 xl:py-0 xl:h-full xl:min-h-[40px] rounded-lg xl:rounded-xl border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] xl:text-[13px] text-slate-400 hover:text-white transition-all">
+                  <Receipt size={11} className="shrink-0 xl:w-4 xl:h-4" />
                   <span className="truncate">Purchase History</span>
                 </button>
               </Link>
-              <Link href="/requests-feedback" className="block">
-                <button className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all">
-                  <Terminal size={11} className="shrink-0" />
+              <Link href="/requests-feedback" className="block xl:flex-1">
+                <button className="w-full flex items-center gap-2 xl:gap-3 px-2.5 xl:px-3.5 py-1.5 xl:py-0 xl:h-full xl:min-h-[40px] rounded-lg xl:rounded-xl border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] xl:text-[13px] text-slate-400 hover:text-white transition-all">
+                  <Terminal size={11} className="shrink-0 xl:w-4 xl:h-4" />
                   <span className="truncate">Feedback</span>
                 </button>
               </Link>
-              <button
-                onClick={() => { setShowPasswordModal(true); setPwError(""); setPwSuccess(false) }}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] text-slate-400 hover:text-white transition-all"
-              >
-                <KeyRound size={11} className="shrink-0" />
-                <span className="truncate">Change Password</span>
-              </button>
+              <div className="xl:flex-1">
+                <button
+                  onClick={() => { setShowPasswordModal(true); setPwError(""); setPwSuccess(false) }}
+                  className="w-full flex items-center gap-2 xl:gap-3 px-2.5 xl:px-3.5 py-1.5 xl:py-0 xl:h-full xl:min-h-[40px] rounded-lg xl:rounded-xl border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[11px] xl:text-[13px] text-slate-400 hover:text-white transition-all"
+                >
+                  <KeyRound size={11} className="shrink-0 xl:w-4 xl:h-4" />
+                  <span className="truncate">Change Password</span>
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Shop */}
-          <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
-            <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Shop</p>
-            <div className="space-y-1.5">
-              <Link href="/buy-tickets" className="block">
-                <div className="flex items-center justify-between px-2.5 py-2 rounded-lg border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Ticket size={12} className="text-white shrink-0" />
+          <div className="rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 xl:p-4 flex flex-col min-h-0">
+            <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2 xl:mb-3">Shop</p>
+            <div className="space-y-1.5 xl:space-y-0 xl:flex-1 xl:flex xl:flex-col xl:gap-2 xl:min-h-0">
+              <Link href="/buy-tickets" className="block xl:flex-1">
+                <div className="flex items-center justify-between px-2.5 xl:px-4 py-2 xl:py-0 xl:h-full xl:min-h-[52px] rounded-lg xl:rounded-xl border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                  <div className="flex items-center gap-2 xl:gap-3 min-w-0">
+                    <Ticket size={12} className="text-white shrink-0 xl:w-4 xl:h-4" />
                     <div className="min-w-0">
-                      <p className="text-[11px] font-semibold text-white truncate">Buy Tickets</p>
-                      <p className="text-[9px] text-slate-600 truncate">
+                      <p className="text-[11px] xl:text-[13px] font-semibold text-white truncate">Buy Tickets</p>
+                      <p className="text-[9px] xl:text-[11px] text-slate-600 truncate">
                         {hasPromptStudioDev ? 'Dev tier — 10% off' : 'From $5.00'}
                       </p>
                     </div>
@@ -441,42 +476,26 @@ export default function DashboardPage() {
                   <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
                 </div>
               </Link>
-              {!hasPromptStudioDev && (
-                <Link href="/prompting-studio/subscribe" className="block">
-                  <div className="flex items-center justify-between px-2.5 py-2 rounded-lg border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Sparkles size={12} className="text-slate-300 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold text-white truncate">Upgrade to Dev Tier</p>
-                        <p className="text-[9px] text-slate-600 truncate">10% off tickets · From $20</p>
-                      </div>
+              <Link href={hasPromptStudioDev ? "/subscriptions" : "/prompting-studio/subscribe"} className="block xl:flex-1">
+                <div className="flex items-center justify-between px-2.5 xl:px-4 py-2 xl:py-0 xl:h-full xl:min-h-[52px] rounded-lg xl:rounded-xl border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                  <div className="flex items-center gap-2 xl:gap-3 min-w-0">
+                    <Sparkles size={12} className="text-slate-300 shrink-0 xl:w-4 xl:h-4" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] xl:text-[13px] font-semibold text-white truncate">{hasPromptStudioDev ? "Dev Tier Active" : "Upgrade to Dev Tier"}</p>
+                      <p className="text-[9px] xl:text-[11px] text-slate-600 truncate">{hasPromptStudioDev ? "Manage subscription" : "10% off tickets · From $20"}</p>
                     </div>
-                    <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
                   </div>
-                </Link>
-              )}
-              {hasPromptStudioDev && (
-                <Link href="/subscriptions" className="block">
-                  <div className="flex items-center justify-between px-2.5 py-2 rounded-lg border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Sparkles size={12} className="text-slate-300 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold text-white truncate">Dev Tier Active</p>
-                        <p className="text-[9px] text-slate-600 truncate">Manage subscription</p>
-                      </div>
-                    </div>
-                    <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
-                  </div>
-                </Link>
-              )}
+                  <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
+                </div>
+              </Link>
             </div>
           </div>
         </div>
 
         {/* Documents & Support — every page from the Policies hub, one tap away */}
-        <div className="shrink-0 xl:mt-auto rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3">
-          <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Documents &amp; Support</p>
-          <div className="grid grid-cols-3 sm:grid-cols-6 xl:grid-cols-3 gap-1.5">
+        <div className="shrink-0 xl:shrink xl:flex-[0.9] xl:min-h-[118px] rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 xl:p-4 flex flex-col">
+          <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2 xl:mb-3">Documents &amp; Support</p>
+          <div className="grid grid-cols-3 sm:grid-cols-6 xl:grid-cols-3 xl:grid-rows-2 xl:flex-1 gap-1.5 xl:gap-2">
             {[
               { href: "/policies", label: "Policies", icon: FileText },
               { href: "/contact", label: "Contact", icon: Mail },
@@ -485,9 +504,9 @@ export default function DashboardPage() {
               { href: "/refund", label: "Refund", icon: FileText },
               { href: "/report", label: "Report", icon: ShieldCheck },
             ].map(({ href, label, icon: Icon }) => (
-              <Link key={href} href={href}>
-                <button className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[10px] text-slate-400 hover:text-white transition-all">
-                  <Icon size={10} className="shrink-0" />
+              <Link key={href} href={href} className="block">
+                <button className="w-full h-full flex xl:flex-col items-center justify-center gap-1.5 xl:gap-1 px-2 py-1.5 rounded-lg xl:rounded-xl border border-white/6 bg-white/2 hover:border-white/25 hover:bg-white/[0.06] text-[10px] xl:text-[11px] text-slate-400 hover:text-white transition-all">
+                  <Icon size={10} className="shrink-0 xl:w-3.5 xl:h-3.5" />
                   <span className="truncate">{label}</span>
                 </button>
               </Link>
