@@ -181,6 +181,8 @@ export function HomeMediaCard({
   }
 
   const onRemove = async () => {
+    // Removing deletes the file too, so it is one click from gone: ask first.
+    if (!window.confirm(`Remove the ${media?.mediaType === "video" ? "video" : "image"} from "${title}"? The file is deleted.`)) return
     setUploading(true)
     try {
       await fetch(`/api/admin/home-cards?key=${encodeURIComponent(cardKey)}`, { method: "DELETE" })
