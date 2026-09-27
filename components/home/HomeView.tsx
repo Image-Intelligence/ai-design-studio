@@ -68,6 +68,12 @@ const VIDEO_TOOL_GROUP_LABELS = new Set(["Lipsync", "Video Tools"])
 type HomeModel = { name: string; accent: string; group: string; admin: boolean }
 
 /**
+ * Cards shown portrait (3:4) in the model grids: they span two rows. Virtual
+ * Try-On is about whole outfits, which a landscape frame cuts short.
+ */
+const TALL_CARDS = new Set(["image:Virtual Try-On"])
+
+/**
  * A wrapping grid of model cards. The long single-file scrolling rows made a
  * wide screen look empty on the right and hid most models off the edge; a
  * grid shows all of them, as many across as the screen takes.
@@ -83,8 +89,11 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
 }) {
   if (models.length === 0) return null
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 min-[2200px]:grid-cols-8 gap-3 2xl:gap-4">
-      {models.map(m => (
+    // dense packing: a two-row card leaves no hole beside it
+    <div className="grid grid-flow-row-dense grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 min-[2200px]:grid-cols-8 gap-3 2xl:gap-4">
+      {models.map(m => {
+        const tall = TALL_CARDS.has(`${kind}:${m.name}`)
+        return (
         <HomeMediaCard
           key={`${kind}:${m.name}`}
           cardKey={`${kind}:${m.name}`}
@@ -98,8 +107,12 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
           badge={m.admin ? <AdminModelBadge /> : undefined}
           onClick={() => onSelect(m.name)}
           onMediaChange={onCardMediaChange}
+          tall={tall}
+          className={tall ? "row-span-2" : ""}
+          frameAspect={tall ? 3 / 4 : 4 / 3}
         />
-      ))}
+        )
+      })}
     </div>
   )
 }
