@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail } from "lucide-react"
+import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail, FolderOpen } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -297,17 +297,28 @@ export default function DashboardPage() {
           wide screens it takes all the height the page has left over.
         */}
         <section className="xl:flex-1 xl:min-h-[320px] flex flex-col gap-2 min-w-0">
-          <div className="shrink-0 flex items-center justify-between px-0.5">
-            <div className="flex items-center gap-2">
-              <ImageIcon size={13} className="text-slate-300" />
-              <span className="text-xs font-semibold text-white">Your Library</span>
+          {/* Heading, with a proper button into the full library (it was a small text link). */}
+          <div className="shrink-0 flex items-center justify-between gap-3 px-0.5">
+            <div className="flex items-center gap-2 xl:gap-2.5 min-w-0">
+              <ImageIcon size={13} className="text-slate-300 shrink-0 xl:w-4 xl:h-4" />
+              <span className="text-xs xl:text-base font-semibold xl:font-bold text-white whitespace-nowrap">Your Library</span>
               {totalImageCount > 0 && (
-                <span className="text-[9px] font-mono text-slate-500 bg-white/5 px-1.5 py-0.5 rounded-full">{totalImageCount.toLocaleString()}</span>
+                <span className="text-[9px] xl:text-[11px] font-mono text-slate-400 bg-white/5 border border-white/10 px-1.5 xl:px-2 py-0.5 rounded-full">{totalImageCount.toLocaleString()}</span>
               )}
-              <span className="hidden sm:inline text-[10px] text-slate-600">favourites and rediscoveries · hover to pause</span>
+              <span className="hidden md:inline text-[10px] xl:text-[11px] text-slate-600 truncate">favourites and rediscoveries · hover to pause</span>
             </div>
-            <Link href="/my-generations" className="flex items-center gap-1 text-[11px] text-slate-300 hover:text-white transition-colors">
-              View All <ArrowRight size={10} />
+            <Link
+              href="/my-generations"
+              className="group/open relative overflow-hidden shrink-0 flex items-center gap-1.5 xl:gap-2 px-3 xl:px-4 py-1.5 xl:py-2 rounded-lg xl:rounded-xl bg-white/10 border border-white/25 text-white text-[11px] xl:text-sm font-bold hover:bg-white/15 hover:border-white/40 transition-all"
+            >
+              <span
+                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none"
+                style={{ animation: "sheen-sweep 2.6s infinite" }}
+              />
+              <FolderOpen size={13} className="xl:w-4 xl:h-4" />
+              <span className="sm:hidden">View all</span>
+              <span className="hidden sm:inline">Open My Generations</span>
+              <ArrowRight size={13} className="xl:w-4 xl:h-4 group-hover/open:translate-x-0.5 transition-transform" />
             </Link>
           </div>
           <div className="relative xl:flex-1">
