@@ -1,68 +1,140 @@
 "use client"
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { ArrowRight, LayoutGrid } from "lucide-react"
 
 /*
- * The picture strip behind the dashboard's Catalog card.
+ * The dashboard's Catalog card: a row of the home page's model cards beside
+ * (or above) the card's own title.
  *
- * The home page's model cards are framed 4:3 (landscape). An earlier version
- * sliced five of them into thin portrait columns, which showed a narrow band
- * of each. This shows two or three at their own 4:3 shape instead - sized
- * from the card's height, as many as fit its width - lined up on the right,
- * where the card's text does not cover them.
+ * The pictures and the text never overlap. An earlier version laid the
+ * pictures across the whole card and darkened them under the text, which
+ * blacked out whichever frame sat on the left. Now the card measures its own
+ * width and picks one of two layouts:
  *
- * It cycles through every model card that has a picture or clip, one frame
+ *   wide (640px+)  text on the left, frames in their own area on the right
+ *   narrow         frames as a band across the top, text underneath
+ *
+ * Frames keep the model cards' 4:3 shape, and nothing is laid over them.
+ * They cycle through every model card that has a picture or clip, one frame
  * at a time, with at least one video playing whenever there is one: a frame
- * holding the only video on show is only ever replaced by another video.
+ * holding the only video on show is only replaced by another video.
  */
 
 export type CatalogMedia = { name: string; url: string; type: string }
 
 const SWAP_MS = 3500
+const GAP = 6
+const PAD = 8
 
-export function CatalogStrip({ media }: { media: CatalogMedia[] }) {
+export function CatalogCard({ media }: { media: CatalogMedia[] }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [size, setSize] = useState({ w: 0, h: 0 })
+  const [w, setW] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const ro = new ResizeObserver(([e]) => setW(e.contentRect.width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const stacked = w > 0 && w < 640
+  const hasMedia = media.length > 0
+
+  let strip: React.ReactNode = null
+  if (w > 0 && hasMedia) {
+    if (stacked) {
+      // Band across the top: as many 4:3 frames as fill the width exactly.
+      const count = Math.min(media.length, w >= 420 ? 3 : 2)
+      const frameW = (w - PAD * 2 - GAP * (count - 1)) / count
+      strip = (
+        <div className="flex justify-center px-2 pt-2">
+          <CatalogFrames media={media} count={count} frameW={frameW} frameH={frameW * 0.75} />
+        </div>
+      )
+    } else {
+      // Beside the text: frames at the card's height, as many as the space holds.
+      const frameH = (w >= 900 ? 168 : 140) - PAD * 2
+      const frameW = frameH * (4 / 3)
+      const room = w - textWidth(w) - PAD
+      const count = Math.max(1, Math.min(3, media.length, Math.floor((room + GAP) / (frameW + GAP))))
+      strip = (
+        <div className="flex-1 min-w-0 flex items-center justify-end p-2">
+          <CatalogFrames media={media} count={count} frameW={frameW} frameH={frameH} />
+        </div>
+      )
+    }
+  }
+
+  const text = (
+    <div
+      className={stacked ? "flex items-center gap-3 px-3.5 py-3" : "shrink-0 flex flex-col justify-center gap-2.5 px-4 sm:px-5 py-3.5"}
+      style={stacked || w === 0 ? undefined : { width: textWidth(w) }}
+    >
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <div className="w-11 h-11 shrink-0 rounded-[13px] border border-white/15 bg-white/[0.06] flex items-center justify-center">
+          <LayoutGrid size={19} className="text-white" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mb-1">Home</p>
+          <p className="text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Catalog</p>
+          <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
+            Browse every model and studio, and see what&apos;s featured.
+          </p>
+        </div>
+      </div>
+      <span className={`${stacked ? "self-center" : "self-start"} shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-bold group-hover:bg-white/15 group-hover:border-white/40 transition-all`}>
+        Open Home <ArrowRight size={13} />
+      </span>
+    </div>
+  )
+
+  return (
+    <div
+      ref={ref}
+      className={`relative h-full ${stacked ? "flex flex-col" : "flex items-stretch"}`}
+      style={!stacked && w > 0 ? { minHeight: w >= 900 ? 168 : 140 } : { minHeight: 104 }}
+    >
+      {stacked ? <>{strip}{text}</> : <>{text}{strip}</>}
+    </div>
+  )
+}
+
+/** The text column's width in the wide layout. */
+const textWidth = (w: number) => (w >= 900 ? 300 : 270)
+
+function CatalogFrames({ media, count, frameW, frameH }: {
+  media: CatalogMedia[]
+  count: number
+  frameW: number
+  frameH: number
+}) {
   const [shown, setShown] = useState<string[]>([])
   const shownRef = useRef(shown)
   shownRef.current = shown
   const nextIdx = useRef(0)
   const nextSlot = useRef(0)
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const ro = new ResizeObserver(([e]) => setSize({ w: e.contentRect.width, h: e.contentRect.height }))
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  const slotW = size.h * (4 / 3)
-  const count = slotW > 0 ? Math.min(media.length, 3, Math.max(2, Math.floor((size.w * 0.9) / slotW))) : 0
   const byName = new Map(media.map(m => [m.name, m]))
   const isVideo = (name: string) => byName.get(name)?.type === "video"
 
   // First set: a video if there is one, then the rest in order.
   useEffect(() => {
-    if (count === 0) { setShown([]); return }
     const firstVideo = media.find(m => m.type === "video")
     const picks: string[] = firstVideo ? [firstVideo.name] : []
     for (const m of media) {
       if (picks.length >= count) break
       if (!picks.includes(m.name)) picks.push(m.name)
     }
-    // The video in the middle of three, or last of two, reads best against the text.
+    // The video in the middle of three reads best.
     if (firstVideo && picks.length === 3) picks.splice(0, 2, picks[1], picks[0])
     setShown(picks)
-    const lastUsed = Math.max(...picks.map(n => media.findIndex(m => m.name === n)))
-    nextIdx.current = lastUsed + 1
+    nextIdx.current = Math.max(...picks.map(n => media.findIndex(m => m.name === n))) + 1
     nextSlot.current = 0
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [count, media])
 
   // One frame at a time, round the slots, through the whole list.
   useEffect(() => {
-    if (count === 0 || media.length <= count) return
+    if (media.length <= count) return
     const t = setInterval(() => {
       if (document.hidden) return
       const vis = [...shownRef.current]
@@ -86,11 +158,11 @@ export function CatalogStrip({ media }: { media: CatalogMedia[] }) {
   }, [count, media])
 
   return (
-    <div ref={ref} className="absolute inset-0 flex justify-end gap-1 pointer-events-none">
+    <div className="flex" style={{ gap: GAP }}>
       {shown.map((name, i) => {
         const m = byName.get(name)
         return m ? (
-          <div key={i} className="relative h-full shrink-0 overflow-hidden" style={{ width: slotW }}>
+          <div key={i} className="relative shrink-0 overflow-hidden rounded-lg border border-white/10 bg-[#0a0f1a]" style={{ width: frameW, height: frameH }}>
             <Frame media={m} />
           </div>
         ) : null
@@ -107,11 +179,7 @@ function Frame({ media }: { media: CatalogMedia }) {
     const t = setTimeout(() => setStack(prev => prev.slice(-1)), 1100)
     return () => clearTimeout(t)
   }, [media])
-  return (
-    <>
-      {stack.map((m, i) => <Layer key={m.url} media={m} fadeIn={i > 0} />)}
-    </>
-  )
+  return <>{stack.map((m, i) => <Layer key={m.url} media={m} fadeIn={i > 0} />)}</>
 }
 
 function Layer({ media, fadeIn }: { media: CatalogMedia; fadeIn: boolean }) {
@@ -132,11 +200,11 @@ function Layer({ media, fadeIn }: { media: CatalogMedia; fadeIn: boolean }) {
           preload="auto"
           // The muted PROPERTY, not just the attribute: without it browsers block the autoplay.
           ref={el => { if (el) { el.muted = true; el.play().catch(() => {}) } }}
-          className="absolute inset-0 w-full h-full object-cover opacity-80"
+          className="absolute inset-0 w-full h-full object-cover"
         />
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={media.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-80" />
+        <img src={media.url} alt="" className="absolute inset-0 w-full h-full object-cover" />
       )}
     </div>
   )

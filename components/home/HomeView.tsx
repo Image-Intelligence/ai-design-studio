@@ -5,6 +5,7 @@ import { Image as ImageIcon, Video, Shield, Wand2, Star } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { GenerationsCarousel } from "./GenerationsCarousel"
 import { FEATURED_MODELS } from "./featured"
+import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { SITE_EMPLOYEES, AdminModelBadge } from "@/components/employees/EmployeesView"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
 
@@ -301,20 +302,8 @@ export function HomeView({
         )}
       </Section>
 
-      {/* Content policy notice. Compact and always present: the payment
-          processor asked for a clearly stated prohibition on deepfakes and
-          non-consensual impersonation, visible on the site itself and not
-          only inside the Terms. */}
-      <div className="mb-8 flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/[0.05] px-4 py-3">
-        <Shield size={15} className="text-red-300/80 shrink-0 mt-0.5" />
-        <p className="text-[12px] text-slate-300 leading-relaxed">
-          <span className="font-semibold text-white">Prohibited content.</span>{" "}
-          The creation, upload, distribution, or use of deepfake content, non-consensual impersonation
-          of any real person, and any illegal or policy-violating AI-generated content is strictly
-          prohibited on this site.{" "}
-          <a href="/terms#prohibited" className="text-red-200 hover:underline whitespace-nowrap">Read the full policy →</a>
-        </p>
-      </div>
+      {/* Content policy notice (CCBill) - shared with the dashboard. */}
+      <ProhibitedContentNotice className="mb-8" />
 
       {/* ADMIN TOOLS - the models moved into their own sections; only the
           tools that are not models remain here. */}

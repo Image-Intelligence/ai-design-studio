@@ -1,13 +1,14 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail, LayoutGrid } from "lucide-react"
+import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
 import { FEATURED_MODELS } from "@/components/home/featured"
-import { CatalogStrip, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
+import { CatalogCard, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
+import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 
 interface UserData {
   id: number
@@ -379,30 +380,10 @@ export default function DashboardPage() {
 
         {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
         <Link href="/" onClick={() => openStudioAt("home")} className="block group">
-          <div className="relative h-full min-h-[104px] xl:min-h-[140px] 2xl:min-h-[168px] rounded-2xl overflow-hidden border border-white/10 bg-[#0a0f1a] transition-all duration-200 group-hover:border-white/25 group-hover:scale-[1.004]">
-            {/* The model cards' own 4:3 pictures and clips, cycling (components/dashboard/CatalogStrip). */}
-            {catalogMedia.length > 0 ? (
-              <CatalogStrip media={catalogMedia} />
-            ) : (
-              <div className="absolute inset-0 bg-gradient-to-br from-white/[0.06] via-transparent to-black/40" />
-            )}
-            {/* Legibility: solid behind the text, clear over the pictures. */}
-            <div className="absolute inset-0 bg-gradient-to-r from-[#0a0f1a] from-25% via-[#0a0f1a]/75 via-50% to-transparent" />
-            <div className="relative h-full px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
-              <div className="w-12 h-12 shrink-0 rounded-[14px] border border-white/15 bg-white/[0.06] flex items-center justify-center">
-                <LayoutGrid size={20} className="text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mb-1">Home</p>
-                <p className="text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Catalog</p>
-                <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
-                  Browse every model and studio, see what&apos;s featured, and pick up where your library left off.
-                </p>
-              </div>
-              <span className="shrink-0 flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-bold group-hover:bg-white/15 group-hover:border-white/40 transition-all">
-                Open Home <ArrowRight size={13} />
-              </span>
-            </div>
+          <div className="relative h-full rounded-2xl overflow-hidden border border-white/10 bg-[#0a0f1a] transition-all duration-200 group-hover:border-white/25 group-hover:scale-[1.004]">
+            {/* The model cards' own 4:3 pictures and clips, cycling, beside or above
+                the text - never under it (components/dashboard/CatalogStrip). */}
+            <CatalogCard media={catalogMedia} />
           </div>
         </Link>
 
@@ -448,6 +429,9 @@ export default function DashboardPage() {
           </div>
         </Link>
         </div>
+
+        {/* Content policy notice (CCBill) - the same one as on the Home page. */}
+        <ProhibitedContentNotice />
 
         </div>
 
