@@ -73,6 +73,8 @@ type HomeModel = { name: string; accent: string; group: string; admin: boolean }
  * stand, both of which a landscape frame cuts short.
  */
 const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Product Photo"])
+/** The model grids' widest column count (min-[2200px]:grid-cols-8). */
+const MAX_GRID_COLS = 8
 
 /**
  * A wrapping grid of model cards. The long single-file scrolling rows made a
@@ -89,10 +91,26 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
   onCardMediaChange: (key: string, media: CardMedia | null) => void
 }) {
   if (models.length === 0) return null
+  /*
+   * A two-row card near the end of the list leaves its second row mostly
+   * empty (Pixelcut, an admin model, came second to last and opened a near-
+   * empty extra row). So each tall card is moved up until at least a full row
+   * of the widest layout (8 columns) follows it; dense packing then fills the
+   * space beside it at every width. Cards already far enough up stay put.
+   */
+  const ordered = [...models]
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    if (!TALL_CARDS.has(`${kind}:${ordered[i].name}`)) continue
+    const target = ordered.length - 1 - MAX_GRID_COLS
+    if (i > target) {
+      const [card] = ordered.splice(i, 1)
+      ordered.splice(Math.max(0, target), 0, card)
+    }
+  }
   return (
     // dense packing: a two-row card leaves no hole beside it
     <div className="grid grid-flow-row-dense grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 min-[2200px]:grid-cols-8 gap-3 2xl:gap-4">
-      {models.map(m => {
+      {ordered.map(m => {
         const tall = TALL_CARDS.has(`${kind}:${m.name}`)
         return (
         <HomeMediaCard
