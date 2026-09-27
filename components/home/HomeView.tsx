@@ -69,10 +69,11 @@ type HomeModel = { name: string; accent: string; group: string; admin: boolean }
 
 /**
  * Cards shown portrait (3:4) in the model grids: they span two rows. Virtual
- * Try-On is about whole outfits and Pixelcut about single products on a
- * stand, both of which a landscape frame cuts short.
+ * Try-On is about whole outfits, Pixelcut about single products on a stand
+ * and Kling V3 Motion about full-body movement - all cut short by a
+ * landscape frame.
  */
-const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Product Photo"])
+const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Product Photo", "video:Kling V3 Motion"])
 /** The model grids' widest column count (min-[2200px]:grid-cols-8). */
 const MAX_GRID_COLS = 8
 /** The fewest regular cards between two tall ones, so they never sit side by side. */
