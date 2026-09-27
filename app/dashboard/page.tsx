@@ -394,30 +394,61 @@ export default function DashboardPage() {
         */}
         <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
-        {/* Ticket balance (wide screens) */}
-        <div className="hidden xl:flex flex-col justify-between gap-4 xl:flex-[1.15] min-h-[180px] rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.07] via-white/[0.02] to-transparent p-5 2xl:p-6">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.2em]">Ticket balance</p>
-            <span className={`text-[9px] font-black px-2 py-0.5 rounded-full leading-none border ${hasPromptStudioDev ? "bg-white/10 border-white/25 text-white" : "border-white/10 text-slate-500"}`}>
-              {hasPromptStudioDev ? "DEV TIER" : "FREE PLAN"}
-            </span>
-          </div>
-          <div className="flex items-end gap-3">
-            <Ticket size={30} className="text-slate-400 mb-2 shrink-0" />
-            <p className="text-5xl 2xl:text-6xl font-black tracking-tight tabular-nums text-transparent bg-clip-text bg-gradient-to-b from-white to-white/60 leading-none">
-              {user.ticketBalance.toLocaleString()}
-            </p>
-          </div>
-          <p className="text-[11px] text-slate-500 leading-snug">
-            {hasPromptStudioDev ? "Dev tier is active: 10% off every ticket pack." : "Upgrade to Dev tier for 10% off every ticket pack."}
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            <Link href="/buy-tickets" className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-white text-black text-xs font-bold hover:bg-white/90 transition-colors">
-              <Ticket size={13} /> Buy tickets
-            </Link>
-            <Link href={hasPromptStudioDev ? "/subscriptions" : "/prompting-studio/subscribe"} className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-white/20 bg-white/[0.04] text-white text-xs font-semibold hover:bg-white/10 transition-colors">
-              <Sparkles size={13} /> {hasPromptStudioDev ? "Manage plan" : "See plans"}
-            </Link>
+        {/*
+          Ticket balance (wide screens), branded like the AI Design Studio card:
+          the synced site logo, the rotating silver rim, and the light sweep on
+          the main button.
+        */}
+        <div className="hidden xl:block xl:flex-[1.15] min-h-[200px] relative rounded-2xl overflow-hidden p-[2px] isolate">
+          {/* Rotating silver rim (oversized square so the sweep covers the whole card) */}
+          <span
+            className="absolute left-1/2 top-1/2 w-[250%] aspect-square -translate-x-1/2 -translate-y-1/2 animate-spin pointer-events-none -z-10"
+            style={{
+              background:
+                "conic-gradient(from 0deg, rgba(226,232,240,0.08), #f8fafc, #94a3b8, rgba(226,232,240,0.12), #cbd5e1, #64748b, rgba(226,232,240,0.08))",
+              animationDuration: "6s",
+            }}
+          />
+          <div className="relative h-full rounded-[14px] bg-[#0a0f1a] overflow-hidden flex flex-col p-5 2xl:p-6">
+            {/* Soft glow behind the number */}
+            <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-white/[0.05] blur-3xl pointer-events-none" />
+
+            <div className="relative flex items-center gap-3">
+              <SiteLogoBox size={40} rounded={12} />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight truncate">Ticket Balance</p>
+                <p className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.18em] truncate">Prompt &amp; Protocol</p>
+              </div>
+              <span className={`shrink-0 text-[9px] font-black px-2 py-1 rounded-full leading-none border ${hasPromptStudioDev ? "bg-white/10 border-white/25 text-white" : "border-white/10 text-slate-500"}`}>
+                {hasPromptStudioDev ? "DEV TIER" : "FREE PLAN"}
+              </span>
+            </div>
+
+            <div className="relative flex-1 flex flex-col justify-center py-3">
+              <div className="flex items-baseline gap-2.5">
+                <p className="text-6xl 2xl:text-7xl font-black tracking-tight tabular-nums text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-slate-400 leading-none">
+                  {user.ticketBalance.toLocaleString()}
+                </p>
+                <span className="text-sm font-semibold text-slate-400">tickets</span>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-snug mt-2">
+                {hasPromptStudioDev ? "Dev tier is active: 10% off every ticket pack." : "Upgrade to Dev tier for 10% off every ticket pack."}
+              </p>
+            </div>
+
+            <div className="relative grid grid-cols-2 gap-2">
+              {/* Buy tickets — the same light sweep as Open Studio */}
+              <Link href="/buy-tickets" className="relative overflow-hidden flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-bold hover:bg-white/15 hover:border-white/40 transition-all">
+                <span
+                  className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                  style={{ animation: "sheen-sweep 2.6s infinite" }}
+                />
+                <Ticket size={13} /> Buy tickets
+              </Link>
+              <Link href={hasPromptStudioDev ? "/subscriptions" : "/prompting-studio/subscribe"} className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-white/10 bg-white/[0.03] text-slate-300 text-xs font-semibold hover:text-white hover:border-white/25 hover:bg-white/[0.07] transition-all">
+                <Sparkles size={13} /> {hasPromptStudioDev ? "Manage plan" : "See plans"}
+              </Link>
+            </div>
           </div>
         </div>
 
