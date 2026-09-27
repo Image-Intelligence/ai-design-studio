@@ -93,7 +93,7 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
   if (models.length === 0) return null
   /*
    * A two-row card near the end of the list leaves its second row mostly
-   * empty (Pixelcut, an admin model, came second to last and opened a near-
+   * empty (Pixelcut, then an admin model, came second to last and opened a near-
    * empty extra row). So each tall card is moved up until at least a full row
    * of the widest layout (8 columns) follows it; dense packing then fills the
    * space beside it at every width. Cards already far enough up stay put.

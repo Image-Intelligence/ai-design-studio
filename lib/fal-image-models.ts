@@ -1371,6 +1371,10 @@ export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
   'ideogram-v4-fast',
   'ideogram-v4-instant',
   'ideogram-v4-tiling',
+  // Pixelcut Product Photo, promoted 2026-09-27. fal bills $0.024 per image
+  // (its pricing API); its flat 2-ticket price is an 85% gross margin
+  // even at a $0.08 subscription ticket.
+  'pixelcut-product-photo',
 ])
 
 /** FAL_IMAGE_MODEL_IDS minus the ones that have been promoted. */

@@ -1180,6 +1180,7 @@ const IMAGE_MODEL_GROUPS = [
   // Google, distinct from the Gemini row above: Virtual Try-On is a Google
   // model but not a Gemini one, and filing it under Gemini would be wrong.
   { label: "Google",            type: "virtual try-on",            accent: "text-emerald-400", dot: "bg-emerald-400", items: ["Virtual Try-On"] },
+  { label: "Pixelcut",          type: "product photography",       accent: "text-rose-400",    dot: "bg-rose-400",    items: ["Pixelcut Product Photo"] },
 ]
 
 /**
@@ -1215,7 +1216,6 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // Gemini scanners retired from the public offering 2026-07-29 — admin only now
   { label: "Gemini",    type: "text to image",              accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Flash Scanner v2.5", "Pro Scanner v3"] },
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
-  { label: "Pixelcut",  type: "product photography",        accent: "text-rose-400",  dot: "bg-rose-400",  items: ["Pixelcut Product Photo"] },
   { label: "Topaz",     type: "upscale · restore · adjust", accent: "text-lime-400",  dot: "bg-lime-400",  items: ["Topaz Image"] },
   { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
   { label: "RunPod",    type: "local · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
