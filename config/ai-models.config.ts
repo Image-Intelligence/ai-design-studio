@@ -352,6 +352,34 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  // Luma Photon / Photon Flash / Uni-1 / Uni-1 Max (ADMIN ONLY while under
+  // test). Priced for a >=50% gross margin at the cheapest ticket anyone can
+  // buy ($0.08, a subscription ticket), from fal's rates on 2026-09-28:
+  //   Photon      $0.019/MP x ~2.36MP = $0.045  -> 2 tickets ($0.16)
+  //   Photon Flash $0.005/MP x ~2.36MP = $0.012 -> 1 ticket  ($0.08)
+  //   Uni-1       $0.042 (+$0.003/ref, <=4)     -> 2 tickets
+  //   Uni-1 Max   $0.102 (+$0.003/ref, <=4)     -> 3 tickets ($0.24)
+  // Modify / reframe / edit bill like their base model.
+  ...([
+    ['luma-photon', 'fal-ai/luma-photon', 'Luma Photon', 'Luma Photon text-to-image', 2],
+    ['luma-photon-modify', 'fal-ai/luma-photon/modify', 'Luma Photon Modify', 'Luma Photon image restyle by instruction', 2],
+    ['luma-photon-reframe', 'fal-ai/luma-photon/reframe', 'Luma Photon Reframe', 'Luma Photon outpaint to a new aspect ratio', 2],
+    ['luma-photon-flash', 'fal-ai/luma-photon/flash', 'Luma Photon Flash', 'Luma Photon Flash text-to-image (fast)', 1],
+    ['luma-photon-flash-modify', 'fal-ai/luma-photon/flash/modify', 'Luma Photon Flash Modify', 'Luma Photon Flash image restyle by instruction', 1],
+    ['luma-photon-flash-reframe', 'fal-ai/luma-photon/flash/reframe', 'Luma Photon Flash Reframe', 'Luma Photon Flash outpaint to a new aspect ratio', 1],
+    ['luma-uni-1', 'luma/agent/uni-1/v1/text-to-image', 'Luma Uni-1', 'Luma Uni-1 text-to-image with optional references', 2],
+    ['luma-uni-1-edit', 'luma/agent/uni-1/v1/edit', 'Luma Uni-1 Edit', 'Luma Uni-1 instruction editing', 2],
+    ['luma-uni-1-max', 'luma/agent/uni-1/v1/max', 'Luma Uni-1 Max', 'Luma Uni-1 Max text-to-image', 3],
+    ['luma-uni-1-max-edit', 'luma/agent/uni-1/v1/max/edit', 'Luma Uni-1 Max Edit', 'Luma Uni-1 Max instruction editing', 3],
+  ] as const).map(([id, name, displayName, description, ticketCost]) => ({
+    id, name, displayName, description, ticketCost,
+    category: 'standard' as const,
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high' as const,
+    isAvailable: true,
+    provider: 'fal' as const,
+  })),
+
   // Microsoft MAI Image 2.5 Pro
   {
     id: 'mai-image-2.5-pro',

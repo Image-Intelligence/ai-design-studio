@@ -392,6 +392,11 @@ const BRIA_STYLE_FIELDS: Record<string, { artistic_style?: string; style_medium?
 }
 const AR_NB2 = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9'] as const
 const AR_NB2_LITE = ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'] as const
+// Luma - declared up here because FAL_IMAGE_MODELS calls the Luma spec builders at load
+const AR_PHOTON = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21'] as const
+const AR_UNI = ['3:1', '2:1', '16:9', '3:2', '1:1', '2:3', '9:16', '1:2', '1:3'] as const
+/** Uni-1 bills $0.003 per reference; the flat ticket price is set for up to this many. */
+const UNI_MAX_REFS = 4
 
 const TOPAZ_PRECISION_MODELS = ['Standard V2', 'High Fidelity V3', 'High Fidelity V2', 'Low Resolution V2', 'CGI', 'Text Refine'] as const
 const TOPAZ_CREATIVE_MODELS = ['Bloom 2', 'Bloom', 'Bloom Realism'] as const
@@ -1085,6 +1090,27 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     },
   },
 
+  // ── Luma (ADMIN ONLY while under test) ─────────────────────────────────────
+  //
+  // Verified against the live schemas on 2026-09-28. Photon and Photon Flash
+  // are billed per megapixel ($0.019 / $0.005) and render ~2.36MP whatever the
+  // aspect (a 1:1 test came back 1536x1536, a 16:9 one 2048x1152); Uni-1 and
+  // Uni-1 Max are flat ($0.042 / $0.102, +$0.003 per edit source/reference).
+  // Photon's modify endpoint is its edit sibling (picked when an image is
+  // attached); reframe is its own tool - outpaint an image to a new aspect.
+  'luma-photon': lumaPhotonSpec('luma-photon', 'fal-ai/luma-photon', 'luma-photon-modify'),
+  'luma-photon-modify': lumaPhotonModifySpec('luma-photon-modify', 'fal-ai/luma-photon/modify'),
+  'luma-photon-reframe': lumaPhotonReframeSpec('luma-photon-reframe', 'fal-ai/luma-photon/reframe'),
+  'luma-photon-flash': lumaPhotonSpec('luma-photon-flash', 'fal-ai/luma-photon/flash', 'luma-photon-flash-modify'),
+  'luma-photon-flash-modify': lumaPhotonModifySpec('luma-photon-flash-modify', 'fal-ai/luma-photon/flash/modify'),
+  'luma-photon-flash-reframe': lumaPhotonReframeSpec('luma-photon-flash-reframe', 'fal-ai/luma-photon/flash/reframe'),
+  // Uni-1: text-to-image takes optional references; with an attached image
+  // the edit sibling runs, the first image as the source, the rest as refs.
+  'luma-uni-1': lumaUniSpec('luma-uni-1', 'luma/agent/uni-1/v1/text-to-image', 'luma-uni-1-edit'),
+  'luma-uni-1-edit': lumaUniEditSpec('luma-uni-1-edit', 'luma/agent/uni-1/v1/edit'),
+  'luma-uni-1-max': lumaUniSpec('luma-uni-1-max', 'luma/agent/uni-1/v1/max', 'luma-uni-1-max-edit'),
+  'luma-uni-1-max-edit': lumaUniEditSpec('luma-uni-1-max-edit', 'luma/agent/uni-1/v1/max/edit'),
+
   // ── Google Virtual Try-On ──────────────────────────────────────────────────
   'google-virtual-try-on': {
     id: 'google-virtual-try-on',
@@ -1335,6 +1361,89 @@ function recraftSpec(id: string, endpoint: string): FalImageModelSpec {
             : undefined,
       })
     },
+  }
+}
+
+// ── Luma ─────────────────────────────────────────────────────────────────────
+
+/** Photon / Photon Flash text-to-image: prompt + aspect ratio, nothing else. */
+function lumaPhotonSpec(id: string, endpoint: string, editVariant: string): FalImageModelSpec {
+  return {
+    id, endpoint, editVariant,
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: [...AR_PHOTON], usesImageSize: false,
+    build: (ctx) => ({ prompt: ctx.prompt, aspect_ratio: pickEnum(ctx.aspectRatio, AR_PHOTON, '1:1') }),
+  }
+}
+
+/**
+ * Photon modify: restyle an image by instruction. `strength` is required -
+ * higher keeps more of the source; 0.6 leaves room for the prompt to change it.
+ */
+function lumaPhotonModifySpec(id: string, endpoint: string): FalImageModelSpec {
+  return {
+    id, endpoint,
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1,
+    promptRequired: false, promptMax: 5000,
+    aspectRatios: [...AR_PHOTON], usesImageSize: false,
+    notes: 'strength 0-1 (default 0.6): higher keeps more of the source',
+    build: (ctx) => compact({
+      image_url: ctx.imageUrls[0],
+      prompt: ctx.prompt || undefined,
+      strength: num(ctx.options.lumaStrength, 0, 1) ?? 0.6,
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_PHOTON, '1:1'),
+    }),
+  }
+}
+
+/** Photon reframe: outpaint one image to a new aspect ratio; prompt optional. */
+function lumaPhotonReframeSpec(id: string, endpoint: string): FalImageModelSpec {
+  return {
+    id, endpoint,
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1,
+    promptRequired: false, promptMax: 5000,
+    aspectRatios: [...AR_PHOTON], usesImageSize: false,
+    notes: 'the aspect ratio is the TARGET shape the image is extended to',
+    build: (ctx) => compact({
+      image_url: ctx.imageUrls[0],
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_PHOTON, '16:9'),
+      prompt: ctx.prompt || undefined,
+    }),
+  }
+}
+
+/** Uni-1 / Uni-1 Max text-to-image (references optional, capped for pricing). */
+function lumaUniSpec(id: string, endpoint: string, editVariant: string): FalImageModelSpec {
+  return {
+    id, endpoint, editVariant,
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: [...AR_UNI], usesImageSize: false,
+    build: (ctx) => ({
+      prompt: ctx.prompt,
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_UNI, '1:1'),
+      style: pickEnum(ctx.options.lumaUniStyle, ['auto', 'manga'] as const, 'auto'),
+      output_format: 'png',
+    }),
+  }
+}
+
+/** Uni-1 / Uni-1 Max edit: the first image is the source, the rest guide it. */
+function lumaUniEditSpec(id: string, endpoint: string): FalImageModelSpec {
+  return {
+    id, endpoint,
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1 + UNI_MAX_REFS,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: null, usesImageSize: false,
+    notes: `refs[0] = source image, refs[1..${UNI_MAX_REFS}] = references`,
+    build: (ctx) => compact({
+      prompt: ctx.prompt,
+      image_url: ctx.imageUrls[0],
+      reference_image_urls: ctx.imageUrls.length > 1 ? ctx.imageUrls.slice(1, 1 + UNI_MAX_REFS) : undefined,
+      style: pickEnum(ctx.options.lumaUniStyle, ['auto', 'manga'] as const, 'auto'),
+      output_format: 'png',
+    }),
   }
 }
 

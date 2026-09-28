@@ -134,6 +134,16 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "gpt-image-2.5",        apiId: "gpt-image-2.5",            name: "ChatGPT Images 2.5",  aspectRatios: ["auto", "21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "qwen-image-3",         apiId: "qwen-image-3",             name: "Qwen Image 3",        aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 6, isFal: true, maxImages: 4 },
   { id: "reve-2.1",             apiId: "reve-2.1",                 name: "Reve 2.1",            aspectRatios: ["auto", "21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
+  // Luma (ADMIN ONLY while under test). Photon/Photon Flash switch to their
+  // modify endpoint when an image is attached; Uni-1 to its edit endpoint (the
+  // first image is the source, up to 4 more guide it). Reframe outpaints one
+  // image to the chosen aspect ratio.
+  { id: "luma-photon",          apiId: "luma-photon",              name: "Luma Photon",         aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
+  { id: "luma-photon-flash",    apiId: "luma-photon-flash",        name: "Luma Photon Flash",   aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
+  { id: "luma-photon-reframe",  apiId: "luma-photon-reframe",      name: "Luma Photon Reframe", aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21"], supportsQuality: false, maxReferenceImages: 1, requiresReferenceImage: true, isFal: true, maxImages: 1 },
+  { id: "luma-photon-flash-reframe", apiId: "luma-photon-flash-reframe", name: "Luma Photon Flash Reframe", aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21"], supportsQuality: false, maxReferenceImages: 1, requiresReferenceImage: true, isFal: true, maxImages: 1 },
+  { id: "luma-uni-1",           apiId: "luma-uni-1",               name: "Luma Uni-1",          aspectRatios: ["2:1", "16:9", "3:2", "1:1", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 5, isFal: true, maxImages: 4 },
+  { id: "luma-uni-1-max",       apiId: "luma-uni-1-max",           name: "Luma Uni-1 Max",      aspectRatios: ["2:1", "16:9", "3:2", "1:1", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 5, isFal: true, maxImages: 4 },
   { id: "mai-image-2.5-pro",    apiId: "mai-image-2.5-pro",        name: "MAI Image 2.5 Pro",   aspectRatios: ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "grok-imagine-2",       apiId: "grok-imagine-2",           name: "Grok Imagine 2.0",    aspectRatios: ["2:1", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 4, isFal: true, maxImages: 4 },
   { id: "meta-muse",            apiId: "meta-muse",                name: "Meta Muse",           aspectRatios: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
@@ -625,7 +635,12 @@ interface VideoModelConfig {
   toolPrompt?: boolean          // this tool accepts an optional guidance prompt
   upscaleFactors?: string[]     // 1-4x, per the tool's own schema
   targetFpsOptions?: string[]   // frame interpolation targets
+  lumaModes?: string[]          // Luma modify / Ray 3.2 edit: adhere_1 (closest) .. reimagine_3 (freest)
+  toolPromptRequired?: boolean  // this tool can't run without a prompt (Ray 3.2 edit / reframe)
 }
+
+// Luma's modify strength scale, closest to the source first
+const LUMA_MODES = ["adhere_1", "adhere_2", "adhere_3", "flex_1", "flex_2", "flex_3", "reimagine_1", "reimagine_2", "reimagine_3"]
 
 interface VideoItem {
   id: string
@@ -906,6 +921,41 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     fpsOptions: ["24","25","48","50"],
   },
   {
+    // ADMIN ONLY — Luma Ray 2 ("Dream Machine"). Text or a start image (+ an
+    // optional end frame); 5s or 9s; 540p-1080p.
+    id: "luma-ray-2",
+    name: "Luma Ray 2",
+    durations: ["5","9"],
+    resolutions: ["540p","720p","1080p"],
+    aspectRatios: ["16:9","9:16","4:3","3:4","21:9","9:21"],
+    supportsEndFrame: true,
+    audioType: "none",
+    textToVideo: true,
+  },
+  {
+    // ADMIN ONLY — Luma Ray 2 Flash: the same inputs, faster and cheaper.
+    id: "luma-ray-2-flash",
+    name: "Luma Ray 2 Flash",
+    durations: ["5","9"],
+    resolutions: ["540p","720p","1080p"],
+    aspectRatios: ["16:9","9:16","4:3","3:4","21:9","9:21"],
+    supportsEndFrame: true,
+    audioType: "none",
+    textToVideo: true,
+  },
+  {
+    // ADMIN ONLY — Luma Ray 3.2. 10s from an image needs a start AND an end
+    // frame (the route sends them as keyframes); a start frame alone is 5s.
+    id: "luma-ray-3.2",
+    name: "Luma Ray 3.2",
+    durations: ["5","10"],
+    resolutions: ["540p","720p","1080p"],
+    aspectRatios: ["16:9","9:16","4:3","3:4","1:1","21:9"],
+    supportsEndFrame: true,
+    audioType: "none",
+    textToVideo: true,
+  },
+  {
     // ── Video tools (ADMIN ONLY): these take an existing clip. Upload it as a
     // video reference; no prompt is required, and most take none at all.
     id: "flux-video-upscale",
@@ -984,6 +1034,51 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     isVideoTool: true, supportsReferenceVideo: true,
   },
   {
+    // ── Luma video tools (ADMIN ONLY): modify restyles a clip by instruction
+    // (the strength picks how far it may move); reframe re-shapes it to a new
+    // aspect ratio, painting in the new space.
+    id: "luma-ray-2-modify",
+    name: "Luma Ray 2 Modify",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, lumaModes: LUMA_MODES,
+  },
+  {
+    id: "luma-ray-2-flash-modify",
+    name: "Luma Ray 2 Flash Modify",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, lumaModes: LUMA_MODES,
+  },
+  {
+    id: "luma-ray-2-reframe",
+    name: "Luma Ray 2 Reframe",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true,
+    aspectRatios: ["9:16","16:9","1:1","4:3","3:4","21:9","9:21"],
+  },
+  {
+    id: "luma-ray-2-flash-reframe",
+    name: "Luma Ray 2 Flash Reframe",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true,
+    aspectRatios: ["9:16","16:9","1:1","4:3","3:4","21:9","9:21"],
+  },
+  {
+    // Ray 3.2 video-to-video: a prompt is required; a source past 5.5s renders 10s
+    id: "luma-ray-3.2-edit",
+    name: "Luma Ray 3.2 Edit",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true,
+    resolutions: ["540p","720p","1080p"], lumaModes: LUMA_MODES,
+  },
+  {
+    // Ray 3.2 reframe: sources up to 10s; the prompt describes the new space
+    id: "luma-ray-3.2-reframe",
+    name: "Luma Ray 3.2 Reframe",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true,
+    resolutions: ["540p","720p","1080p"], aspectRatios: ["9:16","16:9","1:1","4:3","3:4","21:9"],
+  },
+  {
     id: "lipsync-v3",
     name: "Lipsync v3",
     durations: [],
@@ -1024,6 +1119,12 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "seedream-4.5":        "$",
   "seedream-5-lite":     "$",
   "seedream-5-pro":      "$$$",
+  "luma-photon":         "$$",
+  "luma-photon-flash":   "$",
+  "luma-photon-reframe": "$$",
+  "luma-photon-flash-reframe": "$",
+  "luma-uni-1":          "$$",
+  "luma-uni-1-max":      "$$$",
   "recraft-v4.1":        "$$$",
   "flux-2":              "$",
   "flux-1-dev":          "$$",
@@ -1076,6 +1177,15 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "topaz-colorize":     "$$",
   "topaz-deblur":       "$$",
   "topaz-sdr-to-hdr":   "$$",
+  "luma-ray-2":         "$$$",
+  "luma-ray-2-flash":   "$$",
+  "luma-ray-3.2":       "$$$",
+  "luma-ray-2-modify":  "$$$",
+  "luma-ray-2-flash-modify": "$$",
+  "luma-ray-2-reframe": "$$",
+  "luma-ray-2-flash-reframe": "$",
+  "luma-ray-3.2-edit":  "$$$",
+  "luma-ray-3.2-reframe": "$$",
   "flux-3":             "$$$",
   "flux-1-dev":         "$$",
   "z-image-base":       "$$",
@@ -1207,6 +1317,7 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // from here simply never appears, however complete its config is.
   { label: "Alibaba",   type: "text to image · edit",       accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3"] },
   { label: "Reve",      type: "text to image · edit",       accent: "text-pink-400",  dot: "bg-pink-400",  items: ["Reve 2.1"] },
+  { label: "Luma",      type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
   { label: "Microsoft", type: "text to image · edit",       accent: "text-sky-400",   dot: "bg-sky-400",   items: ["MAI Image 2.5 Pro"] },
   { label: "xAI",       type: "text to image · edit",       accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine 2.0"] },
   { label: "Google",    type: "text to image · try-on",     accent: "text-emerald-400", dot: "bg-emerald-400", items: ["NanoBanana 2 Lite"] },
@@ -1235,18 +1346,24 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   { label: "Alibaba", type: "text · image · refs · with audio · pricing TBD",  accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
   { label: "Google", type: "text · image · ref · edit to video · pricing TBD", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
   { label: "Lightricks", type: "text & image to video · up to 4K · pricing TBD", accent: "text-lime-400", dot: "bg-lime-400",   items: ["LTX 2.5 Fast"] },
+  { label: "Luma", type: "text & image to video · start + end frame", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Ray 3.2", "Luma Ray 2", "Luma Ray 2 Flash"] },
   { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max"] },
   { label: "Black Forest Labs", type: "text · image · keyframes · extend · with audio · pricing TBD", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3"] },
   { label: "Wan",    type: "image & text to video · pricing TBD",             accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.7", "Wan 2.2 LoRA"] },
   { label: "Video Tools", type: "upload a clip · upscale · restore · pricing TBD", accent: "text-teal-400", dot: "bg-teal-400",
     items: ["Flux Video Upscale", "Topaz Upscale · Precision", "Topaz Upscale · Creative", "Topaz Upscale · Starlight",
             "SeedVR2 Video", "FlashVSR", "ByteDance Video Upscale", "Topaz Frame Interpolate",
-            "Topaz Colorize", "Topaz Deblur", "Topaz SDR → HDR"] },
+            "Topaz Colorize", "Topaz Deblur", "Topaz SDR → HDR",
+            "Luma Ray 3.2 Edit", "Luma Ray 3.2 Reframe", "Luma Ray 2 Modify", "Luma Ray 2 Flash Modify",
+            "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe"] },
 ]
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
   "gemini-omni-flash", "wan-2.7", "wan-2.2-lora", "minimax-h3-max", "flux-3",
   "wan-3.0", "wan-3.0-prime", "gemini-omni-1.1", "ltx-2.5-fast",
+  "luma-ray-2", "luma-ray-2-flash", "luma-ray-3.2",
+  "luma-ray-2-modify", "luma-ray-2-flash-modify", "luma-ray-2-reframe",
+  "luma-ray-2-flash-reframe", "luma-ray-3.2-edit", "luma-ray-3.2-reframe",
   "flux-video-upscale", "topaz-upscale-precision", "topaz-upscale-creative", "topaz-upscale-generative",
   "seedvr2-video", "flashvsr-video", "bytedance-video-upscale",
   "topaz-interpolate", "topaz-colorize", "topaz-deblur", "topaz-sdr-to-hdr",
@@ -1760,6 +1877,12 @@ const MODEL_BLURBS: Record<string, string> = {
   "Ideogram v4":               "Text inside images, two speeds",
   "Qwen Image 3":              "Alibaba flagship; edits with refs",
   "Reve 2.1":                  "Prompt-accurate; edits with a ref",
+  "Luma Photon":               "Luma's image model; restyles a ref",
+  "Luma Photon Flash":         "Fast, low-cost Photon",
+  "Luma Photon Reframe":       "Extend an image to a new shape",
+  "Luma Photon Flash Reframe": "Fast reframe to a new shape",
+  "Luma Uni-1":                "Luma's newest; edits with up to 5 refs",
+  "Luma Uni-1 Max":            "Top-quality Uni-1; edits with refs",
   "MAI Image 2.5 Pro":         "Microsoft flagship; edits with a ref",
   "Grok Imagine 2.0":          "Expressive and quick; edits with refs",
   "Virtual Try-On":            "Dress a person in a garment",
@@ -1806,6 +1929,15 @@ const MODEL_BLURBS: Record<string, string> = {
   "Gemini Omni Flash 1.1":     "Adds 4K and video editing",
   "LTX 2.5 Pro":               "Fast 1080p with audio",
   "LTX 2.5 Fast":              "Up to 4K and longer clips",
+  "Luma Ray 3.2":              "Luma's newest; start + end frames",
+  "Luma Ray 2":                "Dream Machine; start + end frames",
+  "Luma Ray 2 Flash":          "Faster, cheaper Ray 2",
+  "Luma Ray 3.2 Edit":         "Restyle a clip by instruction",
+  "Luma Ray 3.2 Reframe":      "Re-shape a clip, fills the new space",
+  "Luma Ray 2 Modify":         "Restyle a clip by instruction",
+  "Luma Ray 2 Flash Modify":   "Fast, cheaper clip restyle",
+  "Luma Ray 2 Reframe":        "Re-shape a clip to a new aspect",
+  "Luma Ray 2 Flash Reframe":  "Fast, cheaper reframe",
   "MiniMax H3 Max":            "Strong prompt following, 768p",
   "Flux 3":                    "Text, keyframes, extend, audio",
   "Lipsync v3":                "Syncs lips to any audio",
@@ -24350,6 +24482,8 @@ function VideoCustomizationPanel({
   safetyChecker,
   ltxFps = "25",
   onLtxFpsChange,
+  lumaMode = "flex_1",
+  onLumaModeChange,
   setSafetyChecker,
   isAdminAccount = false,
 }: {
@@ -24407,6 +24541,8 @@ function VideoCustomizationPanel({
   safetyChecker?: boolean
   ltxFps?: string
   onLtxFpsChange?: (fps: string) => void
+  lumaMode?: string
+  onLumaModeChange?: (mode: string) => void
   setSafetyChecker?: (v: boolean) => void
   isAdminAccount?: boolean
 }) {
@@ -24510,9 +24646,9 @@ function VideoCustomizationPanel({
     ? parseInt(duration) * (audioEnabled ? 8 : 6)
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
-    // SeeDance 2.5 / LTX 2.5 Pro: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro"
-    ? videoTicketCost({ model: model.id, duration, resolution })
+    // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
+    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-")
+    ? videoTicketCost({ model: model.id, duration, resolution, editVideoDurationSec: editSourceDuration })
     : isSD20Family
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * sd20ResMultiplier)
     : model.id === "happy-horse"
@@ -24950,6 +25086,23 @@ function VideoCustomizationPanel({
                 {model.fpsOptions.map(f => (
                   <button key={f} onClick={() => onLtxFpsChange?.(f)}
                     className={`flex-1 ${btnBase} ${ltxFps === f ? btnActive : btnIdle}`}>{f} fps</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Strength — Luma modify / Ray 3.2 edit: how far the result may move from the clip */}
+          {model.lumaModes && model.lumaModes.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                Strength <span className="text-slate-600 normal-case font-normal">(adhere = closest to the clip)</span>
+              </p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {model.lumaModes.map(m => (
+                  <button key={m} onClick={() => onLumaModeChange?.(m)}
+                    className={`${btnBase} ${lumaMode === m ? btnActive : btnIdle}`}>
+                    {m.charAt(0).toUpperCase() + m.slice(1).replace("_", " ")}
+                  </button>
                 ))}
               </div>
             </div>
@@ -25864,8 +26017,8 @@ function VideoPromptBar({
     ? parseInt(duration) * (audioEnabled ? 8 : 6)
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
-    // SeeDance 2.5 / LTX 2.5 Pro: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro"
+    // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
+    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-")
     ? videoTicketCost({ model: model.id, duration, resolution })
     : isSD20FamilyBar
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
@@ -27804,6 +27957,7 @@ export default function PortalV2Page() {
   const [flux3VideoSafetyChecker, setFlux3VideoSafetyChecker] = useState(true)
   const [wan30VideoSafetyChecker, setWan30VideoSafetyChecker] = useState(true)
   const [videoLtxFps, setVideoLtxFps] = useState("25")
+  const [videoLumaMode, setVideoLumaMode] = useState("flex_1")
   const [videoToolFactor, setVideoToolFactor] = useState("2")
   const [videoToolCreativity, setVideoToolCreativity] = useState("0.35")
   const [videoToolTargetFps, setVideoToolTargetFps] = useState("60")
@@ -28404,6 +28558,7 @@ export default function PortalV2Page() {
     if (selectedVideoModel.isVideoTool) {
       const src = videoRefVideoUrls.filter(Boolean)[0] || videoEditSourceUrl
       if (!src) { alert("Upload the video to process as a video reference first."); return }
+      if (selectedVideoModel.toolPromptRequired && !promptText.trim()) { alert("This tool needs a prompt - describe the change you want."); return }
     } else if (!isMotion && !isLipsync && !promptText.trim() && !(selectedVideoModel.id === "wan-2.7" && videoStartFrameUrl)) {
       // Say why nothing happened instead of returning silently — a dead Generate
       // button is indistinguishable from a broken one
@@ -28505,7 +28660,9 @@ export default function PortalV2Page() {
           // Extend / edit source video (inferred from the refs panel)
           ...(sdMode === "edit" && {
             editVideoUrl:          sdEditVideoUrl,
-            editVideoDurationSec:  videoEditSourceDuration,
+            // Luma tools bill by the clip's length: when it came in through the
+            // refs panel, that panel's measured duration is the one to send
+            editVideoDurationSec:  videoEditSourceDuration || (selectedVideoModel.id.startsWith("luma-ray-") ? videoRefVideoDuration : 0),
           }),
           // Lipsync v3
           ...(isLipsync && {
@@ -28521,6 +28678,7 @@ export default function PortalV2Page() {
           ...(selectedVideoModel.id === "flux-3" ? { flux3SafetyChecker: flux3VideoSafetyChecker } : {}),
           ...(selectedVideoModel.id.startsWith("wan-3.0") ? { wan30SafetyChecker: wan30VideoSafetyChecker } : {}),
           ...(selectedVideoModel.fpsOptions ? { ltxFps: videoLtxFps } : {}),
+          ...(selectedVideoModel.lumaModes ? { lumaMode: videoLumaMode } : {}),
           ...(selectedVideoModel.isVideoTool ? {
             videoUpscaleFactor: videoToolFactor,
             videoToolCreativity: videoToolCreativity,
@@ -28587,7 +28745,7 @@ export default function PortalV2Page() {
     } finally {
       setVideoGenerating(false)
     }
-  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoEditSourceUrl, videoEditSourceDuration])
+  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoEditSourceUrl, videoEditSourceDuration])
 
   const applyVideoModel = useCallback((model: VideoModelConfig) => {
     setSelectedVideoModel(model)
@@ -32147,6 +32305,8 @@ function employeePending(
               isAdminAccount={isAdminAccount}
               ltxFps={videoLtxFps}
               onLtxFpsChange={setVideoLtxFps}
+              lumaMode={videoLumaMode}
+              onLumaModeChange={setVideoLumaMode}
               duration={videoDuration}
               onDurationChange={setVideoDuration}
               aspectRatio={videoAspectRatio}

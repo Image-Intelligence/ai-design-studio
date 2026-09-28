@@ -15,6 +15,9 @@ export const VIDEO_TOOL_MODELS = new Set([
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
   'bytedance-video-upscale', 'topaz-colorize', 'topaz-deblur',
   'topaz-interpolate', 'topaz-sdr-to-hdr',
+  // Luma: restyle (modify / edit) or re-shape (reframe) a source clip
+  'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
+  'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
 ])
 
 /**
@@ -121,6 +124,9 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     // PLACEHOLDER — ADMIN ONLY until priced. A14B renders ~81 frames @16fps ≈ 5s
     const sec = Math.ceil((parseInt(duration) || 5));
     ticketCost = Math.ceil(sec * (resolution === '720p' ? 4 : 2.6));
+  } else if (model.startsWith('luma-ray-')) {
+    // Before the generic tool branch: the Luma tools price by their own rates
+    ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec)
   } else if (VIDEO_TOOL_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Billed against the SOURCE clip's
     // length, since that is what these process.
@@ -263,6 +269,46 @@ export interface VideoModelPricingSpec {
   note?: string
 }
 
+/*
+ * Luma Ray 2 / Ray 2 Flash / Ray 3.2 - priced from fal's published rates
+ * (2026-09-28) for a >=50% gross margin at the cheapest ticket anyone can buy
+ * ($0.08, a subscription ticket): tickets = ceil(fal cost / $0.04).
+ *
+ *   Ray 2, Ray 3.2   $0.50 per 5s at 540p; 720p x2, 1080p x4; 9s/10s x2
+ *   Ray 2 Flash      $0.20 per 5s at 540p; same multipliers
+ *   Ray 3.2 edit     $0.72 / $1.08 / $2.16 per 5s (540p/720p/1080p); 10s x2
+ *   Ray 3.2 reframe  $0.06 / $0.12 / $0.36 per started source second
+ *   Ray 2 modify     $0.35/s   (Flash $0.12/s)  - per second of the clip
+ *   Ray 2 reframe    $0.20/s   (Flash $0.06/s)
+ *
+ * The tools bill the SOURCE clip's length; when the client couldn't read it,
+ * 10s is assumed - the longest these endpoints take - so a run is never under-
+ * charged. HDR is never requested, so its surcharge never applies.
+ */
+const LUMA_TICKET_USD = 0.04
+function lumaTicketCost(model: string, duration: string, resolution: string, sourceSec: number): number {
+  const res = resolution === '1080p' ? '1080p' : resolution === '720p' ? '720p' : '540p'
+  const resX = res === '1080p' ? 4 : res === '720p' ? 2 : 1
+  const secs = Math.ceil(sourceSec > 0 ? sourceSec : 10)
+  let usd: number
+  switch (model) {
+    case 'luma-ray-2':        usd = 0.5 * resX * (parseInt(duration) >= 9 ? 2 : 1); break
+    case 'luma-ray-2-flash':  usd = 0.2 * resX * (parseInt(duration) >= 9 ? 2 : 1); break
+    case 'luma-ray-3.2':      usd = 0.5 * resX * (parseInt(duration) >= 10 ? 2 : 1); break
+    // Output length follows the source: 10s past 5.5s of source, else 5s
+    case 'luma-ray-3.2-edit': usd = { '540p': 0.72, '720p': 1.08, '1080p': 2.16 }[res] * (secs > 5.5 ? 2 : 1); break
+    case 'luma-ray-3.2-reframe': usd = Math.min(secs, 10) * { '540p': 0.06, '720p': 0.12, '1080p': 0.36 }[res]; break
+    case 'luma-ray-2-modify':        usd = secs * 0.35; break
+    case 'luma-ray-2-flash-modify':  usd = secs * 0.12; break
+    case 'luma-ray-2-reframe':       usd = secs * 0.20; break
+    case 'luma-ray-2-flash-reframe': usd = secs * 0.06; break
+    default: usd = 0.5 * resX
+  }
+  // A hair under the division so a cost that lands exactly on a ticket
+  // boundary (25.000000001 from float maths) isn't rounded up a whole ticket
+  return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
+}
+
 const RES_STD = ['480p', '720p', '1080p']
 const DUR_5_10 = ['5', '10']
 
@@ -299,6 +345,15 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'topaz-deblur',             label: 'Topaz Deblur',              kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'topaz-interpolate',        label: 'Topaz Interpolate',         kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'topaz-sdr-to-hdr',         label: 'Topaz SDR to HDR',          kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
+  { id: 'luma-ray-2',               label: 'Luma Ray 2',                kind: 'generator', durations: ['5', '9'], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.50 per 5s at 540p (x2 720p, x4 1080p, x2 9s). Admin only.' },
+  { id: 'luma-ray-2-flash',         label: 'Luma Ray 2 Flash',          kind: 'generator', durations: ['5', '9'], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.20 per 5s at 540p (x2 720p, x4 1080p, x2 9s). Admin only.' },
+  { id: 'luma-ray-3.2',             label: 'Luma Ray 3.2',              kind: 'generator', durations: ['5', '10'], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.50/$1/$2 per 5s (540p/720p/1080p), x2 for 10s. Admin only.' },
+  { id: 'luma-ray-2-modify',        label: 'Luma Ray 2 Modify',         kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.35 per source second.' },
+  { id: 'luma-ray-2-flash-modify',  label: 'Luma Ray 2 Flash Modify',   kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.12 per source second.' },
+  { id: 'luma-ray-2-reframe',       label: 'Luma Ray 2 Reframe',        kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.20 per source second.' },
+  { id: 'luma-ray-2-flash-reframe', label: 'Luma Ray 2 Flash Reframe',  kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.06 per source second.' },
+  { id: 'luma-ray-3.2-edit',        label: 'Luma Ray 3.2 Edit',         kind: 'tool', durations: [], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.72/$1.08/$2.16 per 5s; a source past 5.5s renders (and bills) 10s.' },
+  { id: 'luma-ray-3.2-reframe',     label: 'Luma Ray 3.2 Reframe',      kind: 'tool', durations: [], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.06/$0.12/$0.36 per started source second (max 10s).' },
 ]
 
 

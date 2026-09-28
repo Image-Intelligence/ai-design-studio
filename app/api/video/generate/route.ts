@@ -7,7 +7,8 @@ import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
 import { authenticateApiKey, invalidKeyResponse, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth';
 import { enforceContentFilter } from '@/lib/content-filter'
-import { FAL_ENDPOINTS, ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
+import { FAL_ENDPOINTS, ADMIN_ONLY_VIDEO_MODELS, LUMA_VIDEO_GENERATORS, LUMA_VIDEO_TOOLS } from '@/lib/fal-video-endpoints'
+import { fitImageForFal } from '@/lib/fal-image-fit'
 import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS } from '@/lib/ticket-pricing'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
@@ -138,6 +139,8 @@ export async function POST(request: NextRequest) {
       flux3SafetyChecker = true,
       wan30SafetyChecker = true,
       ltxFps = '25',
+      // Luma modify / Ray 3.2 edit: how far the result may move from the source
+      lumaMode = 'flex_1',
       videoUpscaleFactor = '2',
       videoToolCreativity = '0.35',
       videoTargetFps = '60',
@@ -227,6 +230,7 @@ export async function POST(request: NextRequest) {
     const TEXT_CAPABLE_MODELS = new Set([
       'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'wan-2.7',
       'wan-2.2-lora', 'gemini-omni-flash', 'minimax-h3-max', 'flux-3',
+      'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
     ])
     const hasNonImageInput = !!editVideoUrl || !!motionVideoUrl
       || (Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)
@@ -248,6 +252,16 @@ export async function POST(request: NextRequest) {
     if (VIDEO_TOOL_MODELS.has(model)) {
       if (!editVideoUrl) {
         return NextResponse.json({ success: false, error: 'Add the source video to upscale or process.' }, { status: 400 });
+      }
+      // Ray 3.2's edit and reframe schemas REQUIRE a prompt (Ray 2's modify
+      // and reframe take it as optional)
+      if ((model === 'luma-ray-3.2-edit' || model === 'luma-ray-3.2-reframe') && !prompt?.trim()) {
+        return NextResponse.json({ success: false, error: model === 'luma-ray-3.2-edit'
+          ? 'Describe the edit - Ray 3.2 needs a prompt.'
+          : 'Describe what should fill the new space - Ray 3.2 reframe needs a prompt.' }, { status: 400 });
+      }
+      if (model === 'luma-ray-3.2-reframe' && editVideoDurationSec > 10.5) {
+        return NextResponse.json({ success: false, error: 'Ray 3.2 reframe takes clips up to 10 seconds.' }, { status: 400 });
       }
     } else if (model !== 'kling-v3-motion' && !isLipsync && !prompt && !(model === 'wan-2.7' && imageUrl)) {
       // Name the field — a bare "missing required fields" tells nobody anything
@@ -284,9 +298,18 @@ export async function POST(request: NextRequest) {
     // Calculate ticket cost based on model. The formula lives in
     // lib/ticket-pricing.ts so the admin Ticket Economics page and this billing
     // path can never drift apart.
+    /*
+     * Luma lengths are enums: Ray 2 5s/9s, Ray 3.2 5s/10s. Ray 3.2's 10s
+     * image-to-video only exists as a keyframed run, so it needs a start AND
+     * an end frame (sent as keyframes); a start frame alone renders 5s. The
+     * snapped length is what's both requested and billed.
+     */
+    const lumaDuration = model === 'luma-ray-3.2'
+      ? (parseInt(duration) >= 10 && (!imageUrl || !!endImageUrl) ? '10' : '5')
+      : parseInt(duration) >= 9 ? '9' : '5'
     const ticketCost: number = videoTicketCost({
       model,
-      duration,
+      duration: LUMA_VIDEO_GENERATORS.has(model) ? lumaDuration : duration,
       resolution,
       generateAudio,
       sd20Mode,
@@ -350,7 +373,7 @@ export async function POST(request: NextRequest) {
       ? FAL_ENDPOINTS[model]
       : model === 'minimax-h3-max'
       ? FAL_ENDPOINTS[imageUrl ? 'minimax-h3-max' : 'minimax-h3-max-text']
-      : (model === 'ltx-2.5-pro' || model === 'ltx-2.5-fast')
+      : (model === 'ltx-2.5-pro' || model === 'ltx-2.5-fast' || LUMA_VIDEO_GENERATORS.has(model))
       ? FAL_ENDPOINTS[`${model}-${imageUrl ? 'i2v' : 't2v'}`]
       : INPUT_ROUTED_MODELS.has(model)
       // Every one of these ships t2v/i2v (+ r2v where the family has it), so
@@ -471,6 +494,48 @@ export async function POST(request: NextRequest) {
       else if (klingAspectRatio && klingAspectRatio !== 'auto') falInput.aspect_ratio = klingAspectRatio;
       if (endImageUrl) falInput.end_image_url = endImageUrl;
       if (audioUrl) falInput.audio_url = audioUrl;
+    } else if (LUMA_VIDEO_TOOLS.has(model)) {
+      // Luma tools. Resolution maps exactly as lib/ticket-pricing bills it.
+      const res = resolution === '1080p' ? '1080p' : resolution === '720p' ? '720p' : '540p';
+      const MODES = ['adhere_1', 'adhere_2', 'adhere_3', 'flex_1', 'flex_2', 'flex_3', 'reimagine_1', 'reimagine_2', 'reimagine_3'];
+      const mode = MODES.includes(lumaMode) ? lumaMode : 'flex_1';
+      const ar = (allowed: string[]) => allowed.includes(klingAspectRatio) ? klingAspectRatio : '9:16';
+      if (model === 'luma-ray-2-modify' || model === 'luma-ray-2-flash-modify') {
+        falInput = { video_url: editVideoUrl, mode };
+        if (prompt?.trim()) falInput.prompt = prompt.trim();
+      } else if (model === 'luma-ray-2-reframe' || model === 'luma-ray-2-flash-reframe') {
+        falInput = { video_url: editVideoUrl, aspect_ratio: ar(['1:1', '16:9', '9:16', '4:3', '3:4', '21:9', '9:21']) };
+        if (prompt?.trim()) falInput.prompt = prompt.trim();
+      } else if (model === 'luma-ray-3.2-edit') {
+        // Output length follows the source (and is billed that way)
+        falInput = {
+          video_url: editVideoUrl, prompt: prompt.trim(), edit_strength: mode, resolution: res,
+          duration: (editVideoDurationSec > 0 ? editVideoDurationSec : 10) > 5.5 ? '10s' : '5s',
+        };
+      } else {
+        // luma-ray-3.2-reframe: duration defaults to the source's
+        falInput = { video_url: editVideoUrl, prompt: prompt.trim(), aspect_ratio: ar(['3:4', '4:3', '1:1', '9:16', '16:9', '21:9']), resolution: res };
+      }
+    } else if (LUMA_VIDEO_GENERATORS.has(model)) {
+      const ray3 = model === 'luma-ray-3.2';
+      const res = resolution === '1080p' ? '1080p' : resolution === '720p' ? '720p' : '540p';
+      const ars = ray3 ? ['3:4', '4:3', '1:1', '9:16', '16:9', '21:9'] : ['16:9', '9:16', '4:3', '3:4', '21:9', '9:21'];
+      falInput = { prompt, resolution: res, duration: `${lumaDuration}s` };
+      if (ars.includes(klingAspectRatio)) falInput.aspect_ratio = klingAspectRatio;
+      if (imageUrl) {
+        // Ray 2 / Ray 2 Flash 422 any frame past 1920x1920 (a 2K 9:16 image is
+        // 1536x2752); Ray 3.2 takes them as they are
+        const frame = async (u: string) => (ray3 ? u : fitImageForFal(u, 1920));
+        if (ray3 && lumaDuration === '10') {
+          // 10s image-to-video is keyframed: pin the two frames at the ends
+          // (24fps -> frames 0..240)
+          falInput.keyframes = [imageUrl, endImageUrl];
+          falInput.keyframe_indexes = [0, 240];
+        } else {
+          falInput.image_url = await frame(imageUrl);
+          if (endImageUrl) falInput.end_image_url = await frame(endImageUrl);
+        }
+      }
     } else if (VIDEO_TOOL_MODELS.has(model)) {
       const factor = Math.max(1, Math.min(4, parseFloat(videoUpscaleFactor) || 2));
       falInput = { video_url: editVideoUrl };

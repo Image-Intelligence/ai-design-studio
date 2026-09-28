@@ -42,6 +42,7 @@ function groupOf(id: string, name: string): string {
   if (id.startsWith('topaz')) return 'Topaz'
   if (id.startsWith('qwen')) return 'Alibaba'
   if (id.startsWith('reve')) return 'Reve'
+  if (id.startsWith('luma')) return 'Luma'
   if (id.startsWith('mai-')) return 'Microsoft'
   if (id.startsWith('grok')) return 'xAI'
   if (id.startsWith('meta-')) return 'Meta'

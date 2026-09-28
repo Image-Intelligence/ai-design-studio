@@ -64,6 +64,16 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'ltx-2.5-pro-i2v':            'lightricks/ltx-2.5/image-to-video/pro',
   'ltx-2.5-fast-t2v':           'lightricks/ltx-2.5/text-to-video/fast',
   'ltx-2.5-fast-i2v':           'lightricks/ltx-2.5/image-to-video/fast',
+  // Luma (ADMIN ONLY while under test) - verified against the live schemas
+  // 2026-09-28. Ray 2 / Ray 2 Flash are fal's "Dream Machine" ids; Ray 3.2
+  // lives under the `luma/agent` owner (no fal-ai/ prefix). The generators
+  // route by input: a start image -> image-to-video, otherwise text-to-video.
+  'luma-ray-2-t2v':             'fal-ai/luma-dream-machine/ray-2',
+  'luma-ray-2-i2v':             'fal-ai/luma-dream-machine/ray-2/image-to-video',
+  'luma-ray-2-flash-t2v':       'fal-ai/luma-dream-machine/ray-2-flash',
+  'luma-ray-2-flash-i2v':       'fal-ai/luma-dream-machine/ray-2-flash/image-to-video',
+  'luma-ray-3.2-t2v':           'luma/agent/ray/v3.2/text-to-video',
+  'luma-ray-3.2-i2v':           'luma/agent/ray/v3.2/image-to-video',
   // Gemini Omni Flash lives under the `google` owner — NO `fal-ai/` prefix
   // (same pattern as bytedance/seedance-2.0 above). ADMIN-ONLY model.
   'gemini-omni-flash-t2v':      'google/gemini-omni-flash',
@@ -82,7 +92,21 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'topaz-deblur':               'topaz/deblur/video',
   'topaz-interpolate':          'topaz/interpolate/video',
   'topaz-sdr-to-hdr':           'topaz/sdr-to-hdr/video',
+  // Luma video tools: restyle (modify / edit) or re-shape (reframe) a clip
+  'luma-ray-2-modify':          'fal-ai/luma-dream-machine/ray-2/modify',
+  'luma-ray-2-flash-modify':    'fal-ai/luma-dream-machine/ray-2-flash/modify',
+  'luma-ray-2-reframe':         'fal-ai/luma-dream-machine/ray-2/reframe',
+  'luma-ray-2-flash-reframe':   'fal-ai/luma-dream-machine/ray-2-flash/reframe',
+  'luma-ray-3.2-edit':          'luma/agent/ray/v3.2/video-to-video',
+  'luma-ray-3.2-reframe':       'luma/agent/ray/v3.2/reframe',
 };
+
+/** The Luma generators (endpoint picked by input) and tools (take a source clip). */
+export const LUMA_VIDEO_GENERATORS = new Set(['luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2'])
+export const LUMA_VIDEO_TOOLS = new Set([
+  'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
+  'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
+])
 
 /** Owner/app prefixes of the fal models this app already uses. */
 export const FAL_APPS_IN_USE: string[] = [
@@ -110,12 +134,15 @@ export const VIDEO_MODEL_IDS: string[] = [
   'gemini-omni-flash', 'gemini-omni-1.1',
   'minimax-h3-max', 'flux-3',
   'ltx-2.5-pro', 'ltx-2.5-fast',
+  'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
   'lipsync-v3', 'happy-horse',
   // tools that output video
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
   'bytedance-video-upscale', 'topaz-interpolate', 'topaz-colorize',
   'topaz-deblur', 'topaz-sdr-to-hdr',
+  'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
+  'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -134,4 +161,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
   'bytedance-video-upscale', 'topaz-colorize', 'topaz-deblur',
   'topaz-interpolate', 'topaz-sdr-to-hdr',
+  // Luma, all of it, while under test
+  'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
+  'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
+  'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
 ])
