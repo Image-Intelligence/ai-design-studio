@@ -166,6 +166,17 @@ export default function DashboardPage() {
     try { sessionStorage.setItem("pv2-view-mode", mode) } catch {}
   }
 
+  // From xl the launcher row has a fixed height (xl:h-[200px]), so the Catalog
+  // card sizes its frames to fit it rather than growing to hold them.
+  const [isXl, setIsXl] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1280px)")
+    const sync = () => setIsXl(mq.matches)
+    sync()
+    mq.addEventListener("change", sync)
+    return () => mq.removeEventListener("change", sync)
+  }, [])
+
   // Every model card with a picture or clip (featured first), for the Catalog card's strip.
   const [catalogMedia, setCatalogMedia] = useState<CatalogMedia[]>([])
   useEffect(() => {
@@ -201,7 +212,7 @@ export default function DashboardPage() {
 
   return (
     <>
-    <div className="min-h-[100dvh] bg-[#050810] text-white flex flex-col">
+    <div className="min-h-[100dvh] xl:fits:h-[100dvh] bg-[#050810] text-white flex flex-col">
       {/* Subtle grid */}
       <div className="fixed inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
       {/* Ambient glows */}
@@ -217,7 +228,7 @@ export default function DashboardPage() {
         empty space above and below on a 16:9 monitor. Narrower screens stack
         the same sections and scroll.
       */}
-      <div className="relative z-10 flex-1 w-full max-w-[2560px] mx-auto px-3 sm:px-6 lg:px-8 2xl:px-12 py-3 sm:py-5 xl:py-6 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
+      <div className="relative z-10 flex-1 xl:min-h-0 w-full max-w-[2560px] mx-auto px-3 sm:px-6 lg:px-8 2xl:px-12 py-3 sm:py-5 xl:py-6 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Generation maintenance banner — admin emails bypass this */}
         {isGenerationMaintenance && user !== null && !['dirtysecretai@gmail.com', 'promptandprotocol@gmail.com'].includes(user.email) && (
@@ -287,8 +298,8 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="xl:flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(340px,380px)] 2xl:grid-cols-[minmax(0,1fr)_420px] gap-2.5 sm:gap-3 xl:gap-4">
-        <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
+        <div className="xl:flex-1 xl:min-h-0 xl:grid-rows-[minmax(0,1fr)] grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(340px,380px)] 2xl:grid-cols-[minmax(0,1fr)_420px] gap-2.5 sm:gap-3 xl:gap-4">
+        <div className="min-w-0 xl:min-h-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
         {/*
           Your library - the home page's living masonry wall (drifting columns,
@@ -334,15 +345,18 @@ export default function DashboardPage() {
         </section>
 
         {/* Launchers: Catalog (the Home page) and the Studio (the feed). Side by
-            side from md up, stacked on phones. */}
-        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] xl:h-[200px] 2xl:h-[220px] gap-2.5 sm:gap-3 xl:gap-4">
+            side from md up, stacked on phones. The Studio card never gets
+            narrower than 420px: at a third of the column (~300px on an iPad in
+            landscape) its title broke over three lines and its tags stacked,
+            stretching the row well past its 200px. */}
+        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(420px,1fr)] xl:h-[200px] 2xl:h-[220px] gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
         <Link href="/" onClick={() => openStudioAt("home")} className="block group">
           <div className="relative h-full rounded-2xl overflow-hidden border border-white/10 bg-[#0a0f1a] transition-all duration-200 group-hover:border-white/25 group-hover:scale-[1.004]">
             {/* The model cards' own 4:3 pictures and clips, cycling, beside or above
                 the text - never under it (components/dashboard/CatalogStrip). */}
-            <CatalogCard media={catalogMedia} />
+            <CatalogCard media={catalogMedia} fillHeight={isXl} />
           </div>
         </Link>
 
@@ -358,7 +372,7 @@ export default function DashboardPage() {
                 animationDuration: "6s",
               }}
             />
-            <div className="relative h-full rounded-[14px] bg-[#0a0f1a] px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
+            <div className="@container relative h-full rounded-[14px] bg-[#0a0f1a] px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
               {/* Synced site logo */}
               <SiteLogoBox size={48} rounded={14} />
               <div className="flex-1 min-w-0">
@@ -368,7 +382,9 @@ export default function DashboardPage() {
                 <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
                   Your full creative workspace — generate images and videos with 20+ AI models, guided by your reference images.
                 </p>
-                <div className="hidden lg:flex flex-wrap gap-1.5 mt-2 [@media(max-height:560px)]:hidden">
+                {/* The tags only where the card is wide enough to hold them -
+                    the card's own width, not the window's */}
+                <div className="hidden @min-[400px]:flex flex-wrap gap-1.5 mt-2 [@media(max-height:560px)]:hidden">
                   {["20+ Models", "Image Generation", "Video Generation", "Reference Images", "Session History"].map(tag => (
                     <span key={tag} className="text-[9px] font-mono text-slate-300 bg-white/[0.06] border border-white/10 px-2 py-0.5 rounded-full">
                       {tag}
@@ -391,8 +407,11 @@ export default function DashboardPage() {
 
         {/* Content policy notice (CCBill) - the same one as on the Home page.
             Here below the launchers on narrower screens; on wide ones it sits
-            at the foot of the right-hand column instead (below). */}
-        <div className="xl:hidden"><ProhibitedContentNotice /></div>
+            at the foot of the right-hand column instead (below) - unless the
+            window is under 1060px tall (an iPad in landscape, a 1080p
+            monitor), where the sidebar can't hold it: in the ~380px sidebar
+            it wraps to five lines, here to two. */}
+        <div className="xl:hidden xl:short:block"><ProhibitedContentNotice /></div>
 
         </div>
 
@@ -403,7 +422,7 @@ export default function DashboardPage() {
           as before (Account and Shop side by side), without the balance panel,
           since the header already shows the balance.
         */}
-        <div className="min-w-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
+        <div className="min-w-0 xl:min-h-0 flex flex-col gap-2.5 sm:gap-3 xl:gap-4">
 
         {/*
           Ticket balance (wide screens), branded like the AI Design Studio card:
@@ -420,7 +439,7 @@ export default function DashboardPage() {
               animationDuration: "6s",
             }}
           />
-          <div className="relative h-full rounded-[14px] bg-[#0a0f1a] overflow-hidden flex flex-col p-5 2xl:p-6">
+          <div className="relative h-full rounded-[14px] bg-[#0a0f1a] overflow-hidden flex flex-col p-5 2xl:p-6 xl:short:p-4">
             {/* Soft glow behind the number */}
             <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-white/[0.05] blur-3xl pointer-events-none" />
 
@@ -435,9 +454,9 @@ export default function DashboardPage() {
               </span>
             </div>
 
-            <div className="relative flex-1 flex flex-col justify-center py-3">
+            <div className="relative flex-1 flex flex-col justify-center py-3 xl:short:py-1">
               <div className="flex items-baseline gap-2.5">
-                <p className="text-6xl 2xl:text-7xl font-black tracking-tight tabular-nums text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-slate-400 leading-none">
+                <p className="text-6xl 2xl:text-7xl xl:short:text-5xl 2xl:short:text-6xl font-black tracking-tight tabular-nums text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-slate-400 leading-none">
                   {user.ticketBalance.toLocaleString()}
                 </p>
                 <span className="text-sm font-semibold text-slate-400">tickets</span>
@@ -505,7 +524,7 @@ export default function DashboardPage() {
             <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2 xl:mb-3">Shop</p>
             <div className="space-y-1.5 xl:space-y-0 xl:flex-1 xl:flex xl:flex-col xl:gap-2 xl:min-h-0">
               <Link href="/buy-tickets" className="block xl:flex-1">
-                <div className="flex items-center justify-between px-2.5 xl:px-4 py-2 xl:py-0 xl:h-full xl:min-h-[52px] rounded-lg xl:rounded-xl border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                <div className="flex items-center justify-between px-2.5 xl:px-4 py-2 xl:py-0 xl:h-full xl:min-h-[52px] xl:short:min-h-[44px] rounded-lg xl:rounded-xl border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
                   <div className="flex items-center gap-2 xl:gap-3 min-w-0">
                     <Ticket size={12} className="text-white shrink-0 xl:w-4 xl:h-4" />
                     <div className="min-w-0">
@@ -519,7 +538,7 @@ export default function DashboardPage() {
                 </div>
               </Link>
               <Link href={hasPromptStudioDev ? "/subscriptions" : "/prompting-studio/subscribe"} className="block xl:flex-1">
-                <div className="flex items-center justify-between px-2.5 xl:px-4 py-2 xl:py-0 xl:h-full xl:min-h-[52px] rounded-lg xl:rounded-xl border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
+                <div className="flex items-center justify-between px-2.5 xl:px-4 py-2 xl:py-0 xl:h-full xl:min-h-[52px] xl:short:min-h-[44px] rounded-lg xl:rounded-xl border border-white/15 bg-white/[0.04] hover:border-white/30 hover:bg-white/[0.07] transition-all cursor-pointer group">
                   <div className="flex items-center gap-2 xl:gap-3 min-w-0">
                     <Sparkles size={12} className="text-slate-300 shrink-0 xl:w-4 xl:h-4" />
                     <div className="min-w-0">
@@ -535,9 +554,9 @@ export default function DashboardPage() {
         </div>
 
         {/* Documents & Support — every page from the Policies hub, one tap away */}
-        <div className="shrink-0 xl:shrink xl:flex-[0.9] xl:min-h-[118px] rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 xl:p-4 flex flex-col">
+        <div className="shrink-0 xl:shrink xl:flex-[0.9] xl:min-h-[118px] xl:short:min-h-0 xl:short:flex-none rounded-xl border border-white/6 bg-white/2 p-2.5 sm:p-3 xl:p-4 flex flex-col">
           <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2 xl:mb-3">Documents &amp; Support</p>
-          <div className="grid grid-cols-3 sm:grid-cols-6 xl:grid-cols-3 xl:grid-rows-2 xl:flex-1 gap-1.5 xl:gap-2">
+          <div className="grid grid-cols-3 sm:grid-cols-6 xl:grid-cols-3 xl:grid-rows-2 xl:short:grid-cols-6 xl:short:grid-rows-1 xl:flex-1 gap-1.5 xl:gap-2">
             {[
               { href: "/policies", label: "Policies", icon: FileText },
               { href: "/contact", label: "Contact", icon: Mail },
@@ -556,8 +575,8 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* The policy notice, at the foot of the sidebar on wide screens. */}
-        <div className="hidden xl:block shrink-0"><ProhibitedContentNotice /></div>
+        {/* The policy notice, at the foot of the sidebar on wide, tall screens. */}
+        <div className="hidden xl:block xl:short:hidden shrink-0"><ProhibitedContentNotice /></div>
 
         </div>
         </div>

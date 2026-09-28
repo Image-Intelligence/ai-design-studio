@@ -15,6 +15,11 @@ import { ArrowRight, LayoutGrid } from "lucide-react"
  *   wide (640px+)  text on the left, frames in their own area on the right
  *   narrow         frames as a band across the top, text underneath
  *
+ * With `fillHeight` the card is given its height (the dashboard's fixed-height
+ * launcher row from xl) instead of growing to its content: the text-beside
+ * layout then holds down to 440px wide, and the stacked layout's frames are
+ * capped to the height left above the text, so neither overflows the row.
+ *
  * Frames keep the model cards' 4:3 shape, and nothing is laid over them.
  * They cycle through every model card that has a picture or clip, one frame
  * at a time, with at least one video playing whenever there is one: a frame
@@ -29,7 +34,10 @@ const MIN_FRAME_W = 150
 const GAP = 6
 const PAD = 8
 
-export function CatalogCard({ media }: { media: CatalogMedia[] }) {
+/** The stacked layout's text row: py-3 around the 44px icon. */
+const STACKED_TEXT_H = 68
+
+export function CatalogCard({ media, fillHeight = false }: { media: CatalogMedia[]; fillHeight?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   const [w, setW] = useState(0)
   const [h, setH] = useState(0)
@@ -41,15 +49,17 @@ export function CatalogCard({ media }: { media: CatalogMedia[] }) {
     return () => ro.disconnect()
   }, [])
 
-  const stacked = w > 0 && w < 640
+  const stacked = w > 0 && w < (fillHeight ? 440 : 640)
   const hasMedia = media.length > 0
 
   let strip: React.ReactNode = null
   if (w > 0 && hasMedia) {
     if (stacked) {
-      // Band across the top: as many 4:3 frames as fill the width exactly.
+      // Band across the top: as many 4:3 frames as fill the width exactly -
+      // or, in a card of fixed height, as tall as the room above the text.
       const count = Math.min(media.length, w >= 420 ? 3 : 2)
-      const frameW = (w - PAD * 2 - GAP * (count - 1)) / count
+      const byWidth = (w - PAD * 2 - GAP * (count - 1)) / count
+      const frameW = fillHeight && h > 0 ? Math.min(byWidth, (h - STACKED_TEXT_H - PAD) * (4 / 3)) : byWidth
       strip = (
         <div className="flex justify-center px-2 pt-2">
           <CatalogFrames media={media} count={count} frameW={frameW} frameH={frameW * 0.75} />

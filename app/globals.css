@@ -2,6 +2,11 @@
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
+/* A window under 1060px tall: an iPad in landscape, a 1080p monitor. The
+   dashboard's full-height layout compacts its sidebar there (xl:short:...). */
+@custom-variant short (@media (max-height: 1059px));
+/* Tall enough to pin a full-height layout to the window; shorter ones scroll. */
+@custom-variant fits (@media (min-height: 800px));
 
 @theme inline {
   --color-background: var(--background);
