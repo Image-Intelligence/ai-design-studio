@@ -21,6 +21,9 @@ export const VIDEO_TOOL_MODELS = new Set([
   // 2026-09-28 batch: edit / re-drive / extend a source clip
   'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
   'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
+  // 2026-09-29 batch: extend / motion + pose transfer
+  'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
+  'marey-motion-transfer', 'marey-pose-transfer',
 ])
 
 /**
@@ -32,6 +35,12 @@ export const INPUT_ROUTED_MODELS = new Set([
   // 2026-09-28 batch (priced by batch0928TicketCost, ahead of the placeholder)
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
   'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  // 2026-09-29 batch (priced by batch0929TicketCost, ahead of the placeholder)
+  'pika-2.2', 'pikaframes', 'pika-2-turbo',
+  'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
+  'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
+  'minimax-h3-max-turbo', 'minimax-h3-max-ref',
+  'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
 ])
 
 export interface VideoTicketCostInput {
@@ -58,6 +67,8 @@ export interface VideoTicketCostInput {
   referenceImageCount?: number
   /** A start image was sent (Grok bills it like a reference). */
   hasStartImage?: boolean
+  /** An end frame was sent (Veo's first-last-frame mode is 8s only). */
+  hasEndImage?: boolean
 }
 
 /**
@@ -137,6 +148,12 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   } else if (model.startsWith('luma-ray-')) {
     // Before the generic tool branch: the Luma tools price by their own rates
     ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec)
+  } else if (BATCH_0929_MODELS.has(model)) {
+    ticketCost = batch0929TicketCost(model, {
+      // Veo's references and first-last-frame modes render 8s whatever is asked
+      duration: model.startsWith('veo-3.1') && !model.endsWith('extend') && ((input.referenceImageCount ?? 0) > 0 || (input.hasEndImage && input.hasStartImage)) ? '8' : duration,
+      resolution, generateAudio, refs: input.referenceImageCount ?? 0,
+    })
   } else if (BATCH_0928_MODELS.has(model)) {
     // Also ahead of the generic tool and input-routed placeholder branches
     ticketCost = batch0928TicketCost(model, {
@@ -407,6 +424,98 @@ function batch0928TicketCost(model: string, o: {
   return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
 }
 
+/*
+ * The 2026-09-29 batch - fal's published rates that day, same rule: tickets =
+ * ceil(fal cost / $0.04), >=50% gross margin at a $0.08 subscription ticket.
+ * Where fal publishes no surcharge (Pika 10s, Pika Turbo 1080p, Hunyuan Video
+ * 720p) the higher price is assumed, so a run is never priced under cost.
+ *
+ *   Pika 2.2 / Scenes     $0.20 per 5s at 720p, $0.45 at 1080p (10s x2)
+ *   Pikaframes            $0.04/s (720p), $0.06/s (1080p), 5s minimum
+ *   Pika 2 Turbo          $0.20 per 5s (1080p assumed x2.25)
+ *   Hailuo 2.3 Pro        $0.49 (6s 1080p);  Standard $0.28 (6s) / $0.56 (10s)
+ *   Hailuo 2.3 Fast       Pro $0.33;  Standard $0.19 (6s) / $0.32 (10s)
+ *   Veo 3.1               $0.20/s, $0.40/s with audio (4K $0.40 / $0.60)
+ *   Veo 3.1 Fast          $0.10/s, $0.15/s with audio (4K $0.30 / $0.35)
+ *   Veo 3.1 Lite          720p $0.03 / $0.05, 1080p $0.05 / $0.08 per s
+ *   Veo extend            the tier's rate on the 7s it adds
+ *   H3 Max Turbo          $0.025 / $0.04 / $0.08 per s (480/768/1080P) - the
+ *                         post-promo rates (a 50% promo ends 2026-09-30)
+ *   H3 Max refs / extend  $0.05 / $0.08 / $0.16 per s (<=4 images ride free)
+ *   Marey                 $0.30/s;  motion / pose transfer $2.00 a run
+ *   SeeDance 2.0 Mini     $0.0721/s (480p), $0.1547/s (720p); auto = 10s
+ *   Hunyuan Video 1.5     $0.075/s (720p assumed x2)
+ */
+const BATCH_0929_MODELS = new Set([
+  'pika-2.2', 'pikaframes', 'pika-2-turbo',
+  'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
+  'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
+  'minimax-h3-max-turbo', 'minimax-h3-max-ref',
+  'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
+  'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
+  'marey-motion-transfer', 'marey-pose-transfer',
+])
+/** Seconds as the route will send them: snapped to what each endpoint takes. */
+export function batch0929Seconds(model: string, duration: string): number {
+  const d = duration === 'auto' ? 10 : parseInt(duration) || 5
+  const clamp = (lo: number, hi: number) => Math.max(lo, Math.min(hi, d))
+  switch (model) {
+    case 'pika-2.2': case 'pika-2-turbo': case 'marey': return d >= 10 ? 10 : 5
+    case 'pikaframes': return clamp(1, 10)
+    case 'hailuo-2.3-pro': case 'hailuo-2.3-fast-pro': return 6
+    case 'hailuo-2.3': case 'hailuo-2.3-fast': return d >= 10 ? 10 : 6
+    case 'veo-3.1': case 'veo-3.1-fast': case 'veo-3.1-lite': return d >= 8 ? 8 : d >= 6 ? 6 : 4
+    case 'veo-3.1-extend': case 'veo-3.1-fast-extend': return 7
+    case 'seedance-2.0-mini': return clamp(4, 15)
+    case 'hunyuan-video-1.5': return clamp(2, 5)
+    default: return clamp(5, 15)   // MiniMax H3 family
+  }
+}
+function batch0929TicketCost(model: string, o: { duration: string; resolution: string; generateAudio: boolean; refs: number }): number {
+  const secs = batch0929Seconds(model, o.duration)
+  const hi = o.resolution === '1080p'
+  const mm = (rates: [number, number, number]) => rates[o.resolution === '480p' ? 0 : o.resolution === '1080p' ? 2 : 1]
+  const veoRate = (tier: string) => {
+    const k = o.resolution === '4k' ? '4k' : o.resolution === '1080p' ? '1080p' : '720p'
+    const t: Record<string, Record<string, [number, number]>> = {
+      std: { '720p': [0.2, 0.4], '1080p': [0.2, 0.4], '4k': [0.4, 0.6] },
+      fast: { '720p': [0.1, 0.15], '1080p': [0.1, 0.15], '4k': [0.3, 0.35] },
+      lite: { '720p': [0.03, 0.05], '1080p': [0.05, 0.08], '4k': [0.05, 0.08] },
+    }
+    return t[tier][k][o.generateAudio ? 1 : 0]
+  }
+  let usd: number
+  switch (model) {
+    case 'pika-2.2':          usd = (hi ? 0.45 : 0.2) * (secs / 5); break
+    case 'pika-2-turbo':      usd = 0.2 * (hi ? 2.25 : 1) * (secs / 5); break
+    case 'pikaframes': {
+      const transitions = Math.max(1, Math.min(4, o.refs - 1))
+      const per = Math.min(secs, Math.floor(25 / transitions))
+      usd = Math.max(5, per * transitions) * (hi ? 0.06 : 0.04)
+      break
+    }
+    case 'hailuo-2.3-pro':      usd = 0.49; break
+    case 'hailuo-2.3':          usd = secs >= 10 ? 0.56 : 0.28; break
+    case 'hailuo-2.3-fast-pro': usd = 0.33; break
+    case 'hailuo-2.3-fast':     usd = secs >= 10 ? 0.32 : 0.19; break
+    case 'veo-3.1':             usd = veoRate('std') * secs; break
+    case 'veo-3.1-fast':        usd = veoRate('fast') * secs; break
+    case 'veo-3.1-lite':        usd = veoRate('lite') * secs; break
+    case 'veo-3.1-extend':      usd = veoRate('std') * secs; break
+    case 'veo-3.1-fast-extend': usd = veoRate('fast') * secs; break
+    case 'minimax-h3-max-turbo': usd = mm([0.025, 0.04, 0.08]) * secs; break
+    case 'minimax-h3-max-ref':
+    case 'minimax-h3-max-extend': usd = mm([0.05, 0.08, 0.16]) * secs; break
+    case 'marey':               usd = 0.3 * secs; break
+    case 'marey-motion-transfer':
+    case 'marey-pose-transfer': usd = 2.0; break
+    case 'seedance-2.0-mini':   usd = (o.resolution === '480p' ? 0.0721 : 0.1547) * secs; break
+    case 'hunyuan-video-1.5':   usd = 0.075 * secs * (o.resolution === '720p' ? 2 : 1); break
+    default:                    usd = 0.2 * secs
+  }
+  return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
+}
+
 const RES_STD = ['480p', '720p', '1080p']
 const DUR_5_10 = ['5', '10']
 
@@ -468,6 +577,26 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'pixverse-v6-extend',   label: 'PixVerse V6 Extend',           kind: 'tool', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'PixVerse V6 rates on the extension length.' },
   { id: 'grok-video-edit',      label: 'Grok Video Edit',              kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.08 per second of clip.' },
   { id: 'grok-video-extend',    label: 'Grok Video Extend',            kind: 'tool', durations: ['5', '6', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.07/s extension + $0.01/s of source.' },
+  { id: 'pika-2.2',             label: 'Pika 2.2',               kind: 'generator', durations: ['5', '10'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.20 / $0.45 per 5s (720p / 1080p). Admin only.' },
+  { id: 'pikaframes',           label: 'Pikaframes',             kind: 'generator', durations: ['5', '10'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.04 / $0.06 per s, 5s min. Admin only.' },
+  { id: 'pika-2-turbo',         label: 'Pika 2 Turbo',           kind: 'generator', durations: ['5', '10'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.20 per 5s. Admin only.' },
+  { id: 'hailuo-2.3-pro',       label: 'Hailuo 2.3 Pro',         kind: 'generator', durations: ['6'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.49 a run (6s 1080p). Admin only.' },
+  { id: 'hailuo-2.3',           label: 'Hailuo 2.3',             kind: 'generator', durations: ['6', '10'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.28 (6s) / $0.56 (10s), 768p. Admin only.' },
+  { id: 'hailuo-2.3-fast-pro',  label: 'Hailuo 2.3 Fast Pro',    kind: 'generator', durations: ['6'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.33 a run. Admin only.' },
+  { id: 'hailuo-2.3-fast',      label: 'Hailuo 2.3 Fast',        kind: 'generator', durations: ['6', '10'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.19 (6s) / $0.32 (10s). Admin only.' },
+  { id: 'veo-3.1',              label: 'Veo 3.1',                kind: 'generator', durations: ['4', '6', '8'], resolutions: ['720p', '1080p', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.20/s, $0.40/s with audio (4K more). Admin only.' },
+  { id: 'veo-3.1-fast',         label: 'Veo 3.1 Fast',           kind: 'generator', durations: ['4', '6', '8'], resolutions: ['720p', '1080p', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.10/s, $0.15/s with audio. Admin only.' },
+  { id: 'veo-3.1-lite',         label: 'Veo 3.1 Lite',           kind: 'generator', durations: ['4', '6', '8'], resolutions: ['720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.03-0.08/s. Admin only.' },
+  { id: 'minimax-h3-max-turbo', label: 'MiniMax H3 Max Turbo',   kind: 'generator', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.025/$0.04/$0.08 per s (post-promo). Admin only.' },
+  { id: 'minimax-h3-max-ref',   label: 'MiniMax H3 Max References', kind: 'generator', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05/$0.08/$0.16 per s. Admin only.' },
+  { id: 'marey',                label: 'Marey',                  kind: 'generator', durations: ['5', '10'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $1.50 (5s) / $3.00 (10s). Admin only.' },
+  { id: 'seedance-2.0-mini',    label: 'SeeDance 2.0 Mini',      kind: 'generator', durations: ['auto', '5', '10', '15'], resolutions: ['480p', '720p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.0721 / $0.1547 per s. Admin only.' },
+  { id: 'hunyuan-video-1.5',    label: 'Hunyuan Video 1.5',      kind: 'generator', durations: ['3', '5'], resolutions: ['480p', '720p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.075/s (720p assumed x2). Admin only.' },
+  { id: 'veo-3.1-extend',       label: 'Veo 3.1 Extend',         kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo rates on the 7s it adds.' },
+  { id: 'veo-3.1-fast-extend',  label: 'Veo 3.1 Fast Extend',    kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo Fast rates on the 7s it adds.' },
+  { id: 'minimax-h3-max-extend', label: 'MiniMax H3 Max Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05/$0.08/$0.16 per s added.' },
+  { id: 'marey-motion-transfer', label: 'Marey Motion Transfer', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },
+  { id: 'marey-pose-transfer',  label: 'Marey Pose Transfer',    kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },
 ]
 
 

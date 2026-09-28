@@ -11,6 +11,7 @@ import { FAL_ENDPOINTS, ADMIN_ONLY_VIDEO_MODELS, LUMA_VIDEO_GENERATORS, LUMA_VID
 import { fitImageForFal } from '@/lib/fal-image-fit'
 import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS } from '@/lib/ticket-pricing'
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
+import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
 
@@ -233,6 +234,7 @@ export async function POST(request: NextRequest) {
       'wan-2.2-lora', 'gemini-omni-flash', 'minimax-h3-max', 'flux-3',
       'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
       ...BATCH_0928_GENERATORS,
+      ...BATCH_0929_TEXT_CAPABLE,
     ])
     const hasNonImageInput = !!editVideoUrl || !!motionVideoUrl
       || (Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)
@@ -258,7 +260,7 @@ export async function POST(request: NextRequest) {
       // Ray 3.2's edit and reframe schemas REQUIRE a prompt (Ray 2's modify
       // and reframe take it as optional)
       // Every tool in the 2026-09-28 batch needs a prompt (their schemas require it)
-      if (BATCH_0928_TOOLS.has(model) && !prompt?.trim()) {
+      if ((BATCH_0928_TOOLS.has(model) || BATCH_0929_TOOLS.has(model)) && !prompt?.trim()) {
         return NextResponse.json({ success: false, error: 'This tool needs a prompt - describe the change you want.' }, { status: 400 });
       }
       if (model.startsWith('kling-o3-') && editVideoDurationSec > 0 && (editVideoDurationSec < 2.9 || editVideoDurationSec > 15.5)) {
@@ -332,7 +334,8 @@ export async function POST(request: NextRequest) {
       duration: LUMA_VIDEO_GENERATORS.has(model) ? lumaDuration : duration,
       resolution: BATCH_0928_GENERATORS.has(model) ? batchRes : resolution,
       referenceImageCount: batchRefs,
-      hasStartImage: batchMode === 'i2v' || batchMode === 'transition',
+      hasStartImage: batchMode === 'i2v' || batchMode === 'transition' || (BATCH_0929_GENERATORS.has(model) && !!imageUrl),
+      hasEndImage: !!endImageUrl,
       generateAudio,
       sd20Mode,
       effectiveSd20Mode,
@@ -397,6 +400,8 @@ export async function POST(request: NextRequest) {
       ? FAL_ENDPOINTS[imageUrl ? 'minimax-h3-max' : 'minimax-h3-max-text']
       : BATCH_0928_GENERATORS.has(model)
       ? FAL_ENDPOINTS[`${model}-${batchMode}`]
+      : BATCH_0929_GENERATORS.has(model)
+      ? FAL_ENDPOINTS[batch0929EndpointKey(model, batch0929Mode(model, { imageUrl, endImageUrl, effectiveMode: effectiveSd20Mode }))]
       : (model === 'ltx-2.5-pro' || model === 'ltx-2.5-fast' || LUMA_VIDEO_GENERATORS.has(model))
       ? FAL_ENDPOINTS[`${model}-${imageUrl ? 'i2v' : 't2v'}`]
       : INPUT_ROUTED_MODELS.has(model)
@@ -518,6 +523,13 @@ export async function POST(request: NextRequest) {
       else if (klingAspectRatio && klingAspectRatio !== 'auto') falInput.aspect_ratio = klingAspectRatio;
       if (endImageUrl) falInput.end_image_url = endImageUrl;
       if (audioUrl) falInput.audio_url = audioUrl;
+    } else if (BATCH_0929_TOOLS.has(model) || BATCH_0929_GENERATORS.has(model)) {
+      // lib/batch-0929-video builds the exact input (tools' prompts checked above)
+      falInput = batch0929Input(model, {
+        prompt, imageUrl, endImageUrl, editVideoUrl,
+        referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
+        duration, resolution, aspectRatio: klingAspectRatio, generateAudio, effectiveMode: effectiveSd20Mode,
+      });
     } else if (BATCH_0928_TOOLS.has(model) || BATCH_0928_GENERATORS.has(model)) {
       // lib/batch-0928-video builds the exact input (tools' prompts checked above)
       falInput = batch0928Input(model, {

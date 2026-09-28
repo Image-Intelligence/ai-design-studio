@@ -649,8 +649,12 @@ interface VideoModelConfig {
   toolPromptRequired?: boolean  // this tool can't run without a prompt (Ray 3.2 edit / reframe)
 }
 
-// The 2026-09-28 video batch: priced by the billing function itself in the UI
+// The 2026-09-28 / 09-29 video batches: priced by the billing function itself in the UI
 const BATCH_0928_VIDEO = new Set([
+  "pika-2.2", "pikaframes", "pika-2-turbo", "hailuo-2.3-pro", "hailuo-2.3", "hailuo-2.3-fast-pro", "hailuo-2.3-fast",
+  "veo-3.1", "veo-3.1-fast", "veo-3.1-lite", "minimax-h3-max-turbo", "minimax-h3-max-ref",
+  "marey", "seedance-2.0-mini", "hunyuan-video-1.5",
+  "veo-3.1-extend", "veo-3.1-fast-extend", "minimax-h3-max-extend", "marey-motion-transfer", "marey-pose-transfer",
   "kling-v3-turbo-pro", "kling-v3-turbo", "kling-o3-pro", "kling-o3-4k",
   "pixverse-v6", "pixverse-c1", "grok-video-1.5", "vidu-q3", "vidu-q3-turbo",
   "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
@@ -984,6 +988,24 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "pixverse-c1",        name: "PixVerse C1",        durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
   { id: "grok-video-1.5",     name: "Grok Imagine Video 1.5", durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p","1080p"], aspectRatios: ["16:9","4:3","3:2","1:1","2:3","3:4","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true, supportsReferenceVideo: true },
   { id: "vidu-q3",            name: "Vidu Q3",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  // ── 2026-09-29 batch (ADMIN ONLY while under test). Refs-panel models route
+  // by what's attached: one image -> image-to-video, a tagged start + end ->
+  // first/last frame, more images -> references (Pika: Scenes).
+  { id: "pika-2.2",            name: "Pika 2.2",            durations: ["5","10"], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:5","5:4","3:2","2:3"], supportsEndFrame: false, audioType: "none", textToVideo: true, supportsReferenceVideo: true },
+  { id: "pikaframes",          name: "Pikaframes",          durations: ["2","3","4","5","6","7","8","9","10"], resolutions: ["720p","1080p"], supportsEndFrame: true, audioType: "none", supportsReferenceVideo: true },
+  { id: "pika-2-turbo",        name: "Pika 2 Turbo",        durations: ["5","10"], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:5","5:4","3:2","2:3"], supportsEndFrame: false, audioType: "none", textToVideo: true },
+  { id: "hailuo-2.3-pro",      name: "Hailuo 2.3 Pro",      durations: ["6"], supportsEndFrame: false, audioType: "none", textToVideo: true },
+  { id: "hailuo-2.3",          name: "Hailuo 2.3",          durations: ["6","10"], supportsEndFrame: false, audioType: "none", textToVideo: true },
+  { id: "hailuo-2.3-fast-pro", name: "Hailuo 2.3 Fast Pro", durations: ["6"], supportsEndFrame: false, audioType: "none" },
+  { id: "hailuo-2.3-fast",     name: "Hailuo 2.3 Fast",     durations: ["6","10"], supportsEndFrame: false, audioType: "none" },
+  { id: "veo-3.1",             name: "Veo 3.1",             durations: ["4","6","8"], resolutions: ["720p","1080p","4k"], aspectRatios: ["16:9","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "veo-3.1-fast",        name: "Veo 3.1 Fast",        durations: ["4","6","8"], resolutions: ["720p","1080p","4k"], aspectRatios: ["16:9","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "veo-3.1-lite",        name: "Veo 3.1 Lite",        durations: ["4","6","8"], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
+  { id: "minimax-h3-max-turbo", name: "MiniMax H3 Max Turbo", durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], aspectRatios: ["21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: true, audioType: "none", textToVideo: true },
+  { id: "minimax-h3-max-ref",  name: "MiniMax H3 Max References", durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], aspectRatios: ["adaptive","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: false, audioType: "none", supportsReferenceVideo: true },
+  { id: "marey",               name: "Marey",               durations: ["5","10"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, audioType: "none", textToVideo: true },
+  { id: "seedance-2.0-mini",   name: "SeeDance 2.0 Mini",   durations: ["auto","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p"], aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "hunyuan-video-1.5",   name: "Hunyuan Video 1.5",   durations: ["2","3","4","5"], resolutions: ["480p","720p"], aspectRatios: ["16:9","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true },
   { id: "vidu-q3-turbo",      name: "Vidu Q3 Turbo",      durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
   {
     // ── Video tools (ADMIN ONLY): these take an existing clip. Upload it as a
@@ -1115,6 +1137,12 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "kling-o3-4k-reference",  name: "Kling O3 4K Video Reference",  durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["auto","16:9","9:16","1:1"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "pixverse-v6-extend",     name: "PixVerse V6 Extend",           durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "grok-video-edit",        name: "Grok Video Edit",              durations: [], resolutions: ["480p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  // ── 2026-09-29 batch tools (ADMIN ONLY): all need a prompt
+  { id: "veo-3.1-extend",         name: "Veo 3.1 Extend",               durations: [], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "veo-3.1-fast-extend",    name: "Veo 3.1 Fast Extend",          durations: [], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "minimax-h3-max-extend",  name: "MiniMax H3 Max Extend",        durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "marey-motion-transfer",  name: "Marey Motion Transfer",        durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "marey-pose-transfer",    name: "Marey Pose Transfer",          durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "grok-video-extend",      name: "Grok Video Extend",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   {
     id: "lipsync-v3",
@@ -1247,6 +1275,26 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "pixverse-v6-extend": "$",
   "grok-video-edit":    "$$",
   "grok-video-extend":  "$$",
+  "pika-2.2":           "$",
+  "pikaframes":         "$",
+  "pika-2-turbo":       "$",
+  "hailuo-2.3-pro":     "$$",
+  "hailuo-2.3":         "$$",
+  "hailuo-2.3-fast-pro": "$$",
+  "hailuo-2.3-fast":    "$",
+  "veo-3.1":            "$$$+",
+  "veo-3.1-fast":       "$$$",
+  "veo-3.1-lite":       "$",
+  "minimax-h3-max-turbo": "$",
+  "minimax-h3-max-ref": "$$",
+  "marey":              "$$$+",
+  "seedance-2.0-mini":  "$$",
+  "hunyuan-video-1.5":  "$$",
+  "veo-3.1-extend":     "$$$+",
+  "veo-3.1-fast-extend": "$$$",
+  "minimax-h3-max-extend": "$$",
+  "marey-motion-transfer": "$$$+",
+  "marey-pose-transfer": "$$$+",
   "flux-3":             "$$$",
   "flux-1-dev":         "$$",
   "z-image-base":       "$$",
@@ -1415,7 +1463,19 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1"] },
   { label: "xAI", type: "text · image · refs to video", accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine Video 1.5"] },
   { label: "Vidu", type: "text · image · start/end · refs to video · audio", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q3", "Vidu Q3 Turbo"] },
-  { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max"] },
+  { label: "Google Veo", type: "text · image · first/last · refs · audio", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite"] },
+  { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
+  { label: "Hailuo", type: "MiniMax · text & image to video", accent: "text-rose-300", dot: "bg-rose-300", items: ["Hailuo 2.3 Pro", "Hailuo 2.3", "Hailuo 2.3 Fast Pro", "Hailuo 2.3 Fast"] },
+  /*
+   * Wired but NOT listed (2026-09-28): Marey (t2v/i2v, motion + pose transfer)
+   * and Pika 2 Turbo. Every test - including fal's own minimal inputs - came
+   * back "Failed to generate video" / "Downstream service error", so they'd
+   * only take tickets and fail. To list them again, add back:
+   *   { label: "Moonvalley", type: "licensed-data video", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Marey"] },
+   *   "Pika 2 Turbo" to the Pika group, and the two Marey tools to Video Tools.
+   */
+  { label: "More video", type: "SeeDance Mini · Hunyuan Video", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["SeeDance 2.0 Mini", "Hunyuan Video 1.5"] },
+  { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References"] },
   { label: "Black Forest Labs", type: "text · image · keyframes · extend · with audio · pricing TBD", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3"] },
   { label: "Wan",    type: "image & text to video · pricing TBD",             accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.7", "Wan 2.2 LoRA"] },
   { label: "Video Tools", type: "upload a clip · upscale · restore · pricing TBD", accent: "text-teal-400", dot: "bg-teal-400",
@@ -1425,7 +1485,8 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
             "Luma Ray 3.2 Edit", "Luma Ray 3.2 Reframe", "Luma Ray 2 Modify", "Luma Ray 2 Flash Modify",
             "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe",
             "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference",
-            "PixVerse V6 Extend", "Grok Video Edit", "Grok Video Extend"] },
+            "PixVerse V6 Extend", "Grok Video Edit", "Grok Video Extend",
+            "Veo 3.1 Extend", "Veo 3.1 Fast Extend", "MiniMax H3 Max Extend"] },
 ]
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
@@ -1438,6 +1499,10 @@ const ADMIN_VIDEO_MODEL_IDS = new Set([
   "pixverse-v6", "pixverse-c1", "grok-video-1.5", "vidu-q3", "vidu-q3-turbo",
   "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
   "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
+  "pika-2.2", "pikaframes", "pika-2-turbo", "hailuo-2.3-pro", "hailuo-2.3", "hailuo-2.3-fast-pro", "hailuo-2.3-fast",
+  "veo-3.1", "veo-3.1-fast", "veo-3.1-lite", "minimax-h3-max-turbo", "minimax-h3-max-ref",
+  "marey", "seedance-2.0-mini", "hunyuan-video-1.5",
+  "veo-3.1-extend", "veo-3.1-fast-extend", "minimax-h3-max-extend", "marey-motion-transfer", "marey-pose-transfer",
   "flux-video-upscale", "topaz-upscale-precision", "topaz-upscale-creative", "topaz-upscale-generative",
   "seedvr2-video", "flashvsr-video", "bytedance-video-upscale",
   "topaz-interpolate", "topaz-colorize", "topaz-deblur", "topaz-sdr-to-hdr",
@@ -2035,6 +2100,26 @@ const MODEL_BLURBS: Record<string, string> = {
   "PixVerse V6 Extend":        "Continue a clip",
   "Grok Video Edit":           "Edit a clip by instruction",
   "Grok Video Extend":         "Continue a clip",
+  "Pika 2.2":                  "Text, image or multi-image scenes",
+  "Pikaframes":                "Animate between 2-5 keyframes",
+  "Pika 2 Turbo":              "Fast, cheap Pika",
+  "Hailuo 2.3 Pro":            "MiniMax Hailuo at 1080p",
+  "Hailuo 2.3":                "MiniMax Hailuo, 6 or 10s",
+  "Hailuo 2.3 Fast Pro":       "Fast Hailuo from an image, 1080p",
+  "Hailuo 2.3 Fast":           "Fastest, cheapest Hailuo",
+  "Veo 3.1":                   "Google's flagship; audio, first/last, refs",
+  "Veo 3.1 Fast":              "Faster, cheaper Veo 3.1",
+  "Veo 3.1 Lite":              "Lowest-cost Veo",
+  "MiniMax H3 Max Turbo":      "Fast H3 Max; start + end frame",
+  "MiniMax H3 Max References": "H3 Max from up to 4 images",
+  "Marey":                     "Moonvalley; licensed-data cinema",
+  "SeeDance 2.0 Mini":         "Budget SeeDance with audio and refs",
+  "Hunyuan Video 1.5":         "Tencent's open video model",
+  "Veo 3.1 Extend":            "Continue a clip with Veo",
+  "Veo 3.1 Fast Extend":       "Continue a clip, faster",
+  "MiniMax H3 Max Extend":     "Continue a clip with H3 Max",
+  "Marey Motion Transfer":     "New video with a clip's motion",
+  "Marey Pose Transfer":       "New video with a clip's poses",
   "MiniMax H3 Max":            "Strong prompt following, 768p",
   "Flux 3":                    "Text, keyframes, extend, audio",
   "Lipsync v3":                "Syncs lips to any audio",

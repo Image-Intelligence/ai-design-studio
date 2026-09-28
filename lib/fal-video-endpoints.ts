@@ -1,3 +1,5 @@
+import { BATCH_0929_ENDPOINTS } from '@/lib/batch-0929-video'
+
 // Every fal video endpoint this app can submit to, keyed by the model id the
 // UI uses. Lives here rather than inside the route so other code (the Model
 // Watch page) can answer "do we already use this model?" from data instead of
@@ -136,6 +138,10 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'pixverse-v6-extend':         'fal-ai/pixverse/v6/extend',
   'grok-video-edit':            'xai/grok-imagine-video/edit-video',
   'grok-video-extend':          'xai/grok-imagine-video/extend-video',
+  // 2026-09-29 batch (Pika, Hailuo 2.3, Veo 3.1, H3 Max Turbo / refs /
+  // extend, Marey, SeeDance 2.0 Mini, Hunyuan Video 1.5) - kept with the
+  // code that routes them in lib/batch-0929-video
+  ...BATCH_0929_ENDPOINTS,
 };
 
 /** The 2026-09-28 batch: generators routed by input, and clip tools. */
@@ -184,6 +190,11 @@ export const VIDEO_MODEL_IDS: string[] = [
   'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
   'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  'pika-2.2', 'pikaframes', 'pika-2-turbo',
+  'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
+  'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
+  'minimax-h3-max-turbo', 'minimax-h3-max-ref',
+  'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
   'lipsync-v3', 'happy-horse',
   // tools that output video
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
@@ -194,6 +205,8 @@ export const VIDEO_MODEL_IDS: string[] = [
   'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
   'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
   'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
+  'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
+  'marey-motion-transfer', 'marey-pose-transfer',
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -216,6 +229,14 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
   'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
   'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
+  // The 2026-09-29 batch, all of it, while under test
+  'pika-2.2', 'pikaframes', 'pika-2-turbo',
+  'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
+  'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
+  'minimax-h3-max-turbo', 'minimax-h3-max-ref',
+  'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
+  'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
+  'marey-motion-transfer', 'marey-pose-transfer',
   // The 2026-09-28 batch, all of it, while under test
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
   'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
