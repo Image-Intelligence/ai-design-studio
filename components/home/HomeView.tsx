@@ -4,7 +4,7 @@ import type { ReactNode } from "react"
 import { Image as ImageIcon, Video, Shield, Wand2, Star } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { GenerationsCarousel } from "./GenerationsCarousel"
-import { FEATURED_MODELS } from "./featured"
+import { FEATURED_MODELS, TALL_CARDS } from "./featured"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { SITE_EMPLOYEES, AdminModelBadge } from "@/components/employees/EmployeesView"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
@@ -67,13 +67,6 @@ const VIDEO_TOOL_GROUP_LABELS = new Set(["Lipsync", "Video Tools"])
 
 type HomeModel = { name: string; accent: string; group: string; admin: boolean }
 
-/**
- * Cards shown portrait (3:4) in the model grids: they span two rows. Virtual
- * Try-On is about whole outfits, Pixelcut about single products on a stand
- * and Kling V3 Motion about full-body movement - all cut short by a
- * landscape frame.
- */
-const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Product Photo", "video:Kling V3 Motion"])
 /** The model grids' widest column count (min-[2200px]:grid-cols-8). */
 const MAX_GRID_COLS = 8
 /** The fewest regular cards between two tall ones, so they never sit side by side. */

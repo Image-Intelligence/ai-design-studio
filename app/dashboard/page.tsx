@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
-import { FEATURED_MODELS } from "@/components/home/featured"
+import { FEATURED_MODELS, TALL_CARDS } from "@/components/home/featured"
 import { CatalogCard, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { GenerationsCarousel } from "@/components/home/GenerationsCarousel"
@@ -187,7 +187,8 @@ export default function DashboardPage() {
         ...featured.filter(k => cards[k]?.mediaUrl),
         ...Object.keys(cards).filter(k => (k.startsWith("image:") || k.startsWith("video:")) && !k.endsWith("::alt") && !featured.includes(k) && cards[k]?.mediaUrl),
       ]
-      setCatalogMedia(keys.map(k => ({ name: k, url: cards[k].mediaUrl!, type: cards[k].mediaType || "image" })))
+      // Portrait cards keep their 3:4 shape in the strip
+      setCatalogMedia(keys.map(k => ({ name: k, url: cards[k].mediaUrl!, type: cards[k].mediaType || "image", tall: TALL_CARDS.has(k) })))
     }).catch(() => {})
   }, [])
 
