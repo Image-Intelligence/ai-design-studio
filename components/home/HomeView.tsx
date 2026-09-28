@@ -304,43 +304,62 @@ export function HomeView({
         const talls = rest.filter(isTall)
         const regs = rest.filter(m => !isTall(m))
         /*
-         * The gallery band (a lead, three portrait cards, four regular ones):
-         *   wide   one band two rows tall, portraits and pairs alternating -
+         * The gallery band (a lead, three portrait cards, four regular ones)
+         * is laid out three ways. The row heights always come from the small
+         * cards' aspect ratio and everything else fills its cell (h-full,
+         * md:min-h-0 on the portraits), so no cell is ever taller than the
+         * card in it.
+         *   xl     one band two rows tall, portraits and pairs alternating -
          *          lead | tall | pair | tall | pair | tall. A pair is two 16:9
          *          cards stacked, so the band is 1.125 of a pair's width tall
          *          (plus the gap); a 0.84 column at that height is ~3:4, and
          *          the lead's 1.5 column makes it ~4:3.
+         *   md-lg  (iPad portrait, small laptops) six columns would make the
+         *          small cards ~140px wide, so the band splits in two, each a
+         *          full-width grid of its own -
+         *            lead | tall | pair          [2 : 1.125 : 1]
+         *            tall | pair | tall          [1.125 : 1 : 1.125]
+         *          with 4:3 pairs: a pair is 1.5 of its width tall, so a
+         *          1.125 column is ~3:4 and the lead's 2 column ~4:3.
+         *          On xl the two band wrappers become display:contents and
+         *          their cards drop into the one six-column grid.
          *   phone  two columns, five rows, no holes -
          *            tall  | reg          rows 1-2
          *            reg   | tall         rows 3-4 (starts on row 3)
          *            tall  | reg          rows 4-5
-         *          which is exactly the DOM order below under normal flow.
+         *          The band wrappers are display:contents here too, and the
+         *          order-* classes put the second band's cards in that flow.
          * Any other mix of cards falls back to a simple lead-plus-grid.
          */
         const band = talls.length === 3 && regs.length === 4
-        const order = band ? [lead, talls[0], regs[0], regs[1], regs[2], talls[1], talls[2], regs[3]] : featured
+        type Placed = { m: typeof featured[number]; className: string; aspect?: string; tall: boolean }
         // Literal class strings, so Tailwind sees every one of them
-        const TALL_COL = ["lg:col-start-2", "lg:col-start-4", "lg:col-start-6"]
-        const REG_CELL = [
-          "lg:col-start-3 lg:row-start-1", "lg:col-start-3 lg:row-start-2",
-          "lg:col-start-5 lg:row-start-1", "lg:col-start-5 lg:row-start-2",
-        ]
-        const place = (m: typeof featured[number]): { className: string; aspect: string; tall: boolean } => {
-          if (m === lead) return band
-            ? { className: "col-span-2 lg:col-span-1 lg:col-start-1 lg:row-start-1 lg:row-span-2", aspect: "aspect-[4/3] lg:aspect-auto lg:h-full", tall: false }
-            : { className: "col-span-2 lg:row-span-2", aspect: "aspect-[4/3] lg:aspect-auto lg:h-full", tall: false }
-          if (!band) return isTall(m)
-            ? { className: "row-span-2", aspect: "", tall: true }
-            : { className: "", aspect: "aspect-[4/3] lg:aspect-video", tall: false }
-          const t = talls.indexOf(m)
-          if (t >= 0) return { className: `row-span-2 lg:row-start-1 ${TALL_COL[t]}`, aspect: "", tall: true }
-          return { className: REG_CELL[regs.indexOf(m)], aspect: "aspect-[4/3] lg:aspect-video", tall: false }
-        }
+        const PAIR = "aspect-[4/3] xl:aspect-video"
+        const bands: Placed[][] = band ? [
+          [
+            { m: lead, tall: false, aspect: "aspect-[4/3] md:aspect-auto md:h-full",
+              className: "col-span-2 md:col-span-1 md:col-start-1 md:row-start-1 md:row-span-2 xl:col-start-1 xl:row-start-1" },
+            { m: talls[0], tall: true, className: "row-span-2 md:min-h-0 md:col-start-2 md:row-start-1 xl:col-start-2 xl:row-start-1" },
+            { m: regs[0], tall: false, aspect: PAIR, className: "md:col-start-3 md:row-start-1 xl:col-start-3 xl:row-start-1" },
+            { m: regs[1], tall: false, aspect: PAIR, className: "md:col-start-3 md:row-start-2 xl:col-start-3 xl:row-start-2" },
+          ],
+          [
+            { m: talls[1], tall: true, className: "row-span-2 order-2 md:order-none md:min-h-0 md:col-start-1 md:row-start-1 xl:col-start-4 xl:row-start-1" },
+            { m: regs[2], tall: false, aspect: PAIR, className: "order-1 md:order-none md:col-start-2 md:row-start-1 xl:col-start-5 xl:row-start-1" },
+            { m: regs[3], tall: false, aspect: PAIR, className: "order-4 md:order-none md:col-start-2 md:row-start-2 xl:col-start-5 xl:row-start-2" },
+            { m: talls[2], tall: true, className: "row-span-2 order-3 md:order-none md:min-h-0 md:col-start-3 md:row-start-1 xl:col-start-6 xl:row-start-1" },
+          ],
+        ] : [featured.map((m, i): Placed => i === 0
+          ? { m, tall: false, aspect: "aspect-[4/3] lg:aspect-auto lg:h-full", className: "col-span-2 lg:row-span-2" }
+          : isTall(m) ? { m, tall: true, className: "row-span-2" }
+          : { m, tall: false, aspect: "aspect-[4/3] lg:aspect-video", className: "" })]
+        const BAND_GRID = ["md:grid-cols-[2fr_1.125fr_1fr]", "md:grid-cols-[1.125fr_1fr_1.125fr]"]
         return (
         <Section icon={<Star size={17} />} title="Featured Models" subtitle="The best place to start">
-          <div className={`grid grid-cols-2 ${band ? "lg:grid-cols-[1.5fr_0.84fr_1fr_0.84fr_1fr_0.84fr]" : talls.length ? "lg:grid-cols-[1fr_1fr_0.84fr_1fr_1fr]" : "lg:grid-cols-4"} gap-3 2xl:gap-4`}>
-            {order.map(m => {
-              const pl = place(m)
+          <div className={`grid grid-cols-2 ${band ? "md:flex md:flex-col xl:grid xl:grid-cols-[1.5fr_0.84fr_1fr_0.84fr_1fr_0.84fr]" : talls.length ? "lg:grid-cols-[1fr_1fr_0.84fr_1fr_1fr]" : "lg:grid-cols-4"} gap-3 2xl:gap-4`}>
+            {bands.map((cardsInBand, b) => (
+            <div key={b} className={band ? `contents md:grid ${BAND_GRID[b]} md:gap-3 xl:contents` : "contents"}>
+            {cardsInBand.map(({ m, ...pl }) => {
               return (
               <HomeMediaCard
                 key={`featured:${m.kind}:${m.name}`}
@@ -358,10 +377,12 @@ export function HomeView({
                 tall={pl.tall}
                 frameAspect={pl.tall ? 3 / 4 : 4 / 3}
                 className={pl.className}
-                aspect={pl.aspect || undefined}
+                aspect={pl.aspect}
               />
               )
             })}
+            </div>
+            ))}
           </div>
         </Section>
         )
