@@ -144,6 +144,16 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "luma-photon-flash-reframe", apiId: "luma-photon-flash-reframe", name: "Luma Photon Flash Reframe", aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21"], supportsQuality: false, maxReferenceImages: 1, requiresReferenceImage: true, isFal: true, maxImages: 1 },
   { id: "luma-uni-1",           apiId: "luma-uni-1",               name: "Luma Uni-1",          aspectRatios: ["2:1", "16:9", "3:2", "1:1", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 5, isFal: true, maxImages: 4 },
   { id: "luma-uni-1-max",       apiId: "luma-uni-1-max",           name: "Luma Uni-1 Max",      aspectRatios: ["2:1", "16:9", "3:2", "1:1", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 5, isFal: true, maxImages: 4 },
+  // 2026-09-28 batch (ADMIN ONLY while under test). Krea 2's attached images are
+  // style references; Hunyuan 3 Instruct and SeeDream 5.0 Flash switch to
+  // their edit endpoints when an image is attached.
+  { id: "krea-2-large",         apiId: "krea-2-large",             name: "Krea 2 Large",        aspectRatios: ["1:1", "4:3", "3:2", "16:9", "4:5", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "krea-2-medium",        apiId: "krea-2-medium",            name: "Krea 2 Medium",       aspectRatios: ["1:1", "4:3", "3:2", "16:9", "4:5", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "krea-2-medium-turbo",  apiId: "krea-2-medium-turbo",      name: "Krea 2 Medium Turbo", aspectRatios: ["1:1", "4:3", "3:2", "16:9", "4:5", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "hunyuan-image-3",      apiId: "hunyuan-image-3",          name: "Hunyuan Image 3",     aspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
+  { id: "hunyuan-image-3-instruct", apiId: "hunyuan-image-3-instruct", name: "Hunyuan Image 3 Instruct", aspectRatios: ["auto", "1:1", "4:3", "3:4", "16:9", "9:16"], supportsQuality: false, maxReferenceImages: 3, isFal: true, maxImages: 4 },
+  { id: "seedream-5-flash",     apiId: "seedream-5-flash",         name: "SeeDream 5.0 Flash",  aspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "recraft-v4.1-flash",   apiId: "recraft-v4.1-flash",       name: "Recraft V4.1 Flash",  aspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
   { id: "mai-image-2.5-pro",    apiId: "mai-image-2.5-pro",        name: "MAI Image 2.5 Pro",   aspectRatios: ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "grok-imagine-2",       apiId: "grok-imagine-2",           name: "Grok Imagine 2.0",    aspectRatios: ["2:1", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 4, isFal: true, maxImages: 4 },
   { id: "meta-muse",            apiId: "meta-muse",                name: "Meta Muse",           aspectRatios: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
@@ -639,6 +649,14 @@ interface VideoModelConfig {
   toolPromptRequired?: boolean  // this tool can't run without a prompt (Ray 3.2 edit / reframe)
 }
 
+// The 2026-09-28 video batch: priced by the billing function itself in the UI
+const BATCH_0928_VIDEO = new Set([
+  "kling-v3-turbo-pro", "kling-v3-turbo", "kling-o3-pro", "kling-o3-4k",
+  "pixverse-v6", "pixverse-c1", "grok-video-1.5", "vidu-q3", "vidu-q3-turbo",
+  "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
+  "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
+])
+
 // Luma's modify strength scale, closest to the source first
 const LUMA_MODES = ["adhere_1", "adhere_2", "adhere_3", "flex_1", "flex_2", "flex_3", "reimagine_1", "reimagine_2", "reimagine_3"]
 
@@ -955,6 +973,18 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     audioType: "none",
     textToVideo: true,
   },
+  // ── 2026-09-28 batch (ADMIN ONLY while under test). The refs-panel models
+  // route by what's attached: one image -> image-to-video, a start + end pair
+  // -> start/end (PixVerse: transition), more images -> references (@Image1..).
+  { id: "kling-v3-turbo-pro", name: "Kling V3 Turbo Pro", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["16:9","9:16","1:1"], supportsEndFrame: false, audioType: "none", textToVideo: true, startFrameLocksAspect: true },
+  { id: "kling-v3-turbo",     name: "Kling V3 Turbo",     durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["16:9","9:16","1:1"], supportsEndFrame: false, audioType: "none", textToVideo: true, startFrameLocksAspect: true },
+  { id: "kling-o3-pro",       name: "Kling O3 Pro",       durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["16:9","9:16","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "kling-o3-4k",        name: "Kling O3 4K",        durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["16:9","9:16","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "pixverse-v6",        name: "PixVerse V6",        durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
+  { id: "pixverse-c1",        name: "PixVerse C1",        durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "grok-video-1.5",     name: "Grok Imagine Video 1.5", durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p","1080p"], aspectRatios: ["16:9","4:3","3:2","1:1","2:3","3:4","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true, supportsReferenceVideo: true },
+  { id: "vidu-q3",            name: "Vidu Q3",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "vidu-q3-turbo",      name: "Vidu Q3 Turbo",      durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
   {
     // ── Video tools (ADMIN ONLY): these take an existing clip. Upload it as a
     // video reference; no prompt is required, and most take none at all.
@@ -1078,6 +1108,14 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true,
     resolutions: ["540p","720p","1080p"], aspectRatios: ["9:16","16:9","1:1","4:3","3:4","21:9"],
   },
+  // ── 2026-09-28 batch tools (ADMIN ONLY): all need a prompt
+  { id: "kling-o3-pro-edit",      name: "Kling O3 Pro Video Edit",      durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "kling-o3-pro-reference", name: "Kling O3 Pro Video Reference", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["auto","16:9","9:16","1:1"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "kling-o3-4k-edit",       name: "Kling O3 4K Video Edit",       durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "kling-o3-4k-reference",  name: "Kling O3 4K Video Reference",  durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["auto","16:9","9:16","1:1"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "pixverse-v6-extend",     name: "PixVerse V6 Extend",           durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "grok-video-edit",        name: "Grok Video Edit",              durations: [], resolutions: ["480p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "grok-video-extend",      name: "Grok Video Extend",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   {
     id: "lipsync-v3",
     name: "Lipsync v3",
@@ -1125,6 +1163,13 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "luma-photon-flash-reframe": "$",
   "luma-uni-1":          "$$",
   "luma-uni-1-max":      "$$$",
+  "krea-2-large":        "$$",
+  "krea-2-medium":       "$",
+  "krea-2-medium-turbo": "$",
+  "hunyuan-image-3":     "$$$",
+  "hunyuan-image-3-instruct": "$$$",
+  "seedream-5-flash":    "$",
+  "recraft-v4.1-flash":  "$",
   "recraft-v4.1":        "$$$",
   "flux-2":              "$",
   "flux-1-dev":          "$$",
@@ -1186,6 +1231,22 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "luma-ray-2-flash-reframe": "$",
   "luma-ray-3.2-edit":  "$$$",
   "luma-ray-3.2-reframe": "$$",
+  "kling-v3-turbo-pro": "$$$",
+  "kling-v3-turbo":     "$$",
+  "kling-o3-pro":       "$$$",
+  "kling-o3-4k":        "$$$+",
+  "pixverse-v6":        "$",
+  "pixverse-c1":        "$",
+  "grok-video-1.5":     "$$$",
+  "vidu-q3":            "$$$",
+  "vidu-q3-turbo":      "$$",
+  "kling-o3-pro-edit":  "$$$",
+  "kling-o3-pro-reference": "$$$",
+  "kling-o3-4k-edit":   "$$$+",
+  "kling-o3-4k-reference": "$$$+",
+  "pixverse-v6-extend": "$",
+  "grok-video-edit":    "$$",
+  "grok-video-extend":  "$$",
   "flux-3":             "$$$",
   "flux-1-dev":         "$$",
   "z-image-base":       "$$",
@@ -1317,13 +1378,16 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // from here simply never appears, however complete its config is.
   { label: "Alibaba",   type: "text to image · edit",       accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3"] },
   { label: "Reve",      type: "text to image · edit",       accent: "text-pink-400",  dot: "bg-pink-400",  items: ["Reve 2.1"] },
+  { label: "Krea",      type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
+  { label: "Tencent",   type: "text to image · edit",       accent: "text-sky-300",   dot: "bg-sky-300",   items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct"] },
+  { label: "SeeDream Flash", type: "fast text to image · edit", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["SeeDream 5.0 Flash"] },
   { label: "Luma",      type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
   { label: "Microsoft", type: "text to image · edit",       accent: "text-sky-400",   dot: "bg-sky-400",   items: ["MAI Image 2.5 Pro"] },
   { label: "xAI",       type: "text to image · edit",       accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine 2.0"] },
   { label: "Google",    type: "text to image · try-on",     accent: "text-emerald-400", dot: "bg-emerald-400", items: ["NanoBanana 2 Lite"] },
   { label: "Meta",      type: "text to image · edit",       accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Meta Muse"] },
   { label: "Bria",      type: "text to image · edit",       accent: "text-teal-400",  dot: "bg-teal-400",  items: ["Bria Fibo 1.5"] },
-  { label: "Recraft V4", type: "styles · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4"] },
+  { label: "Recraft V4", type: "styles · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4", "Recraft V4.1 Flash"] },
   // Gemini scanners retired from the public offering 2026-07-29 — admin only now
   { label: "Gemini",    type: "text to image",              accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Flash Scanner v2.5", "Pro Scanner v3"] },
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
@@ -1347,6 +1411,10 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   { label: "Google", type: "text · image · ref · edit to video · pricing TBD", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
   { label: "Lightricks", type: "text & image to video · up to 4K · pricing TBD", accent: "text-lime-400", dot: "bg-lime-400",   items: ["LTX 2.5 Fast"] },
   { label: "Luma", type: "text & image to video · start + end frame", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Ray 3.2", "Luma Ray 2", "Luma Ray 2 Flash"] },
+  { label: "Kling · new", type: "text · image · refs to video · audio", accent: "text-orange-300", dot: "bg-orange-300", items: ["Kling O3 Pro", "Kling O3 4K", "Kling V3 Turbo Pro", "Kling V3 Turbo"] },
+  { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1"] },
+  { label: "xAI", type: "text · image · refs to video", accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine Video 1.5"] },
+  { label: "Vidu", type: "text · image · start/end · refs to video · audio", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q3", "Vidu Q3 Turbo"] },
   { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max"] },
   { label: "Black Forest Labs", type: "text · image · keyframes · extend · with audio · pricing TBD", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3"] },
   { label: "Wan",    type: "image & text to video · pricing TBD",             accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.7", "Wan 2.2 LoRA"] },
@@ -1355,7 +1423,9 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
             "SeedVR2 Video", "FlashVSR", "ByteDance Video Upscale", "Topaz Frame Interpolate",
             "Topaz Colorize", "Topaz Deblur", "Topaz SDR → HDR",
             "Luma Ray 3.2 Edit", "Luma Ray 3.2 Reframe", "Luma Ray 2 Modify", "Luma Ray 2 Flash Modify",
-            "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe"] },
+            "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe",
+            "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference",
+            "PixVerse V6 Extend", "Grok Video Edit", "Grok Video Extend"] },
 ]
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
@@ -1364,6 +1434,10 @@ const ADMIN_VIDEO_MODEL_IDS = new Set([
   "luma-ray-2", "luma-ray-2-flash", "luma-ray-3.2",
   "luma-ray-2-modify", "luma-ray-2-flash-modify", "luma-ray-2-reframe",
   "luma-ray-2-flash-reframe", "luma-ray-3.2-edit", "luma-ray-3.2-reframe",
+  "kling-v3-turbo-pro", "kling-v3-turbo", "kling-o3-pro", "kling-o3-4k",
+  "pixverse-v6", "pixverse-c1", "grok-video-1.5", "vidu-q3", "vidu-q3-turbo",
+  "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
+  "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
   "flux-video-upscale", "topaz-upscale-precision", "topaz-upscale-creative", "topaz-upscale-generative",
   "seedvr2-video", "flashvsr-video", "bytedance-video-upscale",
   "topaz-interpolate", "topaz-colorize", "topaz-deblur", "topaz-sdr-to-hdr",
@@ -1883,6 +1957,13 @@ const MODEL_BLURBS: Record<string, string> = {
   "Luma Photon Flash Reframe": "Fast reframe to a new shape",
   "Luma Uni-1":                "Luma's newest; edits with up to 5 refs",
   "Luma Uni-1 Max":            "Top-quality Uni-1; edits with refs",
+  "Krea 2 Large":              "Krea's top model; style references",
+  "Krea 2 Medium":             "Balanced Krea 2; style references",
+  "Krea 2 Medium Turbo":       "Fastest, cheapest Krea 2",
+  "Hunyuan Image 3":           "Tencent's flagship image model",
+  "Hunyuan Image 3 Instruct":  "Follows instructions; edits up to 3 images",
+  "SeeDream 5.0 Flash":        "Fast SeeDream; edits up to 10 images",
+  "Recraft V4.1 Flash":        "Cheapest Recraft, very fast",
   "MAI Image 2.5 Pro":         "Microsoft flagship; edits with a ref",
   "Grok Imagine 2.0":          "Expressive and quick; edits with refs",
   "Virtual Try-On":            "Dress a person in a garment",
@@ -1938,6 +2019,22 @@ const MODEL_BLURBS: Record<string, string> = {
   "Luma Ray 2 Flash Modify":   "Fast, cheaper clip restyle",
   "Luma Ray 2 Reframe":        "Re-shape a clip to a new aspect",
   "Luma Ray 2 Flash Reframe":  "Fast, cheaper reframe",
+  "Kling O3 Pro":              "Text, image, start/end or refs; audio",
+  "Kling O3 4K":               "Kling O3 at 4K",
+  "Kling V3 Turbo Pro":        "Fast Kling V3, up to 15s",
+  "Kling V3 Turbo":            "Fastest, cheapest Kling V3",
+  "PixVerse V6":               "Cheap and quick; start/end transitions",
+  "PixVerse C1":               "PixVerse with @Image references",
+  "Grok Imagine Video 1.5":    "xAI video; up to 7 references",
+  "Vidu Q3":                   "Up to 16s; refs, start/end, audio",
+  "Vidu Q3 Turbo":             "Faster, half-price Vidu Q3",
+  "Kling O3 Pro Video Edit":   "Edit a clip by instruction",
+  "Kling O3 Pro Video Reference": "New video driven by a clip",
+  "Kling O3 4K Video Edit":    "Clip edit at 4K",
+  "Kling O3 4K Video Reference": "Clip-driven video at 4K",
+  "PixVerse V6 Extend":        "Continue a clip",
+  "Grok Video Edit":           "Edit a clip by instruction",
+  "Grok Video Extend":         "Continue a clip",
   "MiniMax H3 Max":            "Strong prompt following, 768p",
   "Flux 3":                    "Text, keyframes, extend, audio",
   "Lipsync v3":                "Syncs lips to any audio",
@@ -24647,8 +24744,8 @@ function VideoCustomizationPanel({
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-")
-    ? videoTicketCost({ model: model.id, duration, resolution, editVideoDurationSec: editSourceDuration })
+    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-") || BATCH_0928_VIDEO.has(model.id)
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration })
     : isSD20Family
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * sd20ResMultiplier)
     : model.id === "happy-horse"
@@ -26018,8 +26115,8 @@ function VideoPromptBar({
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-")
-    ? videoTicketCost({ model: model.id, duration, resolution })
+    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-") || BATCH_0928_VIDEO.has(model.id)
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled })
     : isSD20FamilyBar
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
     : model.id === "happy-horse"

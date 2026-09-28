@@ -17,6 +17,12 @@ export interface AIModel {
   provider?: 'gemini' | 'fal'
 }
 
+/**
+ * Hunyuan Image 3 Instruct bills $0.09 per megapixel and picks its own size
+ * ('auto'); set from the size measured in testing, for >=50% at $0.08.
+ */
+const HUNYUAN_INSTRUCT_TICKETS = 3
+
 export const AI_MODELS: AIModel[] = [
   // NANOBANANA - FAL.ai (Gemini 2.5 Flash Image) - Fast & Cheap - 2 IMAGES!
   {
@@ -371,6 +377,33 @@ export const AI_MODELS: AIModel[] = [
     ['luma-uni-1-edit', 'luma/agent/uni-1/v1/edit', 'Luma Uni-1 Edit', 'Luma Uni-1 instruction editing', 2],
     ['luma-uni-1-max', 'luma/agent/uni-1/v1/max', 'Luma Uni-1 Max', 'Luma Uni-1 Max text-to-image', 3],
     ['luma-uni-1-max-edit', 'luma/agent/uni-1/v1/max/edit', 'Luma Uni-1 Max Edit', 'Luma Uni-1 Max instruction editing', 3],
+  ] as const).map(([id, name, displayName, description, ticketCost]) => ({
+    id, name, displayName, description, ticketCost,
+    category: 'standard' as const,
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high' as const,
+    isAvailable: true,
+    provider: 'fal' as const,
+  })),
+
+  // 2026-09-28 batch (ADMIN ONLY while under test), same >=50%-at-$0.08 rule:
+  //   Krea 2 Large  $0.060 ($0.065 with style refs) -> 2 tickets
+  //   Krea 2 Medium $0.030 ($0.035)                 -> 1
+  //   Krea 2 Medium Turbo $0.015 ($0.0175)          -> 1
+  //   Hunyuan Image 3  $0.10/MP, presets <= 1.05MP  -> 3
+  //   Hunyuan Image 3 Instruct (+edit) $0.09/MP     -> priced from the measured size (below)
+  //   Seedream 5.0 Flash (+edit) $0.027             -> 1
+  //   Recraft V4.1 Flash $0.007                      -> 1
+  ...([
+    ['krea-2-large', 'krea/v2/large/text-to-image', 'Krea 2 Large', 'Krea 2 Large text-to-image (images = style references)', 2],
+    ['krea-2-medium', 'krea/v2/medium/text-to-image', 'Krea 2 Medium', 'Krea 2 Medium text-to-image', 1],
+    ['krea-2-medium-turbo', 'krea/v2/medium/turbo/text-to-image', 'Krea 2 Medium Turbo', 'Krea 2 Medium Turbo text-to-image', 1],
+    ['hunyuan-image-3', 'fal-ai/hunyuan-image/v3/text-to-image', 'Hunyuan Image 3', 'Tencent Hunyuan Image 3 text-to-image', 3],
+    ['hunyuan-image-3-instruct', 'fal-ai/hunyuan-image/v3/instruct/text-to-image', 'Hunyuan Image 3 Instruct', 'Hunyuan Image 3 Instruct text-to-image', HUNYUAN_INSTRUCT_TICKETS],
+    ['hunyuan-image-3-instruct-edit', 'fal-ai/hunyuan-image/v3/instruct/edit', 'Hunyuan Image 3 Instruct Edit', 'Hunyuan Image 3 Instruct editing (up to 3 images)', HUNYUAN_INSTRUCT_TICKETS],
+    ['seedream-5-flash', 'bytedance/seedream/v5/flash/text-to-image', 'SeeDream 5.0 Flash', 'SeeDream 5.0 Flash text-to-image', 1],
+    ['seedream-5-flash-edit', 'bytedance/seedream/v5/flash/edit', 'SeeDream 5.0 Flash Edit', 'SeeDream 5.0 Flash editing (up to 10 images)', 1],
+    ['recraft-v4.1-flash', 'recraft/v4.1/flash/text-to-image', 'Recraft V4.1 Flash', 'Recraft V4.1 Flash text-to-image', 1],
   ] as const).map(([id, name, displayName, description, ticketCost]) => ({
     id, name, displayName, description, ticketCost,
     category: 'standard' as const,

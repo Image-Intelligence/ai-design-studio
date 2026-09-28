@@ -74,6 +74,35 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'luma-ray-2-flash-i2v':       'fal-ai/luma-dream-machine/ray-2-flash/image-to-video',
   'luma-ray-3.2-t2v':           'luma/agent/ray/v3.2/text-to-video',
   'luma-ray-3.2-i2v':           'luma/agent/ray/v3.2/image-to-video',
+  // ── 2026-09-28 batch (ADMIN ONLY while under test), each checked against
+  // its live schema. These route by input: references -> r2v, a start + end
+  // frame -> transition (PixVerse), a start image -> i2v, otherwise t2v.
+  'kling-v3-turbo-pro-t2v':     'fal-ai/kling-video/v3/turbo/pro/text-to-video',
+  'kling-v3-turbo-pro-i2v':     'fal-ai/kling-video/v3/turbo/pro/image-to-video',
+  'kling-v3-turbo-t2v':         'fal-ai/kling-video/v3/turbo/standard/text-to-video',
+  'kling-v3-turbo-i2v':         'fal-ai/kling-video/v3/turbo/standard/image-to-video',
+  'kling-o3-pro-t2v':           'fal-ai/kling-video/o3/pro/text-to-video',
+  'kling-o3-pro-i2v':           'fal-ai/kling-video/o3/pro/image-to-video',
+  'kling-o3-pro-r2v':           'fal-ai/kling-video/o3/pro/reference-to-video',
+  'kling-o3-4k-t2v':            'fal-ai/kling-video/o3/4k/text-to-video',
+  'kling-o3-4k-i2v':            'fal-ai/kling-video/o3/4k/image-to-video',
+  'kling-o3-4k-r2v':            'fal-ai/kling-video/o3/4k/reference-to-video',
+  'pixverse-v6-t2v':            'fal-ai/pixverse/v6/text-to-video',
+  'pixverse-v6-i2v':            'fal-ai/pixverse/v6/image-to-video',
+  'pixverse-v6-transition':     'fal-ai/pixverse/v6/transition',
+  'pixverse-c1-t2v':            'fal-ai/pixverse/c1/text-to-video',
+  'pixverse-c1-i2v':            'fal-ai/pixverse/c1/image-to-video',
+  'pixverse-c1-r2v':            'fal-ai/pixverse/c1/reference-to-video',
+  'pixverse-c1-transition':     'fal-ai/pixverse/c1/transition',
+  // xAI lives under the `xai` owner - no fal-ai/ prefix
+  'grok-video-1.5-t2v':         'xai/grok-imagine-video/v1.5/text-to-video',
+  'grok-video-1.5-i2v':         'xai/grok-imagine-video/v1.5/image-to-video',
+  'grok-video-1.5-r2v':         'xai/grok-imagine-video/v1.5/reference-to-video',
+  'vidu-q3-t2v':                'fal-ai/vidu/q3/text-to-video',
+  'vidu-q3-i2v':                'fal-ai/vidu/q3/image-to-video',
+  'vidu-q3-r2v':                'fal-ai/vidu/q3/reference-to-video/mix',
+  'vidu-q3-turbo-t2v':          'fal-ai/vidu/q3/text-to-video/turbo',
+  'vidu-q3-turbo-i2v':          'fal-ai/vidu/q3/image-to-video/turbo',
   // Gemini Omni Flash lives under the `google` owner — NO `fal-ai/` prefix
   // (same pattern as bytedance/seedance-2.0 above). ADMIN-ONLY model.
   'gemini-omni-flash-t2v':      'google/gemini-omni-flash',
@@ -99,7 +128,25 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'luma-ray-2-flash-reframe':   'fal-ai/luma-dream-machine/ray-2-flash/reframe',
   'luma-ray-3.2-edit':          'luma/agent/ray/v3.2/video-to-video',
   'luma-ray-3.2-reframe':       'luma/agent/ray/v3.2/reframe',
+  // 2026-09-28 batch tools: edit / re-drive / extend a source clip
+  'kling-o3-pro-edit':          'fal-ai/kling-video/o3/pro/video-to-video/edit',
+  'kling-o3-pro-reference':     'fal-ai/kling-video/o3/pro/video-to-video/reference',
+  'kling-o3-4k-edit':           'fal-ai/kling-video/o3/4k/video-to-video/edit',
+  'kling-o3-4k-reference':      'fal-ai/kling-video/o3/4k/video-to-video/reference',
+  'pixverse-v6-extend':         'fal-ai/pixverse/v6/extend',
+  'grok-video-edit':            'xai/grok-imagine-video/edit-video',
+  'grok-video-extend':          'xai/grok-imagine-video/extend-video',
 };
+
+/** The 2026-09-28 batch: generators routed by input, and clip tools. */
+export const BATCH_0928_GENERATORS = new Set([
+  'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
+  'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+])
+export const BATCH_0928_TOOLS = new Set([
+  'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
+  'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
+])
 
 /** The Luma generators (endpoint picked by input) and tools (take a source clip). */
 export const LUMA_VIDEO_GENERATORS = new Set(['luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2'])
@@ -135,6 +182,8 @@ export const VIDEO_MODEL_IDS: string[] = [
   'minimax-h3-max', 'flux-3',
   'ltx-2.5-pro', 'ltx-2.5-fast',
   'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
+  'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
+  'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
   'lipsync-v3', 'happy-horse',
   // tools that output video
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
@@ -143,6 +192,8 @@ export const VIDEO_MODEL_IDS: string[] = [
   'topaz-deblur', 'topaz-sdr-to-hdr',
   'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
   'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
+  'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
+  'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -165,4 +216,9 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
   'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
   'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
+  // The 2026-09-28 batch, all of it, while under test
+  'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
+  'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
+  'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
 ])

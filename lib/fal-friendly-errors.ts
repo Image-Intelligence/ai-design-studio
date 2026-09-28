@@ -41,6 +41,18 @@ export function friendlyFalError(raw: string, model?: string): string {
     return 'An input file\'s resolution is outside what this model accepts. Try a smaller or more standard-resolution file.'
   }
 
+  /*
+   * Source-clip size limits on the video tools, checked 2026-09-28: Grok's
+   * extend takes at most 921,600 pixels (1280x720), PixVerse's extend at most
+   * 1920 on a side - a phone clip or a 1080x1920+ render is refused outright.
+   */
+  if (d.includes('video dimensions are too large') || d.includes('maximum area is 921600')) {
+    return 'This tool takes clips up to 1280x720 (720p). Export or re-render your clip at 720p and try again.'
+  }
+  if (d.includes('video resolution exceeds 1920x1920')) {
+    return 'This tool takes clips up to 1920 pixels on either side. Export your clip at 1080p (1920x1080 or 1080x1920) and try again.'
+  }
+
   if (d.includes('content_policy') || d.includes('content policy') || d.includes('flagged')) {
     return 'Your prompt or an input file was flagged by the model\'s content policy. Please adjust and try again.'
   }

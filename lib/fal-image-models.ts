@@ -397,6 +397,13 @@ const AR_PHOTON = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21'] as const
 const AR_UNI = ['3:1', '2:1', '16:9', '3:2', '1:1', '2:3', '9:16', '1:2', '1:3'] as const
 /** Uni-1 bills $0.003 per reference; the flat ticket price is set for up to this many. */
 const UNI_MAX_REFS = 4
+// 2026-09-28 batch
+const AR_KREA = ['1:1', '4:3', '3:2', '16:9', '2.35:1', '4:5', '2:3', '9:16'] as const
+/** Portal aspect -> fal's named size presets (Hunyuan 3, Recraft 4.1 Flash). */
+const PRESET_SIZE: Record<string, string> = {
+  '1:1': 'square_hd', '4:3': 'landscape_4_3', '3:4': 'portrait_4_3',
+  '16:9': 'landscape_16_9', '9:16': 'portrait_16_9',
+}
 
 const TOPAZ_PRECISION_MODELS = ['Standard V2', 'High Fidelity V3', 'High Fidelity V2', 'Low Resolution V2', 'CGI', 'Text Refine'] as const
 const TOPAZ_CREATIVE_MODELS = ['Bloom 2', 'Bloom', 'Bloom Realism'] as const
@@ -1111,6 +1118,75 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
   'luma-uni-1-max': lumaUniSpec('luma-uni-1-max', 'luma/agent/uni-1/v1/max', 'luma-uni-1-max-edit'),
   'luma-uni-1-max-edit': lumaUniEditSpec('luma-uni-1-max-edit', 'luma/agent/uni-1/v1/max/edit'),
 
+  // ── 2026-09-28 batch (ADMIN ONLY while under test) ──────────────────────
+  // Checked against the live schemas that day. Krea 2's attached images are
+  // STYLE references on the same endpoint (not an edit); Hunyuan 3 Instruct
+  // and Seedream 5.0 Flash switch to their edit endpoints with an image.
+  'krea-2-large': kreaSpec('krea-2-large', 'krea/v2/large/text-to-image'),
+  'krea-2-medium': kreaSpec('krea-2-medium', 'krea/v2/medium/text-to-image'),
+  'krea-2-medium-turbo': kreaSpec('krea-2-medium-turbo', 'krea/v2/medium/turbo/text-to-image'),
+  'hunyuan-image-3': {
+    id: 'hunyuan-image-3', endpoint: 'fal-ai/hunyuan-image/v3/text-to-image',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: Object.keys(PRESET_SIZE), usesImageSize: true,
+    notes: 'size presets only (<= ~1MP): billed per megapixel',
+    build: (ctx) => ({
+      prompt: ctx.prompt, image_size: PRESET_SIZE[ctx.aspectRatio] ?? 'square_hd',
+      num_images: 1, output_format: 'png',
+    }),
+  },
+  'hunyuan-image-3-instruct': {
+    id: 'hunyuan-image-3-instruct', editVariant: 'hunyuan-image-3-instruct-edit',
+    endpoint: 'fal-ai/hunyuan-image/v3/instruct/text-to-image',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: ['auto', ...Object.keys(PRESET_SIZE)], usesImageSize: true,
+    build: (ctx) => ({
+      prompt: ctx.prompt, image_size: PRESET_SIZE[ctx.aspectRatio] ?? 'auto',
+      num_images: 1, output_format: 'png',
+    }),
+  },
+  'hunyuan-image-3-instruct-edit': {
+    id: 'hunyuan-image-3-instruct-edit', endpoint: 'fal-ai/hunyuan-image/v3/instruct/edit',
+    needsImage: true, imageParam: 'image_urls', maxInputImages: 3,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: ['auto', ...Object.keys(PRESET_SIZE)], usesImageSize: true,
+    build: (ctx) => ({
+      prompt: ctx.prompt, image_urls: ctx.imageUrls.slice(0, 3),
+      image_size: PRESET_SIZE[ctx.aspectRatio] ?? 'auto', num_images: 1, output_format: 'png',
+    }),
+  },
+  'seedream-5-flash': {
+    id: 'seedream-5-flash', editVariant: 'seedream-5-flash-edit',
+    endpoint: 'bytedance/seedream/v5/flash/text-to-image',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: null, usesImageSize: true,
+    build: (ctx) => ({
+      prompt: ctx.prompt, image_size: imageSize(ctx.aspectRatio, '2k', 2048),
+      num_images: 1, output_format: 'png', enable_safety_checker: false,
+    }),
+  },
+  'seedream-5-flash-edit': {
+    id: 'seedream-5-flash-edit', endpoint: 'bytedance/seedream/v5/flash/edit',
+    needsImage: true, imageParam: 'image_urls', maxInputImages: 10,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: null, usesImageSize: true,
+    build: (ctx) => ({
+      prompt: ctx.prompt, image_urls: ctx.imageUrls.slice(0, 10),
+      image_size: imageSize(ctx.aspectRatio, '2k', 2048),
+      num_images: 1, output_format: 'png', enable_safety_checker: false,
+    }),
+  },
+  'recraft-v4.1-flash': {
+    id: 'recraft-v4.1-flash', endpoint: 'recraft/v4.1/flash/text-to-image',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: Object.keys(PRESET_SIZE), usesImageSize: true,
+    build: (ctx) => ({ prompt: ctx.prompt, image_size: PRESET_SIZE[ctx.aspectRatio] ?? 'square_hd', enable_safety_checker: false }),
+  },
+
   // ── Google Virtual Try-On ──────────────────────────────────────────────────
   'google-virtual-try-on': {
     id: 'google-virtual-try-on',
@@ -1409,6 +1485,26 @@ function lumaPhotonReframeSpec(id: string, endpoint: string): FalImageModelSpec 
       image_url: ctx.imageUrls[0],
       aspect_ratio: pickEnum(ctx.aspectRatio, AR_PHOTON, '16:9'),
       prompt: ctx.prompt || undefined,
+    }),
+  }
+}
+
+/**
+ * Krea 2 (Large / Medium / Medium Turbo): attached images ride along as style
+ * references (<=10) on the same endpoint, which bills them ~8% more.
+ */
+function kreaSpec(id: string, endpoint: string): FalImageModelSpec {
+  return {
+    id, endpoint,
+    needsImage: false, imageParam: 'image_urls', maxInputImages: 10,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: [...AR_KREA], usesImageSize: false,
+    notes: 'images are STYLE references; creativity raw|low|medium|high',
+    build: (ctx) => compact({
+      prompt: ctx.prompt,
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_KREA, '1:1'),
+      creativity: pickEnum(ctx.options.kreaCreativity, ['raw', 'low', 'medium', 'high'] as const, 'medium'),
+      image_style_references: ctx.imageUrls.length ? ctx.imageUrls.slice(0, 10).map(image_url => ({ image_url })) : undefined,
     }),
   }
 }

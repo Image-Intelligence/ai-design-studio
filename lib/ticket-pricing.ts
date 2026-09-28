@@ -18,6 +18,9 @@ export const VIDEO_TOOL_MODELS = new Set([
   // Luma: restyle (modify / edit) or re-shape (reframe) a source clip
   'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
   'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
+  // 2026-09-28 batch: edit / re-drive / extend a source clip
+  'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
+  'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
 ])
 
 /**
@@ -26,6 +29,9 @@ export const VIDEO_TOOL_MODELS = new Set([
  */
 export const INPUT_ROUTED_MODELS = new Set([
   'wan-3.0', 'wan-3.0-prime', 'seedance-2.5', 'gemini-omni-1.1', 'ltx-2.5-pro', 'ltx-2.5-fast',
+  // 2026-09-28 batch (priced by batch0928TicketCost, ahead of the placeholder)
+  'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
+  'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
 ])
 
 export interface VideoTicketCostInput {
@@ -48,6 +54,10 @@ export interface VideoTicketCostInput {
   /** 'image' | 'video' — only used as the kling-v3-motion duration fallback. */
   characterOrientation?: string
   videoUpscaleFactor?: string | number
+  /** Reference images sent (Grok bills $0.01 each). */
+  referenceImageCount?: number
+  /** A start image was sent (Grok bills it like a reference). */
+  hasStartImage?: boolean
 }
 
 /**
@@ -127,6 +137,12 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   } else if (model.startsWith('luma-ray-')) {
     // Before the generic tool branch: the Luma tools price by their own rates
     ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec)
+  } else if (BATCH_0928_MODELS.has(model)) {
+    // Also ahead of the generic tool and input-routed placeholder branches
+    ticketCost = batch0928TicketCost(model, {
+      duration, resolution, generateAudio, sourceSec: editVideoDurationSec,
+      refs: input.referenceImageCount ?? 0, startImage: !!input.hasStartImage,
+    })
   } else if (VIDEO_TOOL_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Billed against the SOURCE clip's
     // length, since that is what these process.
@@ -309,6 +325,88 @@ function lumaTicketCost(model: string, duration: string, resolution: string, sou
   return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
 }
 
+/*
+ * The 2026-09-28 batch - priced from fal's published rates that day, with the
+ * same rule as Luma: tickets = ceil(fal cost / $0.04), a >=50% gross margin at
+ * the cheapest ticket anyone can buy ($0.08, a subscription ticket).
+ *
+ *   Kling V3 Turbo       $0.14/s (Pro), $0.112/s (Standard); 3-15s
+ *   Kling O3 Pro         $0.112/s, $0.14/s with native audio; 3-15s
+ *   Kling O3 4K          $0.42/s; 3-15s
+ *   Kling O3 video edit / reference   the tier's rate per second of clip
+ *   PixVerse V6          360p .025 / 540p .035 / 720p .045 / 1080p .09 per s
+ *                        (+audio: .035 / .045 / .06 / .115); 1-15s
+ *   PixVerse C1          .03 / .04 / .05 / .095 (+audio .04 / .05 / .065 / .12)
+ *   Grok Imagine 1.5     480p .08 / 720p .14 / 1080p .25 per s, +$0.01 per
+ *                        reference or start image
+ *   Grok video edit      $0.08/s of the clip (720p; fal caps the input)
+ *   Grok video extend    $0.07/s of extension + $0.01/s of the source
+ *   Vidu Q3              $0.07/s at 360-540p, x2.2 at 720-1080p; Turbo half
+ *
+ * Tools bill the SOURCE clip's length; unknown lengths assume the longest the
+ * endpoint takes, so a run is never under-charged.
+ */
+const BATCH_0928_MODELS = new Set([
+  'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
+  'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
+  'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
+])
+/** Seconds as the route will send them: clamped to what each endpoint takes. */
+export function batch0928Seconds(model: string, duration: string): number {
+  const d = parseInt(duration) || 5
+  const clamp = (lo: number, hi: number) => Math.max(lo, Math.min(hi, d))
+  if (model.startsWith('kling-')) return clamp(3, 15)
+  if (model.startsWith('vidu-')) return clamp(1, 16)
+  return clamp(1, 15)
+}
+const PIXVERSE_RATE: Record<string, Record<string, [number, number]>> = {
+  // [no audio, with audio] per second
+  'pixverse-v6': { '360p': [0.025, 0.035], '540p': [0.035, 0.045], '720p': [0.045, 0.06], '1080p': [0.09, 0.115] },
+  'pixverse-c1': { '360p': [0.03, 0.04], '540p': [0.04, 0.05], '720p': [0.05, 0.065], '1080p': [0.095, 0.12] },
+}
+function batch0928TicketCost(model: string, o: {
+  duration: string; resolution: string; generateAudio: boolean; sourceSec: number; refs: number; startImage: boolean
+}): number {
+  const secs = batch0928Seconds(model, o.duration)
+  const src = (fallback: number, cap: number) => Math.min(cap, Math.ceil(o.sourceSec > 0 ? o.sourceSec : fallback))
+  let usd: number
+  switch (model) {
+    case 'kling-v3-turbo-pro': usd = 0.14 * secs; break
+    case 'kling-v3-turbo':     usd = 0.112 * secs; break
+    case 'kling-o3-pro':       usd = (o.generateAudio ? 0.14 : 0.112) * secs; break
+    case 'kling-o3-4k':        usd = 0.42 * secs; break
+    // Edit renders the clip's own length; reference renders the chosen length
+    case 'kling-o3-pro-edit':      usd = 0.14 * src(15, 15); break
+    case 'kling-o3-4k-edit':       usd = 0.42 * src(15, 15); break
+    case 'kling-o3-pro-reference': usd = 0.14 * secs; break
+    case 'kling-o3-4k-reference':  usd = 0.42 * secs; break
+    case 'pixverse-v6':
+    case 'pixverse-c1':
+    case 'pixverse-v6-extend': {
+      const table = PIXVERSE_RATE[model === 'pixverse-c1' ? 'pixverse-c1' : 'pixverse-v6']
+      const rate = table[o.resolution] ?? table['720p']
+      usd = rate[o.generateAudio ? 1 : 0] * secs
+      break
+    }
+    case 'grok-video-1.5': {
+      const rate = o.resolution === '1080p' ? 0.25 : o.resolution === '480p' ? 0.08 : 0.14
+      usd = rate * secs + 0.01 * (Math.min(7, o.refs) + (o.startImage ? 1 : 0))
+      break
+    }
+    case 'grok-video-edit':   usd = 0.08 * src(15, 15); break
+    case 'grok-video-extend': usd = 0.07 * secs + 0.01 * src(15, 15); break
+    case 'vidu-q3':
+    case 'vidu-q3-turbo': {
+      const base = model === 'vidu-q3-turbo' ? 0.035 : 0.07
+      usd = base * (o.resolution === '720p' || o.resolution === '1080p' ? 2.2 : 1) * secs
+      break
+    }
+    default: usd = 0.14 * secs
+  }
+  return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
+}
+
 const RES_STD = ['480p', '720p', '1080p']
 const DUR_5_10 = ['5', '10']
 
@@ -354,6 +452,22 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'luma-ray-2-flash-reframe', label: 'Luma Ray 2 Flash Reframe',  kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.06 per source second.' },
   { id: 'luma-ray-3.2-edit',        label: 'Luma Ray 3.2 Edit',         kind: 'tool', durations: [], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.72/$1.08/$2.16 per 5s; a source past 5.5s renders (and bills) 10s.' },
   { id: 'luma-ray-3.2-reframe',     label: 'Luma Ray 3.2 Reframe',      kind: 'tool', durations: [], resolutions: ['540p', '720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.06/$0.12/$0.36 per started source second (max 10s).' },
+  { id: 'kling-v3-turbo-pro',   label: 'Kling V3 Turbo Pro',     kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.14/s. Admin only.' },
+  { id: 'kling-v3-turbo',       label: 'Kling V3 Turbo',         kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.112/s. Admin only.' },
+  { id: 'kling-o3-pro',         label: 'Kling O3 Pro',           kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'fal $0.112/s, $0.14/s with audio. Admin only.' },
+  { id: 'kling-o3-4k',          label: 'Kling O3 4K',            kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'fal $0.42/s. Admin only.' },
+  { id: 'pixverse-v6',          label: 'PixVerse V6',            kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.025-0.09/s (+audio). Admin only.' },
+  { id: 'pixverse-c1',          label: 'PixVerse C1',            kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.03-0.095/s (+audio). Admin only.' },
+  { id: 'grok-video-1.5',       label: 'Grok Imagine Video 1.5', kind: 'generator', durations: ['5', '6', '10', '15'], resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.08/$0.14/$0.25 per s, +$0.01 per image. Admin only.' },
+  { id: 'vidu-q3',              label: 'Vidu Q3',                kind: 'generator', durations: ['5', '8', '10', '16'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.07/s at 360-540p, x2.2 at 720-1080p. Admin only.' },
+  { id: 'vidu-q3-turbo',        label: 'Vidu Q3 Turbo',          kind: 'generator', durations: ['5', '8', '10', '16'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.035/s at 360-540p, x2.2 at 720-1080p. Admin only.' },
+  { id: 'kling-o3-pro-edit',    label: 'Kling O3 Pro Video Edit',      kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.14 per second of clip (3-15s).' },
+  { id: 'kling-o3-pro-reference', label: 'Kling O3 Pro Video Reference', kind: 'tool', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.14/s of output.' },
+  { id: 'kling-o3-4k-edit',     label: 'Kling O3 4K Video Edit',       kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.42 per second of clip (3-15s).' },
+  { id: 'kling-o3-4k-reference', label: 'Kling O3 4K Video Reference', kind: 'tool', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.42/s of output.' },
+  { id: 'pixverse-v6-extend',   label: 'PixVerse V6 Extend',           kind: 'tool', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'PixVerse V6 rates on the extension length.' },
+  { id: 'grok-video-edit',      label: 'Grok Video Edit',              kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.08 per second of clip.' },
+  { id: 'grok-video-extend',    label: 'Grok Video Extend',            kind: 'tool', durations: ['5', '6', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.07/s extension + $0.01/s of source.' },
 ]
 
 
