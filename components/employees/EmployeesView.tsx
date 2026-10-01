@@ -205,7 +205,11 @@ export function EmployeesView({
   }
 
   return (
-    <div className="px-3 sm:px-6 py-6 sm:py-10">
+    // Its own scroll area: the page holds the Studios section at a fixed
+    // height with overflow hidden, so without this the picker was clipped at
+    // the bottom of the screen on a phone (desktop fits, so it never showed).
+    // The bottom padding clears iOS Safari's floating toolbar.
+    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-6 pt-6 sm:pt-10 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:pb-10">
       <div className="max-w-5xl mx-auto">
         <div className="flex items-center gap-3 mb-1">
           {logo}
