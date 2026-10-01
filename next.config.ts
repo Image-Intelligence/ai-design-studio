@@ -27,6 +27,11 @@ const nextConfig: NextConfig = {
     '/api/video/assemble': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/dataset/thumb/[id]': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/dataset/preview/[id]': ['./node_modules/ffmpeg-static/**'],
+    // Video feed tiles show a still until their playback turn: videos without
+    // a poster get one made from their first frame (lib/video-poster)
+    '/api/images/[id]': ['./node_modules/ffmpeg-static/**'],
+    // Storyboard Final Cut calls /api/video/assemble's handler as a function
+    '/api/employees/storyboards/[id]/final-cut': ['./node_modules/ffmpeg-static/**'],
   },
   // Routes importing lib/video-clip get their trace exploded to the ENTIRE
   // project dir (AI/ training junk, .git, uploads — 14GB locally, 401MB of

@@ -79,8 +79,10 @@ export async function GET(req: NextRequest) {
         const buf = Buffer.from(await res.arrayBuffer())
         const ct = res.headers.get('content-type') ?? ''
         const url = img.imageUrl
-        const ext =
-          /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) ? 'mp4'
+        const audioExt = url.split('?')[0].match(/\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i)?.[1]?.toLowerCase()
+        const ext = audioExt ? audioExt
+          : ct.startsWith('audio/') ? (ct.includes('wav') ? 'wav' : ct.includes('flac') ? 'flac' : ct.includes('mp4') ? 'm4a' : 'mp3')
+          : /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) ? 'mp4'
           : ct.includes('mp4') || ct.includes('video/mp4') ? 'mp4'
           : ct.includes('webm') ? 'webm'
           : ct.includes('jpeg') || ct.includes('jpg') ? 'jpg'

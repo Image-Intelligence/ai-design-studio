@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { ideogramTicketCost, videoTicketCost } from "@/lib/ticket-pricing"
+import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost } from "@/lib/ticket-pricing"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -11,14 +11,18 @@ import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, Use
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
+import { AudioStudio } from "@/components/audio/AudioStudio"
+import { AUDIO_GROUPS, AUDIO_STUDIO_MODELS, audioCostTier } from "@/lib/audio-studio"
 import { EmployeesView, type EmployeeId } from "@/components/employees/EmployeesView"
 import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/employees"
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
 import { ThreeDStudioWorkspace } from "@/components/employees/ThreeDStudioWorkspace"
+import { StoryboardWorkspace } from "@/components/employees/StoryboardWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
 
@@ -216,6 +220,9 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
 
 // --- HELPERS ---
 function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectRatio, loraActive?: boolean, hasRefImages?: boolean): number {
+  // Priced per request from measured fal costs; with "auto" + references the
+  // shape is unknown here, so this is the upper bound (square).
+  if (modelId === "gpt-image-2.5")       return gptImage25TicketCost({ quality, aspectRatio, refCount: hasRefImages ? 1 : 0 })
   if (modelId === "nano-banana-pro")     return quality === "4k" ? 14 : 7
   if (modelId === "nano-banana-pro-2")   return quality === "4k" ? 12 : 7
   if (modelId === "seedream-4.5")        return quality === "4k" ? 4 : 2
@@ -647,6 +654,12 @@ interface VideoModelConfig {
   targetFpsOptions?: string[]   // frame interpolation targets
   lumaModes?: string[]          // Luma modify / Ray 3.2 edit: adhere_1 (closest) .. reimagine_3 (freest)
   toolPromptRequired?: boolean  // this tool can't run without a prompt (Ray 3.2 edit / reframe)
+  /** A single named choice the model takes (Pixelcut: loop motion / background). Sent as videoChoice. */
+  choice?: { label: string; note?: string; options: { value: string; label: string }[] }
+  /** The tool works on ONE clip and nothing else (Pixelcut background removal):
+   *  the reference block shows just a "Source clip" slot, capped at this many
+   *  seconds, instead of SeeDance's images + videos + audio (15s combined). */
+  sourceClipMaxSec?: number
 }
 
 // The 2026-09-28 / 09-29 video batches: priced by the billing function itself in the UI
@@ -659,6 +672,7 @@ const BATCH_0928_VIDEO = new Set([
   "pixverse-v6", "pixverse-c1", "grok-video-1.5", "vidu-q3", "vidu-q3-turbo",
   "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
   "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
+  "pixelcut-looping-video", "pixelcut-video-bg-removal",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -1144,6 +1158,22 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "marey-motion-transfer",  name: "Marey Motion Transfer",        durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "marey-pose-transfer",    name: "Marey Pose Transfer",          durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "grok-video-extend",      name: "Grok Video Extend",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  // Pixelcut video (2026-09-30): a looping product video from one photo, and
+  // background removal for clips. Priced by lib/ticket-pricing's pixelcutVideoTicketCost.
+  {
+    id: "pixelcut-looping-video", name: "Pixelcut Looping Video",
+    durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"],
+    supportsEndFrame: false, audioType: "toggle", toolPrompt: true,
+    choice: { label: "Motion", note: "the loop starts and ends on your photo", options: [{ value: "subtle", label: "Subtle" }, { value: "spin", label: "360° spin" }] },
+  },
+  {
+    id: "pixelcut-video-bg-removal", name: "Pixelcut Video Background Removal",
+    durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
+    choice: { label: "Background", note: "transparent keeps an alpha channel (WebM)", options: [
+      { value: "transparent", label: "Transparent" }, { value: "green", label: "Green screen" }, { value: "black", label: "Black" },
+      { value: "white", label: "White" }, { value: "blue", label: "Blue" }, { value: "magenta", label: "Magenta" },
+    ] },
+  },
   {
     id: "lipsync-v3",
     name: "Lipsync v3",
@@ -1275,6 +1305,8 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "pixverse-v6-extend": "$",
   "grok-video-edit":    "$$",
   "grok-video-extend":  "$$",
+  "pixelcut-looping-video": "$$$",
+  "pixelcut-video-bg-removal": "$$",
   "pika-2.2":           "$",
   "pikaframes":         "$",
   "pika-2-turbo":       "$",
@@ -1300,6 +1332,13 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "z-image-base":       "$$",
   "z-image-turbo":      "$",
 }
+// Audio Studio (ADMIN ONLY while in development): the picker's groups in
+// lib/audio-studio's section order, and a $ tier from a typical run
+const ADMIN_AUDIO_MODEL_GROUPS = AUDIO_GROUPS.map(g => ({
+  label: g.label, type: g.key, accent: g.accent, dot: g.dot, note: g.note,
+  items: AUDIO_STUDIO_MODELS.filter(m => m.group === g.key).map(m => m.name),
+}))
+const AUDIO_MODEL_COST_BY_NAME = Object.fromEntries(AUDIO_STUDIO_MODELS.map(m => [m.name, audioCostTier(m)])) as Record<string, "$" | "$$" | "$$$" | "$$$+">
 function CostBadge({ tier }: { tier: "$" | "$$" | "$$$" | "$$$+" }) {
   const color = tier === "$"    ? "text-green-400"
               : tier === "$$"   ? "text-amber-400"
@@ -1474,6 +1513,7 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    *   { label: "Moonvalley", type: "licensed-data video", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Marey"] },
    *   "Pika 2 Turbo" to the Pika group, and the two Marey tools to Video Tools.
    */
+  { label: "Pixelcut", type: "looping product video from one photo", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Looping Video"] },
   { label: "More video", type: "SeeDance Mini · Hunyuan Video", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["SeeDance 2.0 Mini", "Hunyuan Video 1.5"] },
   { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References"] },
   { label: "Black Forest Labs", type: "text · image · keyframes · extend · with audio · pricing TBD", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3"] },
@@ -1486,7 +1526,8 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
             "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe",
             "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference",
             "PixVerse V6 Extend", "Grok Video Edit", "Grok Video Extend",
-            "Veo 3.1 Extend", "Veo 3.1 Fast Extend", "MiniMax H3 Max Extend"] },
+            "Veo 3.1 Extend", "Veo 3.1 Fast Extend", "MiniMax H3 Max Extend",
+            "Pixelcut Video Background Removal"] },
 ]
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
@@ -2044,6 +2085,8 @@ const MODEL_BLURBS: Record<string, string> = {
   "Pro Scanner v3":            "Detailed Gemini scanner (legacy)",
   "Wan 2.2 T2I LoRA":          "Runs your trained Wan LoRAs",
   "Pixelcut Product Photo":    "Product shots on clean backgrounds",
+  "Pixelcut Looping Video":    "A seamless product loop from one photo - subtle motion or a full spin",
+  "Pixelcut Video Background Removal": "Cut the subject out of a clip onto transparent or a solid colour",
   "Custom Flux LoRA":          "Runs your own Flux LoRAs",
   // ── Image tools ──
   "Topaz Adjust":              "Colour, white balance, colourise",
@@ -2138,6 +2181,8 @@ const MODEL_BLURBS: Record<string, string> = {
   "Topaz Deblur":              "Removes motion blur",
   "Topaz SDR → HDR":           "Converts SDR footage to HDR",
 }
+// Audio models describe themselves in lib/audio-studio
+for (const m of AUDIO_STUDIO_MODELS) MODEL_BLURBS[m.name] = m.blurb
 
 function ModelMenuPanel({
   label,
@@ -2171,7 +2216,7 @@ function ModelMenuPanel({
   menuTitle?: string
   menuDescription?: string
   cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
-  cardPrefix?: "image" | "video"
+  cardPrefix?: "image" | "video" | "audio"
   bodyMaxHeight: string
 }) {
   // Display mode: "list" (grouped rows) or "cards" (home-page media tiles).
@@ -2531,6 +2576,7 @@ function GroupedTaskbarDropdown({
   menuDescription,
   cardMedia,
   cardPrefix,
+  variant,
 }: {
   label: string
   icon: React.ElementType
@@ -2554,7 +2600,9 @@ function GroupedTaskbarDropdown({
   menuDescription?: string
   // Cards view: the home page's admin-uploaded card media, keyed `${cardPrefix}:${name}`
   cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
-  cardPrefix?: "image" | "video"
+  cardPrefix?: "image" | "video" | "audio"
+  /** "admin": red, like the other admin-only taskbar entries (Studios). */
+  variant?: "admin"
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -2585,20 +2633,25 @@ function GroupedTaskbarDropdown({
   }, [open])
 
   return (
-    <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
+    // min-w-fit: a slot never gets narrower than its own label. With only the
+    // 90px floor, "Audio + ADMIN chip + price" was wider than its share of the
+    // strip on laptop-size screens and its centred content spilled into the
+    // Video slot next to it (the strip scrolls sideways instead)
+    <div className="relative flex-none min-w-fit sm:flex-1" ref={ref}>
       <button
         ref={buttonRef}
         onClick={onToggle}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm transition-all ${
+        className={`flex items-center justify-center gap-2 w-full min-w-[90px] px-3 py-2 rounded-lg text-sm whitespace-nowrap transition-all ${
           open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
         {/* Animated silver-shimmer title — the flagship Image/Video dropdowns */}
         <span
-          className="font-extrabold tracking-wide silver-shimmer-text"
+          className={variant === "admin" ? "font-extrabold tracking-wide text-red-300" : "font-extrabold tracking-wide silver-shimmer-text"}
         >
           {label}
         </span>
+        {variant === "admin" && <span className="px-1 py-px rounded bg-red-500/15 border border-red-500/30 text-[8px] font-bold uppercase tracking-wider text-red-300">Admin</span>}
         {activeCost && <CostBadge tier={activeCost} />}
       </button>
 
@@ -20320,6 +20373,21 @@ function PromptBox({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configOverride?.version])
 
+  /*
+   * ChatGPT Images 2.5 prices by shape, and an "auto" edit takes the first
+   * reference's shape - so read it (from its small thumbnail, same ratio) to
+   * show the exact price the server will charge. Unknown = priced as square,
+   * the upper bound.
+   */
+  const gptRefUrl = model.id === "gpt-image-2.5" && aspectRatio === "auto" ? activeRefImages[0]?.url : undefined
+  const [gptRefDims, setGptRefDims] = useState<{ url: string; width: number; height: number } | null>(null)
+  useEffect(() => {
+    if (!gptRefUrl || gptRefDims?.url === gptRefUrl) return
+    const img = new window.Image() // (Image is an icon import in this file)
+    img.onload = () => { if (img.naturalWidth && img.naturalHeight) setGptRefDims({ url: gptRefUrl, width: img.naturalWidth, height: img.naturalHeight }) }
+    img.src = refTileThumb(gptRefUrl, 128)
+  }, [gptRefUrl, gptRefDims?.url])
+
   const supportsLora = model.id === "z-image-base" || model.id === "z-image-turbo" || model.id === "flux-2" || model.id === "flux-1-dev"
   // The 7/26 scale belongs to the original factor-priced upscalers. The Topaz
   // image suite and Pixelcut arrived later with flat per-run prices in the
@@ -20350,6 +20418,12 @@ function PromptBox({
         tier: model.id, quality, aspectRatio, lora: !!selectedLoraUrl,
         ref: activeRefImages.length > 0, speed: ideogramRenderingSpeed,
         mode: ideogramMode, expansion: ideogramExpansion,
+      })
+    : model.id === "gpt-image-2.5"
+    // The same function the server charges with, fed the same settings.
+    ? gptImage25TicketCost({
+        quality, aspectRatio, refCount: activeRefImages.length, promptChars: prompt.length,
+        refDims: gptRefDims && gptRefDims.url === gptRefUrl ? gptRefDims : null,
       })
     : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
@@ -24403,6 +24477,7 @@ function SD20RefPanel({
   videoRefVideoDuration = 0,
   maxVideos = 3,
   maxAudios = 3,
+  sourceClipMaxSec,
   refTagHint = "prompt with @Image1…",
   allowFrameTags = false,
   startIdx = null,
@@ -24424,6 +24499,8 @@ function SD20RefPanel({
   // Gemini Omni Flash r2v reuses this panel with images only (maxVideos/maxAudios 0)
   maxVideos?: number
   maxAudios?: number
+  /** Single-clip tools: one "Source clip" slot, no images/audio, this cap */
+  sourceClipMaxSec?: number
   refTagHint?: string
   // SeeDance 2.0: pick the start/end frame out of the references (S/E tags per tile)
   allowFrameTags?: boolean
@@ -24442,7 +24519,9 @@ function SD20RefPanel({
 
   // FAL Seedance 2.0 r2v limits: 9 images + 3 videos + 3 audio (12 files
   // total); input videos max 15s combined. Omni r2v: images only.
-  const SD20_MAX_VIDEO_SEC = 15
+  const sourceOnly = !!sourceClipMaxSec
+  const SD20_MAX_VIDEO_SEC = sourceClipMaxSec ?? 15
+  const videoSlots = sourceOnly ? 1 : 3
   const totalFiles = videoRefImagePreviews.length + videoRefVideoFilenames.length + videoRefAudioFilenames.length
   const filesLeft = (9 + maxVideos + maxAudios) - totalFiles
 
@@ -24461,11 +24540,15 @@ function SD20RefPanel({
       const dur = vid.duration
       const w = vid.videoWidth, h = vid.videoHeight
       // fal SeeDance r2v rejects reference clips shaped beyond 2.5:1 either way
-      if (w > 0 && h > 0 && Math.max(w, h) / Math.min(w, h) > 2.5) {
+      if (!sourceOnly && w > 0 && h > 0 && Math.max(w, h) / Math.min(w, h) > 2.5) {
         setRefError(`"${shortName}" can't be used as a reference — its shape (${w}×${h}, ${(w / h).toFixed(2)}:1) is outside SeeDance's supported range. Clips must be no wider than 2.5:1 and no taller than 1:2.5; crop it closer to a standard shape and re-upload.`)
         return
       }
-      if (videoRefVideoDuration + dur > SD20_MAX_VIDEO_SEC + 0.25) {
+      if (sourceOnly && dur > SD20_MAX_VIDEO_SEC + 0.25) {
+        setRefError(`"${shortName}" is ${dur.toFixed(1)}s — this tool takes clips up to ${SD20_MAX_VIDEO_SEC}s. Trim it and re-upload.`)
+        return
+      }
+      if (!sourceOnly && videoRefVideoDuration + dur > SD20_MAX_VIDEO_SEC + 0.25) {
         setRefError(`Reference videos are capped at ${SD20_MAX_VIDEO_SEC}s combined — this clip (${dur.toFixed(1)}s) would make ${(videoRefVideoDuration + dur).toFixed(1)}s. Trim it or remove another video.`)
         return
       }
@@ -24483,6 +24566,7 @@ function SD20RefPanel({
   return (
     <div className="space-y-4">
       {/* Reference Images */}
+      {!sourceOnly && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
@@ -24543,15 +24627,18 @@ function SD20RefPanel({
           </button>
         )}
       </div>
+      )}
 
-      {/* Reference Videos */}
+      {/* Reference Videos (single-clip tools: the one source clip) */}
       {maxVideos > 0 && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-            Reference Videos <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length}/3 · {videoRefVideoDuration.toFixed(0)}s · 2–15s total)</span>
+            {sourceOnly
+              ? <>Source clip <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length ? `${videoRefVideoDuration.toFixed(1)}s` : "required"} · up to {SD20_MAX_VIDEO_SEC}s)</span></>
+              : <>Reference Videos <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length}/3 · {videoRefVideoDuration.toFixed(0)}s · 2–15s total)</span></>}
           </p>
-          {videoRefVideoFilenames.length < 3 && filesLeft > 0 && videoRefVideoDuration < SD20_MAX_VIDEO_SEC && (
+          {videoRefVideoFilenames.length < videoSlots && filesLeft > 0 && (sourceOnly || videoRefVideoDuration < SD20_MAX_VIDEO_SEC) && (
             <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
               className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
               <Plus size={10} />Add
@@ -24576,14 +24663,14 @@ function SD20RefPanel({
         ) : (
           <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
             className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
-            <Video size={12} />Upload reference videos
+            <Video size={12} />{sourceOnly ? "Upload the clip" : "Upload reference videos"}
           </button>
         )}
       </div>
       )}
 
       {/* Reference Audio */}
-      {maxAudios > 0 && (
+      {maxAudios > 0 && !sourceOnly && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
@@ -24666,6 +24753,8 @@ function VideoCustomizationPanel({
   onLtxFpsChange,
   lumaMode = "flex_1",
   onLumaModeChange,
+  choiceValue,
+  onChoiceChange,
   setSafetyChecker,
   isAdminAccount = false,
 }: {
@@ -24725,6 +24814,8 @@ function VideoCustomizationPanel({
   onLtxFpsChange?: (fps: string) => void
   lumaMode?: string
   onLumaModeChange?: (mode: string) => void
+  choiceValue?: string
+  onChoiceChange?: (v: string) => void
   setSafetyChecker?: (v: boolean) => void
   isAdminAccount?: boolean
 }) {
@@ -24847,7 +24938,7 @@ function VideoCustomizationPanel({
 
   return (
     <>
-    <div className="relative isolate p-4 space-y-5 rounded-2xl">
+    <div className="relative isolate flex-1 flex flex-col gap-5 p-4 xl:p-5 rounded-2xl bg-white/[0.015] min-[1800px]:[zoom:1.1] min-[2300px]:[zoom:1.2]">
       <SilverRimOverlay />
       {/* Header — site logo + model, matching the rest of the app */}
       <div className="flex items-center gap-2.5 pb-3 border-b border-white/[0.06]">
@@ -25116,7 +25207,8 @@ function VideoCustomizationPanel({
               onAddRefAudio={onAddRefAudio!}
               onRemoveRefAudio={onRemoveRefAudio!}
               videoRefVideoDuration={videoRefVideoDuration}
-              allowFrameTags
+              sourceClipMaxSec={model.sourceClipMaxSec}
+              allowFrameTags={!model.sourceClipMaxSec}
               startIdx={refStartIdx}
               endIdx={refEndIdx}
               onTagStart={onTagRefStart}
@@ -25273,6 +25365,23 @@ function VideoCustomizationPanel({
             </div>
           )}
 
+          {/* The model's named choice (config.choice) - e.g. Pixelcut's motion or background */}
+          {model.choice && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                {model.choice.label} {model.choice.note && <span className="text-slate-600 normal-case font-normal">({model.choice.note})</span>}
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {model.choice.options.map(o => (
+                  <button key={o.value} onClick={() => onChoiceChange?.(o.value)}
+                    className={`${btnBase} ${(choiceValue || model.choice!.options[0].value) === o.value ? btnActive : btnIdle}`}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Strength — Luma modify / Ray 3.2 edit: how far the result may move from the clip */}
           {model.lumaModes && model.lumaModes.length > 0 && (
             <div className="space-y-1.5">
@@ -25376,6 +25485,32 @@ function VideoCustomizationPanel({
           })()}
         </>
       )}
+
+      {/* Run summary - pinned to the bottom of the column, so the panel reads
+          as one full-height column instead of a card floating at the top */}
+      <div className="mt-auto pt-4 border-t border-white/[0.06] space-y-2.5">
+        {MODEL_BLURBS[model.name] && (
+          <p className="text-[11px] leading-relaxed text-slate-400">{MODEL_BLURBS[model.name]}</p>
+        )}
+        <div className="flex items-center justify-between rounded-xl bg-white/[0.03] border border-white/[0.08] px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">This run</p>
+            <p className="text-[10px] font-mono text-slate-500 truncate">
+              {model.isVideoTool
+                ? (editSourceDuration > 0 ? `${editSourceDuration.toFixed(1)}s source clip` : "add a source clip")
+                : isLipsync
+                ? (lipsyncVideoDuration ? `${lipsyncVideoDuration.toFixed(1)}s video` : "add video + audio")
+                : [duration && duration !== "auto" ? `${duration}s` : duration === "auto" ? "auto length" : null,
+                   model.resolutions?.length ? resolution : null,
+                   model.aspectRatios?.length && !startFramePreview ? aspectRatio : null,
+                   audioEnabled && model.audioType === "toggle" ? "audio" : null].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          <span className="shrink-0 flex items-center gap-1.5 font-mono text-base font-bold text-white">
+            <Ticket size={13} className="text-slate-400" />{ticketCost}
+          </span>
+        </div>
+      </div>
     </div>
 
     {/* Age verification modal for admin safety toggle */}
@@ -25438,28 +25573,28 @@ function VideoCustomizationPanel({
 }
 
 // Video tile that corrects its aspect ratio to the REAL video dimensions once
-// metadata loads. Stored aspectRatio is unreliable (the save path hardcoded 16:9
-// for every video, and i2v "auto" is unknowable before generation), so Full Size
-// tiles measure the actual file instead of trusting the DB.
-const FEED_PLAY_CAP = 8
-const feedPlaying: { el: HTMLVideoElement; stop: () => void }[] = []
-function claimPlayback(el: HTMLVideoElement, stop: () => void) {
-  const dup = feedPlaying.findIndex(x => x.el === el)
-  if (dup >= 0) feedPlaying.splice(dup, 1)
-  feedPlaying.push({ el, stop })
-  while (feedPlaying.length > FEED_PLAY_CAP) feedPlaying.shift()?.stop()
-}
-function releasePlayback(el: HTMLVideoElement) {
-  const i = feedPlaying.findIndex(x => x.el === el)
-  if (i >= 0) feedPlaying.splice(i, 1)
-}
+// its still (or metadata) loads. Stored aspectRatio is unreliable (the save path
+// hardcoded 16:9 for every video, and i2v "auto" is unknowable before
+// generation), so Full Size tiles measure the actual picture instead of the DB.
+//
+// Playback is the home page's cycle (components/home/card-video-scheduler):
+// every tile shows its STILL, and only the few tiles holding a turn mount a
+// <video> at all - it plays through (a short clip loops to a minimum), fades
+// back to the still, and the turn moves to the next tile on screen. How many
+// play at once depends on the device (phone 3, tablet 5, desktop 8) and drops
+// when videos stall, so a long feed never oversubscribes an iPhone's decoders
+// the way dozens of mounted, preloading <video> elements used to.
+const TILE_FADE_MS = 400
 
-function VideoTile({ natural, initialAspect, className, onClick, videoSrc, videoClassName, preload, autoplay = false, silverRim = false, children }: {
+function VideoTile({ natural, initialAspect, className, onClick, videoSrc, stillSrc, videoClassName, preload, autoplay = false, silverRim = false, children }: {
   natural: boolean
   initialAspect: string
   className: string
   onClick: () => void
   videoSrc: string
+  /** The poster image shown while the tile isn't playing. None (or a failed
+   *  one) falls back to the video's own first frame. */
+  stillSrc?: string
   videoClassName: string
   preload: "auto" | "metadata"
   autoplay?: boolean
@@ -25472,45 +25607,119 @@ function VideoTile({ natural, initialAspect, className, onClick, videoSrc, video
   // Locked at mount: recomputing per render would rewrite animation-delay on
   // the running rim sweep and jump its phase
   const [rimDelay] = useState(() => rimPhase())
+  const tileRef = useRef<HTMLDivElement>(null)
   const vidRef = useRef<HTMLVideoElement>(null)
+  const measure = (w: number, h: number) => { if (natural && w > 0 && h > 0) setMeasured(`${w}/${h}`) }
 
-  // Autoplay is viewport-gated: only tiles actually on screen play (muted, looping),
-  // and they pause the moment they scroll away — dozens of simultaneously decoding
-  // videos would blank out iPad Safari. muted is set via the DOM property because
-  // the React attribute alone is unreliable and blocks autoplay.
+  // The still. A poster being made right now answers 503 (the server makes a
+  // couple at a time), so a failed load retries a few times before the tile
+  // settles for the video's first frame.
+  const [stillTry, setStillTry] = useState(0)
+  const [stillFailed, setStillFailed] = useState(false)
+  useEffect(() => { setStillTry(0); setStillFailed(false) }, [stillSrc])
+  const onStillError = () => {
+    if (stillTry >= 3) { setStillFailed(true); return }
+    setTimeout(() => setStillTry(t => t + 1), 4000 + stillTry * 3000)
+  }
+  const stillUrl = stillSrc && !stillFailed
+    ? stillTry ? `${stillSrc}${stillSrc.includes("?") ? "&" : "?"}r=${stillTry}` : stillSrc
+    : null
+
+  // Its turn in the cycle: `live` mounts the video, `shown` fades the still
+  // off it once it is really playing, `turn` restarts a video still mounted.
+  const [live, setLive] = useState(false)
+  const [shown, setShown] = useState(false)
+  const [turn, setTurn] = useState(0)
+  const handleRef = useRef<CardVideoHandle | null>(null)
+  useEffect(() => {
+    const el = tileRef.current
+    if (!el || !autoplay) return
+    let unmount: ReturnType<typeof setTimeout> | null = null
+    const handle = registerCardVideo(el, {
+      start: () => {
+        if (unmount) clearTimeout(unmount)
+        setLive(true)
+        setTurn(t => t + 1)
+      },
+      stop: () => {
+        setShown(false)
+        if (unmount) clearTimeout(unmount)
+        unmount = setTimeout(() => setLive(false), TILE_FADE_MS + 50)
+      },
+    })
+    handleRef.current = handle
+    return () => {
+      if (unmount) clearTimeout(unmount)
+      handle.unregister()
+      handleRef.current = null
+      setLive(false)
+      setShown(false)
+    }
+  }, [autoplay, videoSrc])
+
+  // Each turn: from the top, muted via the DOM property (React's attribute is
+  // unreliable and browsers refuse unmuted autoplay)
   useEffect(() => {
     const v = vidRef.current
-    if (!v) return
-    if (!autoplay) { v.pause(); return }
+    if (!live || !v || !turn) return
     v.muted = true
-    const obs = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        claimPlayback(v, () => v.pause())
-        v.play().catch(() => {})
-      } else {
-        releasePlayback(v)
-        v.pause()
-      }
-    }, { rootMargin: "100px" })
-    obs.observe(v)
-    return () => { obs.disconnect(); releasePlayback(v); v.pause() }
-  }, [autoplay])
+    v.currentTime = 0
+    v.play()
+      ?.then(() => { setShown(true); handleRef.current?.started() })
+      .catch((e: unknown) => handleRef.current?.failed((e as DOMException)?.name === "NotAllowedError"))
+  }, [live, turn])
+
+  const onVideoEnded = () => {
+    const v = vidRef.current
+    if (v && handleRef.current?.ended()) {
+      v.currentTime = 0 // a short clip goes round again until the minimum is up
+      v.play()?.catch(() => handleRef.current?.failed())
+    }
+  }
 
   const tile = (
-    <div className={className} style={{ aspectRatio: natural && measured ? measured : initialAspect }} onClick={onClick}>
-      <video
-        ref={vidRef}
-        src={videoSrc}
-        className={videoClassName}
-        playsInline
-        preload={preload}
-        muted
-        loop={autoplay}
-        onLoadedMetadata={natural ? (e) => {
-          const v = e.currentTarget
-          if (v.videoWidth > 0 && v.videoHeight > 0) setMeasured(`${v.videoWidth}/${v.videoHeight}`)
-        } : undefined}
-      />
+    <div ref={tileRef} className={className} style={{ aspectRatio: natural && measured ? measured : initialAspect }} onClick={onClick}>
+      {/* The video exists only during the tile's turn */}
+      {live && (
+        <video
+          ref={vidRef}
+          src={videoSrc}
+          className={`absolute inset-0 ${videoClassName}`}
+          playsInline
+          muted
+          preload="auto"
+          onLoadedMetadata={e => measure(e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
+          onPlaying={() => { setShown(true); handleRef.current?.started() }}
+          onWaiting={() => handleRef.current?.stalled()}
+          onEnded={onVideoEnded}
+          onError={() => handleRef.current?.failed()}
+        />
+      )}
+      {/* The still covers it whenever it is not playing */}
+      <div className="absolute inset-0 transition-opacity ease-out pointer-events-none" style={{ opacity: shown ? 0 : 1, transitionDuration: `${TILE_FADE_MS}ms` }}>
+        {stillUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={stillUrl}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            className={videoClassName}
+            onLoad={e => measure(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+            onError={onStillError}
+          />
+        ) : (
+          // No usable poster: the video's first frame stands in (never played)
+          <video
+            src={videoSrc}
+            className={videoClassName}
+            playsInline
+            muted
+            preload={preload}
+            onLoadedMetadata={e => measure(e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
+          />
+        )}
+      </div>
       {children}
     </div>
   )
@@ -25759,6 +25968,15 @@ function VideoFeed({
 
   // Append #t=0.001 so iOS Safari decodes the first frame instead of showing black
   const iosSrc = (url: string) => (url.includes("#") ? url : `${url}#t=0.001`)
+  // A tile's still: the stored thumbnail, else the poster recorded at save time
+  // (when it is an image - some rows recorded the mp4 itself), else the proxy,
+  // which makes one from the video's first frame and stores it
+  const videoStill = (img: ImageItem) => {
+    const vmThumb = img.videoMetadata?.thumbnailUrl
+    if (img.thumbnailUrl) return img.thumbnailUrl
+    if (typeof vmThumb === "string" && /\.(webp|jpe?g|png|avif)(\?|$)/i.test(vmThumb)) return vmThumb
+    return `/api/images/${img.id}?thumb=1`
+  }
 
   const hasContent = showHidden
     ? dbImages.length > 0 || dbLoading || videoHasMoreRef.current
@@ -25844,6 +26062,7 @@ function VideoFeed({
         }`}
         onClick={() => selectMode ? onSelectToggle?.(parseInt(item.id)) : onVideoClick({ id: item.dbId, videoUrl: item.videoUrl, prompt: item.prompt, model: item.model, duration: item.duration, resolution: item.resolution, aspectRatio: item.aspectRatio, audioEnabled: item.audioEnabled, startFrameUrl: item.startFrameUrl, endFrameUrl: item.endFrameUrl, motionVideoUrl: item.motionVideoUrl, keepOriginalSound: item.keepOriginalSound, characterOrientation: item.characterOrientation, createdAt: item.createdAt })}
         videoSrc={iosSrc(item.videoUrl)}
+        stillSrc={item.dbId ? `/api/images/${item.dbId}?thumb=1` : undefined}
         videoClassName={`w-full h-full pointer-events-none ${tileFit(item.aspectRatio)}`}
         preload={tilePreload}
         autoplay={autoplay}
@@ -25944,6 +26163,7 @@ function VideoFeed({
               onVideoClick({ id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt })
             }}
             videoSrc={iosSrc(img.imageUrl)}
+            stillSrc={videoStill(img)}
             videoClassName={`w-full h-full pointer-events-none ${tileFit(dbAr)}`}
             preload={tilePreload}
             autoplay={autoplay}
@@ -26116,9 +26336,12 @@ function VideoPromptBar({
   cardMedia,
   promptScale = 1,
   onPromptChange,
+  sourceSeconds = 0,
 }: {
   model: VideoModelConfig
   onGenerate: (prompt: string) => void
+  /** A clip tool's source length (seconds), for tools billed by it. */
+  sourceSeconds?: number
   onPromptChange?: (text: string) => void
   generating: boolean
   canGenerate: boolean
@@ -26177,6 +26400,20 @@ function VideoPromptBar({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overrideVersion])
 
+  // The bar's real height (one row on wide screens, two or three on tablets,
+  // taller again at the 1.5x prompt scale) goes out as --video-bar-h so the
+  // feed behind it can pad by exactly that much - a fixed pb-24 left the last
+  // row of videos under the bar whenever the bar grew
+  const barRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = barRef.current
+    if (!el) return
+    const root = document.documentElement
+    const ro = new ResizeObserver(() => root.style.setProperty("--video-bar-h", `${Math.ceil(el.getBoundingClientRect().height)}px`))
+    ro.observe(el)
+    return () => { ro.disconnect(); root.style.removeProperty("--video-bar-h") }
+  }, [])
+
   useEffect(() => {
     if (!modelOpen) return
     const handler = (e: MouseEvent) => {
@@ -26201,7 +26438,7 @@ function VideoPromptBar({
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-") || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled })
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds })
     : isSD20FamilyBar
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
     : model.id === "happy-horse"
@@ -26224,7 +26461,11 @@ function VideoPromptBar({
 
   // Wan 2.7's i2v endpoint takes an OPTIONAL prompt — with a start image present,
   // an empty prompt is a valid run (t2v without an image still needs one)
-  const promptOptional = model.id === "wan-2.7" && !!startFramePreview
+  // Wan 2.7 i2v and Pixelcut Looping Video run from the start frame alone
+  const promptOptional = ((model.id === "wan-2.7" || model.id === "pixelcut-looping-video") && !!startFramePreview)
+    // A clip tool works on its source clip; only the ones whose schema demands
+    // a prompt (toolPromptRequired) wait for text - the config already says so
+    || (!!model.isVideoTool && !model.toolPromptRequired)
   const ready = !isGenerationMaintenance && ((model.id === "kling-v3-motion" || isLipsyncModel) ? canGenerate : canGenerate && (!!prompt.trim() || promptOptional))
   const promptPlaceholder = model.id === "kling-v3-motion"
     ? "Describe additional details (optional)..."
@@ -26237,7 +26478,7 @@ function VideoPromptBar({
     : "Describe the motion..."
 
   return (
-    <div className="fixed bottom-0 left-0 sm:left-72 right-0 z-30 border-t border-white/5 bg-[#050810]/95 backdrop-blur-md">
+    <div ref={barRef} className="fixed bottom-0 left-0 sm:left-72 xl:left-80 2xl:left-96 right-0 z-30 border-t border-white/5 bg-[#050810]/95 backdrop-blur-md">
 
       {/* ── Mobile layout (< sm) ───────────────────────────────────────────── */}
       <div className="flex flex-col gap-2 px-3 py-2.5 sm:hidden" style={{ zoom: promptScale }}>
@@ -26401,17 +26642,23 @@ function VideoPromptBar({
       </div>
 
       {/* ── Desktop layout (≥ sm) ─────────────────────────────────────────── */}
-      <div className="hidden sm:flex gap-2 items-end px-4 py-3" style={{ zoom: promptScale }}>
+      {/* Below lg (tablets, small laptops) the space beside the settings column
+          is too narrow for switcher + prompt + Generate in one row, so the
+          prompt takes a full row of its own and the controls sit under it */}
+      <div className="hidden sm:flex flex-wrap lg:flex-nowrap gap-2 items-end px-4 py-3" style={{ zoom: promptScale }}>
 
         {/* Model switcher */}
         <div className="relative shrink-0" ref={modelRef}>
           <button
             onClick={() => setModelOpen(v => !v)}
+            title={model.name}
             className="flex items-center gap-1.5 h-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 hover:border-white/20 transition-all text-[11px] text-slate-300 font-medium whitespace-nowrap"
           >
             <Video size={11} className="text-slate-300 shrink-0" />
-            {model.name}
-            <ChevronDown size={10} className={`text-slate-500 transition-transform ${modelOpen ? "rotate-180" : ""}`} />
+            {/* Long names ("Pixelcut Video Background Removal") are clipped on
+                narrower screens so the prompt keeps its room; full name on hover */}
+            <span className="truncate max-w-[8.5rem] lg:max-w-[13rem] 2xl:max-w-none">{model.name}</span>
+            <ChevronDown size={10} className={`shrink-0 text-slate-500 transition-transform ${modelOpen ? "rotate-180" : ""}`} />
           </button>
           {modelOpen && (
             <div className="absolute bottom-full mb-1.5 left-0 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-hidden z-50" style={{ width: Math.min(720, window.innerWidth / promptScale - 16) }}>
@@ -26438,7 +26685,7 @@ function VideoPromptBar({
         </div>
 
         {/* Prompt textarea — animated silver rim */}
-        <div className="flex-1 relative isolate rounded-lg overflow-hidden p-[1.5px]">
+        <div className="order-first lg:order-none w-full lg:w-auto lg:flex-1 min-w-0 relative isolate rounded-lg overflow-hidden p-[1.5px]">
           <span
             className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
             style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
@@ -26455,7 +26702,7 @@ function VideoPromptBar({
 
 
         {/* Generate button + meta */}
-        <div className="flex flex-col items-end gap-1.5 shrink-0">
+        <div className="ml-auto flex flex-col items-end gap-1.5 shrink-0">
           {queueFull
             ? <span className="text-[10px] text-red-400/80 font-mono">Queue full</span>
             : <span className="text-[10px] text-slate-500 font-mono">{metaLine}</span>
@@ -27654,6 +27901,30 @@ export default function PortalV2Page() {
   const [feedVideoAutoplay, setFeedVideoAutoplay] = useState(true)
   // Taskbar size — CSS zoom on the whole top taskbar (1x default)
   const [feedTaskbarScale, setFeedTaskbarScale] = useState<1 | 1.5>(1)
+  // Phones always get the 1x taskbar: at 1.5x its mobile row (logo, queues,
+  // tickets, profile, Dashboard) is ~520px wide and the page scrolled sideways
+  const [isPhoneWidth, setIsPhoneWidth] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)")
+    const sync = () => setIsPhoneWidth(mq.matches)
+    sync()
+    mq.addEventListener("change", sync)
+    return () => mq.removeEventListener("change", sync)
+  }, [])
+  const taskbarZoom = isPhoneWidth ? 1 : feedTaskbarScale
+  // The taskbar's real height, measured: one 48px row on desktop, two rows on
+  // phones, either one scaled by the taskbar-size setting. Full-height views
+  // subtract THIS - a fixed 48px left the page taller than the window at the
+  // 1.5x setting and on every phone.
+  const taskbarRef = useRef<HTMLDivElement>(null)
+  const [taskbarHeightPx, setTaskbarHeightPx] = useState(49)
+  useEffect(() => {
+    const el = taskbarRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setTaskbarHeightPx(Math.ceil(el.getBoundingClientRect().height)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   // Prompt box size — CSS zoom on the composer bars (image + video)
   const [feedPromptScale, setFeedPromptScale] = useState<1 | 1.5>(1)
   // Borders: animated silver rim around every feed thumbnail (image + video).
@@ -28000,10 +28271,10 @@ export default function PortalV2Page() {
   // current view persists across refreshes via sessionStorage, and every view switch
   // pushes a history entry so the browser Back button walks view history (Home →
   // Image → Back lands on Home, not on whatever page preceded the portal).
-  const [scannerMode, setScannerMode] = useState<"image" | "video" | "chat" | "home" | "employees" | "threed">("home")
+  const [scannerMode, setScannerMode] = useState<"image" | "video" | "chat" | "home" | "employees" | "threed" | "audio">("home")
   // Which employee workspace is open inside the Employees section
   const [activeEmployee, setActiveEmployee] = useState<EmployeeId | null>(null)
-  const VALID_MODES = ["image", "video", "chat", "home", "employees", "threed"] as const
+  const VALID_MODES = ["image", "video", "chat", "home", "employees", "threed", "audio"] as const
   type ScannerMode = (typeof VALID_MODES)[number]
   // Set when a mode change came from restore/popstate — those must not push a new entry.
   const modeFromHistoryRef = useRef(false)
@@ -28063,6 +28334,8 @@ export default function PortalV2Page() {
   // but only once the admin check has actually resolved (it's async on load)
   useEffect(() => {
     if (scannerMode === "chat" && adminChecked && !isAdminAccount) setScannerMode("image")
+    // Audio Studio is admin-only while in development
+    if (scannerMode === "audio" && adminChecked && !isAdminAccount) setScannerMode("home")
     // Employees open to everyone once any one is released (lib/employees.ts);
     // until then, admin-only.
     if (scannerMode === "employees" && adminChecked && !isAdminAccount && !ANY_PUBLIC_EMPLOYEE) setScannerMode("image")
@@ -28076,6 +28349,20 @@ export default function PortalV2Page() {
     if (scannerMode === "threed") { setActiveEmployee("3d-studio"); setScannerMode("employees") }
   }, [scannerMode, adminChecked, isAdminAccount, activeEmployee])
   const [selectedVideoModel, setSelectedVideoModel] = useState<VideoModelConfig>(() => VIDEO_MODEL_CONFIGS[0])
+  // Audio Studio (admin only): the chosen model, remembered per browser
+  const [selectedAudioModelId, setSelectedAudioModelId] = useState<string>(() => {
+    try { return localStorage.getItem("pv2-audio-model") || AUDIO_STUDIO_MODELS[0].id } catch { return AUDIO_STUDIO_MODELS[0].id }
+  })
+  const chooseAudioModel = useCallback((id: string) => {
+    setSelectedAudioModelId(id)
+    try { localStorage.setItem("pv2-audio-model", id) } catch {}
+  }, [])
+  const handleSelectAudioModel = useCallback((name: string) => {
+    const m = AUDIO_STUDIO_MODELS.find(x => x.name === name)
+    if (!m) return
+    chooseAudioModel(m.id)
+    setScannerMode("audio")
+  }, [chooseAudioModel])
   const [videoDuration, setVideoDuration] = useState("5")
   const [videoAspectRatio, setVideoAspectRatio] = useState("16:9")
   const [videoResolution, setVideoResolution] = useState("1080p")
@@ -28140,6 +28427,15 @@ export default function PortalV2Page() {
   const [wan30VideoSafetyChecker, setWan30VideoSafetyChecker] = useState(true)
   const [videoLtxFps, setVideoLtxFps] = useState("25")
   const [videoLumaMode, setVideoLumaMode] = useState("flex_1")
+  // The model's single named choice (config.choice), e.g. Pixelcut's loop motion
+  const [videoChoice, setVideoChoice] = useState("")
+  // Always one of the CURRENT model's options: a model restored on load (not
+  // picked through applyVideoModel) kept the last model's value - Looping's
+  // "subtle" on Background Removal, where nothing showed as selected.
+  useEffect(() => {
+    const opts = selectedVideoModel.choice?.options
+    if (opts && !opts.some(o => o.value === videoChoice)) setVideoChoice(opts[0].value)
+  }, [selectedVideoModel, videoChoice])
   const [videoToolFactor, setVideoToolFactor] = useState("2")
   const [videoToolCreativity, setVideoToolCreativity] = useState("0.35")
   const [videoToolTargetFps, setVideoToolTargetFps] = useState("60")
@@ -28720,6 +29016,10 @@ export default function PortalV2Page() {
     videoPollingIntervals.current[slot.slotId] = interval
   }, [])
 
+  // A clip tool's source length: its own upload, or the clip in the refs panel
+  // (Luma and Pixelcut background removal read their source from there)
+  const videoToolSourceSec = videoEditSourceDuration
+    || ((selectedVideoModel.id.startsWith("luma-ray-") || selectedVideoModel.id === "pixelcut-video-bg-removal") ? videoRefVideoDuration : 0)
   const handleVideoGenerate = useCallback(async (promptText: string) => {
     const isMotion = selectedVideoModel.id === "kling-v3-motion"
     const isLipsync = !!selectedVideoModel.supportsLipsync
@@ -28741,7 +29041,8 @@ export default function PortalV2Page() {
       const src = videoRefVideoUrls.filter(Boolean)[0] || videoEditSourceUrl
       if (!src) { alert("Upload the video to process as a video reference first."); return }
       if (selectedVideoModel.toolPromptRequired && !promptText.trim()) { alert("This tool needs a prompt - describe the change you want."); return }
-    } else if (!isMotion && !isLipsync && !promptText.trim() && !(selectedVideoModel.id === "wan-2.7" && videoStartFrameUrl)) {
+    } else if (!isMotion && !isLipsync && !promptText.trim() && !(selectedVideoModel.id === "wan-2.7" && videoStartFrameUrl) && selectedVideoModel.id !== "pixelcut-looping-video") {
+      // (Pixelcut Looping Video's prompt is optional: the motion setting drives it)
       // Say why nothing happened instead of returning silently — a dead Generate
       // button is indistinguishable from a broken one
       alert("Add a prompt before generating.")
@@ -28844,7 +29145,7 @@ export default function PortalV2Page() {
             editVideoUrl:          sdEditVideoUrl,
             // Luma tools bill by the clip's length: when it came in through the
             // refs panel, that panel's measured duration is the one to send
-            editVideoDurationSec:  videoEditSourceDuration || (selectedVideoModel.id.startsWith("luma-ray-") ? videoRefVideoDuration : 0),
+            editVideoDurationSec:  videoToolSourceSec,
           }),
           // Lipsync v3
           ...(isLipsync && {
@@ -28861,6 +29162,7 @@ export default function PortalV2Page() {
           ...(selectedVideoModel.id.startsWith("wan-3.0") ? { wan30SafetyChecker: wan30VideoSafetyChecker } : {}),
           ...(selectedVideoModel.fpsOptions ? { ltxFps: videoLtxFps } : {}),
           ...(selectedVideoModel.lumaModes ? { lumaMode: videoLumaMode } : {}),
+          ...(selectedVideoModel.choice ? { videoChoice: videoChoice || selectedVideoModel.choice.options[0].value } : {}),
           ...(selectedVideoModel.isVideoTool ? {
             videoUpscaleFactor: videoToolFactor,
             videoToolCreativity: videoToolCreativity,
@@ -28927,7 +29229,7 @@ export default function PortalV2Page() {
     } finally {
       setVideoGenerating(false)
     }
-  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoEditSourceUrl, videoEditSourceDuration])
+  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec])
 
   const applyVideoModel = useCallback((model: VideoModelConfig) => {
     setSelectedVideoModel(model)
@@ -28935,7 +29237,8 @@ export default function PortalV2Page() {
     // Omni Flash defaults to 8s, Wan 2.7 to 5s (their API defaults) — durations[0] would seed the minimum
     setVideoDuration(model.id === "gemini-omni-flash" ? "8" : model.id === "wan-2.7" ? "5" : model.durations[0] ?? "5")
     setVideoAspectRatio(model.aspectRatios?.[0] ?? "16:9")
-    setVideoResolution(model.resolutions?.[1] ?? "1080p")
+    setVideoResolution(model.id === "pixelcut-looping-video" ? "1080p" : model.resolutions?.[1] ?? "1080p")
+    setVideoChoice(model.choice?.options[0]?.value ?? "")
     setVideoAudioEnabled(false)
     setVideoAudioFile(null)
     setVideoAudioUrl(null)
@@ -31890,7 +32193,7 @@ function employeePending(
     <div className="bg-[#050810] text-white min-h-screen">
       {needsAgeAttest && <AgeAttestModal onDone={() => setNeedsAgeAttest(false)} />}
       {/* Taskbar — user-scalable via Feed → Taskbar Size (CSS zoom reflows layout) */}
-      <div className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: feedTaskbarScale }}>
+      <div ref={taskbarRef} className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: taskbarZoom }}>
 
         {/* Mobile-only top row: branding + queue + tickets + profile + dashboard */}
         <div className="flex sm:hidden items-center justify-between px-3 h-9 border-b border-white/5">
@@ -31976,6 +32279,25 @@ function employeePending(
               cardMedia={homeCards}
               cardPrefix="video"
             />
+            {/* Audio - admin only while in development */}
+            {isAdminAccount && (
+              <GroupedTaskbarDropdown
+                label="Audio"
+                icon={Music}
+                groups={[]}
+                adminGroups={ADMIN_AUDIO_MODEL_GROUPS}
+                open={openDropdown === "audio"}
+                onToggle={() => toggle("audio")}
+                onSelect={handleSelectAudioModel}
+                activeItem={AUDIO_STUDIO_MODELS.find(m => m.id === selectedAudioModelId)?.name}
+                itemCosts={AUDIO_MODEL_COST_BY_NAME}
+                menuTitle="Audio Model"
+                menuDescription="Voices, dialogue, music, sound effects and audio tools. Admin only while in development."
+                cardMedia={homeCards}
+                cardPrefix="audio"
+                variant="admin"
+              />
+            )}
             <TextDropdown
               open={openDropdown === "text"}
               onToggle={() => toggle("text")}
@@ -31989,7 +32311,7 @@ function employeePending(
               onToggle={() => toggle("refs")}
               library={refLibrary}
               activeIds={videoRefsEnabled ? videoActiveRefIds : motionRefsEnabled ? motionActiveRefIds : activeRefIds}
-              modelMaxRefs={scannerMode === "threed" || (scannerMode === "employees" && activeEmployee === "3d-studio") ? 8 : scannerMode === "employees" && activeEmployee === "movie-studio" ? 16 : scannerMode === "chat" ? (chatRefCap ?? 20) : videoRefsEnabled ? 12 : motionRefsEnabled ? 1 : selectedModel.maxReferenceImages}
+              modelMaxRefs={scannerMode === "threed" || (scannerMode === "employees" && (activeEmployee === "3d-studio" || activeEmployee === "storyboard")) ? 8 : scannerMode === "employees" && activeEmployee === "movie-studio" ? 16 : scannerMode === "chat" ? (chatRefCap ?? 20) : videoRefsEnabled ? 12 : motionRefsEnabled ? 1 : selectedModel.maxReferenceImages}
               // Movie Studio alone counts the user's own clips separately —
               // they are cut into the film rather than shown to a model.
               modelMaxVideos={scannerMode === "employees" && activeEmployee === "movie-studio" ? 4 : undefined}
@@ -32276,7 +32598,7 @@ function employeePending(
         // feeds grew the PAGE as they loaded, so the window scrollbar appeared
         // and disappeared — each toggle changed the viewport width, flipped the
         // responsive breakpoint, and made the taskbar labels flash in and out.
-        <div style={{ height: "calc(100vh - 48px)" }} className="flex flex-col overflow-hidden">
+        <div style={{ height: `calc(100dvh - ${taskbarHeightPx}px)` }} className="flex flex-col overflow-hidden">
         <EmployeesView
           isAdmin={isAdminAccount}
           active={activeEmployee}
@@ -32331,6 +32653,16 @@ function employeePending(
                 .map(r => ({ id: r.id, url: r.url }))}
               onRemoveRef={handleDeactivateRef}
             />
+          ) : activeEmployee === "storyboard" ? (
+            // The taskbar Refs library's active images keep a board's cast
+            // consistent across its stills (and inform the AI draft)
+            <StoryboardWorkspace
+              signedIn={user !== null}
+              activeRefs={refLibrary
+                .filter(img => activeRefIds.includes(img.id))
+                .map(r => ({ id: r.id, url: r.url }))}
+              onRemoveRef={handleDeactivateRef}
+            />
           ) : null}
         </EmployeesView>
         </div>
@@ -32348,6 +32680,9 @@ function employeePending(
           cards={homeCards}
           onSelectImageModel={handleSelectImageModel}
           onSelectVideoModel={handleSelectVideoModel}
+          adminAudioGroups={ADMIN_AUDIO_MODEL_GROUPS}
+          audioCostByName={AUDIO_MODEL_COST_BY_NAME}
+          onSelectAudioModel={handleSelectAudioModel}
           onGoChat={() => setScannerMode("chat")}
           onGoEmployee={(id) => { setActiveEmployee(id); setScannerMode("employees") }}
           onGoThreeD={() => { setActiveEmployee("3d-studio"); setScannerMode("employees") }}
@@ -32368,7 +32703,7 @@ function employeePending(
         />
       ) : scannerMode === "chat" ? (
         /* Restored chat mode, admin check still in flight — avoid flashing the feed */
-        <div style={{ height: "calc(100vh - 48px)" }} className="flex items-center justify-center">
+        <div style={{ height: `calc(100dvh - ${taskbarHeightPx}px)` }} className="flex items-center justify-center">
           <Loader2 size={20} className="text-cyan-500/60 animate-spin" />
         </div>
       ) : scannerMode === "image" ? (
@@ -32469,14 +32804,28 @@ function employeePending(
           />
           )}
         </>
+      ) : scannerMode === "audio" ? (
+        /* Audio Studio - admin only (the redirect above sends anyone else home) */
+        isAdminAccount && user ? (
+          <AudioStudio
+            topOffsetPx={taskbarHeightPx}
+            modelId={selectedAudioModelId}
+            onModelChange={chooseAudioModel}
+            isAdmin={isAdminAccount}
+            ticketBalance={user.ticketBalance}
+            onTicketsSpent={n => setUser(prev => prev ? { ...prev, ticketBalance: prev.ticketBalance - n } : prev)}
+          />
+        ) : (
+          <div className="flex items-center justify-center py-32"><Loader2 size={22} className="animate-spin text-slate-500" /></div>
+        )
       ) : !user ? (
         /* Video — not signed in */
         <FeedSignInPrompt />
       ) : (
         /* Video scanner — sidebar on desktop, drawer on mobile */
-        <div style={{ height: "calc(100vh - 48px)" }} className="flex overflow-hidden relative">
+        <div style={{ height: `calc(100dvh - ${taskbarHeightPx}px)` }} className="flex overflow-hidden relative">
           {/* Left: customization panel — desktop only */}
-          <div className="hidden sm:block w-72 shrink-0 border-r border-white/5 overflow-y-auto pb-24">
+          <div className="hidden sm:flex sm:flex-col gap-2 w-72 xl:w-80 2xl:w-96 shrink-0 border-r border-white/5 overflow-y-auto p-2">
             {selectedVideoModel.id === "wan-2.2-lora" && (
               <WanLoraPicker runs={videoLoraRuns} sel={videoLoraSel} onSelect={setVideoLoraSel} />
             )}
@@ -32489,6 +32838,8 @@ function employeePending(
               onLtxFpsChange={setVideoLtxFps}
               lumaMode={videoLumaMode}
               onLumaModeChange={setVideoLumaMode}
+              choiceValue={videoChoice}
+              onChoiceChange={setVideoChoice}
               duration={videoDuration}
               onDurationChange={setVideoDuration}
               aspectRatio={videoAspectRatio}
@@ -32537,7 +32888,7 @@ function employeePending(
               onSD20ModeChange={setVideoSD20Mode}
               editSourceFilename={videoEditSourceFilename}
               editSourceUploading={videoEditSourceFilename !== null && videoEditSourceUrl === null}
-              editSourceDuration={videoEditSourceDuration}
+              editSourceDuration={videoToolSourceSec}
               onEditSourceSelect={handleEditSourceSelect}
               onClearEditSource={() => { setVideoEditSourceFilename(null); setVideoEditSourceUrl(null); setVideoEditSourceDuration(0) }}
               lipsyncVideoFilename={videoLipsyncVideoFilename}
@@ -32554,8 +32905,10 @@ function employeePending(
             />
           </div>
 
-          {/* Feed — full width on mobile, flex-1 on desktop */}
-          <div className="flex-1 overflow-y-auto pb-24">
+          {/* Feed — full width on mobile, flex-1 on desktop. The bottom padding
+              clears the fixed prompt bar by its measured height (VideoPromptBar
+              publishes --video-bar-h; 6rem until it has) */}
+          <div className="flex-1 overflow-y-auto" style={{ paddingBottom: "calc(var(--video-bar-h, 6rem) + 0.75rem)" }}>
             <VideoFeed
               modelFilter={videoModelFilter}
               pendingSlots={videoPendingSlots}
@@ -32582,6 +32935,7 @@ function employeePending(
 
           {/* Video prompt bar — fixed at bottom */}
           <VideoPromptBar
+            sourceSeconds={videoToolSourceSec}
             key={`vpb-${user?.id ?? "anon"}`}
             cardMedia={homeCards}
             promptScale={feedPromptScale}
@@ -32657,6 +33011,10 @@ function employeePending(
                   safetyChecker={selectedVideoModel.id === "wan-2.5" ? wan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? seedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? wan27VideoSafetyChecker : selectedVideoModel.id === "minimax-h3-max" ? h3MaxVideoSafetyChecker : selectedVideoModel.id === "flux-3" ? flux3VideoSafetyChecker : selectedVideoModel.id.startsWith("wan-3.0") ? wan30VideoSafetyChecker : undefined}
                   setSafetyChecker={selectedVideoModel.id === "wan-2.5" ? setWan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? setSeedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? setWan27VideoSafetyChecker : selectedVideoModel.id === "minimax-h3-max" ? setH3MaxVideoSafetyChecker : selectedVideoModel.id === "flux-3" ? setFlux3VideoSafetyChecker : selectedVideoModel.id.startsWith("wan-3.0") ? setWan30VideoSafetyChecker : undefined}
                   isAdminAccount={isAdminAccount}
+                  lumaMode={videoLumaMode}
+                  onLumaModeChange={setVideoLumaMode}
+                  choiceValue={videoChoice}
+                  onChoiceChange={setVideoChoice}
                   duration={videoDuration}
                   onDurationChange={setVideoDuration}
                   aspectRatio={videoAspectRatio}
@@ -32705,7 +33063,7 @@ function employeePending(
                   onSD20ModeChange={setVideoSD20Mode}
                   editSourceFilename={videoEditSourceFilename}
                   editSourceUploading={videoEditSourceFilename !== null && videoEditSourceUrl === null}
-                  editSourceDuration={videoEditSourceDuration}
+                  editSourceDuration={videoToolSourceSec}
                   onEditSourceSelect={handleEditSourceSelect}
                   onClearEditSource={() => { setVideoEditSourceFilename(null); setVideoEditSourceUrl(null); setVideoEditSourceDuration(0) }}
                   lipsyncVideoFilename={videoLipsyncVideoFilename}

@@ -1,3 +1,4 @@
+import { gptImage25TicketCost } from '@/lib/ticket-pricing'
 // AI Model Configuration - FAL.ai models (NanoBanana + SeeDream)
 // Imagen models require different setup (commented out for now)
 
@@ -892,6 +893,14 @@ export function getTicketCost(modelId: string, quality?: '2k' | '4k' | string): 
   // Pro Scanner v3: 7 tickets for 2K, 15 tickets for 4K
   if (modelId === 'gemini-3-pro-image') {
     return quality === '4k' ? 15 : 7
+  }
+
+  // ChatGPT Images 2.5: priced per request from measured fal costs (shape,
+  // effort, references - lib/ticket-pricing). Callers that only know the tier
+  // get the dearest shape (square) with no references; /api/generate and the
+  // portal price the real request.
+  if (modelId === 'gpt-image-2.5' || modelId === 'gpt-image-2.5-edit') {
+    return gptImage25TicketCost({ quality: quality ?? '1k' })
   }
 
   // SeeDream 4.5: 2 tickets for 2K, 4 tickets for 4K

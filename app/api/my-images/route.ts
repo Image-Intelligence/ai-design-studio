@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma'
 import { deleteFromR2 } from '@/lib/r2'
 import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth'
 import { jsonPrivate } from '@/lib/api-json'
+import { AUDIO_MODEL_PREFIX } from '@/lib/audio-studio'
 
 
 export async function GET(request: Request) {
@@ -187,10 +188,21 @@ export async function GET(request: Request) {
     // or .ply, which an <img> cannot draw, so every one of them rendered as an
     // empty tile in the picture feed. They have their own library in the 3D
     // Studio, which knows how to display them.
+    //
+    // Audio Studio runs (model 'audio:<id>') are sound files. Like meshes, an
+    // <img> cannot draw them, and most callers of this route are picture
+    // feeds - so they are left out unless the caller asks: type=audio for the
+    // Audio Studio's own feed, includeAudio=1 for a feed that can play them
+    // (My Generations).
+    const includeAudio = searchParams.get('includeAudio') === '1'
+    const audioWhere = type === 'audio'
+      ? { model: { startsWith: AUDIO_MODEL_PREFIX } }
+      : includeAudio ? {} : { NOT: { model: { startsWith: AUDIO_MODEL_PREFIX } } }
     const uploadWhere = {
       AND: [
         { model: { not: '__upload__' } },
         { NOT: { model: { startsWith: '3d:' } } },
+        audioWhere,
       ],
     }
 

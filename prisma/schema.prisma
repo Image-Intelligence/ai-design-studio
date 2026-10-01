@@ -77,6 +77,7 @@ model User {
   chats               Chat[]
   chatProviderKeys    ChatProviderKey[]
   chatMemories        ChatMemory[]
+  storyboards         Storyboard[]
 
   // Desktop-app link: personal bearer API keys
   apiKeys             ApiKey[]
@@ -1283,4 +1284,27 @@ model ChatMemory {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+}
+
+/// Storyboard Studio (portal-v2 Studios, admin-only): a film planned as an
+/// ordered row of stills before any motion is shot. `shots` is the ordered
+/// array of StoryboardShot objects (lib/storyboard.ts) - one JSON document so a
+/// reorder or an edit is a single write, and the shape can grow without DDL.
+model Storyboard {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String   @default("Untitled storyboard")
+  story     String   @default("") @db.Text // what happens across the shots and how the video connects them
+  look      String   @default("") @db.Text // style / look notes applied to every still
+  aspect    String   @default("16:9")
+  shots     Json     @default("[]")
+  /// The Final Cut: the running job (phase, plan, intermediate urls) and every
+  /// finished version. Written only by /api/employees/storyboards/[id]/final-cut.
+  finalCut  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
 }

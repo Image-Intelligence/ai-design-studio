@@ -5,7 +5,7 @@ import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
-import { ideogramTicketCost } from '@/lib/ticket-pricing'
+import { gptImage25TicketCost, ideogramTicketCost } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
@@ -281,8 +281,21 @@ export async function POST(request: Request) {
     const isZImage = model === 'z-image-base' || model === 'z-image-turbo'
     const quality = isZImage && qualityRaw === '4k' ? '2k' : qualityRaw
 
+    // ChatGPT Images 2.5 bills by shape, effort and references (measured - see
+    // gptImage25RunCostUsd). "auto" on an edit follows the first reference's
+    // shape, which is only measured further down, so this first figure prices
+    // the cheapest shape (a pre-check only) and the real price is set once the
+    // reference is read - before any ticket is taken, and the deduction
+    // re-checks the balance atomically.
+    const gptRefCount = Array.isArray(body.referenceImages) ? body.referenceImages.length : 0
+    const gptPrice = (refDims?: { width: number; height: number } | null) => gptImage25TicketCost({
+      quality, aspectRatio, refDims, refCount: gptRefCount,
+      promptChars: typeof prompt === 'string' ? prompt.length : 0,
+      effort: typeof body.gptQuality === 'string' ? body.gptQuality : undefined,
+    })
+
     // Get ticket cost
-    const ticketCost = model === 'clarity-upscaler'
+    let ticketCost = model === 'clarity-upscaler'
       ? (upscaleFactor === 4 ? 26 : 7)
       : model === 'aura-sr' || model === 'esrgan'
         ? 1
@@ -298,7 +311,9 @@ export async function POST(request: Request) {
                 speed: body.ideogramRenderingSpeed, mode: body.ideogramMode,
                 expansion: body.ideogramExpansionModel,
               })
-            : getTicketCost(model, quality)
+            : model === 'gpt-image-2.5'
+              ? gptPrice(gptRefCount > 0 && aspectRatio === 'auto' ? { width: 16, height: 9 } : null)
+              : getTicketCost(model, quality)
     console.log('Selected model:', selectedModel.displayName, '- Quality:', quality, '- Cost:', ticketCost, 'ticket(s)')
 
     // Per-user concurrency cap — this route creates GenerationQueue rows but never
@@ -1025,6 +1040,8 @@ export async function POST(request: Request) {
             })
             modelEndpoint = built.endpoint
             newFalInput = built.input
+            // The reference is measured now: charge for the shape it really is.
+            if (model === 'gpt-image-2.5') ticketCost = gptPrice(refDims)
           } catch (buildErr: any) {
             return jsonPrivate(
               { error: buildErr?.message || `Invalid input for ${model}` },

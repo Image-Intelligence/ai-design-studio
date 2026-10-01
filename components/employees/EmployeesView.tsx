@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert } from "lucide-react"
+import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd } from "lucide-react"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/employees"
 
@@ -90,6 +90,17 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
     accent: "amber",
     opensOverlay: true,
   },
+  {
+    id: "storyboard",
+    name: "Storyboard Studio",
+    tagline: "See the cut before you shoot it",
+    blurb:
+      "Plan a video as a row of stills in order: the story and how the shots connect, then each slot's image, "
+      + "the model that made it and the prompt planned for its video. Edit everything, play it back as an "
+      + "animatic, and only then shoot.",
+    icon: GalleryHorizontalEnd,
+    accent: "sky",
+  },
 ]
 
 const ACCENTS: Record<string, { ring: string; icon: string; glow: string }> = {
@@ -117,6 +128,11 @@ const ACCENTS: Record<string, { ring: string; icon: string; glow: string }> = {
     ring: "border-amber-500/30 hover:border-amber-400/60",
     icon: "text-amber-400",
     glow: "from-amber-500/[0.10]",
+  },
+  sky: {
+    ring: "border-sky-500/30 hover:border-sky-400/60",
+    icon: "text-sky-400",
+    glow: "from-sky-500/[0.10]",
   },
 }
 

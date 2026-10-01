@@ -1,4 +1,5 @@
 import { BATCH_0929_ENDPOINTS } from '@/lib/batch-0929-video'
+import { PIXELCUT_VIDEO_ENDPOINTS } from '@/lib/pixelcut-video'
 
 // Every fal video endpoint this app can submit to, keyed by the model id the
 // UI uses. Lives here rather than inside the route so other code (the Model
@@ -142,6 +143,8 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   // extend, Marey, SeeDance 2.0 Mini, Hunyuan Video 1.5) - kept with the
   // code that routes them in lib/batch-0929-video
   ...BATCH_0929_ENDPOINTS,
+  // Pixelcut video (looping product video, background removal)
+  ...PIXELCUT_VIDEO_ENDPOINTS,
 };
 
 /** The 2026-09-28 batch: generators routed by input, and clip tools. */
@@ -180,6 +183,8 @@ export const FAL_IMAGE_APPS_IN_USE: string[] = [
  * missing here shows up in the wrong feed. Add new video models here.
  */
 export const VIDEO_MODEL_IDS: string[] = [
+  // Pixelcut video
+  'pixelcut-looping-video', 'pixelcut-video-bg-removal',
   // generators
   'wan-2.5', 'wan-2.7', 'wan-2.2-lora', 'wan-3.0', 'wan-3.0-prime',
   'kling-v3', 'kling-o3', 'kling-v3-motion',
@@ -219,6 +224,8 @@ export const VIDEO_FILE_EXTS = ['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']
  * a user is offered a model the server will refuse.
  */
 export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
+  // Pixelcut video - admin only while under test
+  'pixelcut-looping-video', 'pixelcut-video-bg-removal',
   'gemini-omni-flash', 'wan-2.7', 'wan-2.2-lora', 'minimax-h3-max', 'flux-3',
   'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-fast',
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',

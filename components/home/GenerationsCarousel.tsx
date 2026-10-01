@@ -30,6 +30,14 @@ import { loadTiles, setHidden, type Tile } from "./highlights"
  * "pending", and a layout effect applies it after React commits and before
  * the browser paints.
  *
+ * FILLING. A wall can need far more tiles than one sample holds - the
+ * dashboard's on a large monitor runs to a dozen columns and ~100 tiles. So
+ * the wall keeps asking for batches, sized to what is missing, until every
+ * column runs a card and a half below the view, and each batch goes straight
+ * onto the short columns as it lands (fading in) rather than waiting for a
+ * tile to scroll out of the top. It once laid out the first 30 and topped up
+ * only on scroll-out, which left the bottom half of a big wall empty.
+ *
  * INTERACTION. Hovering pauses the wall. Each tile offers "don't show here"
  * (with undo) and opens the slideshow from that image; the label opens the
  * full library.
@@ -40,6 +48,10 @@ const GAP = 4
 const COL_TARGET_PX = 150
 /** Pixels per second, per column, so neighbours never move in lockstep. */
 const SPEEDS = [10, 14, 8, 12, 9, 13]
+/** Most the highlights API returns per call. */
+const BATCH_MAX = 60
+/** Back-to-back fill batches before giving up (a tiny library cannot fill a big wall). */
+const FILL_ROUNDS = 8
 
 export function GenerationsCarousel({
   signedIn, className = "", aspect = "aspect-[4/3]",
@@ -68,6 +80,7 @@ export function GenerationsCarousel({
   const pool = useRef<Tile[]>([])
   const spent = useRef<Tile[]>([])
   const fetching = useRef(false)
+  const fillRounds = useRef(0)
   const hiddenIds = useRef(new Set<number>())
 
   const offsets = useRef<number[]>([])
@@ -91,13 +104,39 @@ export function GenerationsCarousel({
   const tileH = (t: Tile) => colWidth() / t.aspect + GAP
   const colHeight = (col: Tile[]) => col.reduce((a, t) => a + tileH(t), 0)
 
+  /** How far the wall is from full: every column a card and a half below the view. */
+  const need = () => size.current.h * 1.5 + 200
+  /** Roughly how many more tiles the columns need (counting a tile as square). */
+  const shortfall = () => {
+    const per = colWidth() + GAP
+    return colsRef.current.reduce(
+      (n, col, c) => n + Math.max(0, Math.ceil((need() - (colHeight(col) - (offsets.current[c] ?? 0))) / per)),
+      0
+    )
+  }
+
+  /**
+   * Fetch another batch - as many as the wall is missing, at least 24 - and put
+   * it straight onto the short columns. Repeats while the wall is still short,
+   * up to FILL_ROUNDS batches in a row.
+   */
   const refill = () => {
     if (fetching.current || !signedIn) return
     fetching.current = true
-    loadTiles(24)
-      .then(({ tiles }) => { pool.current.push(...tiles.filter(t => !hiddenIds.current.has(t.id))) })
+    let added = 0
+    loadTiles(Math.min(BATCH_MAX, Math.max(24, shortfall() - pool.current.length + 10)))
+      .then(({ tiles }) => {
+        const fresh = tiles.filter(t => !hiddenIds.current.has(t.id))
+        added = fresh.length
+        pool.current.push(...fresh)
+        if (added && colsRef.current.length) commit(topUp(colsRef.current.map(col => [...col])))
+      })
       .catch(() => {})
-      .finally(() => { fetching.current = false })
+      .finally(() => {
+        fetching.current = false
+        if (added && colsRef.current.length && shortfall() > 0 && fillRounds.current++ < FILL_ROUNDS) refill()
+        else if (shortfall() === 0) fillRounds.current = 0
+      })
   }
 
   /** The next tile to show: new work first, preferring images not already on the wall. */
@@ -115,11 +154,10 @@ export function GenerationsCarousel({
 
   /** Top every column up so it runs at least a card and a half below the view. */
   const topUp = (next: Tile[][]) => {
-    const need = size.current.h * 1.5 + 200
     const onWall = new Set(next.flat().map(t => t.id))
     next.forEach((col, c) => {
       let guard = 0
-      while (colHeight(col) - (offsets.current[c] ?? 0) < need && guard++ < 12) {
+      while (colHeight(col) - (offsets.current[c] ?? 0) < need() && guard++ < 24) {
         const t = takeNext(onWall)
         if (!t) break
         col.push(t)
@@ -175,10 +213,10 @@ export function GenerationsCarousel({
     colsRef.current = next
     // Deal tiles to the shortest column, like a masonry grid.
     const onWall = new Set<number>()
-    for (let guard = 0; guard < 80; guard++) {
+    for (let guard = 0; guard < 200; guard++) {
       const heights = next.map(colHeight)
       const c = heights.indexOf(Math.min(...heights))
-      if (heights[c] >= size.current.h * 1.5 + 200) break
+      if (heights[c] >= need()) break
       const t = takeNext(onWall)
       if (!t) break
       next[c].push(t)
@@ -188,6 +226,9 @@ export function GenerationsCarousel({
     offsets.current = next.map((_, c) => (c % 2 ? 40 : 0) + c * 7)
     pending.current = next.map(() => 0)
     commit(next.map(col => [...col]))
+    // A big wall outgrows the first sample: keep fetching until it is full.
+    fillRounds.current = 0
+    if (shortfall() > 0) refill()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, colCount])
 
@@ -291,7 +332,7 @@ export function GenerationsCarousel({
                     key={t.key}
                     onClick={() => setSlideshow({ start: t })}
                     className="group/tile relative w-full shrink-0 overflow-hidden rounded-[3px] bg-white/[0.03] cursor-pointer"
-                    style={{ aspectRatio: t.aspect }}
+                    style={{ aspectRatio: t.aspect, animation: "wall-tile-in 0.6s ease-out" }}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={t.thumb} alt="" draggable={false} className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover/tile:scale-[1.04]" />

@@ -1,8 +1,9 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { Image as ImageIcon, Video, Shield, Wand2, Star } from "lucide-react"
+import { Image as ImageIcon, Video, Shield, Wand2, Star, Music } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
+import { AudioCardArt } from "./AudioCardArt"
 import { GenerationsCarousel } from "./GenerationsCarousel"
 import { FEATURED_MODELS, TALL_CARDS } from "./featured"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
@@ -79,7 +80,7 @@ const TALL_CARD_GAP = 6
  */
 function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardMediaChange }: {
   models: HomeModel[]
-  kind: "image" | "video"
+  kind: "image" | "video" | "audio"
   cards: Record<string, CardMedia>
   isAdmin: boolean
   costByName: Record<string, string>
@@ -151,6 +152,9 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
           // row tall); with neighbours, it fills the two rows exactly.
           className={tall ? "row-span-2 aspect-[2/3]" : ""}
           frameAspect={tall ? 3 / 4 : 4 / 3}
+          // Audio models: waveform art until a thumbnail is uploaded, and a sample to play
+          placeholder={kind === "audio" ? <AudioCardArt seed={m.name} tint={m.accent} /> : undefined}
+          sampleUrl={kind === "audio" ? cards[`audio:${m.name}::sample`]?.mediaUrl : undefined}
         />
         )
       })}
@@ -168,6 +172,9 @@ export function HomeView({
   adminVideoGroups = [],
   imageCostByName = {},
   videoCostByName = {},
+  adminAudioGroups = [],
+  audioCostByName = {},
+  onSelectAudioModel,
   cards,
   onSelectImageModel,
   onSelectVideoModel,
@@ -186,6 +193,10 @@ export function HomeView({
   adminVideoGroups?: ModelGroup[]
   imageCostByName?: Record<string, string>
   videoCostByName?: Record<string, string>
+  /** Audio Studio models - admin only while in development. */
+  adminAudioGroups?: (ModelGroup & { note?: string })[]
+  audioCostByName?: Record<string, string>
+  onSelectAudioModel?: (name: string) => void
   cards: Record<string, CardMedia>
   onSelectImageModel: (name: string) => void
   onSelectVideoModel: (name: string) => void
@@ -431,6 +442,18 @@ export function HomeView({
           </div>
         )}
       </Section>
+
+      {/* AUDIO - admin only while in development: one sub-section per kind of audio. */}
+      {isAdmin && onSelectAudioModel && adminAudioGroups.some(g => g.items.length) && (
+        <Section icon={<Music size={17} />} title="Audio Models" subtitle="Admin only · tap a card to play a sample">
+          {adminAudioGroups.filter(g => g.items.length).map((g, i) => (
+            <div key={g.label} className={i ? "mt-5" : ""}>
+              <SubHead label={g.label} note={g.note} />
+              <ModelGrid models={flatten([g], true)} kind="audio" cards={cards} isAdmin={isAdmin} costByName={audioCostByName} onSelect={onSelectAudioModel} onCardMediaChange={onCardMediaChange} />
+            </div>
+          ))}
+        </Section>
+      )}
 
       {/* Content policy notice (CCBill) - shared with the dashboard. */}
       <ProhibitedContentNotice className="mb-8" />

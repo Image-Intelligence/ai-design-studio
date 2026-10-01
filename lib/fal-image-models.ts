@@ -12,6 +12,8 @@
  * app/api/generate/route.ts (ADMIN_ONLY_IMAGE_MODELS).
  */
 
+import { gptImage25DefaultEffort } from './ticket-pricing'
+
 export interface FalImageBuildContext {
   /** User prompt (already trimmed). May be '' for promptless models. */
   prompt: string
@@ -162,6 +164,24 @@ export function gptImage25Size(aspectRatio: string, quality: string): { width: n
 }
 
 /**
+ * Size for a GPT Image 2.5 EDIT. An explicit portal ratio wins; on "auto" the
+ * first reference's own shape is kept, at the quality tier's resolution.
+ *
+ * This used to send the endpoint's own `image_size: "auto"`, which keeps the
+ * source shape but lets the model pick the pixel count - and it picks one
+ * near its floor (655,360 px): a 4K edit came back 624x1056. The route
+ * measures the first reference anyway (options.refDims), so the shape is
+ * known and the tier can set real dimensions. Only when nothing could be
+ * measured does "auto" still go through.
+ */
+function gptImage25EditSize(ctx: FalImageBuildContext): { width: number; height: number } | 'auto' {
+  if (ctx.aspectRatio && ctx.aspectRatio !== 'auto') return gptImage25Size(ctx.aspectRatio, ctx.quality)
+  const d = ctx.options.refDims as { width?: number; height?: number } | null | undefined
+  if (d?.width && d?.height && d.width > 0 && d.height > 0) return gptImage25Size(`${d.width}:${d.height}`, ctx.quality)
+  return 'auto'
+}
+
+/**
  * Portal quality tier to GPT Image 2.5's rendering effort.
  *
  * `xhigh` and `max` exist but cost materially more per image, so 4K maps to
@@ -170,7 +190,8 @@ export function gptImage25Size(aspectRatio: string, quality: string): { width: n
 function gptImage25Quality(ctx: FalImageBuildContext): string {
   const explicit = pickEnum(ctx.options.gptQuality, ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const, '' as any)
   if (explicit) return explicit
-  return ctx.quality === '4k' ? 'xhigh' : ctx.quality === '2k' ? 'high' : 'medium'
+  // Shared with the ticket price (lib/ticket-pricing), so the two cannot drift.
+  return gptImage25DefaultEffort(ctx.quality)
 }
 
 /** Clamped number, or `undefined` when the caller didn't supply one. */
@@ -498,11 +519,9 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       compact({
         prompt: ctx.prompt,
         image_urls: ctx.imageUrls,
-        // "auto" keeps the source shape, which is what an edit almost always
-        // wants; an explicit portal ratio still wins.
-        image_size: ctx.aspectRatio && ctx.aspectRatio !== 'auto'
-          ? gptImage25Size(ctx.aspectRatio, ctx.quality)
-          : 'auto',
+        // "auto" keeps the source shape (at the tier's resolution), which is
+        // what an edit almost always wants; an explicit portal ratio still wins.
+        image_size: gptImage25EditSize(ctx),
         quality: gptImage25Quality(ctx),
         background: pickEnum(ctx.options.gptBackground, ['auto', 'transparent', 'opaque'] as const, 'auto'),
         output_format: pickEnum(ctx.options.gptOutputFormat, ['png', 'jpeg', 'webp'] as const, 'png'),

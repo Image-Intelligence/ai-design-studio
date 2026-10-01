@@ -11,6 +11,7 @@ import { FAL_ENDPOINTS, ADMIN_ONLY_VIDEO_MODELS, LUMA_VIDEO_GENERATORS, LUMA_VID
 import { fitImageForFal } from '@/lib/fal-image-fit'
 import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS } from '@/lib/ticket-pricing'
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
+import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
@@ -143,6 +144,7 @@ export async function POST(request: NextRequest) {
       ltxFps = '25',
       // Luma modify / Ray 3.2 edit: how far the result may move from the source
       lumaMode = 'flex_1',
+      videoChoice,
       videoUpscaleFactor = '2',
       videoToolCreativity = '0.35',
       videoTargetFps = '60',
@@ -263,6 +265,9 @@ export async function POST(request: NextRequest) {
       if ((BATCH_0928_TOOLS.has(model) || BATCH_0929_TOOLS.has(model)) && !prompt?.trim()) {
         return NextResponse.json({ success: false, error: 'This tool needs a prompt - describe the change you want.' }, { status: 400 });
       }
+      if (model === 'pixelcut-video-bg-removal' && editVideoDurationSec > PIXELCUT_BG_MAX_SECONDS + 0.5) {
+        return NextResponse.json({ success: false, error: `Background removal takes clips up to ${PIXELCUT_BG_MAX_SECONDS} seconds.` }, { status: 400 });
+      }
       if (model.startsWith('kling-o3-') && editVideoDurationSec > 0 && (editVideoDurationSec < 2.9 || editVideoDurationSec > 15.5)) {
         return NextResponse.json({ success: false, error: 'Kling O3 video tools take clips of 3 to 15 seconds.' }, { status: 400 });
       }
@@ -277,7 +282,7 @@ export async function POST(request: NextRequest) {
       if (model === 'luma-ray-3.2-reframe' && editVideoDurationSec > 10.5) {
         return NextResponse.json({ success: false, error: 'Ray 3.2 reframe takes clips up to 10 seconds.' }, { status: 400 });
       }
-    } else if (model !== 'kling-v3-motion' && !isLipsync && !prompt && !(model === 'wan-2.7' && imageUrl)) {
+    } else if (model !== 'kling-v3-motion' && !isLipsync && !prompt && !(model === 'wan-2.7' && imageUrl) && model !== PIXELCUT_LOOPING) {
       // Name the field — a bare "missing required fields" tells nobody anything
       console.warn('Video submit rejected: no prompt', { model, mode: effectiveSd20Mode, hasImage: !!imageUrl, hasEditVideo: !!editVideoUrl })
       return NextResponse.json({ success: false, error: 'A prompt is required for this model.' }, { status: 400 });
@@ -386,7 +391,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Build FAL input based on model
-    const falEndpoint = (isSD20Family || isOmni)
+    const falEndpoint = PIXELCUT_VIDEO_ENDPOINTS[model]
+      ? PIXELCUT_VIDEO_ENDPOINTS[model]
+      : (isSD20Family || isOmni)
       ? FAL_ENDPOINTS[`${model}-${effectiveSd20Mode}`] || FAL_ENDPOINTS[`${model}-t2v`]
       : model === 'seedance-1.5' && !imageUrl
       ? FAL_ENDPOINTS['seedance-1.5-text']
@@ -523,6 +530,13 @@ export async function POST(request: NextRequest) {
       else if (klingAspectRatio && klingAspectRatio !== 'auto') falInput.aspect_ratio = klingAspectRatio;
       if (endImageUrl) falInput.end_image_url = endImageUrl;
       if (audioUrl) falInput.audio_url = audioUrl;
+    } else if (PIXELCUT_VIDEO_ENDPOINTS[model]) {
+      // lib/pixelcut-video builds the exact input; `videoChoice` is the motion
+      // style (looping) or the background (removal)
+      falInput = pixelcutVideoInput(model, {
+        prompt, imageUrl, editVideoUrl, duration, resolution, generateAudio,
+        choice: typeof videoChoice === 'string' ? videoChoice : undefined,
+      });
     } else if (BATCH_0929_TOOLS.has(model) || BATCH_0929_GENERATORS.has(model)) {
       // lib/batch-0929-video builds the exact input (tools' prompts checked above)
       falInput = batch0929Input(model, {

@@ -4,6 +4,8 @@ import { getUserFromSession } from '@/lib/auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { checkAuth } from '@/lib/admin-auth'
 import { uploadToR2 } from '@/lib/r2'
+import { fetchMedia } from '@/lib/media-fetch'
+import { isOurMedia } from '@/lib/media-url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import ffmpegPath from 'ffmpeg-static'
@@ -27,6 +29,9 @@ import crypto from 'crypto'
 //
 //   { op: 'mux', videoUrl, music?: { url, gainDb, fadeOutSec }, voice?: [...] }
 //     -> { url, durationSec }
+//
+//   { op: 'card', imageUrl, seconds, width, height } -> { url, durationSec }
+//     A still (title / end card) as a clip with a push-in, fades and silence.
 //
 //   { op: 'captions', videoUrl, captions: [{ text, startSec, endSec }], position }
 //     -> { url, burned }
@@ -59,11 +64,17 @@ async function authed(req: NextRequest): Promise<boolean> {
 function allowedSource(url: string): boolean {
   const base = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
   if (base && url.startsWith(`${base}/`)) return true
+  // Our media in any of its forms - including the signed Worker links a page
+  // receives - is ours (fetchTo re-signs it)
+  if (isOurMedia(url)) return true
   return /^https:\/\/[a-z0-9.-]*\bfal\.(media|run)\//i.test(url)
 }
 
 async function fetchTo(file: string, url: string): Promise<void> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+  // fetchMedia signs our own storage: the bucket is private now, and a plain
+  // fetch of a stored R2 url gets a 401 - which broke every stitch, mux and
+  // frame grab on stored footage. fal URLs pass through untouched.
+  const res = await fetchMedia(url, { signal: AbortSignal.timeout(120_000) })
   if (!res.ok) throw new Error(`Could not fetch ${url.slice(-40)} (${res.status})`)
   await writeFile(file, Buffer.from(await res.arrayBuffer()))
 }
@@ -122,6 +133,40 @@ export async function POST(req: NextRequest) {
         frames[which] = await uploadToR2(`films/frame-${crypto.randomUUID()}.jpg`, buf, 'image/jpeg')
       }
       return NextResponse.json({ frames, durationSec: Math.round(seconds * 100) / 100 })
+    }
+
+    // ── card ──────────────────────────────────────────────────────────────
+    // { op: 'card', imageUrl, seconds, width, height } -> { url, durationSec }
+    // A still (a title or end card) as a clip stitch can join: a slow push-in,
+    // a fade in and out, and a silent stereo track so concat never meets a
+    // clip without audio.
+    if (op === 'card') {
+      const imageUrl = String(body.imageUrl ?? '')
+      if (!allowedSource(imageUrl)) {
+        return NextResponse.json({ error: 'imageUrl must be an R2 or fal URL' }, { status: 400 })
+      }
+      const secs = Math.min(10, Math.max(1, Number(body.seconds) || 3))
+      const W = Math.round(Math.min(1920, Math.max(320, Number(body.width) || 1280)) / 2) * 2
+      const H = Math.round(Math.min(1920, Math.max(320, Number(body.height) || 720)) / 2) * 2
+      const img = path.join(dir, 'card.png')
+      await fetchTo(img, imageUrl)
+      const fps = 30, frames = Math.round(secs * fps)
+      const fade = Math.min(0.6, secs / 4)
+      const out = path.join(dir, 'card.mp4')
+      await exec(ffmpegPath as string, [
+        '-hide_banner', '-y', '-loop', '1', '-i', img,
+        '-f', 'lavfi', '-t', String(secs), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-filter_complex',
+        // Upscale first so the zoompan push-in has pixels to spare (no stair-stepping)
+        `[0:v]scale=${W * 2}:${H * 2}:force_original_aspect_ratio=increase,crop=${W * 2}:${H * 2},`
+        + `zoompan=z='min(1+0.05*on/${frames},1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=${fps},`
+        + `fade=t=in:st=0:d=${fade.toFixed(2)},fade=t=out:st=${(secs - fade).toFixed(2)}:d=${fade.toFixed(2)},setsar=1,format=yuv420p[v]`,
+        '-map', '[v]', '-map', '1:a', '-t', String(secs),
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', out,
+      ], { maxBuffer: 1024 * 1024 * 32 })
+      const url = await uploadToR2(`films/card-${crypto.randomUUID()}.mp4`, await readFile(out), 'video/mp4')
+      return NextResponse.json({ url, durationSec: secs, width: W, height: H })
     }
 
     // ── stitch ────────────────────────────────────────────────────────────
@@ -425,7 +470,8 @@ export async function POST(req: NextRequest) {
       // duration=longest with an explicit -shortest against the video: a cue
       // delayed to the last second must not be truncated by a shorter first
       // input, and the picture still decides where the file ends.
-      chains.push(`${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:normalize=0[a]`)
+      // normalize: level the finished mix for social playback (-14 LUFS)
+      chains.push(`${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:normalize=0${body.normalize ? ',loudnorm=I=-14:TP=-1.2:LRA=11' : ''}[a]`)
 
       const out = path.join(dir, 'mixed.mp4')
       await exec(ffmpegPath as string, [
@@ -511,7 +557,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ url, burned: caps.length, durationSec: Math.round(seconds * 100) / 100 })
     }
 
-    return NextResponse.json({ error: `Unknown op "${op}" — expected frames, stitch, mux or captions` }, { status: 400 })
+    return NextResponse.json({ error: `Unknown op "${op}" — expected frames, card, stitch, mux or captions` }, { status: 400 })
   } catch (err: any) {
     const msg = String(err?.stderr || err?.message || err).slice(-600)
     console.error('[assemble] failed:', msg)

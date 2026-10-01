@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
-import { Check, Play } from "lucide-react"
+import { useRef, useState } from "react"
+import { Check, Pause, Play } from "lucide-react"
+import { AudioCardArt } from "@/components/home/AudioCardArt"
 
 // Feed tile for the my-generations page. Copied from the portal-v2 GridImage
 // (minus the admin cross-user thumbnail branch — this feed only shows the signed-in
@@ -9,7 +10,7 @@ import { Check, Play } from "lucide-react"
 
 export function GridImage({
   src, alt, onClick, imageId, directUrl, thumbUrl, aspectRatio, aspect,
-  posterUrl, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false,
+  posterUrl, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false, audio,
 }: {
   src: string
   alt: string
@@ -37,8 +38,11 @@ export function GridImage({
   fullWidth?: boolean
   // isVideo: render a muted <video> frame instead of <img>.
   isVideo?: boolean
+  // audio: an Audio Studio clip - drawn as a waveform card that plays in place
+  audio?: { title: string; label?: string | null }
 }) {
   const [loaded, setLoaded] = useState(false)
+  if (audio) return <AudioTile src={src} audio={audio} imageId={imageId} selectMode={selectMode} selected={selected} onSelect={onSelect} fullWidth={fullWidth} />
   const thumbSrc = thumbUrl
     ? thumbUrl
     : directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
@@ -88,6 +92,49 @@ export function GridImage({
           <Play size={8} className="fill-white/85" /> VIDEO
         </div>
       )}
+      {selectMode && (
+        <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"}`}>
+          {selected && <Check size={11} className="text-black" />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** An audio clip in the feed: waveform art, play/pause in place, model name. */
+function AudioTile({ src, audio, imageId, selectMode, selected, onSelect, fullWidth }: {
+  src: string
+  audio: { title: string; label?: string | null }
+  imageId?: number
+  selectMode?: boolean
+  selected?: boolean
+  onSelect?: (id: number) => void
+  fullWidth?: boolean
+}) {
+  const ref = useRef<HTMLAudioElement>(null)
+  const [playing, setPlaying] = useState(false)
+  const toggle = () => {
+    if (selectMode && imageId !== undefined) { onSelect?.(imageId); return }
+    const a = ref.current
+    if (!a) return
+    // One clip at a time
+    document.querySelectorAll<HTMLAudioElement>("audio[data-feed]").forEach(o => { if (o !== a) o.pause() })
+    if (a.paused) a.play().catch(() => {}); else a.pause()
+  }
+  return (
+    <div
+      onClick={toggle}
+      className={`${fullWidth ? "aspect-[4/3]" : "aspect-square"} relative overflow-hidden cursor-pointer group ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+    >
+      <AudioCardArt seed={`${audio.title}${imageId ?? ""}`} tint="text-sky-300" />
+      <audio ref={ref} data-feed src={src} preload="none" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+      <div className="absolute left-1/2 top-[40%] -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/55 border border-white/25 flex items-center justify-center text-white group-hover:scale-105 transition-transform">
+        {playing ? <Pause size={15} className="fill-white" /> : <Play size={15} className="fill-white ml-0.5" />}
+      </div>
+      <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent pointer-events-none">
+        <p className="text-[10px] font-bold text-white truncate">{audio.title}</p>
+        {audio.label && <p className="text-[9px] uppercase tracking-wider text-sky-300/80">{audio.label}</p>}
+      </div>
       {selectMode && (
         <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"}`}>
           {selected && <Check size={11} className="text-black" />}

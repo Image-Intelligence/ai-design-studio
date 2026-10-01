@@ -170,7 +170,7 @@ export function MyGenFeed({
     // Root (folderId null) shows unfiled only; a folder shows its own contents.
     const folderQs = `&folderId=${folderId == null ? "root" : folderId}`
     const countQs = totals.current.has(filterKey) ? "&count=0" : ""
-    const job = fetch(`/api/my-images?page=${p}&limit=${pageSize}${typeQs}${folderQs}${showHidden ? "&hidden=true" : ""}${countQs}`)
+    const job = fetch(`/api/my-images?page=${p}&limit=${pageSize}&includeAudio=1${typeQs}${folderQs}${showHidden ? "&hidden=true" : ""}${countQs}`)
       .then(async res => {
         if (res.status === 401) { window.location.href = "/login"; return }
         if (!res.ok) return
@@ -298,6 +298,7 @@ export function MyGenFeed({
         onSelect={onSelectToggle}
         fullWidth={fullSize}
         isVideo={img.videoMetadata?.isVideo === true || isVideoUrl(img.imageUrl)}
+        audio={img.videoMetadata?.isAudio === true ? { title: img.videoMetadata?.modelName ?? "Audio", label: img.videoMetadata?.label ?? null } : undefined}
       />
     ),
   }))

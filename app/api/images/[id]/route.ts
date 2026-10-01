@@ -7,6 +7,7 @@ import { signMediaUrl } from '@/lib/media-url'
 import sharp from 'sharp'
 import { fetchMedia } from '@/lib/media-fetch'
 import { ensureDisplayImage } from '@/lib/display-image'
+import { makeVideoPoster, VIDEO_URL_RE } from '@/lib/video-poster'
 
 
 // Authenticated image proxy — serves a user's image by DB ID.
@@ -61,6 +62,21 @@ export async function GET(
         // answers to anonymous callers. Ownership was checked above.
         return NextResponse.redirect(signMediaUrl(image.thumbnailUrl), 302)
       }
+      // A video has no picture for sharp to shrink: its still is the first
+      // frame, pulled out with ffmpeg (lib/video-poster) and stored the same way
+      const vmeta = (image.videoMetadata ?? {}) as Record<string, unknown>
+      if (vmeta.isVideo === true || VIDEO_URL_RE.test(image.imageUrl)) {
+        const poster = await makeVideoPoster(image.imageUrl).catch(() => null)
+        if (poster === 'busy') return new NextResponse('Poster queued', { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } })
+        if (!poster) return new NextResponse('Poster unavailable', { status: 502 })
+        try {
+          const thumbUrl = await uploadToR2(`thumb/${id}-${Date.now()}.webp`, poster, 'image/webp')
+          await prisma.generatedImage.update({ where: { id }, data: { thumbnailUrl: thumbUrl } })
+        } catch (storeErr) {
+          console.error('Video poster store failed (non-fatal):', storeErr)
+        }
+        return new NextResponse(new Uint8Array(poster), { status: 200, headers: { 'Content-Type': 'image/webp', 'Cache-Control': 'private, max-age=86400' } })
+      }
       // First view of this image — generate the thumbnail once, store it on R2 so
       // every future request (this route or the direct URL) is a cheap CDN-served file.
       const blobRes = await fetchMedia(image.imageUrl)
@@ -90,7 +106,11 @@ export async function GET(
     const blobRes = await fetchMedia(image.imageUrl)
     if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
     const contentType = blobRes.headers.get('content-type') || 'image/png'
-    const ext = contentType.includes('jpeg') ? 'jpg'
+    // Audio first: 'audio/mp4' (m4a) would otherwise match the video 'mp4' test
+    const audioExt = (image.imageUrl.split('?')[0].match(/\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i)?.[1]
+      ?? (contentType.startsWith('audio/') ? ({ 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/flac': 'flac', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg' } as Record<string, string>)[contentType.split(';')[0]] ?? 'mp3' : null))?.toLowerCase()
+    const ext = audioExt ? audioExt
+              : contentType.includes('jpeg') ? 'jpg'
               : contentType.includes('webp') ? 'webp'
               : contentType.includes('mp4')  ? 'mp4'
               : contentType.includes('webm') ? 'webm'
@@ -103,7 +123,7 @@ export async function GET(
     }
 
     if (isDownload) {
-      headers['Content-Disposition'] = `attachment; filename="image-${id}.${ext}"`
+      headers['Content-Disposition'] = `attachment; filename="${audioExt ? 'audio' : 'image'}-${id}.${ext}"`
     }
 
     return new NextResponse(blobRes.body, { status: 200, headers })

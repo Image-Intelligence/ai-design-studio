@@ -10,9 +10,10 @@
  * import the same flags. Releasing an employee here opens its UI; the routes
  * its workspace calls are gated separately (the chat-hub routes for Movie
  * Studio, Face Swap and Character Design, /api/admin/threed for 3D Studio,
- * /api/admin/frames-clips for Frames) and must be opened with it.
+ * /api/admin/frames-clips for Frames, /api/employees/storyboards for
+ * Storyboard) and must be opened with it.
  */
-export type EmployeeId = "movie-studio" | "face-swap" | "character-design" | "3d-studio" | "frames"
+export type EmployeeId = "movie-studio" | "face-swap" | "character-design" | "3d-studio" | "frames" | "storyboard"
 
 export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "movie-studio": true,
@@ -20,6 +21,7 @@ export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "character-design": true,
   "3d-studio": true,
   "frames": true,
+  "storyboard": true,
 }
 
 export const EMPLOYEE_IDS = Object.keys(EMPLOYEE_ADMIN_ONLY) as EmployeeId[]

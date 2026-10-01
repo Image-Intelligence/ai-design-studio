@@ -24,6 +24,8 @@ export const VIDEO_TOOL_MODELS = new Set([
   // 2026-09-29 batch: extend / motion + pose transfer
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
+  // Pixelcut: cut the subject out of a clip
+  'pixelcut-video-bg-removal',
 ])
 
 /**
@@ -94,7 +96,10 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   const isWanLora = model === 'wan-2.2-lora'
 
   let ticketCost: number
-  if (isLipsync) {
+  if (model === 'pixelcut-looping-video' || model === 'pixelcut-video-bg-removal') {
+    // Ahead of the generic tool branch, which would price by a flat placeholder
+    ticketCost = pixelcutVideoTicketCost(model, { duration, sourceSec: editVideoDurationSec })
+  } else if (isLipsync) {
     ticketCost = Math.max(10, Math.ceil((lipsyncVideoDurationSec || 0) * 6));
   } else if (model === 'kling-v3-motion') {
     // 6 tickets/sec × actual video duration (or max if unknown)
@@ -666,4 +671,111 @@ export function ideogramTicketCost(o: IdeogramPriceInput): number {
   const perTicket = CHEAPEST_USD_PER_TICKET * (1 - IDEOGRAM_TARGET_MARGIN)
   // The small epsilon stops float noise turning an exact 1.0 into 2.
   return Math.max(1, Math.ceil(ideogramRunCostUsd(o) / perTicket - 1e-9))
+}
+
+// ── ChatGPT Images 2.5 ───────────────────────────────────────────────────────
+/*
+ * GPT Image 2.5 bills by tokens, so one flat price per tier cannot hold a
+ * margin: the charge moves with the render effort, the SHAPE and the number of
+ * references. It was a flat 3 tickets, which lost money on every 4K image.
+ *
+ * MEASURED on 2026-09-30 from the fal account balance, one render at a time
+ * (flare renderer; sunburst lists the same prices), at the sizes
+ * gptImage25Size really sends:
+ *
+ *                 16:9    3:2     4:3     1:1
+ *   4K  xhigh    .1781   .2124   .2356   .3165
+ *   2K  high     .0605     -     .0806   .1072
+ *   1K  medium     -       -       -     .0134
+ *
+ *   + $0.0096 per reference image (4K 16:9 edit: 1 ref .1877, 4 refs .2167)
+ *
+ * Squarer costs more at every tier, and portrait costs the same as its
+ * landscape twin (9:16 measured equal to 16:9). fal's published table agrees
+ * on the landscape figures but understates square (it predicts ~.26 at 4K);
+ * the measurements win.
+ *
+ * Other effort levels (reachable through the `gptQuality` option) scale by
+ * the ratios in fal's table at a fixed size: low .063, medium .146,
+ * high .5625, xhigh 1, max 2.25 - calibrated: 2K square high = .1906 x .5625
+ * = .1072 and 1K square medium = .0937 x .146 = .0137, both as measured.
+ *
+ * Prompt text is billed too ($5 per 1M input tokens), and fal notes that
+ * complex requests cost more, so every estimate carries a 10% buffer.
+ */
+
+/** Cost of a render at xhigh effort, by tier then shape bucket: [wide, 3:2, 4:3, square]. */
+const GPT25_XHIGH_USD: Record<'1k' | '2k' | '4k', [number, number, number, number]> = {
+  '4k': [0.1781, 0.2124, 0.2356, 0.3165],
+  // 3:2 at 2K unmeasured: priced as 4:3, the next squarer bucket.
+  '2k': [0.1076, 0.1433, 0.1433, 0.1906],
+  // 1K is cheap enough that every shape is priced as square.
+  '1k': [0.0937, 0.0937, 0.0937, 0.0937],
+}
+const GPT25_EFFORT_FACTOR: Record<string, number> = { low: 0.063, medium: 0.146, high: 0.5625, xhigh: 1, max: 2.25 }
+const GPT25_REF_USD = 0.01
+const GPT25_BUFFER = 1.1
+
+/** Render effort a tier gets by default (lib/fal-image-models sends the same). */
+export function gptImage25DefaultEffort(quality: string): 'medium' | 'high' | 'xhigh' {
+  return quality === '4k' ? 'xhigh' : quality === '2k' ? 'high' : 'medium'
+}
+
+export interface GptImage25PriceInput {
+  quality: string                                    // 1k | 2k | 4k
+  aspectRatio?: string                               // "16:9" | "auto" | ...
+  /** The first reference's size: what "auto" follows on an edit. */
+  refDims?: { width: number; height: number } | null
+  refCount?: number
+  promptChars?: number
+  /** Explicit render effort override (options.gptQuality). */
+  effort?: string
+}
+
+/** Shape bucket: 0 wide (>=1.7:1), 1 3:2, 2 4:3, 3 square-ish. Unknown shape is square, the dearest. */
+function gpt25Bucket(o: GptImage25PriceInput): number {
+  let r = 1
+  if (o.aspectRatio && o.aspectRatio !== 'auto') {
+    const [a, b] = o.aspectRatio.split(':').map(Number)
+    if (a > 0 && b > 0) r = Math.max(a, b) / Math.min(a, b)
+  } else if (o.refDims && o.refDims.width > 0 && o.refDims.height > 0) {
+    r = Math.max(o.refDims.width, o.refDims.height) / Math.min(o.refDims.width, o.refDims.height)
+  }
+  // The endpoint refuses past 3:1, so the size is clamped there - still "wide".
+  return r >= 1.7 ? 0 : r >= 1.45 ? 1 : r >= 1.3 ? 2 : 3
+}
+
+/** What fal charges for one GPT Image 2.5 image with these settings, in USD (buffered). */
+export function gptImage25RunCostUsd(o: GptImage25PriceInput): number {
+  const tier = o.quality === '4k' || o.quality === '2k' ? o.quality : '1k'
+  const effort = o.effort && o.effort in GPT25_EFFORT_FACTOR ? o.effort : o.effort === 'auto' ? 'xhigh' : gptImage25DefaultEffort(tier)
+  const render = GPT25_XHIGH_USD[tier][gpt25Bucket(o)] * GPT25_EFFORT_FACTOR[effort]
+  const refs = Math.max(0, o.refCount ?? 0) * GPT25_REF_USD
+  const promptText = ((o.promptChars ?? 0) / 4) * 5e-6
+  return (render + refs + promptText) * GPT25_BUFFER
+}
+
+/** Tickets for one GPT Image 2.5 image: half of the cheapest ticket ($0.08) kept as margin. */
+export function gptImage25TicketCost(o: GptImage25PriceInput): number {
+  return Math.max(1, Math.ceil(gptImage25RunCostUsd(o) / LUMA_TICKET_USD - 1e-9))
+}
+
+// ── Pixelcut video ───────────────────────────────────────────────────────────
+/*
+ * fal's prices (pricing API, 2026-09-30):
+ *   pixelcut/looping-video              $0.08 per second of output, any resolution
+ *   pixelcut/video-background-removal   $0.022 per 30 frames of the source
+ * Background removal is billed per FRAME and a clip's frame rate is not known
+ * up front, so it is priced for 60 fps (phones record at 60) - the house rule
+ * of assuming the dearer case. At 30 fps that is double margin.
+ */
+export function pixelcutVideoTicketCost(model: string, o: { duration: string; sourceSec?: number }): number {
+  if (model === 'pixelcut-looping-video') {
+    const secs = Math.min(15, Math.max(5, Math.round(Number(o.duration) || 5)))
+    return Math.max(1, Math.ceil((secs * 0.08) / LUMA_TICKET_USD - 1e-9))
+  }
+  // An unknown clip length is priced as the longest clip allowed (60s)
+  const secs = o.sourceSec && o.sourceSec > 0 ? Math.min(o.sourceSec, 60) : 60
+  const usd = Math.ceil((secs * 60) / 30) * 0.022
+  return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
 }

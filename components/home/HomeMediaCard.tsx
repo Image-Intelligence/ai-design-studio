@@ -2,59 +2,53 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Upload, Trash2, Loader2, Film, Image as ImageIcon } from "lucide-react"
+import { Upload, Trash2, Loader2, Film, Image as ImageIcon, Play, Pause } from "lucide-react"
 import { FrameModal } from "./FrameModal"
 import { SilverRimOverlay } from "./SilverRimOverlay"
+import { registerCardVideo, type CardVideoHandle } from "./card-video-scheduler"
 
 export type CardMedia = { mediaUrl: string; mediaType: string }
 
+// Fade between a card's still and its video (ms). The video stays mounted until
+// the still has fully covered it again, so the hand-back is a crossfade.
+const FADE_MS = 500
+
 /*
- * CARD VIDEO PLAYBACK BUDGET - shared by every card on the page.
- *
- * Phones have a handful of hardware video decoders. The home page holds more
- * than a dozen video cards, and with every visible one playing at once iPhone
- * Safari stuttered, froze frames and stopped videos outright (iPad and desktop
- * less often, but the same way). So at most MAX_PLAYING() card videos play at
- * a time - the ones most in view - and the rest pause on their current frame
- * until they are among the most visible again. A video the budget wants
- * playing that the browser pauses or stalls on its own is nudged to play again.
+ * Card samples share ONE audio element, so starting a sample stops whatever
+ * was playing. Listeners let each button show whether it is the one playing.
  */
-const cardVideos = new Map<HTMLVideoElement, number>() // video -> visible ratio
-const wanted = new Set<HTMLVideoElement>()
-let rebalanceQueued = false
-
-function maxPlaying(): number {
-  if (typeof navigator === "undefined") return 6
-  const ua = navigator.userAgent
-  const phone = /iPhone|iPod|Android.+Mobile/i.test(ua)
-  const tablet = /iPad|Android(?!.+Mobile)/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
-  return phone ? 3 : tablet ? 5 : 8
-}
-
-function rebalance() {
-  rebalanceQueued = false
-  const visible = [...cardVideos].filter(([, r]) => r >= 0.2).sort((a, b) => b[1] - a[1])
-  const allowed = new Set(visible.slice(0, maxPlaying()).map(([v]) => v))
-  wanted.clear()
-  for (const [v] of cardVideos) {
-    if (allowed.has(v) && !document.hidden) {
-      wanted.add(v)
-      v.muted = true // the property, not the attribute: desktop blocks unmuted autoplay
-      if (v.preload !== "auto") v.preload = "auto"
-      if (v.paused) v.play()?.catch(() => {})
-    } else if (!v.paused) {
-      v.pause()
-    }
+let samplePlayer: HTMLAudioElement | null = null
+const sampleListeners = new Set<() => void>()
+function playSample(url: string) {
+  if (!samplePlayer) {
+    samplePlayer = new Audio()
+    const notify = () => sampleListeners.forEach(f => f())
+    samplePlayer.addEventListener("play", notify)
+    samplePlayer.addEventListener("pause", notify)
+    samplePlayer.addEventListener("ended", notify)
   }
+  if (samplePlayer.src === url && !samplePlayer.paused) { samplePlayer.pause(); return }
+  if (samplePlayer.src !== url) samplePlayer.src = url
+  samplePlayer.currentTime = 0
+  samplePlayer.play().catch(() => {})
 }
-
-function queueRebalance() {
-  if (rebalanceQueued || typeof window === "undefined") return
-  rebalanceQueued = true
-  requestAnimationFrame(rebalance)
+function SamplePlayButton({ url }: { url: string }) {
+  const [playing, setPlaying] = useState(false)
+  useEffect(() => {
+    const f = () => setPlaying(!!samplePlayer && samplePlayer.src === url && !samplePlayer.paused)
+    sampleListeners.add(f)
+    return () => { sampleListeners.delete(f) }
+  }, [url])
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); playSample(url) }}
+      title={playing ? "Stop the sample" : "Play a sample"}
+      className="absolute left-1/2 top-[40%] -translate-x-1/2 -translate-y-1/2 z-20 w-11 h-11 rounded-full bg-black/55 border border-white/25 backdrop-blur-sm flex items-center justify-center text-white shadow-lg hover:bg-black/75 hover:scale-105 transition-all"
+    >
+      {playing ? <Pause size={16} className="fill-white" /> : <Play size={16} className="fill-white ml-0.5" />}
+    </button>
+  )
 }
-
-if (typeof document !== "undefined") document.addEventListener("visibilitychange", queueRebalance)
 
 // A single home-page section card. Admin-uploaded image/video fills it (cover);
 // otherwise a themed gradient placeholder. The whole card is clickable (onClick or
@@ -77,6 +71,8 @@ export function HomeMediaCard({
   badge,
   altMedia,
   tall = false,
+  placeholder,
+  sampleUrl,
 }: {
   cardKey: string
   title: string
@@ -94,8 +90,11 @@ export function HomeMediaCard({
   /** Top-left, always visible (the admin controls take top-right on hover). */
   badge?: React.ReactNode
   /**
-   * The card's alternative (stored under "<cardKey>::alt"), e.g. the still start
-   * frame of an animated card. When present, admins get a toggle that swaps them.
+   * The card's alternative (stored under "<cardKey>::alt"): the still of an
+   * animated card, or the animation of a still one. A card with both shows the
+   * still and plays the video in its turn of the page-wide cycle, whichever
+   * slot each is in; the admin toggle swaps the slots (so Replace/Remove act
+   * on the other one).
    */
   altMedia?: CardMedia | null
   /**
@@ -106,49 +105,79 @@ export function HomeMediaCard({
    * each side.
    */
   tall?: boolean
+  /** Shown when the card has no media (audio cards draw a waveform). */
+  placeholder?: React.ReactNode
+  /** A short clip the card can play in place, without opening the model. */
+  sampleUrl?: string
 }) {
   const router = useRouter()
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(false)
   const [frameSrc, setFrameSrc] = useState<string | null>(null) // image awaiting framing
+  const cardRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
 
-  // Card videos play under the shared budget above: only the few most in view
-  // play at once, so the decoders are never oversubscribed.
+  // The card's two faces, wherever they are stored: the main slot or "::alt"
+  // (the admin swap only decides which one Replace/Remove act on).
   const isVideo = media?.mediaType === "video"
+  const video = isVideo ? media : altMedia?.mediaType === "video" ? altMedia : null
+  const still = media?.mediaType === "image" && media.mediaUrl ? media : altMedia?.mediaType === "image" && altMedia.mediaUrl ? altMedia : null
+
+  // Its turn in the page-wide cycle (card-video-scheduler): `live` mounts the
+  // video, `shown` fades the still off it once it is really playing, and each
+  // turn bumps `turn` so a video still mounted from the last one restarts.
+  const [live, setLive] = useState(false)
+  const [shown, setShown] = useState(false)
+  const [turn, setTurn] = useState(0)
+  const handleRef = useRef<CardVideoHandle | null>(null)
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el || !video?.mediaUrl) return
+    let unmount: ReturnType<typeof setTimeout> | null = null
+    const handle = registerCardVideo(el, {
+      start: () => {
+        if (unmount) clearTimeout(unmount)
+        setLive(true)
+        setTurn(t => t + 1)
+      },
+      stop: () => {
+        setShown(false)
+        if (unmount) clearTimeout(unmount)
+        unmount = setTimeout(() => setLive(false), FADE_MS + 50)
+      },
+    })
+    handleRef.current = handle
+    return () => {
+      if (unmount) clearTimeout(unmount)
+      handle.unregister()
+      handleRef.current = null
+      setLive(false)
+      setShown(false)
+    }
+  }, [video?.mediaUrl])
+
+  // Each turn: from the top, muted (the property - React's attribute is
+  // unreliable, and desktop browsers refuse unmuted autoplay).
   useEffect(() => {
     const v = videoRef.current
-    if (!v || !isVideo) return
-    v.muted = true // React's `muted` attribute is unreliable; set the property so desktop autoplay isn't blocked
-    cardVideos.set(v, 0)
-    const io = new IntersectionObserver(
-      entries => {
-        for (const e of entries) cardVideos.set(v, e.isIntersecting ? e.intersectionRatio : 0)
-        queueRebalance()
-      },
-      { threshold: [0, 0.2, 0.4, 0.6, 0.8, 1] }
-    )
-    io.observe(v)
-    // The browser pausing or starving a video the budget wants playing (iOS does
-    // both under load): try again shortly.
-    let retry: ReturnType<typeof setTimeout> | null = null
-    const nudge = () => {
-      if (retry) clearTimeout(retry)
-      retry = setTimeout(() => { if (wanted.has(v) && v.paused) v.play()?.catch(() => {}) }, 800)
+    if (!live || !v || !turn) return
+    v.muted = true
+    v.currentTime = 0
+    // The promise settles when playback really begins - covers a restart of a
+    // video that was still running, which fires no fresh "playing" event.
+    v.play()
+      ?.then(() => { setShown(true); handleRef.current?.started() })
+      .catch((e: unknown) => handleRef.current?.failed((e as DOMException)?.name === "NotAllowedError"))
+  }, [live, turn])
+
+  const onVideoEnded = () => {
+    const v = videoRef.current
+    if (v && handleRef.current?.ended()) {
+      v.currentTime = 0 // a short clip goes round again until the minimum is up
+      v.play()?.catch(() => handleRef.current?.failed())
     }
-    v.addEventListener("pause", nudge)
-    v.addEventListener("stalled", nudge)
-    return () => {
-      io.disconnect()
-      v.removeEventListener("pause", nudge)
-      v.removeEventListener("stalled", nudge)
-      if (retry) clearTimeout(retry)
-      cardVideos.delete(v)
-      wanted.delete(v)
-      queueRebalance()
-    }
-  }, [isVideo, media?.mediaUrl])
+  }
 
   const activate = () => {
     if (onClick) onClick()
@@ -220,7 +249,9 @@ export function HomeMediaCard({
     if (ok) setFrameSrc(null)
   }
 
-  // Flip between the card's media and its alternative (still <-> animated).
+  // Swap the card's main and "::alt" slots. Both faces show either way (the
+  // still, then the video in its turn); this only changes which one Replace
+  // and Remove act on.
   const onSwap = async () => {
     setUploading(true)
     setError(false)
@@ -254,27 +285,49 @@ export function HomeMediaCard({
 
   return (
     <div
+      ref={cardRef}
       onClick={activate}
       className={`group relative ${tall ? "h-full min-h-[240px]" : aspect} rounded-2xl overflow-hidden border border-white/10 bg-slate-900 cursor-pointer transition-all hover:border-white/25 hover:shadow-xl hover:shadow-black/40 ${className}`}
     >
       {/* Media */}
       <div className="absolute inset-0">
-      {media?.mediaType === "video" ? (
-        // eslint-disable-next-line jsx-a11y/media-has-caption
-        <video
-          ref={videoRef}
-          // #t=0.001 forces the first frame to render immediately (poster-like) even
-          // before/without playing, so no card ever shows as a black tile.
-          src={`${media.mediaUrl}#t=0.001`}
-          muted
-          loop
-          playsInline
-          preload="metadata"
-          className="absolute inset-0 w-full h-full object-cover"
-        />
+      {video ? (
+        <>
+          {/* The video exists only during the card's turn. */}
+          {live && (
+            <video
+              ref={videoRef}
+              src={video.mediaUrl}
+              muted
+              playsInline
+              preload="auto"
+              onPlaying={() => { setShown(true); handleRef.current?.started() }}
+              onWaiting={() => handleRef.current?.stalled()}
+              onEnded={onVideoEnded}
+              onError={() => handleRef.current?.failed()}
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+          )}
+          {/* The still covers it whenever it is not playing. */}
+          <div
+            className="absolute inset-0 transition-opacity ease-out"
+            style={{ opacity: shown ? 0 : 1, transitionDuration: `${FADE_MS}ms` }}
+          >
+            {still ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={still.mediaUrl} alt={title} className="absolute inset-0 w-full h-full object-cover" />
+            ) : (
+              // No still uploaded: the video's first frame stands in (#t=0.001
+              // renders it without playing).
+              <video src={`${video.mediaUrl}#t=0.001`} muted playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover" />
+            )}
+          </div>
+        </>
       ) : media?.mediaUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={media.mediaUrl} alt={title} className="absolute inset-0 w-full h-full object-cover" />
+      ) : placeholder ? (
+        placeholder
       ) : (
         // Branded placeholder — silver gradient wordmark instead of a bare tint
         <div className="absolute inset-0 bg-gradient-to-br from-white/[0.05] via-transparent to-black/50 flex items-center justify-center">
@@ -301,6 +354,8 @@ export function HomeMediaCard({
       <SilverRimOverlay />
 
       {badge && <div className="absolute top-2 left-2 z-20 pointer-events-none">{badge}</div>}
+
+      {sampleUrl && <SamplePlayButton url={sampleUrl} />}
 
       {/* Foreground label */}
       <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2">
@@ -329,11 +384,11 @@ export function HomeMediaCard({
           {media?.mediaUrl && altMedia?.mediaUrl && !uploading && (
             <button
               onClick={onSwap}
-              title={isVideo ? "Show the still image" : "Show the animation"}
+              title={isVideo ? "Replace/Remove act on the video - switch them to the still" : "Replace/Remove act on the still - switch them to the video"}
               className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/70 border border-white/15 text-[10px] text-white hover:bg-black/90 transition-colors"
             >
               {isVideo ? <ImageIcon size={11} /> : <Film size={11} />}
-              {isVideo ? "Still" : "Animate"}
+              {isVideo ? "Edit still" : "Edit video"}
             </button>
           )}
           {media?.mediaUrl && !uploading && (

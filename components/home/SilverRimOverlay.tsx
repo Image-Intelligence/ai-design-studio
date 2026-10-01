@@ -13,6 +13,10 @@ export function SilverRimOverlay({ rounded = "rounded-2xl" }: { rounded?: string
       aria-hidden
       className={`absolute inset-0 ${rounded} overflow-hidden pointer-events-none z-30`}
       style={{
+        // A space-y parent (Tailwind v4: margin-block-end on every child but
+        // the last) gave this absolutely-positioned layer a bottom margin, so
+        // the rim was drawn short and cut through the card's last row.
+        margin: 0,
         padding: "1.5px",
         WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
         WebkitMaskComposite: "xor",
