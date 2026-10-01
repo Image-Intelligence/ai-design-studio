@@ -440,9 +440,12 @@ export function StoryboardWorkspace({
           <button onClick={create} className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-500/90 hover:bg-sky-400 text-xs font-bold text-white"><Plus size={13} /> New storyboard</button>
         </div>
       ) : (
-        <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
+        // Phones and tablets: ONE scroll - the story panel, then the whole
+        // board. Two stacked scroll panes inside a fixed-height page left the
+        // board a short strip under Safari's toolbar. Desktop keeps two panes.
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain lg:overflow-hidden flex flex-col lg:flex-row">
           {/* ── the story ── */}
-          <aside className="lg:w-80 xl:w-96 shrink-0 border-b lg:border-b-0 lg:border-r border-white/5 overflow-y-auto p-3 sm:p-4 space-y-4 max-h-[45vh] lg:max-h-none">
+          <aside className="lg:w-80 xl:w-96 shrink-0 border-b lg:border-b-0 lg:border-r border-white/5 lg:overflow-y-auto p-3 sm:p-4 space-y-4">
             <input
               value={board.title}
               onChange={e => update(b => ({ ...b, title: e.target.value }))}
@@ -550,7 +553,8 @@ export function StoryboardWorkspace({
           </aside>
 
           {/* ── the board ── */}
-          <main className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4">
+          {/* the bottom padding clears iOS Safari's floating toolbar */}
+          <main className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto p-3 sm:p-4 pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-4">
             {(finalCut.job || finalCut.versions.length > 0) && (
               <section className="mb-4 rounded-2xl border border-amber-300/20 bg-amber-200/[0.03] p-3 flex flex-col xl:flex-row gap-3">
                 {/* the cut itself */}
