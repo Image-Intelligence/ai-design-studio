@@ -60,6 +60,24 @@ function Tix({ n, approx, className = "" }: { n: number; approx?: boolean; class
   return <span className={`inline-flex items-center gap-0.5 font-mono ${className}`}><Ticket size={9} />{approx ? "~" : ""}{n}</span>
 }
 
+/**
+ * A request that never throws: a failed one comes back as { ok: false }.
+ * The browser cancels requests on its own - an iPad sleeping, Safari
+ * suspending the tab, Wi-Fi dropping, the dev server reloading - and an
+ * unguarded one surfaced as "Runtime AbortError: The operation was aborted",
+ * which on the dev server takes over the whole screen. Every studio request
+ * that is not already guarded goes through here.
+ */
+async function getJson<T = any>(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: T | null }> {
+  try {
+    const r = await fetch(url, init)
+    const data = await r.json().catch(() => null)
+    return { ok: r.ok, status: r.status, data }
+  } catch {
+    return { ok: false, status: 0, data: null }
+  }
+}
+
 /** Can this shot be shot right now? */
 const shootable = (s: StoryboardShot) => !!s.stillUrl && !!STORYBOARD_VIDEO_IDS[s.videoModel] && s.video?.status !== "rendering"
 /** The clip no longer matches the slot: the still or the motion prompt changed after it was shot. */
@@ -129,16 +147,16 @@ export function StoryboardWorkspace({
 
   // ── loading ──
   const loadList = useCallback(async () => {
-    const r = await fetch("/api/employees/storyboards")
-    if (!r.ok) return [] as BoardSummary[]
-    const j = await r.json()
-    setBoards(j.storyboards ?? [])
-    return (j.storyboards ?? []) as BoardSummary[]
+    const r = await getJson<{ storyboards?: BoardSummary[] }>("/api/employees/storyboards")
+    // A failed read keeps the list the page already has
+    if (!r.ok || !r.data) return [] as BoardSummary[]
+    setBoards(r.data.storyboards ?? [])
+    return r.data.storyboards ?? []
   }, [])
   const open = useCallback(async (id: number) => {
-    const r = await fetch(`/api/employees/storyboards/${id}`)
-    if (!r.ok) return
-    const { storyboard } = await r.json()
+    const r = await getJson<{ storyboard?: StoryboardDoc }>(`/api/employees/storyboards/${id}`)
+    const storyboard = r.data?.storyboard
+    if (!r.ok || !storyboard) return
     setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], mode: boardMode(storyboard.mode).id })
     setShotError({})
     setFinalCut({ job: null, versions: [] })
@@ -151,9 +169,9 @@ export function StoryboardWorkspace({
     if (fc?.finalCut && boardRef.current?.id === id) setFinalCut(fc.finalCut)
   }, [])
   const create = useCallback(async () => {
-    const r = await fetch("/api/employees/storyboards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
-    if (!r.ok) return
-    const { storyboard } = await r.json()
+    const r = await getJson<{ storyboard?: StoryboardDoc }>("/api/employees/storyboards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+    const storyboard = r.data?.storyboard
+    if (!r.ok || !storyboard) return
     await loadList()
     // A new board has no cuts and no errors: clear the previous board's, or its
     // Final Cuts keep showing in the screening room of the empty board
@@ -167,12 +185,16 @@ export function StoryboardWorkspace({
   useEffect(() => {
     if (!signedIn) return
     ;(async () => {
-      const list = await loadList()
-      let last: number | null = null
-      try { last = Number(localStorage.getItem("pv2-storyboard")) || null } catch {}
-      const pick = list.find(b => b.id === last) ?? list[0]
-      if (pick) await open(pick.id)
-      setLoading(false)
+      // However the loads go, the spinner ends - a failed first read used to leave it spinning
+      try {
+        const list = await loadList()
+        let last: number | null = null
+        try { last = Number(localStorage.getItem("pv2-storyboard")) || null } catch {}
+        const pick = list.find(b => b.id === last) ?? list[0]
+        if (pick) await open(pick.id)
+      } finally {
+        setLoading(false)
+      }
     })()
   }, [signedIn, loadList, open])
 
@@ -319,7 +341,9 @@ export function StoryboardWorkspace({
     if (!rendering || !boardId) return
     const poll = setInterval(async () => {
       const r = await fetch(`/api/employees/storyboards/${boardId}/shoot`).catch(() => null)
-      if (r?.ok && boardRef.current?.id === boardId) { const j = await r.json(); mergeVideos(j.videos ?? {}, j.takes) }
+      // The body can be cut off mid-read too (a tab put to sleep) - that is a missed poll, not an error
+      const j = r?.ok ? await r.json().catch(() => null) : null
+      if (j && boardRef.current?.id === boardId) mergeVideos(j.videos ?? {}, j.takes)
     }, 8000)
     const tick = setInterval(() => setTick(t => t + 1), 1000)
     return () => { clearInterval(poll); clearInterval(tick) }
@@ -514,7 +538,8 @@ export function StoryboardWorkspace({
     if (!board) return
     if (!confirmDelete) { setConfirmDelete(true); return }
     setConfirmDelete(false)
-    await fetch(`/api/employees/storyboards/${board.id}`, { method: "DELETE" })
+    const del = await getJson(`/api/employees/storyboards/${board.id}`, { method: "DELETE" })
+    if (!del.ok) return
     const list = await loadList()
     setBoard(null)
     setFinalCut({ job: null, versions: [] })
@@ -1190,7 +1215,10 @@ function BoardBar({ boards, current, currentTitle, onOpen, onCreate }: {
   const SORTS: { id: typeof sort; label: string }[] = [{ id: "recent", label: "Recent" }, { id: "name", label: "A-Z" }, { id: "longest", label: "Longest" }]
 
   return (
-    <div ref={rootRef} className="relative z-40 flex items-center gap-1.5 px-3 sm:px-4 py-1.5 shrink-0">
+    // z-30: above the board (so the picker opens over the shot cards) but under
+    // the portal's sticky taskbar (z-40) - on phones and tablets the page scrolls
+    // as one, and at z-40 this bar slid over the taskbar instead of behind it
+    <div ref={rootRef} className="relative z-30 flex items-center gap-1.5 px-3 sm:px-4 py-1.5 shrink-0">
       {/* the open board - opens every board */}
       <button
         onClick={() => setOpen(o => !o)}
