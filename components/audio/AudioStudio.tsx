@@ -1,7 +1,7 @@
 "use client"
 
 /*
- * AUDIO STUDIO - portal-v2's audio mode (ADMIN ONLY while in development).
+ * AUDIO STUDIO - portal-v2's audio mode (public since 2026-10-02).
  *
  * Same shape as the video mode: a settings sidebar on the left (desktop) or a
  * drawer (mobile), the session feed in the middle, and the prompt bar fixed
@@ -139,6 +139,7 @@ function AudioCard({ item, onUsePrompt }: { item: AudioItem; onUsePrompt?: (t: s
 function AudioSettings({
   model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
   instrumental, setInstrumental, style, setStyle, lyrics, setLyrics, audioFile, audioUploading, onAudioPick, onAudioClear,
+  voiceConsent, setVoiceConsent,
 }: {
   model: AudioStudioModel
   onModelChange: (id: string) => void
@@ -153,6 +154,7 @@ function AudioSettings({
   audioUploading: boolean
   onAudioPick: (f: File) => void
   onAudioClear: () => void
+  voiceConsent: boolean; setVoiceConsent: (v: boolean) => void
 }) {
   const g = groupOf(model)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -163,7 +165,6 @@ function AudioSettings({
       {/* Model */}
       <div>
         <div className="flex items-center gap-2 mb-2">
-          <span className="px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30 text-[9px] font-bold uppercase tracking-wider text-red-300">Admin only</span>
           <span className={`text-[10px] font-bold uppercase tracking-wider ${g.accent}`}>{g.label}</span>
         </div>
         <select value={model.id} onChange={e => onModelChange(e.target.value)} className={`${field} font-bold text-sm`}>
@@ -263,6 +264,16 @@ function AudioSettings({
               <span className="text-[10px] text-slate-500">{model.audioIn.hint ?? `up to ${model.audioIn.maxMinutes} min`}</span>
             </button>
           )}
+          {/* Cloning copies a real person's voice: the user vouches for it
+              (the server refuses a cloning run without this) */}
+          {model.audioIn.clonesVoice && audioFile && (
+            <label className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-2.5 py-2 cursor-pointer">
+              <input type="checkbox" checked={voiceConsent} onChange={e => setVoiceConsent(e.target.checked)} className="mt-0.5 accent-amber-400" />
+              <span className="text-[11px] leading-snug text-amber-100/90">
+                This is my voice, or I have the speaker&apos;s permission to clone it. I won&apos;t use it to impersonate anyone.
+              </span>
+            </label>
+          )}
         </div>
       )}
     </div>
@@ -293,6 +304,9 @@ export function AudioStudio({
   const [instrumental, setInstrumental] = useState(false)
   const [audio, setAudio] = useState<{ name: string; seconds: number; url: string } | null>(null)
   const [audioUploading, setAudioUploading] = useState(false)
+  // Asked again for every new file
+  const [voiceConsent, setVoiceConsent] = useState(false)
+  useEffect(() => { setVoiceConsent(false) }, [audio?.url])
   useEffect(() => {
     setVoice(model.voices?.default ?? "")
     setVoice2(model.voice2?.default ?? "")
@@ -317,7 +331,8 @@ export function AudioStudio({
   const missing =
     (model.text?.required && !text.trim()) ? `Enter the ${model.text.label.toLowerCase()}` :
     (model.lyrics?.required && !lyrics.trim()) ? "Add lyrics" :
-    (model.audioIn?.required && !audio) ? `Upload ${model.audioIn.label.toLowerCase()}` : null
+    (model.audioIn?.required && !audio) ? `Upload ${model.audioIn.label.toLowerCase()}` :
+    (model.audioIn?.clonesVoice && audio && !voiceConsent) ? "Confirm you have permission to use this voice" : null
   const canGenerate = !missing && !submitting && !audioUploading && (isAdmin || ticketBalance >= cost)
 
   // ── Past audio ──
@@ -411,6 +426,7 @@ export function AudioStudio({
           voice: voice || undefined, voice2: voice2 || undefined, language: language || undefined,
           duration: model.duration ? duration : undefined, instrumental,
           audioUrl: audio?.url, inputSeconds: audio?.seconds,
+          voiceConsent: model.audioIn?.clonesVoice && audio ? voiceConsent : undefined,
         }),
       })
       const d = await res.json().catch(() => ({}))
@@ -428,6 +444,7 @@ export function AudioStudio({
     model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
     instrumental, setInstrumental, style, setStyle, lyrics, setLyrics,
     audioFile: audio, audioUploading, onAudioPick, onAudioClear: () => setAudio(null),
+    voiceConsent, setVoiceConsent,
   }
   const shown = [...session, ...past.filter(p => !session.some(s => s.id === p.id))]
   const g = groupOf(model)
@@ -445,7 +462,6 @@ export function AudioStudio({
           <div className="flex items-center gap-2 mb-4">
             <Music size={16} className="text-red-300" />
             <h2 className="text-base font-black tracking-tight text-white">Audio Studio</h2>
-            <span className="px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30 text-[9px] font-bold uppercase tracking-wider text-red-300">Admin only</span>
             <button onClick={() => setDrawer(true)} className="sm:hidden ml-auto flex items-center gap-1 px-2 py-1 rounded-md bg-white/5 border border-white/10 text-[11px] text-slate-200">
               <SlidersHorizontal size={12} /> Settings
             </button>

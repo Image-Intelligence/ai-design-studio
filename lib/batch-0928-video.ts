@@ -123,6 +123,14 @@ export function batch0928Input(model: string, p: Batch0928Params): Record<string
     return input
   }
 
+  if (model === 'grok-video-1.5-lite') {
+    // Lite: text-to-video (with an aspect) or image-to-video (the image sets
+    // the shape). No reference mode - extra images fall back to the first.
+    const input: Record<string, any> = { prompt, duration: secs, resolution: pick(['480p', '720p', '1080p'], res, '720p') }
+    if (mode === 'i2v') input.image_url = start
+    else input.aspect_ratio = pick(['16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16'], p.aspectRatio, '16:9')
+    return input
+  }
   if (model === 'grok-video-1.5') {
     const input: Record<string, any> = { prompt, duration: secs, resolution: pick(['480p', '720p', '1080p'], res, '720p') }
     const ar = pick(['16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16'], p.aspectRatio, '16:9')

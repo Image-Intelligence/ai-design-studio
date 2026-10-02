@@ -223,7 +223,7 @@ export function computeCreateCost(model: ChatCreateModel, s: ChatCreateSettings)
     case 'seedream-5-lite':    return s.quality === '3k' ? 4 : 2
     case 'seedream-5-pro':     return 10 // flat — public, 2K only
     case 'recraft-v4.1':       return 15 // flat — public
-    case 'gemini-omni-flash':  return (parseInt(s.duration ?? '8') || 8) * 15 // PLACEHOLDER ≈ seedance-2.0
+    case 'gemini-omni-flash':  return Math.min(10, Math.max(3, parseInt(s.duration ?? '8') || 8)) * 4 // lib/ticket-pricing
     case 'gpt-image-2': {
       const size = s.aspect ?? '1024x1024'
       if (s.quality === 'low') return 1
@@ -349,8 +349,8 @@ export const CHAT_CREATE_MODELS: ChatCreateModel[] = [
     strengths: 'BEST FOR: everything 2.0 does — character movement, action, multi-character staging, multi-part shots — at the highest quality in the catalog, plus 1080p. This is the model to spend on the shots the film is judged by: the opening, the turn, the climax. Nine references (@Image1-@Image9). It is equally strong on plates, weather, water and effects, but picking it ONLY for a gentle landscape move spends the most capable engine you have on the easiest shot in the film. WEAK AT: no end-frame control, and it is expensive. REFUSES: the same ByteDance filter as 2.0 — judged on what is VISIBLE in the frame, not on who the character is in the story. ADMIN ONLY.',
     guide: 'Same prompting rules as seedance-2.0. Reach for this on plates, environments and effects — especially animating a still you just generated.',
     fields: [D(['auto', ...SECONDS(4, 12)], 'auto'), R(['480p', '720p', '1080p'], '1080p'), A('AR', ['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'], 'auto'), AUDIO] },
-  { id: 'gemini-omni-flash', label: 'Gemini Omni Flash',  kind: 'video', group: 'Google', maxRefs: 9, ticketCost: 120, admin: true,
-    strengths: 'BEST FOR: text-to-video with no plate at all, single-image animation, or blending several references into one look. Native synced audio. WEAK AT: locked to 3-10s and 16:9 or 9:16 only. Google screens inputs, so treat a real-person cast as risky here too. ADMIN ONLY.',
+  { id: 'gemini-omni-flash', label: 'Gemini Omni Flash',  kind: 'video', group: 'Google', maxRefs: 9, ticketCost: 32,
+    strengths: 'BEST FOR: text-to-video with no plate at all, single-image animation, or blending several references into one look. Native synced audio. WEAK AT: locked to 3-10s and 16:9 or 9:16 only. Google refuses inputs showing a realistic person (2026-10-01: every keeper still and clip came back "Downstream service error"), so use it for scenes, products and stylised characters.',
     guide: 'With 2+ refs, bind them inline as <IMAGE_REF_0>, <IMAGE_REF_1>… (0-INDEXED, unlike SeeDance\'s @Image1). One ref = true start frame. Keep prompts cinematic: subject+action → camera → sound cues. Duration is an integer 3-10s (no auto).',
     fields: [D(SECONDS(3, 10), '8'), A('AR', ['16:9', '9:16'], '16:9')] },
   { id: 'wan-2.5',           label: 'Wan 2.5',            kind: 'video', group: 'Wan', maxRefs: 1, ticketCost: 13, needsRef: true,

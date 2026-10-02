@@ -307,7 +307,9 @@ export const AI_MODELS: AIModel[] = [
   // Input shapes: lib/fal-image-models.ts (verified against live fal OpenAPI).
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // Qwen Image 3 (Alibaba)
+  // Qwen Image 3 (Alibaba) - fal $0.04 at 1K (1 ticket), $0.075 at 2K (2); no 4K.
+  // The edit costs ~$0.006 more (+1 ticket). /api/generate and the portal
+  // price per quality and refs; these are the 2K text-to-image defaults.
   {
     id: 'qwen-image-3',
     name: 'alibaba/qwen-image-3/text-to-image',
@@ -414,13 +416,15 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal' as const,
   })),
 
-  // Microsoft MAI Image 2.5 Pro
+  // Microsoft MAI Image 2.5 Pro. fal bills tokens: ~$0.17 a text-to-image,
+  // $0.18-0.27 an edit with one input image (2026-10-01). 5 tickets ($0.40 at
+  // the $0.08 ticket) is ~57%; the edit is 7 so the dearest case still clears 50%.
   {
     id: 'mai-image-2.5-pro',
     name: 'microsoft/mai-image-2.5-pro',
     displayName: 'MAI Image 2.5 Pro',
     description: 'Microsoft MAI Image 2.5 Pro text-to-image',
-    ticketCost: 4,
+    ticketCost: 5,
     category: 'premium',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -432,7 +436,7 @@ export const AI_MODELS: AIModel[] = [
     name: 'microsoft/mai-image-2.5-pro/edit',
     displayName: 'MAI Image 2.5 Pro Edit',
     description: 'Microsoft MAI Image 2.5 Pro single-image editing',
-    ticketCost: 4,
+    ticketCost: 7,
     category: 'premium',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -453,12 +457,16 @@ export const AI_MODELS: AIModel[] = [
     isAvailable: true,
     provider: 'fal'
   },
+  // fal 2026-10-01: $0.04/$0.06 (low/medium) at 1K, $0.06/$0.08 at 2K, and the
+  // edit adds $0.01 per input image (up to 4). Text-to-image at 2 tickets is a
+  // 50%+ margin at the $0.08 subscription ticket even at 2K medium; an edit is
+  // 3 tickets so four references at 2K ($0.12) still clear 50%.
   {
     id: 'grok-imagine-2-edit',
     name: 'xai/grok-imagine-image/v2.0/edit',
     displayName: 'Grok Imagine 2 Edit',
     description: 'xAI Grok Imagine 2 multi-reference editing',
-    ticketCost: 2,
+    ticketCost: 3,
     category: 'standard',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -466,13 +474,14 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
-  // Meta Muse
+  // Meta Muse - fal $0.01 an image, t2i and edit alike (measured by balance
+  // delta 2026-10-02) -> 1 ticket
   {
     id: 'meta-muse',
     name: 'meta/muse-image/text-to-image',
     displayName: 'Meta Muse',
     description: 'Meta Muse Image text-to-image',
-    ticketCost: 2,
+    ticketCost: 1,
     category: 'standard',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -484,7 +493,7 @@ export const AI_MODELS: AIModel[] = [
     name: 'meta/muse-image/edit',
     displayName: 'Meta Muse Edit',
     description: 'Meta Muse Image editing — up to 10 reference images',
-    ticketCost: 2,
+    ticketCost: 1,
     category: 'standard',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -544,6 +553,59 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  // FLUX 3 Image (2026-10-02) - priced per request by flux3ImageTicketCost;
+  // these are the 1k defaults
+  {
+    id: 'flux-3-image',
+    name: 'blackforestlabs/flux-3/text-to-image',
+    displayName: 'FLUX 3',
+    description: 'FLUX 3 Image text-to-image; edits with up to 10 references',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  {
+    id: 'flux-3-image-edit',
+    name: 'blackforestlabs/flux-3/edit-image',
+    displayName: 'FLUX 3 Edit',
+    description: 'FLUX 3 Image editing - up to 10 reference images',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  // Ideogram 4.5 (2026-10-02) - fal per image by quality tier, any size:
+  // low $0.03 / medium $0.06 / high $0.22 -> 1 / 2 / 6 tickets (getTicketCost
+  // prices by quality; these are the medium defaults)
+  {
+    id: 'ideogram-4.5',
+    name: 'ideogram/v4.5',
+    displayName: 'Ideogram v4.5',
+    description: 'Ideogram 4.5 text-to-image; edits with references',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  {
+    id: 'ideogram-4.5-edit',
+    name: 'ideogram/v4.5/edit',
+    displayName: 'Ideogram v4.5 Edit',
+    description: 'Ideogram 4.5 editing - a source image plus up to 4 references',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
   {
     id: 'ideogram-v4',
     name: 'ideogram/v4',
@@ -583,13 +645,15 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
-  // Recraft v4 — style + vector
+  // Recraft v4 — style + vector. fal per image (2026-10-02): $0.035 / $0.10 /
+  // $0.05 / $0.12, + $0.005 to build the style from the references (always - there
+  // is no style_id input) -> fal cost / $0.04 a ticket: 1 / 3 / 2 / 4
   {
     id: 'recraft-v4-style',
     name: 'recraft/v4/style/text-to-image',
     displayName: 'Recraft v4 Style',
     description: 'Recraft v4 styled text-to-image (style_id + style refs)',
-    ticketCost: 3,
+    ticketCost: 1,
     category: 'standard',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -601,7 +665,7 @@ export const AI_MODELS: AIModel[] = [
     name: 'recraft/v4/style/pro/text-to-image',
     displayName: 'Recraft v4 Style Pro',
     description: 'Recraft v4 Pro styled text-to-image',
-    ticketCost: 6,
+    ticketCost: 3,
     category: 'premium',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'ultra',
@@ -613,7 +677,7 @@ export const AI_MODELS: AIModel[] = [
     name: 'recraft/v4/style/text-to-vector',
     displayName: 'Recraft v4 Vector',
     description: 'Recraft v4 text-to-vector (SVG output)',
-    ticketCost: 4,
+    ticketCost: 2,
     category: 'standard',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'high',
@@ -625,7 +689,7 @@ export const AI_MODELS: AIModel[] = [
     name: 'recraft/v4/style/pro/text-to-vector',
     displayName: 'Recraft v4 Vector Pro',
     description: 'Recraft v4 Pro text-to-vector (SVG output)',
-    ticketCost: 8,
+    ticketCost: 4,
     category: 'premium',
     rateLimit: { rpm: 0, rpd: 0 },
     quality: 'ultra',
@@ -886,6 +950,11 @@ export function getTicketCost(modelId: string, quality?: '2k' | '4k' | string): 
   }
 
   // NanoBanana Pro 2: 7 tickets for 2K, 12 tickets for 4K
+  // Ideogram 4.5: fal bills per image by tier (low $0.03 / medium $0.06 / high $0.22)
+  if (modelId === 'ideogram-4.5' || modelId === 'ideogram-4.5-edit') {
+    return quality === 'high' ? 6 : quality === 'low' ? 1 : 2
+  }
+
   if (modelId === 'nano-banana-pro-2') {
     return quality === '4k' ? 12 : 7
   }

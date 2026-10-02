@@ -7,12 +7,12 @@ import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import { buildFalCall } from '@/lib/chat-hub-create'
 import { ensureThumbnail } from '@/lib/thumbnail'
-import { STORYBOARD_IMAGE_MODELS } from '@/lib/storyboard'
+import { STORYBOARD_IMAGE_MODELS, stillModelSpec, stillBuildOptions, GPT_SIZE_FOR_ASPECT } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/still - make one slot's still.
  *
- * Body: { prompt, model, refs?: string[] }
+ * Body: { prompt, model, quality?, options?: Record<string, string>, refs?: string[] }
  * Returns: { url, imageId }
  *
  * The board's look notes are appended to the prompt and its aspect ratio is
@@ -48,12 +48,19 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!prompt) return jsonPrivate({ error: 'Write an image prompt first' }, { status: 400 })
   const spec = STORYBOARD_IMAGE_MODELS.find(m => m.id === body.model)
   if (!spec) return jsonPrivate({ error: 'Unknown image model' }, { status: 400 })
+  // The model's own limits: how many refs it takes (Recraft none, Kling V3
+  // one, NanoBanana Pro 2 fourteen...) and which qualities it offers
+  const knobs = stillModelSpec(spec.id)
   const refs = spec.refs && Array.isArray(body.refs)
-    ? (body.refs as unknown[]).filter((u): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 8)
+    ? (body.refs as unknown[]).filter((u): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, knobs.maxRefs)
     : []
+  const quality = typeof body.quality === 'string' && knobs.qualities.includes(body.quality) ? body.quality : (knobs.defQuality || '2k')
 
   const fullPrompt = [prompt, board.look.trim() && `Look: ${board.look.trim()}`].filter(Boolean).join('\n\n')
-  const call = buildFalCall(spec.id, fullPrompt, refs, { aspect: board.aspect, quality: '2k' })
+  // GPT Image takes a pixel size rather than a ratio
+  const aspect = spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[board.aspect] ?? '1024x1024') : board.aspect
+  // The model's other settings, kept to the values it offers (stillSettings)
+  const call = buildFalCall(spec.id, fullPrompt, refs, { aspect, quality }, stillBuildOptions(spec.id, body.options))
   if ('error' in call) return jsonPrivate({ error: call.error }, { status: 400 })
 
   let falUrl: string | undefined
@@ -78,7 +85,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       userId: user.id, prompt: fullPrompt, imageUrl: url, model: spec.id, ticketCost: 0, referenceImageUrls: refs,
       folderId: await boardFolder(user.id, board.title),
       expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
-      quality: '2k', aspectRatio: board.aspect,
+      quality, aspectRatio: board.aspect,
     },
   })
   await ensureThumbnail(row.id).catch(() => {})

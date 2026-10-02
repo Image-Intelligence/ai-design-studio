@@ -1,7 +1,7 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { Image as ImageIcon, Video, Shield, Wand2, Star, Music } from "lucide-react"
+import { Image as ImageIcon, Video, Shield, Wand2, Star, Music, Clapperboard, Film, Sparkles, ArrowRight } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { AudioCardArt } from "./AudioCardArt"
 import { GenerationsCarousel } from "./GenerationsCarousel"
@@ -9,6 +9,7 @@ import { FEATURED_MODELS, TALL_CARDS } from "./featured"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { SITE_EMPLOYEES, AdminModelBadge } from "@/components/employees/EmployeesView"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
+import { STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, BOARD_MODES } from "@/lib/storyboard"
 
 // Model group shape (matches IMAGE_MODEL_GROUPS / VIDEO_MODEL_GROUPS in portal-v2).
 export type ModelGroup = { label: string; type: string; accent: string; dot: string; items: string[] }
@@ -168,11 +169,13 @@ export function HomeView({
   imageGroups,
   imageSections = [],
   adminImageGroups = [],
+  imageUpscaleNames = [],
   videoGroups,
+  videoToolNames = [],
   adminVideoGroups = [],
   imageCostByName = {},
   videoCostByName = {},
-  adminAudioGroups = [],
+  audioGroups = [],
   audioCostByName = {},
   onSelectAudioModel,
   cards,
@@ -189,12 +192,20 @@ export function HomeView({
   imageGroups: ModelGroup[]
   imageSections?: ModelSection[]
   adminImageGroups?: ModelGroup[]
+  /**
+   * Models that belong in the Upscale / Tools sub-sections whatever company
+   * group the picker files them under. The picker stopped keeping tools in
+   * their own groups (2026-10-02: each sits with its maker), so the home page
+   * can no longer tell a tool by its group's label alone.
+   */
+  imageUpscaleNames?: string[]
+  videoToolNames?: string[]
   videoGroups: ModelGroup[]
   adminVideoGroups?: ModelGroup[]
   imageCostByName?: Record<string, string>
   videoCostByName?: Record<string, string>
-  /** Audio Studio models - admin only while in development. */
-  adminAudioGroups?: (ModelGroup & { note?: string })[]
+  /** Audio Studio models (public since 2026-10-02). */
+  audioGroups?: (ModelGroup & { note?: string })[]
   audioCostByName?: Record<string, string>
   onSelectAudioModel?: (name: string) => void
   cards: Record<string, CardMedia>
@@ -216,23 +227,26 @@ export function HomeView({
   const adminImage = isAdmin ? adminImageGroups : []
   const adminVideo = isAdmin ? adminVideoGroups : []
   const isUpscaleGroup = (g: ModelGroup) => UPSCALE_GROUP_LABELS.has(g.label)
+  const upscaleNames = new Set(imageUpscaleNames)
+  const toolNames = new Set(videoToolNames)
   const imageGenerate = [
-    ...reorder(flatten(imageGroups, false), HOME_IMAGE_ORDER),
+    ...reorder(flatten(imageGroups, false), HOME_IMAGE_ORDER).filter(m => !upscaleNames.has(m.name)),
     ...flatten(adminImage.filter(g => !isUpscaleGroup(g)), true).filter(m => !UPSCALE_ITEMS.has(m.name)),
   ]
   const imageUpscale = [
+    ...flatten(imageGroups, false).filter(m => upscaleNames.has(m.name)),
     ...imageSections.flatMap(sec => flatten(sec.groups, false)),
     ...flatten(adminImage.filter(isUpscaleGroup), true),
     ...flatten(adminImage.filter(g => !isUpscaleGroup(g)), true).filter(m => UPSCALE_ITEMS.has(m.name)),
   ]
-  const isToolGroup = (g: ModelGroup) => VIDEO_TOOL_GROUP_LABELS.has(g.label)
+  const isTool = (m: HomeModel) => VIDEO_TOOL_GROUP_LABELS.has(m.group) || toolNames.has(m.name)
   const videoGenerate = [
-    ...reorder(flatten(videoGroups.filter(g => !isToolGroup(g)), false), HOME_VIDEO_ORDER),
-    ...flatten(adminVideo.filter(g => !isToolGroup(g)), true),
+    ...reorder(flatten(videoGroups, false), HOME_VIDEO_ORDER).filter(m => !isTool(m)),
+    ...flatten(adminVideo, true).filter(m => !isTool(m)),
   ]
   const videoTools = [
-    ...flatten(videoGroups.filter(isToolGroup), false),
-    ...flatten(adminVideo.filter(isToolGroup), true),
+    ...flatten(videoGroups, false).filter(isTool),
+    ...flatten(adminVideo, true).filter(isTool),
   ]
 
   // Featured: only what this account can open, in the order listed.
@@ -245,7 +259,13 @@ export function HomeView({
     })
     .filter((m): m is HomeModel & { kind: "image" | "video" } => !!m)
 
-  const studios = SITE_EMPLOYEES.filter(e => employeeVisibleTo(e.id, isAdmin))
+  /*
+   * Studios: Storyboard Studio is the one being released, so it gets the
+   * section to itself as a feature panel; the rest wait in Admin Tools until
+   * their turn (they are admin-only either way).
+   */
+  const featuredStudio = SITE_EMPLOYEES.find(e => e.id === "storyboard" && employeeVisibleTo(e.id, isAdmin))
+  const otherStudios = SITE_EMPLOYEES.filter(e => e.id !== "storyboard" && employeeVisibleTo(e.id, isAdmin))
 
   return (
     /*
@@ -393,28 +413,63 @@ export function HomeView({
       })()}
 
       {/*
-        STUDIOS - driven by SITE_EMPLOYEES: a released studio shows for
-        everyone, a gated one for admins only, badged.
+        STUDIOS - Storyboard Studio on its own, as a feature panel: the big
+        card (its title art, then the explainer video in its turn of the
+        page-wide cycle) beside what it does in three steps. Shows for
+        everyone once released; admins only (badged) until then.
       */}
-      {studios.length > 0 && (
+      {featuredStudio && (
         <Section icon={<Wand2 size={17} />} title="Studios" subtitle="Guided workspaces">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 2xl:gap-4">
-            {studios.map(emp => (
+          <div className="relative isolate overflow-hidden rounded-3xl border border-sky-400/20 bg-gradient-to-br from-sky-500/[0.07] via-white/[0.02] to-amber-400/[0.05] p-3 sm:p-4 lg:p-5">
+            <div className="grid gap-4 lg:gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center">
               <HomeMediaCard
-                key={emp.id}
-                cardKey={`studio:${emp.id}`}
-                title={emp.name}
-                subtitle={emp.tagline}
-                media={cards[`studio:${emp.id}`]}
-                altMedia={cards[`studio:${emp.id}::alt`]}
+                cardKey={`studio:${featuredStudio.id}`}
+                title={featuredStudio.name}
+                subtitle={featuredStudio.tagline}
+                media={cards[`studio:${featuredStudio.id}`]}
+                altMedia={cards[`studio:${featuredStudio.id}::alt`]}
                 isAdmin={isAdmin}
-                badge={EMPLOYEE_ADMIN_ONLY[emp.id] ? <AdminModelBadge /> : undefined}
-                onClick={() => emp.opensOverlay ? onOpenFrames()
-                  : emp.id === "3d-studio" ? onGoThreeD()
-                  : onGoEmployee(emp.id)}
+                badge={EMPLOYEE_ADMIN_ONLY[featuredStudio.id] ? <AdminModelBadge /> : undefined}
+                onClick={() => onGoEmployee(featuredStudio.id)}
                 onMediaChange={onCardMediaChange}
+                className="w-full max-w-[1100px] justify-self-center"
               />
-            ))}
+              <div className="flex flex-col gap-4 2xl:gap-5 px-1 sm:px-2 lg:py-2 max-w-[720px]">
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-[0.28em] text-sky-300/90">Plan · Shoot · Final Cut</p>
+                  <h3 className="mt-1.5 text-2xl sm:text-3xl xl:text-4xl 2xl:text-5xl font-black tracking-tight text-white">{featuredStudio.name}</h3>
+                  <p className="mt-2 text-sm xl:text-base 2xl:text-lg leading-relaxed text-slate-300">
+                    Turn one idea into a finished film. Describe it once - the studio plans every shot, makes each still with the right model, brings it to life and cuts the movie for you.
+                  </p>
+                </div>
+                <ol className="flex flex-col gap-2.5">
+                  {[
+                    { icon: <Sparkles size={15} />, title: "Plan", text: "The AI writes the story, the shots and a still for each one, choosing the best image model for every frame." },
+                    { icon: <Clapperboard size={15} />, title: "Shoot", text: "Every still is animated by the video model that suits it - Veo, Kling, SeeDance, Hailuo and more." },
+                    { icon: <Film size={15} />, title: "Final Cut", text: "One click trims the shots, scores the music and narrates the finished film." },
+                  ].map((s, i) => (
+                    <li key={s.title} className="flex gap-3 rounded-xl border border-white/[0.07] bg-black/25 px-3 py-2.5">
+                      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-400/15 text-sky-200">{s.icon}</span>
+                      <span className="min-w-0">
+                        <span className="block text-[13px] 2xl:text-[15px] font-bold text-white"><span className="text-sky-300/80 font-mono mr-1.5">{i + 1}</span>{s.title}</span>
+                        <span className="block text-[12px] 2xl:text-[13.5px] leading-snug text-slate-400">{s.text}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+                <div className="flex flex-wrap gap-1.5">
+                  {[`${STORYBOARD_IMAGE_MODELS.length} image models`, `${STORYBOARD_VIDEO_MODELS.length} video models`, `${BOARD_MODES.length} kinds of film`, "Music & narration"].map(t => (
+                    <span key={t} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-slate-300">{t}</span>
+                  ))}
+                </div>
+                <button
+                  onClick={() => onGoEmployee(featuredStudio.id)}
+                  className="self-start inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-bold text-slate-950 shadow-[0_0_24px_-6px_rgba(56,189,248,0.7)] transition-colors hover:bg-sky-300"
+                >
+                  Open {featuredStudio.name} <ArrowRight size={15} />
+                </button>
+              </div>
+            </div>
           </div>
         </Section>
       )}
@@ -443,13 +498,13 @@ export function HomeView({
         )}
       </Section>
 
-      {/* AUDIO - admin only while in development: one sub-section per kind of audio. */}
-      {isAdmin && onSelectAudioModel && adminAudioGroups.some(g => g.items.length) && (
-        <Section icon={<Music size={17} />} title="Audio Models" subtitle="Admin only · tap a card to play a sample">
-          {adminAudioGroups.filter(g => g.items.length).map((g, i) => (
+      {/* AUDIO: one sub-section per kind of audio. */}
+      {onSelectAudioModel && audioGroups.some(g => g.items.length) && (
+        <Section icon={<Music size={17} />} title="Audio Models" subtitle="Voices, music and sound · tap a card to play a sample">
+          {audioGroups.filter(g => g.items.length).map((g, i) => (
             <div key={g.label} className={i ? "mt-5" : ""}>
               <SubHead label={g.label} note={g.note} />
-              <ModelGrid models={flatten([g], true)} kind="audio" cards={cards} isAdmin={isAdmin} costByName={audioCostByName} onSelect={onSelectAudioModel} onCardMediaChange={onCardMediaChange} />
+              <ModelGrid models={flatten([g], false)} kind="audio" cards={cards} isAdmin={isAdmin} costByName={audioCostByName} onSelect={onSelectAudioModel} onCardMediaChange={onCardMediaChange} />
             </div>
           ))}
         </Section>
@@ -458,11 +513,28 @@ export function HomeView({
       {/* Content policy notice (CCBill) - shared with the dashboard. */}
       <ProhibitedContentNotice className="mb-8" />
 
-      {/* ADMIN TOOLS - the models moved into their own sections; only the
-          tools that are not models remain here. */}
+      {/* ADMIN TOOLS - the studios not released yet, and the tools that are
+          not models. */}
       {isAdmin && (
         <Section icon={<Shield size={17} />} title="Admin Tools" subtitle="Admin only">
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 2xl:gap-4">
+            {/* The studios that are not released yet wait here for their turn */}
+            {otherStudios.map(emp => (
+              <HomeMediaCard
+                key={emp.id}
+                cardKey={`studio:${emp.id}`}
+                title={emp.name}
+                subtitle={emp.tagline}
+                media={cards[`studio:${emp.id}`]}
+                altMedia={cards[`studio:${emp.id}::alt`]}
+                isAdmin={isAdmin}
+                badge={<AdminModelBadge />}
+                onClick={() => emp.opensOverlay ? onOpenFrames()
+                  : emp.id === "3d-studio" ? onGoThreeD()
+                  : onGoEmployee(emp.id)}
+                onMediaChange={onCardMediaChange}
+              />
+            ))}
             <HomeMediaCard
               cardKey="admin:chat"
               title="AI Chat Hub"

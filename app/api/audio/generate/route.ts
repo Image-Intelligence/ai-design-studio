@@ -1,7 +1,6 @@
 import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
-import { checkIsAdmin } from '@/lib/admin-check'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { canonicalisePayload } from '@/lib/media-url'
@@ -10,10 +9,10 @@ import { jsonPrivate } from '@/lib/api-json'
 import { AUDIO_MODEL_PREFIX, audioTicketCost, getAudioStudioModel, type AudioRunInput } from '@/lib/audio-studio'
 
 /**
- * POST /api/audio/generate - submit an Audio Studio run (ADMIN ONLY for now).
+ * POST /api/audio/generate - submit an Audio Studio run (public since 2026-10-02).
  *
  * Body: { model, text?, lyrics?, style?, voice?, voice2?, language?, duration?,
- *         instrumental?, audioUrl?, inputSeconds? }
+ *         instrumental?, audioUrl?, voiceConsent? }
  * Returns: { success, requestId, ticketCost }
  *
  * The run is submitted to fal's queue and tracked by a GenerationQueue row
@@ -27,7 +26,13 @@ import { AUDIO_MODEL_PREFIX, audioTicketCost, getAudioStudioModel, type AudioRun
  *
  * Pricing is lib/audio-studio's audioTicketCost, the same function the portal
  * shows the price with. Input-audio tools are priced from the uploaded clip's
- * length (the client reads it from the file; clamped to the model's limit).
+ * length as MEASURED here (ffmpeg on the signed URL) - the browser's own
+ * reading is only used to show the price before submitting.
+ *
+ * Voice cloning (models whose input `clonesVoice`) needs `voiceConsent: true`:
+ * the user's confirmation that they own the voice or have the speaker's
+ * permission. Public users can upload anyone's recording, so this is enforced
+ * here as well as by the checkbox.
  */
 export const maxDuration = 60
 
@@ -39,8 +44,6 @@ export async function POST(req: Request) {
     const token = (await cookies()).get('session')?.value
     const user = token ? await getUserFromSession(token) : null
     if (!user?.email) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
-    // Admin only while the section is in development
-    if (!(await checkIsAdmin(user.email))) return jsonPrivate({ error: 'Audio models are admin only for now' }, { status: 403 })
 
     const body = canonicalisePayload(await req.json().catch(() => ({})))
     const spec = getAudioStudioModel(String(body?.model ?? ''))
@@ -75,12 +78,19 @@ export async function POST(req: Request) {
     if (spec.audioIn?.required && !input.audioUrl) return jsonPrivate({ error: `${spec.audioIn.label} is required` }, { status: 400 })
     if (input.audioUrl && !/^https:\/\//.test(input.audioUrl)) return jsonPrivate({ error: 'Invalid audio URL' }, { status: 400 })
 
+    if (spec.audioIn?.clonesVoice && input.audioUrl && body.voiceConsent !== true) {
+      return jsonPrivate({ error: 'Confirm that you own this voice or have the speaker’s permission to clone it.' }, { status: 400 })
+    }
+
     let inputSeconds: number | undefined
     if (spec.audioIn && input.audioUrl) {
-      const s = Number(body.inputSeconds)
+      // Measured, not taken from the browser - the tools are billed on it
+      const { probeRemoteMediaSeconds } = await import('@/lib/video-probe')
+      const s = await probeRemoteMediaSeconds(input.audioUrl).catch(() => null)
+      if (!s) return jsonPrivate({ error: 'Could not read that audio file - try an MP3, WAV or M4A.' }, { status: 400 })
       const cap = spec.audioIn.maxMinutes * 60
-      if (Number.isFinite(s) && s > cap + 1) return jsonPrivate({ error: `That recording is too long - ${spec.audioIn.maxMinutes} minutes at most` }, { status: 400 })
-      inputSeconds = Number.isFinite(s) && s > 0 ? Math.min(s, cap) : cap
+      if (s > cap + 1) return jsonPrivate({ error: `That recording is too long - ${spec.audioIn.maxMinutes} minutes at most` }, { status: 400 })
+      inputSeconds = Math.min(s, cap)
     }
 
     const promptText = [input.text, input.lyrics, input.style].filter(Boolean).join('\n')

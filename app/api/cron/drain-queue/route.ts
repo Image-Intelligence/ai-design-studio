@@ -5,6 +5,7 @@ import { syncActiveCounters } from '@/app/api/admin/queue/stats/route'
 import { processChunk, getBaseUrl } from '@/app/api/admin/auto-caption/jobs/_processor'
 import { uploadToR2 } from '@/lib/r2'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
+import { settleAbandonedAudioRuns } from '@/lib/audio-settle'
 
 // Jobs stuck in 'processing' longer than this are CANDIDATES for being reset.
 // Was 10 minutes, which force-failed jobs fal was still happily running —
@@ -436,7 +437,13 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ success: true, staleReset, harvested, promoted, autofillKicked: stuckAutofillJobs.length, autofillPromoted })
+    // ── Audio Studio runs whose page was closed ──────────────────────────────
+    // Audio rows live in their own 'audio-processing' status (they hold no fal
+    // slot), so nothing above touches them; without this a run whose tab was
+    // closed never lands in the feed - or, if it failed, never refunds.
+    const audioSettled = await settleAbandonedAudioRuns().catch(e => { console.error('[cron-drain] audio:', e); return 0 })
+
+    return NextResponse.json({ success: true, staleReset, harvested, promoted, autofillKicked: stuckAutofillJobs.length, autofillPromoted, audioSettled })
   } catch (error) {
     console.error('[cron-drain] Error:', error)
     return NextResponse.json({ error: 'Drain failed' }, { status: 500 })

@@ -101,6 +101,9 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'grok-video-1.5-t2v':         'xai/grok-imagine-video/v1.5/text-to-video',
   'grok-video-1.5-i2v':         'xai/grok-imagine-video/v1.5/image-to-video',
   'grok-video-1.5-r2v':         'xai/grok-imagine-video/v1.5/reference-to-video',
+  // Grok Imagine Video 1.5 Lite (2026-10-02): text or a start image, no references
+  'grok-video-1.5-lite-t2v':    'xai/grok-imagine-video/v1.5/lite/text-to-video',
+  'grok-video-1.5-lite-i2v':    'xai/grok-imagine-video/v1.5/lite/image-to-video',
   'vidu-q3-t2v':                'fal-ai/vidu/q3/text-to-video',
   'vidu-q3-i2v':                'fal-ai/vidu/q3/image-to-video',
   'vidu-q3-r2v':                'fal-ai/vidu/q3/reference-to-video/mix',
@@ -151,6 +154,7 @@ export const FAL_ENDPOINTS: Record<string, string> = {
 export const BATCH_0928_GENERATORS = new Set([
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
   'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  'grok-video-1.5-lite',
 ])
 export const BATCH_0928_TOOLS = new Set([
   'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
@@ -195,6 +199,7 @@ export const VIDEO_MODEL_IDS: string[] = [
   'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
   'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  'grok-video-1.5-lite',
   'pika-2.2', 'pikaframes', 'pika-2-turbo',
   'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
   'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
@@ -212,6 +217,7 @@ export const VIDEO_MODEL_IDS: string[] = [
   'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
+  'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -224,29 +230,33 @@ export const VIDEO_FILE_EXTS = ['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']
  * a user is offered a model the server will refuse.
  */
 export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
-  // Pixelcut video - admin only while under test
-  'pixelcut-looping-video', 'pixelcut-video-bg-removal',
-  'gemini-omni-flash', 'wan-2.7', 'wan-2.2-lora', 'minimax-h3-max', 'flux-3',
-  'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-fast',
-  'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
-  'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
-  'bytedance-video-upscale', 'topaz-colorize', 'topaz-deblur',
-  'topaz-interpolate', 'topaz-sdr-to-hdr',
+  // Pixelcut video: looping public 2026-10-01, background removal 2026-10-02
+  // (priced per measured frame)
+  // Public 2026-10-01 (priced, tested): gemini-omni-flash, gemini-omni-1.1,
+  // ltx-2.5-fast, flux-3, grok-video-1.5; then wan-2.7, wan-3.0, wan-3.0-prime,
+  // flux-video-upscale, hunyuan-video-1.5, pixelcut-looping-video
+  'wan-2.2-lora',
+  // seedvr2-video, flashvsr-video, bytedance-video-upscale public 2026-10-02
+  // (upscalerVideoTicketCost, from the measured source)
+  // Topaz video tools public 2026-10-01 (priced from the measured source, topazVideoTicketCost)
+  // EXCEPT colorize: fal's Topaz colorize returned "Downstream service unavailable" on every try
+  'topaz-colorize',
   // Luma, all of it, while under test
-  'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
-  'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
-  'luma-ray-2-flash-reframe', 'luma-ray-3.2-edit', 'luma-ray-3.2-reframe',
-  // The 2026-09-29 batch, all of it, while under test
-  'pika-2.2', 'pikaframes', 'pika-2-turbo',
-  'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
-  'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
-  'minimax-h3-max-turbo', 'minimax-h3-max-ref',
-  'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
-  'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
+  // The 2026-09-29 batch, while under test. Public 2026-10-01 (priced at
+  // fal cost / $0.04 a ticket, tested): veo-3.1, veo-3.1-fast, veo-3.1-lite,
+  // seedance-2.0-mini
+  // pika-2.2 + pikaframes public 2026-10-01; Pika 2 Turbo stays (it never rendered)
+  'pika-2-turbo',
+  // Hailuo 2.3 Pro / Standard / Fast Pro / Fast public 2026-10-02 (fal flat
+  // rates, cost / $0.04 a ticket)
+  'marey',
+  // veo-3.1-extend + fast-extend public 2026-10-02 (Veo rates on the 7s added)
   'marey-motion-transfer', 'marey-pose-transfer',
-  // The 2026-09-28 batch, all of it, while under test
-  'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
-  'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
-  'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
-  'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
+  // The 2026-09-28 batch while under test. The Kling 8 (V3 Turbo / Pro, O3
+  // Pro / 4K, O3 video edit + reference) public 2026-10-01 at fal cost / $0.04
+  // PixVerse V6 / C1 and Vidu Q3 / Turbo public 2026-10-01 (fal cost / $0.04)
+  // grok-video-edit + grok-video-extend public 2026-10-02 (measured source)
+  // pixverse-v6-extend public 2026-10-02 (PIXVERSE_RATE, extension seconds)
+  // Luma (all 9) public 2026-10-01 - priced by lumaTicketCost at fal cost / $0.04
+  // MiniMax H3 Max / Turbo / References / Extend public 2026-10-01 (list prices, cost / $0.04)
 ])

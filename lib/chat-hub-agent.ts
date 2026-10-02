@@ -2157,7 +2157,7 @@ export async function executeEditImage(
       }
     } catch { /* change map is best-effort */ }
     const { uploadToR2 } = await import('@/lib/r2')
-    const url = await uploadToR2(`chat-edit-${ctx.user.id}-${Date.now()}.png`, out, 'image/png')
+    const url = await uploadToR2(`chat-edit-${ctx.user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`, out, 'image/png')
     // NOTE: no GeneratedImage row here — drafts/sketches would pollute the
     // portal feeds. The route persists only the run's FINAL edit on finalize.
     return {

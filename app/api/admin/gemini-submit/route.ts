@@ -159,7 +159,7 @@ export async function POST(req: Request) {
 
         // ── Upload to R2 ────────────────────────────────────────────────
         const buffer = Buffer.from(imageBytes, 'base64')
-        const filename = `universe-scan-${userId}-${Date.now()}.png`
+        const filename = `universe-scan-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
         const url = await uploadToR2(filename, buffer, 'image/png')
 
         // ── Save GeneratedImage ─────────────────────────────────────────

@@ -1,5 +1,5 @@
 /**
- * AUDIO STUDIO - the portal's audio models (ADMIN ONLY while in development).
+ * AUDIO STUDIO - the portal's audio models (public since 2026-10-02).
  *
  * One registry for everything the Audio section needs: which fal endpoint a
  * model submits to, which controls its prompt box shows, how those controls
@@ -49,6 +49,11 @@ export interface AudioPrice {
   charsPerSecond?: number
   /** A multiplier for outputs billed per file (e.g. a separation returns two). */
   outputs?: number
+  /**
+   * The output contains the INPUT too, and fal bills the whole output: ACE-Step
+   * Extend returns source + extension (measured 2026-10-02: 20s + 20s = 39.9s).
+   */
+  outputIncludesInput?: boolean
 }
 
 /** The values the prompt box collects. */
@@ -85,7 +90,12 @@ export interface AudioStudioModel {
   /** Seconds. `options` makes it a picker instead of a slider. */
   duration?: { min: number; max: number; default: number; step?: number; options?: number[] }
   instrumental?: boolean
-  audioIn?: { label: string; required: boolean; maxMinutes: number; hint?: string }
+  /**
+   * An uploaded input. `clonesVoice`: the model copies the voice in it, so the
+   * user must confirm they own it or have the speaker's permission - checked
+   * by /api/audio/generate, not just the checkbox.
+   */
+  audioIn?: { label: string; required: boolean; maxMinutes: number; hint?: string; clonesVoice?: boolean }
   price: AudioPrice
   build: (i: AudioRunInput) => Record<string, unknown>
   outputs: (data: any) => AudioOutput[]
@@ -222,7 +232,7 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     id: 'chatterbox-hd', name: 'Chatterbox HD', group: 'tts', provider: 'Resemble AI', endpoint: 'resemble-ai/chatterboxhd/text-to-speech',
     blurb: 'Emotive speech; attach a short voice sample to clone any voice.',
     text: SPEECH(3000), voices: { options: CHATTERBOX_HD_VOICES, default: 'Aurora' },
-    audioIn: { label: 'Voice to clone (optional)', required: false, maxMinutes: 1, hint: '5-20 seconds of clean speech' },
+    audioIn: { label: 'Voice to clone (optional)', required: false, maxMinutes: 1, hint: '5-20 seconds of clean speech', clonesVoice: true },
     price: { usd: 0.04, per: 'kchar' },
     build: i => clean({ text: i.text, voice: i.audioUrl ? undefined : (i.voice || 'Aurora'), audio_url: i.audioUrl, high_quality_audio: true }), outputs: audioOut,
   },
@@ -302,7 +312,7 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     id: 'index-tts-2', name: 'IndexTTS 2', group: 'voice', provider: 'IndexTeam', endpoint: 'fal-ai/index-tts-2/text-to-speech',
     blurb: 'Clone a voice from a short sample and have it say anything, with emotion.',
     text: SPEECH(2000), style: { label: 'Emotion', placeholder: 'optional, e.g. frightened, whispering' },
-    audioIn: { label: 'Voice sample', required: true, maxMinutes: 1, hint: '5-20 seconds of clean speech' },
+    audioIn: { label: 'Voice sample', required: true, maxMinutes: 1, hint: '5-20 seconds of clean speech', clonesVoice: true },
     price: { usd: 0.002, per: 'second', charsPerSecond: 12 },
     build: i => clean({ audio_url: i.audioUrl, prompt: i.text, emotion_prompt: i.style, should_use_prompt_for_emotion: i.style ? true : undefined }), outputs: audioOut,
   },
@@ -310,7 +320,7 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     id: 'zonos2', name: 'Zonos 2', group: 'voice', provider: 'Zyphra', endpoint: 'fal-ai/zonos2',
     blurb: 'Zero-shot voice cloning from a reference recording.',
     text: SPEECH(2000),
-    audioIn: { label: 'Reference voice', required: true, maxMinutes: 1, hint: '10-30 seconds of clean speech' },
+    audioIn: { label: 'Reference voice', required: true, maxMinutes: 1, hint: '10-30 seconds of clean speech', clonesVoice: true },
     price: { usd: 0.01, per: 'minute', charsPerSecond: 12 },
     build: i => clean({ reference_audio_url: i.audioUrl, text: i.text, language: 'en_us', clean_speaker_background: true }), outputs: audioOut,
   },
@@ -519,7 +529,7 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     text: t('Tags', 'e.g. same style, building to a big finish', 1000),
     audioIn: { label: 'Track to extend', required: true, maxMinutes: 4 },
     duration: { min: 5, max: 120, default: 30, step: 5 },
-    price: { usd: 0.0002, per: 'second' },
+    price: { usd: 0.0002, per: 'second', outputIncludesInput: true },
     build: i => clean({ audio_url: i.audioUrl, tags: i.text, extend_after_duration: i.duration ?? 30, lyrics: '[inst]' }), outputs: audioOut,
   },
 ]
@@ -550,8 +560,9 @@ export function audioRunCostUsd(m: AudioStudioModel, q: AudioPriceQuery): number
   const p = m.price
   const chars = Math.max(q.chars ?? 0, 100)
   // Output length: what was asked for, or - for speech billed by output - an estimate from the text
-  const outSec = q.seconds ?? m.duration?.default ?? (p.charsPerSecond ? chars / p.charsPerSecond : 30)
   const inSec = Math.max(q.inputSeconds ?? 60, 1)
+  const outSec = (q.seconds ?? m.duration?.default ?? (p.charsPerSecond ? chars / p.charsPerSecond : 30))
+    + (p.outputIncludesInput ? inSec : 0)
   let usd: number
   switch (p.per) {
     case 'kchar': usd = (chars / 1000) * p.usd; break

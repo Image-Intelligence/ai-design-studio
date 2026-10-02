@@ -36,20 +36,38 @@ export function SitePageHeader() {
 }
 
 // Just the silver-rimmed synced logo box (no wordmark) — for cards/buttons
-export function SiteLogoBox({ size = 48, rounded = 12 }: { size?: number; rounded?: number }) {
+/*
+ * One read of the site config for every logo box on the page. A studio puts
+ * the mark on each of its buttons, and each box used to fetch the config on
+ * mount - a dozen identical requests for one URL.
+ */
+let logoUrlRead: Promise<string | null> | null = null
+function readLogoUrl(): Promise<string | null> {
+  logoUrlRead ??= fetch("/api/admin/config")
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => (typeof d?.logoUrl === "string" ? d.logoUrl : null))
+    .catch(() => { logoUrlRead = null; return null })
+  return logoUrlRead
+}
+
+/**
+ * `spin={false}` keeps the silver ring but stops it turning - for marks that
+ * repeat down a page (every shot card's buttons), where dozens of spinning
+ * rings are what made iPads drop frames.
+ */
+export function SiteLogoBox({ size = 48, rounded = 12, spin = true }: { size?: number; rounded?: number; spin?: boolean }) {
   const [logoUrl, setLogoUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch("/api/admin/config")
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (d?.logoUrl) setLogoUrl(d.logoUrl) })
-      .catch(() => {})
+    let live = true
+    readLogoUrl().then(u => { if (live && u) setLogoUrl(u) })
+    return () => { live = false }
   }, [])
 
   return (
     <span className="relative isolate flex items-center justify-center overflow-hidden shrink-0" style={{ width: size, height: size, borderRadius: rounded }}>
       <span
-        className="absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 animate-spin -z-10"
+        className={`absolute left-1/2 top-1/2 h-[150%] w-[150%] -translate-x-1/2 -translate-y-1/2 -z-10 ${spin ? "animate-spin" : ""}`}
         style={{
           background:
             "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",

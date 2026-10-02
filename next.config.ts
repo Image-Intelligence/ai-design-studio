@@ -25,6 +25,13 @@ const nextConfig: NextConfig = {
     '/api/admin/home-cards': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/frames-clips': ['./node_modules/ffmpeg-static/**'],
     '/api/video/assemble': ['./node_modules/ffmpeg-static/**'],
+    // Storyboard shots are conformed to the board's frame as they settle
+    // (lib/storyboard-shoot calls /api/video/assemble's conform op in-process)
+    '/api/employees/storyboards/[id]/shoot': ['./node_modules/ffmpeg-static/**'],
+    // Topaz / Flux video tools are priced from the measured source (lib/video-probe)
+    '/api/video/generate': ['./node_modules/ffmpeg-static/**'],
+    // The Audio Studio measures uploaded inputs (lib/video-probe) to bill them
+    '/api/audio/generate': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/dataset/thumb/[id]': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/dataset/preview/[id]': ['./node_modules/ffmpeg-static/**'],
     // Video feed tiles show a still until their playback turn: videos without

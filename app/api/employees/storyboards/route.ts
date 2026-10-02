@@ -3,12 +3,12 @@ import prisma from '@/lib/prisma'
 import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
-import { STORYBOARD_ASPECTS, sanitizeShots, type StoryboardShot } from '@/lib/storyboard'
+import { STORYBOARD_ASPECTS, sanitizeShots } from '@/lib/storyboard'
 
 /**
  * Storyboard Studio - the account's storyboards (the workspace's tab strip).
  *
- *   GET   list: id, title, shot count, runtime, a cover still
+ *   GET   list: id, title, kind, last edit, shot count, runtime, a cover still
  *   POST  create: { title?, aspect?, story?, look?, shots? } - an empty board,
  *         or a pre-filled one (a script or another studio can hand one over)
  *
@@ -18,21 +18,35 @@ import { STORYBOARD_ASPECTS, sanitizeShots, type StoryboardShot } from '@/lib/st
 export async function GET() {
   const user = await requireChatHubAdmin()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
-  const rows = await prisma.storyboard.findMany({
-    where: { userId: user.id },
-    orderBy: { updatedAt: 'desc' },
-    select: { id: true, title: true, aspect: true, shots: true, updatedAt: true },
-  })
+  /*
+   * Summarised in the database. Reading every board's whole shots array (each
+   * with its prompts and still versions) to count them grew with every board,
+   * and an account with hundreds would pass Accelerate's ~5MB response cap -
+   * this returns a few numbers and one cover URL per board instead.
+   */
+  const rows = await prisma.$queryRaw<{ id: number; title: string; aspect: string; mode: string; updatedAt: Date; shotCount: number; seconds: number; cover: string | null }[]>`
+    SELECT b.id, b.title, b.aspect, b.mode, b."updatedAt",
+      COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots END), 0)::int AS "shotCount",
+      COALESCE((
+        SELECT SUM(CASE WHEN jsonb_typeof(s->'duration') = 'number' THEN (s->>'duration')::float8 ELSE 0 END)
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots ELSE '[]'::jsonb END) AS s
+      ), 0)::float8 AS seconds,
+      (
+        SELECT t.s->>'stillUrl'
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots ELSE '[]'::jsonb END) WITH ORDINALITY AS t(s, i)
+        WHERE COALESCE(t.s->>'stillUrl', '') <> ''
+        ORDER BY t.i LIMIT 1
+      ) AS cover
+    FROM "Storyboard" b
+    WHERE b."userId" = ${user.id}
+    ORDER BY b."updatedAt" DESC`
   return jsonPrivate({
-    storyboards: rows.map(r => {
-      const shots = (Array.isArray(r.shots) ? r.shots : []) as StoryboardShot[]
-      return {
-        id: r.id, title: r.title, aspect: r.aspect, updatedAt: r.updatedAt,
-        shotCount: shots.length,
-        seconds: shots.reduce((a, s) => a + (Number(s?.duration) || 0), 0),
-        cover: shots.find(s => s?.stillUrl)?.stillUrl ?? null,
-      }
-    }),
+    storyboards: rows.map(r => ({
+      id: r.id, title: r.title, aspect: r.aspect, mode: r.mode, updatedAt: r.updatedAt,
+      shotCount: Number(r.shotCount) || 0,
+      seconds: Number(r.seconds) || 0,
+      cover: r.cover,
+    })),
   })
 }
 

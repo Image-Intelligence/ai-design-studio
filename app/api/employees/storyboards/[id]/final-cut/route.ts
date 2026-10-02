@@ -11,6 +11,7 @@ import { submitShots, settleShots, boardFolder } from '@/lib/storyboard-shoot'
 import {
   sanitizeShots, totalSeconds, DEFAULT_FINAL_CUT_OPTIONS, NARRATOR_VOICES, SHOOT_RESOLUTIONS,
   FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS,
+  boardMode,
   type FinalCutOptions, type FinalCutPhase, type FinalCutState, type StoryboardShot,
 } from '@/lib/storyboard'
 
@@ -33,7 +34,8 @@ import {
  *   cards   title and end cards lettered by Recraft v4.1 (Ideogram v4 as a
  *           fallback), turned into clips
  *   cut     ffmpeg stitch with trims and transitions (/api/video/assemble)
- *   voice   narration lines voiced by ElevenLabs v3, placed on their shots
+ *   voice   narration lines voiced by ElevenLabs v4, placed on their shots -
+ *           one at a time: a line that runs long pushes the next one back
  *   score   Sonilo composes music to the finished picture (it follows the cuts)
  *   mix     the clips' own sound + music + narration, levelled to -14 LUFS
  *   save    the film lands in My Generations > Storyboards > <title>, and on
@@ -135,21 +137,29 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T, i: number) => Pr
 
 // ── the steps ────────────────────────────────────────────────────────────────
 
-async function stepPlan(board: { title: string; story: string; look: string; aspect: string }, shots: StoryboardShot[], opts: FinalCutOptions): Promise<Plan> {
+async function stepPlan(board: { title: string; story: string; look: string; aspect: string; mode: string }, shots: StoryboardShot[], opts: FinalCutOptions): Promise<Plan> {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured')
   // Three frames of every clip, so the plan can choose the best seconds to keep
+  // The frames only inform the edit: a clip whose frames can't be read is
+  // planned from its notes and recorded length rather than stopping the film
   const looks = await mapLimit(shots, 4, async s => {
-    const f = await assemble({ op: 'frames', videoUrl: s.video!.url!, at: ['first', 'mid', 'last'] })
-    const frames = (await Promise.all(['first', 'mid', 'last'].map(k => (f.frames?.[k] ? inlineFrame(f.frames[k]) : Promise.resolve(null))))).filter(Boolean)
-    return { seconds: Number(f.durationSec) || s.video!.seconds, frames }
+    try {
+      const f = await assemble({ op: 'frames', videoUrl: s.video!.url!, at: ['first', 'mid', 'last'] })
+      const frames = (await Promise.all(['first', 'mid', 'last'].map(k => (f.frames?.[k] ? inlineFrame(f.frames[k]) : Promise.resolve(null))))).filter(Boolean)
+      return { seconds: Number(f.durationSec) || s.video!.seconds, frames }
+    } catch {
+      return { seconds: s.video!.seconds, frames: [] }
+    }
   })
   const parts: any[] = [{ text: [
     'You are the editor of a short AI-generated film. The shots are already filmed; you decide the edit.',
     `TITLE: ${board.title}`, `STORY: ${board.story}`, board.look ? `LOOK: ${board.look}` : '', `FRAME: ${board.aspect}`,
+    // What kind of piece it is changes the edit (an ad cuts tighter than a story)
+    `KIND: ${boardMode(board.mode).label}. ${boardMode(board.mode).edit}`,
     'For every shot below you get its notes, the planned length, the real clip length and three frames (first / middle / last).',
   ].filter(Boolean).join('\n') }]
   shots.forEach((s, i) => {
-    parts.push({ text: `\nSHOT ${i + 1}: ${s.title} - ${s.description}\nmotion: ${s.videoPrompt}\nplanned ${s.duration}s, clip is ${looks[i].seconds.toFixed(1)}s\ncut to next: ${s.transition}` })
+    parts.push({ text: `\nSHOT ${i + 1}: ${s.title} - ${s.description}\nmotion: ${s.videoPrompt}\nplanned ${s.duration}s, clip is ${looks[i].seconds.toFixed(1)}s${s.keepWhole ? ' - KEEP THE WHOLE CLIP (the owner marked it; do not trim it)' : ''}\ncut to next: ${s.transition}` })
     parts.push(...looks[i].frames)
   })
   parts.push({ text: [
@@ -159,7 +169,7 @@ async function stepPlan(board: { title: string; story: string; look: string; asp
     '- "title": {"text": the film\'s title, "subtitle": a short line or ""}; "end": {"text": a closing line such as "The End" or a tagline, "subtitle": ""}.',
     '- "musicPrompt": one or two sentences briefing a composer: genre, instruments, mood arc across the film, where it builds and where it lands. No vocals.',
     opts.narration
-      ? '- "narration": short voice-over lines, at most one per shot and only where it helps (not every shot), each {"shot": shot number, "text": a line short enough to speak inside that shot}. Evocative, not a description of the picture.'
+      ? '- "narration": short voice-over lines, at most one per shot and only where it helps (not every shot), each {"shot": shot number, "text": a line short enough to speak inside that shot - about 2.5 words per second of the kept length of the shot, so a 4-second shot takes 10 words at most}. A line must END inside its shot: the next line waits for it. Evocative, not a description of the picture.'
       : '- "narration": [] (no narrator).',
     'Reply with JSON only: {"title":{"text":"","subtitle":""},"end":{"text":"","subtitle":""},"musicPrompt":"","shots":[{"keepStart":0,"keepSeconds":0,"transitionIn":"cut","transitionSeconds":0}],"narration":[]}',
   ].join('\n') })
@@ -184,8 +194,9 @@ async function stepPlan(board: { title: string; story: string; look: string; asp
     shots: shots.map((s, i) => {
       const r = raw?.shots?.[i] ?? {}
       const clip = looks[i].seconds || s.duration
-      const keepSeconds = Math.max(1, Math.min(clip, Number(r.keepSeconds) || s.duration))
-      const keepStart = Math.max(0, Math.min(clip - keepSeconds, Number(r.keepStart) || 0))
+      // A shot marked "keep the whole clip" plays in full, whatever the plan said
+      const keepSeconds = s.keepWhole ? clip : Math.max(1, Math.min(clip, Number(r.keepSeconds) || s.duration))
+      const keepStart = s.keepWhole ? 0 : Math.max(0, Math.min(clip - keepSeconds, Number(r.keepStart) || 0))
       const t = String(r.transitionIn || 'cut').toLowerCase()
       return { keepStart, keepSeconds, transitionIn: t in TRANSITIONS ? t : 'cut', transitionSeconds: Math.min(1.2, Math.max(0.3, Number(r.transitionSeconds) || 0.6)) }
     }),
@@ -378,13 +389,46 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         break
       }
       case 'voice': {
-        const spec = getAudioStudioModel('eleven-v3')!
-        const lines = work.plan!.narration
-        work.voice = (await mapLimit(lines, 4, async n => {
-          const out: any = await fal.subscribe(spec.endpoint, { input: spec.build({ text: n.text, voice: job.options.voice }) })
-          const url = spec.outputs(out.data)[0]?.url
-          return url ? { url, atSec: (work.starts?.[n.shot - 1] ?? 0) + 0.4 } : null
-        })).filter((x): x is { url: string; atSec: number } => !!x)
+        /*
+         * ElevenLabs v4, not v3: v3 drops the end of a line's last word now and
+         * then (The Paper Lantern's "...in search of purpose" came back
+         * "purpu-"). As a second guard each take is measured against its
+         * text - a line far shorter than it can be spoken is re-recorded once.
+         */
+        const spec = getAudioStudioModel('eleven-v4')!
+        const { probeRemoteMediaSeconds } = await import('@/lib/video-probe')
+        const lines = [...work.plan!.narration].sort((a, b) => a.shot - b.shot)
+        const takes = (await mapLimit(lines, 4, async n => {
+          const words = n.text.trim().split(/\s+/).length
+          // ~3.2 words a second is brisk narration; a take under 70% of that was cut
+          const minSec = (words / 3.2) * 0.7
+          let url: string | undefined
+          let spoken = 0
+          for (let attempt = 0; attempt < 2 && !url; attempt++) {
+            const out: any = await fal.subscribe(spec.endpoint, { input: spec.build({ text: n.text, voice: job.options.voice }) })
+            const take = spec.outputs(out.data)[0]?.url
+            if (!take) continue
+            const secs = await probeRemoteMediaSeconds(take).catch(() => null)
+            if (secs == null || secs >= minSec || attempt === 1) { url = take; spoken = secs ?? (words / 2.6) }
+          }
+          return url ? { url, shot: n.shot, seconds: spoken } : null
+        }))
+        /*
+         * One line at a time. Each line is due 0.4s into its shot, but a line
+         * longer than its shot used to run on under the next one, which
+         * started on time regardless - The Paper Lantern's "...wanders into
+         * the" was talked over by "In the shadows of the alley". Now a line
+         * waits until the one before has finished, plus a breath.
+         */
+        const BREATH = 0.35
+        let free = 0
+        work.voice = []
+        for (const t of takes) {
+          if (!t) continue
+          const atSec = Math.max((work.starts?.[t.shot - 1] ?? 0) + 0.4, free)
+          work.voice.push({ url: t.url, atSec })
+          free = atSec + t.seconds + BREATH
+        }
         setPhase('score', 'Scoring the music')
         break
       }
@@ -426,15 +470,20 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       }
       case 'save': {
         const n = (st.versions.at(-1)?.n ?? 0) + 1
+        // The poster: a frame from the middle of the film (its opening frame is
+        // the black of the title card's fade-in). Falls back to the first still.
+        const poster = await assemble({ op: 'frames', videoUrl: work.mixUrl!, at: ['mid'] })
+          .then(f => (typeof f.frames?.mid === 'string' ? canonicalMediaUrl(f.frames.mid) : null))
+          .catch(() => null) ?? shots[0]?.stillUrl ?? null
         const row = await prisma.generatedImage.create({ data: {
           userId: user.id, prompt: `${board.title} - Final Cut ${n} (Storyboard Studio). ${board.story}`.slice(0, 5000),
           imageUrl: work.mixUrl!, model: 'storyboard-final-cut', ticketCost: 0, referenceImageUrls: [],
           folderId: await boardFolder(user.id, board.title),
           expiresAt: new Date(now() + 100 * 365 * 24 * 3600 * 1000), quality: job.options.resolution, aspectRatio: board.aspect,
-          videoMetadata: { isVideo: true, duration: String(Math.round(work.cutSeconds ?? 0)), thumbnailUrl: shots[0]?.stillUrl ?? null },
+          videoMetadata: { isVideo: true, duration: String(Math.round(work.cutSeconds ?? 0)), thumbnailUrl: poster },
         } })
         st.versions = [...st.versions, {
-          n, url: work.mixUrl!, durationSec: Math.round((work.cutSeconds ?? 0) * 10) / 10, at: now(), imageId: row.id,
+          n, url: work.mixUrl!, durationSec: Math.round((work.cutSeconds ?? 0) * 10) / 10, at: now(), imageId: row.id, posterUrl: poster,
           note: [job.options.cards ? 'cards' : 'no cards', job.options.narration ? `narrated (${job.options.voice})` : 'no narration', work.musicUrl ? 'scored' : 'no score'].join(' · '),
         }]
         setPhase(null, work.musicNote ? `Final Cut ${n} is ready - ${work.musicNote}` : `Final Cut ${n} is ready`)

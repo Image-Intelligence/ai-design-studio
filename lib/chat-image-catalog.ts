@@ -77,7 +77,11 @@ export const CHAT_IMAGE_MODELS: ChatImageEntry[] = AI_MODELS
   .filter(m => !/^(local-|clarity-upscaler|aura-sr|esrgan|drct|supir)/.test(m.id))
   .map(m => {
     const fal = getFalImageModelSpec(m.id)
-    const maxRefs = fal ? fal.maxInputImages : 4
+    // A model whose references go to its EDIT endpoint (Ideogram 4.5, FLUX 3,
+    // Qwen, Muse, Krea...) has 0 inputs on the text-to-image spec - count the
+    // edit sibling's, or the refs are silently sliced away
+    const edit = fal?.editVariant ? getFalImageModelSpec(fal.editVariant) : undefined
+    const maxRefs = fal ? Math.max(fal.maxInputImages, edit?.maxInputImages ?? 0) : 4
     return {
       id: m.id,
       label: m.displayName,

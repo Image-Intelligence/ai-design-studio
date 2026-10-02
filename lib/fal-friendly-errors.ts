@@ -67,7 +67,10 @@ export function friendlyFalError(raw: string, model?: string): string {
     if (model === 'google-virtual-try-on') {
       return 'Virtual Try-On refused these photos: Google flagged one or both images with its content checker. This endpoint has no safety setting to turn down, so the only fix is different source images — a fully clothed, conservatively framed person shot is what passes. Images that work fine in other models are often rejected here.'
     }
-    return 'The model rejected this request with a bare 422 — usually an input image its content checker or decoder refused. Try a different reference image.'
+    // Usually the content checker - on the PROMPT as often as an image:
+    // FLUX 3 Image's text-only runs came back exactly this way, and the
+    // body underneath was content_policy_violation at body.prompt
+    return 'The model rejected this request with a bare 422 — usually its content checker flagged the prompt or an input image. Rephrase the prompt, or try a different reference image.'
   }
 
   /*

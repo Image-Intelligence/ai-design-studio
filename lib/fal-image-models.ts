@@ -378,6 +378,20 @@ function imageSize(aspectRatio: string, quality: string, maxDim = 2048): { width
   return { width: w, height: h }
 }
 
+/**
+ * Qwen Image 3's size. Its schema: "Total number of pixels must be between
+ * 512x512 and 2048x2048" - so there is no 4K. It also caps each SIDE at 2048:
+ * a 2688x1536 (16:9 2K) request came back 2048x1536, the wrong shape - so the
+ * longest edge is held to 2048 too. fal bills $0.04 at 1K, $0.075 at 2K.
+ */
+function qwenSize(aspectRatio: string, quality: string): { width: number; height: number } {
+  const { width, height } = imageSize(aspectRatio, quality === '1k' ? '1k' : '2k', 2048)
+  const max = 2048 * 2048
+  if (width * height <= max) return { width, height }
+  const k = Math.sqrt(max / (width * height))
+  return { width: Math.floor((width * k) / 16) * 16, height: Math.floor((height * k) / 16) * 16 }
+}
+
 /** Truncates to the schema's maxLength; returns undefined for empty input. */
 function clip(text: unknown, max: number): string | undefined {
   if (typeof text !== 'string') return undefined
@@ -412,6 +426,34 @@ const BRIA_STYLE_FIELDS: Record<string, { artistic_style?: string; style_medium?
   cinematic:    { artistic_style: 'cinematic', style_medium: 'film still' },
 }
 const AR_NB2 = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9'] as const
+/**
+ * Ideogram 4.5's sizes. Its text-to-image endpoint takes only an explicit list
+ * of dimensions (or a few presets), and the edit endpoint takes any multiple
+ * of 32 up to 4194304 px - so each portal aspect maps to the LARGEST size on
+ * that list, which also fits the edit's limit. fal bills v4.5 per image by
+ * quality tier, not by size, so the biggest picture costs the same.
+ */
+const IDEOGRAM45_SIZES: Record<string, { width: number; height: number }> = {
+  '1:1': { width: 2048, height: 2048 },
+  '16:9': { width: 2560, height: 1440 }, '9:16': { width: 1440, height: 2560 },
+  '4:3': { width: 2304, height: 1728 }, '3:4': { width: 1728, height: 2304 },
+  '3:2': { width: 2496, height: 1664 }, '2:3': { width: 1664, height: 2496 },
+  '5:4': { width: 2240, height: 1792 }, '4:5': { width: 1792, height: 2240 },
+  '16:10': { width: 2560, height: 1600 }, '10:16': { width: 1600, height: 2560 },
+  '2:1': { width: 2880, height: 1440 }, '1:2': { width: 1440, height: 2880 },
+  '3:1': { width: 3072, height: 1024 }, '1:3': { width: 1024, height: 3072 },
+}
+export const IDEOGRAM45_ASPECTS = Object.keys(IDEOGRAM45_SIZES)
+/** Portal quality -> v4.5's tier. Anything unknown is fal's default, medium. */
+function ideogram45Quality(q: string): 'low' | 'medium' | 'high' {
+  return q === 'low' || q === 'high' ? q : 'medium'
+}
+/** Flux 3 Image's aspect enum (schema 2026-10-02). 'auto' follows the first reference. */
+const AR_FLUX3 = ['auto', '21:9', '2:1', '16:9', '3:2', '7:5', '4:3', '5:4', '1:1', '4:5', '3:4', '5:7', '2:3', '9:16', '1:2'] as const
+/** Portal quality -> Flux 3's resolution tier (it also has 512sq / 768sq). */
+function flux3Resolution(q: string): '1k' | '2k' | '4k' {
+  return q === '4k' || q === '2k' ? q : '1k'
+}
 const AR_NB2_LITE = ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'] as const
 // Luma - declared up here because FAL_IMAGE_MODELS calls the Luma spec builders at load
 const AR_PHOTON = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21'] as const
@@ -543,7 +585,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     build: (ctx) =>
       compact({
         prompt: ctx.prompt,
-        image_size: imageSize(ctx.aspectRatio, ctx.quality, 4096),
+        image_size: qwenSize(ctx.aspectRatio, ctx.quality),
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
@@ -558,15 +600,15 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     endpoint: 'alibaba/qwen-image-3/edit',
     needsImage: true,
     imageParam: 'image_urls',
-    maxInputImages: 6,
+    maxInputImages: 3,
     promptRequired: true,
     aspectRatios: null,
     usesImageSize: true,
     build: (ctx) =>
       compact({
         prompt: ctx.prompt,
-        image_urls: ctx.imageUrls,
-        image_size: imageSize(ctx.aspectRatio, ctx.quality, 4096),
+        image_urls: ctx.imageUrls.slice(0, 3),
+        image_size: qwenSize(ctx.aspectRatio, ctx.quality),
         num_images: 1,
         output_format: 'png',
         enable_safety_checker: false,
@@ -986,6 +1028,83 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       // An input image is optional here: with one, it re-renders that texture
       // so the edges wrap; without, it invents one from the prompt.
       ...(ctx.imageUrls[0] ? { image_url: ctx.imageUrls[0], strength: ideogramStrength(ctx.options) } : {}),
+    }),
+  },
+
+  // ── Ideogram 4.5 ───────────────────────────────────────────────────────────
+  // One portal model, two endpoints (the NanoBanana pattern): plain text-to-
+  // image, or ideogram/v4.5/edit when references are attached - the first is
+  // the image being edited, the rest (up to 4) are references it can pull
+  // from. Ideogram serves 4.5 itself (closed weights at launch, 2026-09-30):
+  // no LoRA input exists on either endpoint, so v4 LoRAs cannot ride along.
+  // Its id avoids the 'ideogram-v4' prefix the v4 family's code keys on.
+  'ideogram-4.5': {
+    id: 'ideogram-4.5',
+    editVariant: 'ideogram-4.5-edit',
+    endpoint: 'ideogram/v4.5',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: IDEOGRAM45_ASPECTS, usesImageSize: true,
+    notes: 'quality low|medium|high is the price; size is free (largest listed size per aspect)',
+    build: (ctx) => ({
+      prompt: ctx.prompt,
+      image_size: IDEOGRAM45_SIZES[ctx.aspectRatio] ?? IDEOGRAM45_SIZES['1:1'],
+      quality: ideogram45Quality(ctx.quality),
+      num_images: 1,
+    }),
+  },
+  'ideogram-4.5-edit': {
+    id: 'ideogram-4.5-edit',
+    endpoint: 'ideogram/v4.5/edit',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 5,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: ['auto', ...IDEOGRAM45_ASPECTS], usesImageSize: true,
+    notes: 'first image = the source; up to 4 more as reference_image_urls; auto keeps the source shape',
+    build: (ctx) => compact({
+      prompt: ctx.prompt,
+      image_url: ctx.imageUrls[0],
+      reference_image_urls: ctx.imageUrls.length > 1 ? ctx.imageUrls.slice(1, 5) : undefined,
+      // 'auto' keeps the source's geometry (fal's default)
+      image_size: IDEOGRAM45_SIZES[ctx.aspectRatio] ?? 'auto',
+      quality: ideogram45Quality(ctx.quality),
+      num_images: 1,
+    }),
+  },
+
+  // ── FLUX 3 Image ───────────────────────────────────────────────────────────
+  // One portal model: text-to-image, or edit-image when references are
+  // attached (up to 10, each 256px-4MP; the first sets 'auto'). Billed per
+  // megapixel - see flux3ImageTicketCost. Distinct id from the 'flux-3' VIDEO
+  // model. safety_tolerance is 0-4: admins 4, everyone else fal's default 2
+  // (forced in /api/generate).
+  'flux-3-image': {
+    id: 'flux-3-image',
+    editVariant: 'flux-3-image-edit',
+    endpoint: 'blackforestlabs/flux-3/text-to-image',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: [...AR_FLUX3], usesImageSize: false,
+    build: (ctx) => ({
+      prompt: ctx.prompt,
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_FLUX3, '1:1'),
+      resolution: flux3Resolution(ctx.quality),
+      output_format: 'png',
+      safety_tolerance: 4,
+    }),
+  },
+  'flux-3-image-edit': {
+    id: 'flux-3-image-edit',
+    endpoint: 'blackforestlabs/flux-3/edit-image',
+    needsImage: true, imageParam: 'image_urls', maxInputImages: 10,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: [...AR_FLUX3], usesImageSize: false,
+    build: (ctx) => ({
+      prompt: ctx.prompt,
+      image_urls: ctx.imageUrls.slice(0, 10),
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_FLUX3, 'auto'),
+      resolution: flux3Resolution(ctx.quality),
+      output_format: 'png',
+      safety_tolerance: 4,
     }),
   },
 
@@ -1418,14 +1537,16 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
 
 /**
  * Recraft v4 style/vector endpoints all share one input schema.
- * `image_urls` here are STYLE reference images (optional, 1-10), not an edit
- * source — the endpoints are text-to-image / text-to-vector.
+ * `image_urls` here are STYLE reference images (1-10), not an edit source -
+ * the endpoints are text-to-image / text-to-vector. fal REQUIRES either a
+ * style_id or style images ("Either style_id or image_urls must be provided",
+ * 2026-10-02) and the portal has no style_id input, so a reference is required.
  */
 function recraftSpec(id: string, endpoint: string): FalImageModelSpec {
   return {
     id,
     endpoint,
-    needsImage: false,
+    needsImage: true,
     imageParam: 'image_urls',
     maxInputImages: 10,
     promptRequired: true,
@@ -1583,6 +1704,45 @@ export const FAL_IMAGE_MODEL_IDS = Object.keys(FAL_IMAGE_MODELS)
  * reference.
  */
 export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
+  // Public 2026-10-01 (priced from fal's rates, tested): SeeDream 5.0 Flash
+  // ($0.027 -> 1 ticket) and Grok Imagine 2 (2 tickets, edit 3)
+  'seedream-5-flash',
+  'seedream-5-flash-edit',
+  'grok-imagine-2',
+  'grok-imagine-2-edit',
+  // Public 2026-10-01 (batch 2): Topaz image suite (priced per output MP),
+  // Bria Fibo 1.5 ($0.04 -> 2), NanoBanana 2 Lite (~$0.05 -> 2),
+  // MAI Image 2.5 Pro (5, edit 7), Hunyuan Image 3 (3)
+  'topaz-img-upscale-precision', 'topaz-img-upscale-creative', 'topaz-img-upscale-generative',
+  'topaz-img-upscale-transparent', 'topaz-adjust', 'topaz-sharpen', 'topaz-denoise', 'topaz-restore',
+  'bria-fibo', 'bria-fibo-edit',
+  'nano-banana-2-lite',
+  'mai-image-2.5-pro', 'mai-image-2.5-pro-edit',
+  'hunyuan-image-3',
+  // Public 2026-10-01: all of Luma (prices already fal cost / $0.04 a ticket -
+  // Photon $0.019/MP -> 2, Flash $0.005/MP -> 1, Uni-1 $0.042 -> 2, Uni-1 Max
+  // $0.102 -> 3; edits +$0.003 a reference, still >= 50% at $0.08)
+  'luma-photon', 'luma-photon-modify', 'luma-photon-reframe',
+  'luma-photon-flash', 'luma-photon-flash-modify', 'luma-photon-flash-reframe',
+  'luma-uni-1', 'luma-uni-1-edit', 'luma-uni-1-max', 'luma-uni-1-max-edit',
+  // Public 2026-10-02: Krea 2 (fal $0.060 / $0.030 / $0.015 a image, +~$0.005
+  // with style references -> Large 2 tickets, Medium + Medium Turbo 1)
+  'krea-2-large', 'krea-2-medium', 'krea-2-medium-turbo',
+  // Public 2026-10-02: Hunyuan Image 3 Instruct (+edit; $0.09/MP, "auto" lands
+  // ~1MP even from 4MP refs -> 3), Meta Muse (+edit; $0.01 -> 1), Qwen Image 3
+  // (+edit; 1K 1, 2K 2, no 4K, refs <= 3 shrunk to 2048px)
+  'hunyuan-image-3-instruct', 'hunyuan-image-3-instruct-edit',
+  'meta-muse', 'meta-muse-edit',
+  'qwen-image-3', 'qwen-image-3-edit',
+  // Public on arrival 2026-10-02: Ideogram 4.5 (+edit), fal per image by tier
+  'ideogram-4.5', 'ideogram-4.5-edit',
+  // Public on arrival 2026-10-02: FLUX 3 Image (+edit), per megapixel
+  'flux-3-image', 'flux-3-image-edit',
+  // Public 2026-10-02: Recraft V4 (style / style pro / vector / vector pro; fal
+  // $0.035/$0.10/$0.05/$0.12 + $0.005 to build a style from the references ->
+  // 1/3/2/4 tickets; a style reference is required) and V4.1 Flash ($0.007 -> 1)
+  'recraft-v4-style', 'recraft-v4-style-pro', 'recraft-v4-vector', 'recraft-v4-vector-pro',
+  'recraft-v4.1-flash',
   'gpt-image-2.5',
   'gpt-image-2.5-edit',
   'google-virtual-try-on',
@@ -1637,6 +1797,9 @@ export function buildFalImageInput(
   spec: FalImageModelSpec,
   ctx: FalImageBuildContext,
 ): { endpoint: string; input: Record<string, any> } {
+  if (spec.id.startsWith('recraft-v4-') && ctx.imageUrls.length === 0) {
+    throw new Error('Recraft V4 needs at least one style reference image - it copies the look of the images you attach.')
+  }
   if (spec.needsImage && ctx.imageUrls.length === 0) {
     throw new Error(`${spec.id} requires an input image`)
   }

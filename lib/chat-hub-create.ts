@@ -2,6 +2,7 @@ import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import type { ChatCreateSettings } from '@/lib/chat-hub-models'
 import { fetchMedia } from './media-fetch'
+import { resolveFalImageModelSpec, buildFalImageInput } from '@/lib/fal-image-models'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -33,7 +34,7 @@ const ZIMAGE_SIZES: Record<string, { w: number; h: number }> = {
 
 // Endpoints + inputs copied from the portal's own generate routes, with the
 // chosen per-model settings applied (aspect / quality / duration / audio…).
-export function buildFalCall(modelId: string, prompt: string, refs: string[], s: ChatCreateSettings):
+export function buildFalCall(modelId: string, prompt: string, refs: string[], s: ChatCreateSettings, options: Record<string, unknown> = {}):
   { endpoint: string; input: Record<string, unknown> } | { error: string } {
   const hasRefs = refs.length > 0
   switch (modelId) {
@@ -288,8 +289,28 @@ export function buildFalCall(modelId: string, prompt: string, refs: string[], s:
           duration: parseInt(s.duration ?? '5') || 5, enable_safety_checker: false,
         },
       }
-    default:
-      return { error: 'Unknown create model' }
+    default: {
+      /*
+       * Every other image model the site ships is described by the shared
+       * registry (lib/fal-image-models) that /api/generate builds from - the
+       * same spec, the same edit-endpoint switch when references are attached
+       * (Ideogram 4.5, FLUX 3, Qwen, Muse, Krea...). Hand-written cases above
+       * stay as they are; this is what makes the rest of the roster usable
+       * here (Storyboard stills) without a second copy of every input shape.
+       */
+      const spec = resolveFalImageModelSpec(modelId, hasRefs)
+      if (!spec) return { error: 'Unknown create model' }
+      try {
+        return buildFalImageInput(spec, {
+          prompt, aspectRatio: s.aspect ?? '1:1', quality: s.quality ?? '2k',
+          // Per-model knobs (FLUX 3 has none, Ideogram its speed, Krea its
+          // creativity...) - the Storyboard's shot settings, already checked
+          imageUrls: refs.slice(0, Math.max(0, spec.maxInputImages)), options,
+        })
+      } catch (e: any) {
+        return { error: e?.message || 'Invalid input for this model' }
+      }
+    }
   }
 }
 
@@ -368,7 +389,7 @@ export async function persistChatGeneration(opts: {
         const buf = Buffer.from(await res.arrayBuffer())
         const ct = res.headers.get('content-type') ?? 'image/png'
         const ext = ct.includes('png') ? 'png' : ct.includes('webp') ? 'webp' : 'jpg'
-        finalUrl = await uploadToR2(`chat-gen-${opts.userId}-${Date.now()}.${ext}`, buf, ct)
+        finalUrl = await uploadToR2(`chat-gen-${opts.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`, buf, ct)
       }
     } catch (err) {
       console.error('chat-gen R2 rehost failed (keeping FAL URL):', err)

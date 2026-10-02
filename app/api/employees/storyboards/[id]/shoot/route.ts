@@ -2,15 +2,21 @@ import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
 import { jsonPrivate } from '@/lib/api-json'
-import { submitShots, settleShots } from '@/lib/storyboard-shoot'
+import { submitShots, settleShots, boardTakes, pickTake } from '@/lib/storyboard-shoot'
 
 /**
  * Shoot a storyboard's shots (the per-shot Shoot buttons and Shoot all).
  *
  *   POST { shotIds, resolution? }  animate each shot's still with its planned
- *        video prompt and model. Returns { videos: { [shotId]: ShotVideo | { error } } }
+ *        video prompt and model. Returns { videos: { [shotId]: ShotVideo | { error } }, takes }
+ *   POST { pick: { shotId, url } }  play one of a shot's earlier takes instead.
+ *        Returns { video, takes } (the autosave never moves `video`, so a stale
+ *        tab cannot undo a render that just landed)
  *   GET  settle the board's renders - the page polls this while any shot is
- *        rendering. Returns { videos: { [shotId]: ShotVideo } }
+ *        rendering. Returns { videos: { [shotId]: ShotVideo }, takes }
+ *
+ * `takes` is every shot's finished clips ({ [shotId]: ShotVideo[] }), oldest
+ * first - kept by the server, so a reshoot never loses the clip it replaced.
  *
  * The work lives in lib/storyboard-shoot, shared with the Final Cut.
  *
@@ -34,12 +40,20 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const r = await load(ctx)
   if ('error' in r) return r.error
   const body = await req.json().catch(() => ({})) as Record<string, unknown>
+  const pick = body.pick as { shotId?: unknown; url?: unknown } | undefined
+  if (pick && typeof pick.shotId === 'string' && typeof pick.url === 'string') {
+    const out = await pickTake(r.board.id, pick.shotId, pick.url)
+    if ('error' in out) return jsonPrivate(out, { status: 400 })
+    return jsonPrivate({ video: out.video, takes: await boardTakes(r.board.id) })
+  }
   const ids = Array.isArray(body.shotIds) ? (body.shotIds as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, 40) : []
-  return jsonPrivate({ videos: await submitShots(r.user, r.board, ids, String(body.resolution ?? '')) })
+  const videos = await submitShots(r.user, r.board, ids, String(body.resolution ?? ''))
+  return jsonPrivate({ videos, takes: await boardTakes(r.board.id) })
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
   const r = await load(ctx)
   if ('error' in r) return r.error
-  return jsonPrivate({ videos: await settleShots(r.user, r.board) })
+  const videos = await settleShots(r.user, r.board)
+  return jsonPrivate({ videos, takes: await boardTakes(r.board.id) })
 }

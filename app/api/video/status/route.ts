@@ -86,8 +86,14 @@ export async function POST(request: NextRequest) {
           ? detail.map((d: any) => d?.msg).filter(Boolean).join('; ')
           : typeof detail === 'string' ? detail : String(err?.message || err)
         // 4xx = the input was rejected and re-asking will never change that.
-        // 5xx / network = transient, so keep the job alive for the next poll.
-        if (httpStatus >= 400 && httpStatus < 500) {
+        // A 5xx that CARRIES fal's error detail is just as final: the job is
+        // COMPLETED and its result IS the error (Gemini Omni's "Downstream
+        // service error" comes back this way) - re-asking returns the same
+        // 500 forever, so treating it as transient left the tile spinning, the
+        // tickets unrefunded and the slot held. Only a bare 5xx / network
+        // failure (no detail) is worth another poll.
+        const finalError = (httpStatus >= 400 && httpStatus < 500) || (httpStatus >= 500 && detail != null)
+        if (finalError) {
           const reason = message.slice(0, 500) || 'The model rejected this request'
           // Close the row, refund and free the slot — the same bookkeeping the
           // ERROR branch below does. Returning the verdict without it left the
@@ -130,7 +136,7 @@ export async function POST(request: NextRequest) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'
           const videoBuffer = Buffer.from(await videoRes.arrayBuffer())
-          const filename = `video-${user.id}-${Date.now()}.${ext}`
+          const filename = `video-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
           permanentVideoUrl = await uploadToR2(filename, videoBuffer, contentType)
           console.log(`[video/status] Uploaded video to blob: ${permanentVideoUrl}`)
         }

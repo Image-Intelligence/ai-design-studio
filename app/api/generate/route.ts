@@ -939,6 +939,13 @@ export async function POST(request: Request) {
           const falImageUrls: string[] = []
           // The first reference's shape, for models that offer "auto".
           let refDims: { width: number; height: number } | null = null
+          // Qwen Image 3's edit refuses references over 2048px on a side (its
+          // schema: 384-2048px each dimension) - a 2K storyboard still is
+          // 2752 wide. Those are shrunk to fit before the upload.
+          const maxRefEdge = model.startsWith('qwen-image-3') ? 2048 : 0
+          // FLUX 3 Image's edit takes references of at most 4 megapixels (a 2K
+          // storyboard still is 4.23); those are scaled down to fit
+          const maxRefPixels = model === 'flux-3-image' ? 4_000_000 : 0
           // Pure text-to-image endpoints (maxInputImages 0) skip uploads entirely.
           for (const ref of rawSources.slice(0, newFalSpec.maxInputImages)) {
             try {
@@ -948,13 +955,16 @@ export async function POST(request: Request) {
               // photos to fal eight times. fal's storage URLs are stable, so
               // remember them per source URL.
               const hit = isHttpRef ? falUploadCache.get(ref) : undefined
-              if (hit && Date.now() - hit.at < FAL_UPLOAD_TTL_MS) {
+              const hitTooBig = !!(hit?.dims && ((maxRefEdge && Math.max(hit.dims.width, hit.dims.height) > maxRefEdge)
+                || (maxRefPixels && hit.dims.width * hit.dims.height > maxRefPixels)))
+              if (hit && !hitTooBig && Date.now() - hit.at < FAL_UPLOAD_TTL_MS) {
                 falImageUrls.push(hit.url)
                 newFalPermanentRefs.push(ref)
                 if (!refDims && hit.dims) refDims = hit.dims
                 continue
               }
               const imageBuffer = await refToBuffer(ref)
+              let uploadBuffer: Buffer = imageBuffer
               /*
                * Measure while the bytes are here. This costs a header read on
                * a buffer already in memory, and it is the only chance — after
@@ -986,14 +996,25 @@ export async function POST(request: Request) {
                       + 'appear, and try again.',
                   }, { status: 400 })
                 }
+                if (maxRefEdge && dims && Math.max(dims.width, dims.height) > maxRefEdge) {
+                  uploadBuffer = await sharp(imageBuffer)
+                    .resize({ width: maxRefEdge, height: maxRefEdge, fit: 'inside' })
+                    .jpeg({ quality: 92 }).toBuffer()
+                } else if (maxRefPixels && dims && dims.width * dims.height > maxRefPixels) {
+                  const k = Math.sqrt(maxRefPixels / (dims.width * dims.height))
+                  uploadBuffer = await sharp(imageBuffer)
+                    .resize({ width: Math.floor(dims.width * k), height: Math.floor(dims.height * k), fit: 'inside' })
+                    .jpeg({ quality: 92 }).toBuffer()
+                }
               } catch { /* unreadable: "auto" falls back to square */ }
               if (!refDims && dims) refDims = dims
-              const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' })
+              const blob = new Blob([new Uint8Array(uploadBuffer)], { type: 'image/jpeg' })
               const uploadedUrl = await fal.storage.upload(blob)
               falImageUrls.push(uploadedUrl)
               // Keep a permanent copy for the DB record (reuse https refs as-is).
               if (isHttpRef) {
-                rememberFalUpload(ref, uploadedUrl, dims)
+                // A shrunk copy is not cached: other models want the original
+                if (uploadBuffer === imageBuffer) rememberFalUpload(ref, uploadedUrl, dims)
                 newFalPermanentRefs.push(ref)
               } else {
                 const refFilename = `reference-${user.id}-${Date.now()}-${falImageUrls.length}.jpg`
@@ -1042,6 +1063,27 @@ export async function POST(request: Request) {
             newFalInput = built.input
             // The reference is measured now: charge for the shape it really is.
             if (model === 'gpt-image-2.5') ticketCost = gptPrice(refDims)
+            // Grok Imagine 2 runs its edit endpoint when references are attached,
+            // which fal bills per input image on top - charge the edit's price
+            if (model === 'grok-imagine-2' && falImageUrls.length > 0) ticketCost = getTicketCost('grok-imagine-2-edit', quality)
+            if (model === 'mai-image-2.5-pro' && falImageUrls.length > 0) ticketCost = getTicketCost('mai-image-2.5-pro-edit', quality)
+            // Qwen Image 3 (measured 2026-10-02): $0.04 at 1K -> 1 ticket, $0.075
+            // at 2K (the old "4k" renders 2K) -> 2; the edit adds ~$0.006 for its
+            // references ($0.081 at 2K) -> one ticket more
+            if (model === 'flux-3-image') {
+              const { flux3ImageTicketCost } = await import('@/lib/ticket-pricing')
+              ticketCost = flux3ImageTicketCost({ quality, aspectRatio, refDims, refs: falImageUrls.length })
+            }
+            if (model === 'qwen-image-3') ticketCost = (quality === '1k' ? 1 : 2) + (falImageUrls.length > 0 ? 1 : 0)
+            // Topaz bills by OUTPUT megapixels: price from the measured source
+            if (model.startsWith('topaz-')) {
+              const { topazImageTicketCost } = await import('@/lib/ticket-pricing')
+              ticketCost = topazImageTicketCost(model, {
+                topazModel: typeof body.topazModel === 'string' ? body.topazModel : undefined,
+                upscaleFactor: body.topazUpscaleFactor,
+                width: refDims?.width, height: refDims?.height,
+              })
+            }
           } catch (buildErr: any) {
             return jsonPrivate(
               { error: buildErr?.message || `Invalid input for ${model}` },
@@ -1064,6 +1106,26 @@ export async function POST(request: Request) {
         // Only add enable_safety_checker for models that support it (SeeDream)
         if (model === 'seedream-4.5') {
           inputParams.enable_safety_checker = seedreamSafetyChecker === true
+        }
+        // SeeDream 5.0 Flash is public (2026-10-01): fal's checker is forced ON
+        // for everyone but admins - the same server-side guarantee as SeeDream
+        // 5.0 Pro and Recraft (CCBill), whatever the client sent
+        if (model === 'seedream-5-flash' || model === 'qwen-image-3' || model.startsWith('recraft-v4-') || model === 'recraft-v4.1-flash') {
+          // Qwen Image 3 + Recraft V4 / V4.1 Flash public 2026-10-02: same rule
+          // (their specs send false)
+          const { checkIsAdmin } = await import('@/lib/admin-check')
+          inputParams.enable_safety_checker = !(await checkIsAdmin(user.email))
+        }
+        // NanoBanana 2 Lite is public too: non-admins get fal's standard
+        // moderation level (4), not the most permissive (6) the client may send
+        // FLUX 3 Image: safety_tolerance 0 (strictest) - 4; non-admins get fal's default 2
+        if (model === 'flux-3-image') {
+          const { checkIsAdmin } = await import('@/lib/admin-check')
+          if (!(await checkIsAdmin(user.email))) inputParams.safety_tolerance = 2
+        }
+        if (model === 'nano-banana-2-lite') {
+          const { checkIsAdmin } = await import('@/lib/admin-check')
+          if (!(await checkIsAdmin(user.email))) inputParams.safety_tolerance = '4'
         }
 
         // Check if regular NanoBanana is trying to use reference images (not supported)
@@ -1305,7 +1367,7 @@ export async function POST(request: Request) {
           // Download from FAL temporary storage and re-host on R2
           const falRes = await fetch(falImageUrl)
           const imageBuffer = Buffer.from(await falRes.arrayBuffer())
-          const filename = `universe-scan-${user.id}-${Date.now()}.png`
+          const filename = `universe-scan-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
           const syncUrl = await uploadToR2(filename, imageBuffer, 'image/png')
           console.log(`Sync image uploaded to R2: ${syncUrl}`)
 
@@ -1760,7 +1822,7 @@ export async function POST(request: Request) {
             continue
           }
           const refBuffer = await refToBuffer(referenceImages[i])
-          const refFilename = `reference-${user.id}-${Date.now()}-${i}.jpg`
+          const refFilename = `reference-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.jpg`
 
           const refUrl = await uploadToR2(refFilename, refBuffer, 'image/jpeg')
 
@@ -1783,7 +1845,7 @@ export async function POST(request: Request) {
     console.log(`Uploading ${buffersToUpload.length} generated image(s)...`)
     
     for (let i = 0; i < buffersToUpload.length; i++) {
-      const filename = `universe-scan-${user.id}-${Date.now()}-${i}.png`
+      const filename = `universe-scan-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.png`
 
       const blobUrl = await uploadToR2(filename, buffersToUpload[i], 'image/png')
 

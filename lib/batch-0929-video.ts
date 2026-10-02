@@ -22,7 +22,12 @@ export const BATCH_0929_GENERATORS = new Set([
 export const BATCH_0929_TOOLS = new Set([
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
+  // 2026-10-02: H3 Max Turbo extend (half the non-turbo rate, adds 2K) and
+  // Recast (swap the people in a clip for the people in 1-4 photos)
+  'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
 ])
+/** Tools whose prompt is optional (every other batch tool requires one). */
+export const BATCH_0929_PROMPT_OPTIONAL = new Set(['minimax-h3-max-recast'])
 /** Generators that can run from text alone. */
 export const BATCH_0929_TEXT_CAPABLE = [
   'pika-2.2', 'pika-2-turbo', 'hailuo-2.3-pro', 'hailuo-2.3',
@@ -69,6 +74,8 @@ export const BATCH_0929_ENDPOINTS: Record<string, string> = {
   'veo-3.1-extend': 'fal-ai/veo3.1/extend-video',
   'veo-3.1-fast-extend': 'fal-ai/veo3.1/fast/extend-video',
   'minimax-h3-max-extend': 'minimax/h3-max/extend-video',
+  'minimax-h3-max-turbo-extend': 'minimax/h3-max-turbo/extend-video',
+  'minimax-h3-max-recast': 'minimax/h3-max/recast',
   'marey-motion-transfer': 'moonvalley/marey/motion-transfer',
   'marey-pose-transfer': 'moonvalley/marey/pose-transfer',
 }
@@ -126,6 +133,22 @@ export function batch0929Input(model: string, p: Batch0929Params): Record<string
   // ── Tools ──
   if (model === 'veo-3.1-extend' || model === 'veo-3.1-fast-extend') {
     return { prompt, video_url: p.editVideoUrl, generate_audio: !!p.generateAudio, resolution: '720p', safety_tolerance: '4' }
+  }
+  if (model === 'minimax-h3-max-turbo-extend') {
+    // Schema 2026-10-02: duration 1-15 (billed on the seconds ADDED), 2K tier
+    return {
+      prompt, video_url: p.editVideoUrl, duration: secs, output: 'extended',
+      resolution: mmRes(p.resolution, ['480P', '768P', '1080P', '2K']), enable_prompt_expansion: true,
+    }
+  }
+  if (model === 'minimax-h3-max-recast') {
+    // One photo per new person; by default they replace the main people left
+    // to right. The prompt is optional ("who becomes whom"). Source 5-30s.
+    return {
+      video_url: p.editVideoUrl, reference_image_urls: refs.slice(0, 4),
+      resolution: mmRes(p.resolution, ['768P', '1080P']),
+      ...(prompt ? { prompt } : {}),
+    }
   }
   if (model === 'minimax-h3-max-extend') {
     return {
@@ -203,7 +226,9 @@ export function batch0929Input(model: string, p: Batch0929Params): Record<string
   }
   if (model === 'seedance-2.0-mini') {
     const input: Record<string, any> = {
-      prompt, duration: p.duration === 'auto' ? 'auto' : String(secs), generate_audio: !!p.generateAudio,
+      // 'auto' is sent as the billed length (10s): Mini's own auto can run
+      // to 15s, which a price fixed up front would not cover
+      prompt, duration: String(secs), generate_audio: !!p.generateAudio,
       resolution: pick(['480p', '720p'], p.resolution, '720p'), codec: 'H264',
       aspect_ratio: pick(['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'], p.aspectRatio, 'auto'),
     }

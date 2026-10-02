@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost } from "@/lib/ticket-pricing"
+import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost } from "@/lib/ticket-pricing"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -136,7 +136,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   // switch in the prompt bar, and the edit endpoint is chosen automatically
   // when references are attached (see lib/fal-image-models.ts).
   { id: "gpt-image-2.5",        apiId: "gpt-image-2.5",            name: "ChatGPT Images 2.5",  aspectRatios: ["auto", "21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
-  { id: "qwen-image-3",         apiId: "qwen-image-3",             name: "Qwen Image 3",        aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 6, isFal: true, maxImages: 4 },
+  { id: "qwen-image-3",         apiId: "qwen-image-3",             name: "Qwen Image 3",        aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 3, isFal: true, maxImages: 4 },
   { id: "reve-2.1",             apiId: "reve-2.1",                 name: "Reve 2.1",            aspectRatios: ["auto", "21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
   // Luma (ADMIN ONLY while under test). Photon/Photon Flash switch to their
   // modify endpoint when an image is attached; Uni-1 to its edit endpoint (the
@@ -148,7 +148,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "luma-photon-flash-reframe", apiId: "luma-photon-flash-reframe", name: "Luma Photon Flash Reframe", aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21"], supportsQuality: false, maxReferenceImages: 1, requiresReferenceImage: true, isFal: true, maxImages: 1 },
   { id: "luma-uni-1",           apiId: "luma-uni-1",               name: "Luma Uni-1",          aspectRatios: ["2:1", "16:9", "3:2", "1:1", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 5, isFal: true, maxImages: 4 },
   { id: "luma-uni-1-max",       apiId: "luma-uni-1-max",           name: "Luma Uni-1 Max",      aspectRatios: ["2:1", "16:9", "3:2", "1:1", "2:3", "9:16", "1:2"], supportsQuality: false, maxReferenceImages: 5, isFal: true, maxImages: 4 },
-  // 2026-09-28 batch (ADMIN ONLY while under test). Krea 2's attached images are
+  // 2026-09-28 batch (Krea 2 public 2026-10-02). Krea 2's attached images are
   // style references; Hunyuan 3 Instruct and SeeDream 5.0 Flash switch to
   // their edit endpoints when an image is attached.
   { id: "krea-2-large",         apiId: "krea-2-large",             name: "Krea 2 Large",        aspectRatios: ["1:1", "4:3", "3:2", "16:9", "4:5", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
@@ -162,16 +162,18 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "grok-imagine-2",       apiId: "grok-imagine-2",           name: "Grok Imagine 2.0",    aspectRatios: ["2:1", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 4, isFal: true, maxImages: 4 },
   { id: "meta-muse",            apiId: "meta-muse",                name: "Meta Muse",           aspectRatios: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "bria-fibo",            apiId: "bria-fibo",                name: "Bria Fibo 1.5",       aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  // Ideogram 4.5: one entry; references switch it to the edit endpoint (first = the source)
+  { id: "ideogram-4.5",         apiId: "ideogram-4.5",             name: "Ideogram v4.5",       aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "2:1", "1:2"], supportsQuality: true, qualityOptions: ["low", "medium", "high"], maxReferenceImages: 5, isFal: true, maxImages: 4 },
   { id: "ideogram-v4",          apiId: "ideogram-v4",              name: "Ideogram v4",         aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-instant",  apiId: "ideogram-v4-instant",      name: "Ideogram v4 Instant", aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-tiling",   apiId: "ideogram-v4-tiling",       name: "Ideogram v4 Tiling",  aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "nano-banana-2-lite",   apiId: "nano-banana-2-lite",       name: "NanoBanana 2 Lite",   aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
   // Recraft V4 Styles — the vector pair outputs true SVG
-  { id: "recraft-v4-style",     apiId: "recraft-v4-style",         name: "Recraft V4 Style",    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
-  { id: "recraft-v4-style-pro", apiId: "recraft-v4-style-pro",     name: "Recraft V4 Style Pro", aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
-  { id: "recraft-v4-vector",    apiId: "recraft-v4-vector",        name: "Recraft V4 Vector",   aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
-  { id: "recraft-v4-vector-pro", apiId: "recraft-v4-vector-pro",   name: "Recraft V4 Vector Pro", aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "recraft-v4-style",     apiId: "recraft-v4-style",         name: "Recraft V4 Style",    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, requiresReferenceImage: true, isFal: true, maxImages: 4 },
+  { id: "recraft-v4-style-pro", apiId: "recraft-v4-style-pro",     name: "Recraft V4 Style Pro", aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, requiresReferenceImage: true, isFal: true, maxImages: 4 },
+  { id: "recraft-v4-vector",    apiId: "recraft-v4-vector",        name: "Recraft V4 Vector",   aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, requiresReferenceImage: true, isFal: true, maxImages: 4 },
+  { id: "recraft-v4-vector-pro", apiId: "recraft-v4-vector-pro",   name: "Recraft V4 Vector Pro", aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, requiresReferenceImage: true, isFal: true, maxImages: 4 },
   // Edit-only / tool models — these take a source image, not a prompt
   { id: "pixelcut-product-photo", apiId: "pixelcut-product-photo", name: "Pixelcut Product Photo", aspectRatios: ["1:1"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   // Two images with FIXED roles, so it gets its own picker rather than the
@@ -202,6 +204,8 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   // ADMIN ONLY — Wan 2.2 A14B text-to-image with custom trained LoRAs
   { id: "wan-2.2-t2i-lora",     apiId: "wan-2.2-t2i-lora",         name: "Wan 2.2 T2I LoRA",    aspectRatios: ["1:1", "4:3", "16:9", "3:4", "9:16"],                     supportsQuality: false, maxReferenceImages: 0,  isFal: false, maxImages: 4 },
   { id: "flux-1-dev",           apiId: "flux-1-dev",               name: "FLUX 1 Dev",          aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], supportsAcceleration: true, maxReferenceImages: 1, isFal: true, maxImages: 1 },
+  // FLUX 3 Image: one entry; references switch it to the edit endpoint
+  { id: "flux-3-image",         apiId: "flux-3-image",             name: "FLUX 3",              aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "2:1", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "flux-2",               apiId: "flux-2",                   name: "FLUX 2",              aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, supportsAcceleration: true, maxReferenceImages: 4,  isFal: true  },
   { id: "pro-scanner-v3",       apiId: "gemini-3-pro-image",       name: "Pro Scanner v3",      aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: false },
   { id: "flash-scanner-v2.5",   apiId: "gemini-2.5-flash-image",   name: "Flash Scanner v2.5",  aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, maxReferenceImages: 4,  isFal: false },
@@ -228,6 +232,15 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (modelId === "seedream-4.5")        return quality === "4k" ? 4 : 2
   if (modelId === "seedream-5-lite")     return quality === "3k" ? 4 : 2
   if (modelId === "seedream-5-pro")      return 10   // flat 10 tickets/generation
+  if (modelId === "seedream-5-flash")    return 1    // fal $0.027
+  if (modelId === "grok-imagine-2")      return hasRefImages ? 3 : 2   // the edit bills per input image
+  if (modelId === "mai-image-2.5-pro")   return hasRefImages ? 7 : 5   // token-billed; the edit is dearer
+  if (modelId === "flux-3-image")        return flux3ImageTicketCost({ quality, aspectRatio, refs: hasRefImages ? 1 : 0 })
+  if (modelId === "ideogram-4.5")        return quality === "high" ? 6 : quality === "low" ? 1 : 2   // fal $0.03 / $0.06 / $0.22 an image
+  if (modelId === "qwen-image-3")        return (quality === "1k" ? 1 : 2) + (hasRefImages ? 1 : 0)   // fal $0.04 1K / $0.075 2K; edit +1
+  // Topaz bills by OUTPUT megapixels; the server prices the measured source.
+  // Shown here for a typical 2048x2048 source at the default 2x.
+  if (modelId.startsWith("topaz-"))      return topazImageTicketCost(modelId, {})
   if (modelId === "recraft-v4.1")        return 15   // flat 15 tickets/generation
   if (modelId === "flux-1-dev") {
     if (hasRefImages) return quality === "4k" ? 8 : quality === "2k" ? 6 : 3  // i2i
@@ -673,6 +686,7 @@ const BATCH_0928_VIDEO = new Set([
   "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
   "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
   "pixelcut-looping-video", "pixelcut-video-bg-removal",
+  "grok-video-1.5-lite", "minimax-h3-max-turbo-extend", "minimax-h3-max-recast",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -868,7 +882,8 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     // Native audio via generate_audio, so the audio toggle applies.
     id: "flux-3",
     name: "Flux 3",
-    durations: ["auto","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20"],
+    // No "auto": fal's auto runs to 15-20s, so the route sends a set length
+    durations: ["5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20"],
     resolutions: ["720p", "1080p"],
     aspectRatios: ["auto","21:9","2:1","16:9","4:3","1:1","3:4","9:16"],
     supportsEndFrame: true,
@@ -923,7 +938,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     name: "Gemini Omni Flash 1.1",
     // a video reference routes to the v1.1 edit endpoint
     supportsVideoExtend: true,
-    durations: ["4","5","6","7","8","9","10","12"],
+    durations: ["3","4","5","6","7","8","9","10"], // fal's 3-10 (12 was offered and 422'd)
     resolutions: ["360p","720p","1080p","4k"],
     aspectRatios: ["16:9","9:16"],
     supportsEndFrame: true,
@@ -948,7 +963,8 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     // ADMIN ONLY — LTX 2.5 Fast: reaches 2160p and 20s, and adds 48fps.
     id: "ltx-2.5-fast",
     name: "LTX 2.5 Fast",
-    durations: ["auto","6","8","10","12","14","16","18","20"],
+    // No "auto" (it can run to 20s); 1440p+ and 48/50fps stop at 10s (the route caps it)
+    durations: ["6","8","10","12","14","16","18","20"],
     resolutions: ["720p","1080p","1440p","2160p"],
     aspectRatios: ["auto","16:9","9:16"],
     supportsEndFrame: true,
@@ -1000,6 +1016,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "kling-o3-4k",        name: "Kling O3 4K",        durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], aspectRatios: ["16:9","9:16","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
   { id: "pixverse-v6",        name: "PixVerse V6",        durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
   { id: "pixverse-c1",        name: "PixVerse C1",        durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "grok-video-1.5-lite", name: "Grok Imagine Video 1.5 Lite", durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p","1080p"], aspectRatios: ["16:9","4:3","3:2","1:1","2:3","3:4","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true, startFrameLocksAspect: true },
   { id: "grok-video-1.5",     name: "Grok Imagine Video 1.5", durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p","1080p"], aspectRatios: ["16:9","4:3","3:2","1:1","2:3","3:4","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true, supportsReferenceVideo: true },
   { id: "vidu-q3",            name: "Vidu Q3",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
   // ── 2026-09-29 batch (ADMIN ONLY while under test). Refs-panel models route
@@ -1018,7 +1035,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "minimax-h3-max-turbo", name: "MiniMax H3 Max Turbo", durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], aspectRatios: ["21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: true, audioType: "none", textToVideo: true },
   { id: "minimax-h3-max-ref",  name: "MiniMax H3 Max References", durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], aspectRatios: ["adaptive","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: false, audioType: "none", supportsReferenceVideo: true },
   { id: "marey",               name: "Marey",               durations: ["5","10"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, audioType: "none", textToVideo: true },
-  { id: "seedance-2.0-mini",   name: "SeeDance 2.0 Mini",   durations: ["auto","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p"], aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  { id: "seedance-2.0-mini",   name: "SeeDance 2.0 Mini",   durations: ["4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p"], aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
   { id: "hunyuan-video-1.5",   name: "Hunyuan Video 1.5",   durations: ["2","3","4","5"], resolutions: ["480p","720p"], aspectRatios: ["16:9","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true },
   { id: "vidu-q3-turbo",      name: "Vidu Q3 Turbo",      durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
   {
@@ -1071,7 +1088,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     id: "bytedance-video-upscale",
     name: "ByteDance Video Upscale",
     durations: [], supportsEndFrame: false, audioType: "none",
-    isVideoTool: true, upscaleFactors: ["1","2","3","4"],
+    isVideoTool: true, upscaleFactors: ["2","3","4"],
     supportsReferenceVideo: true,
   },
   {
@@ -1154,10 +1171,13 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // ── 2026-09-29 batch tools (ADMIN ONLY): all need a prompt
   { id: "veo-3.1-extend",         name: "Veo 3.1 Extend",               durations: [], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "veo-3.1-fast-extend",    name: "Veo 3.1 Fast Extend",          durations: [], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "minimax-h3-max-turbo-extend", name: "MiniMax H3 Max Turbo Extend", durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p","2k"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  // Recast: the clip as a video reference + one photo per new person as image references
+  { id: "minimax-h3-max-recast", name: "MiniMax H3 Max Recast",        durations: [], resolutions: ["768p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 30 },
   { id: "minimax-h3-max-extend",  name: "MiniMax H3 Max Extend",        durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "marey-motion-transfer",  name: "Marey Motion Transfer",        durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "marey-pose-transfer",    name: "Marey Pose Transfer",          durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
-  { id: "grok-video-extend",      name: "Grok Video Extend",            durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
+  { id: "grok-video-extend",      name: "Grok Video Extend",            durations: ["2","3","4","5","6","7","8","9","10"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   // Pixelcut video (2026-09-30): a looping product video from one photo, and
   // background removal for clips. Priced by lib/ticket-pricing's pixelcutVideoTicketCost.
   {
@@ -1211,6 +1231,7 @@ async function asVideoFile(file: File): Promise<File | null> {
 
 // Cost tier indicators — $ cheap · $$ mid · $$$ expensive
 const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
+  "ideogram-4.5":        "$$",
   "flash-scanner-v2.5": "$",
   "seedream-4.5":        "$",
   "seedream-5-lite":     "$",
@@ -1230,6 +1251,7 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "recraft-v4.1-flash":  "$",
   "recraft-v4.1":        "$$$",
   "flux-2":              "$",
+  "flux-3-image":        "$$",
   "flux-1-dev":          "$$",
   "kling-v3-image":      "$",
   "kling-o3-image":      "$$",
@@ -1252,7 +1274,7 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "local-neosr":         "$",
 }
 const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
-  "gemini-omni-flash":  "$$$+",
+  "gemini-omni-flash":  "$$",
   "lipsync-v3":         "$",
   "seedance-1.5":       "$$",
   "wan-2.5":            "$$",
@@ -1266,7 +1288,7 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "wan-3.0":            "$$$",
   "wan-3.0-prime":      "$$$+",
   "seedance-2.5":       "$$$+",
-  "gemini-omni-1.1":    "$$$+",
+  "gemini-omni-1.1":    "$$",
   "ltx-2.5-pro":        "$$",
   "ltx-2.5-fast":       "$$",
   "flux-video-upscale": "$$$",
@@ -1295,7 +1317,10 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "kling-o3-4k":        "$$$+",
   "pixverse-v6":        "$",
   "pixverse-c1":        "$",
-  "grok-video-1.5":     "$$$",
+  "grok-video-1.5":     "$$",
+  "grok-video-1.5-lite": "$",
+  "minimax-h3-max-turbo-extend": "$",
+  "minimax-h3-max-recast": "$$$+",
   "vidu-q3":            "$$$",
   "vidu-q3-turbo":      "$$",
   "kling-o3-pro-edit":  "$$$",
@@ -1332,9 +1357,9 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "z-image-base":       "$$",
   "z-image-turbo":      "$",
 }
-// Audio Studio (ADMIN ONLY while in development): the picker's groups in
+// Audio Studio (public since 2026-10-02): the picker's groups in
 // lib/audio-studio's section order, and a $ tier from a typical run
-const ADMIN_AUDIO_MODEL_GROUPS = AUDIO_GROUPS.map(g => ({
+const AUDIO_MODEL_GROUPS = AUDIO_GROUPS.map(g => ({
   label: g.label, type: g.key, accent: g.accent, dot: g.dot, note: g.note,
   items: AUDIO_STUDIO_MODELS.filter(m => m.group === g.key).map(m => m.name),
 }))
@@ -1424,21 +1449,35 @@ function modelDbKeysForName(name: string): string[] {
   return [...new Set([cfg.id, (cfg as { apiId?: string }).apiId].filter((x): x is string => !!x))]
 }
 const IMAGE_MODEL_GROUPS = [
-  { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2"] },
+  { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2", "NanoBanana 2 Lite"] },
   { label: "Kling",             type: "text to image",             accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling V3", "Kling O3"] },
-  { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro"] },
-  { label: "Recraft",           type: "text to image",             accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1"] },
+  { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro", "SeeDream 5.0 Flash", "SeedVR2 Upscale"] },
+  { label: "xAI",               type: "text to image · edit",      accent: "text-slate-300",   dot: "bg-slate-300",   items: ["Grok Imagine 2.0"] },
+  { label: "Recraft",           type: "text to image",             accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1", "Recraft V4.1 Flash"] },
+  // Public 2026-10-02: V4 copies the style of the attached references (one is required)
+  { label: "Recraft V4",        type: "style refs · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4"] },
   { label: "Wan",               type: "text to image",             accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.7 Pro"] },
-  { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 1 Dev", "FLUX 2"] },
+  { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 3", "FLUX 1 Dev", "FLUX 2"] },
   { label: "OpenAI",            type: "text to image · edit",      accent: "text-green-400",   dot: "bg-green-400",   items: ["ChatGPT Images 2.0", "ChatGPT Images 2.5"] },
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
   // Public since 2026-09-25. The tier (v4, Fast, Instant, Tiling) is picked
   // inside the model, so one item stands for all four.
-  { label: "Ideogram",          type: "text in images",            accent: "text-amber-400",   dot: "bg-amber-400",   items: ["Ideogram v4"] },
+  { label: "Ideogram",          type: "text in images · edit",     accent: "text-amber-400",   dot: "bg-amber-400",   items: ["Ideogram v4.5", "Ideogram v4"] },
   // Google, distinct from the Gemini row above: Virtual Try-On is a Google
   // model but not a Gemini one, and filing it under Gemini would be wrong.
   { label: "Google",            type: "virtual try-on",            accent: "text-emerald-400", dot: "bg-emerald-400", items: ["Virtual Try-On"] },
   { label: "Pixelcut",          type: "product photography",       accent: "text-rose-400",    dot: "bg-rose-400",    items: ["Pixelcut Product Photo"] },
+  // Public 2026-10-01 (priced from fal's rates, tested)
+  { label: "Topaz",             type: "upscale · restore · adjust", accent: "text-lime-400",    dot: "bg-lime-400",    items: ["Topaz Image"] },
+  { label: "Bria",              type: "text to image · edit",      accent: "text-teal-400",    dot: "bg-teal-400",    items: ["Bria Fibo 1.5"] },
+  { label: "Microsoft",         type: "text to image · edit",      accent: "text-sky-400",     dot: "bg-sky-400",     items: ["MAI Image 2.5 Pro"] },
+  { label: "Tencent",           type: "text to image · edit",      accent: "text-sky-300",     dot: "bg-sky-300",     items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct"] },
+  // Public 2026-10-02 (priced from fal's rates, tested)
+  { label: "Alibaba",           type: "text to image · edit",      accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Qwen Image 3"] },
+  { label: "Meta",              type: "text to image · edit",      accent: "text-blue-400",    dot: "bg-blue-400",    items: ["Meta Muse"] },
+  // Public 2026-10-02 (priced from fal's rates, tested)
+  { label: "Krea",              type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
+  { label: "Luma",              type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
 ]
 
 /**
@@ -1449,62 +1488,59 @@ const IMAGE_MODEL_GROUPS = [
  * subsections inside it. Filing SeedVR2 under "ByteDance" in the flat company
  * list would bury it next to SeeDream, which is a different job entirely.
  */
-const IMAGE_MODEL_SECTIONS = [
-  {
-    label: "Upscalers",
-    note: "enhance & enlarge",
-    // No accent: a section is a heading, not a differently-coloured box.
-    dot: "bg-slate-500",
-    groups: [
-      { label: "ByteDance", type: "1-10× · detail recovery", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeedVR2 Upscale"] },
-    ],
-  },
-]
+/*
+ * Tool-first sections (a category subdivided by maker). Empty since
+ * 2026-10-02: the only public upscaler (SeedVR2) sits with its maker,
+ * ByteDance, like every other model - one way of reading the list.
+ */
+const IMAGE_MODEL_SECTIONS: { label: string; note?: string; accent?: string; dot?: string; groups: { label: string; type: string; accent: string; dot: string; items: string[] }[] }[] = []
+/** The home page's Upscale / Tools sub-sections, by model (see HomeView). */
+const HOME_IMAGE_UPSCALE_NAMES = ["SeedVR2 Upscale"]
 const ADMIN_IMAGE_MODEL_GROUPS = [
   // The picker renders THESE groups, not IMAGE_MODEL_CONFIGS — a model missing
   // from here simply never appears, however complete its config is.
-  { label: "Alibaba",   type: "text to image · edit",       accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3"] },
-  { label: "Reve",      type: "text to image · edit",       accent: "text-pink-400",  dot: "bg-pink-400",  items: ["Reve 2.1"] },
-  { label: "Krea",      type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
-  { label: "Tencent",   type: "text to image · edit",       accent: "text-sky-300",   dot: "bg-sky-300",   items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct"] },
-  { label: "SeeDream Flash", type: "fast text to image · edit", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["SeeDream 5.0 Flash"] },
-  { label: "Luma",      type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
-  { label: "Microsoft", type: "text to image · edit",       accent: "text-sky-400",   dot: "bg-sky-400",   items: ["MAI Image 2.5 Pro"] },
-  { label: "xAI",       type: "text to image · edit",       accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine 2.0"] },
-  { label: "Google",    type: "text to image · try-on",     accent: "text-emerald-400", dot: "bg-emerald-400", items: ["NanoBanana 2 Lite"] },
-  { label: "Meta",      type: "text to image · edit",       accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Meta Muse"] },
-  { label: "Bria",      type: "text to image · edit",       accent: "text-teal-400",  dot: "bg-teal-400",  items: ["Bria Fibo 1.5"] },
-  { label: "Recraft V4", type: "styles · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4", "Recraft V4.1 Flash"] },
-  // Gemini scanners retired from the public offering 2026-07-29 — admin only now
-  { label: "Gemini",    type: "text to image",              accent: "text-blue-400",  dot: "bg-blue-400",  items: ["Flash Scanner v2.5", "Pro Scanner v3"] },
+  // Removed 2026-10-02: Reve 2.1 (no such endpoint on fal), the Gemini
+  // scanners (Gemini API no longer used for images), SUPIR (Replicate, not
+  // fal) and the two local RunPod upscalers. Their configs stay so old feed
+  // items still resolve; they just aren't offered.
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
-  { label: "Topaz",     type: "upscale · restore · adjust", accent: "text-lime-400",  dot: "bg-lime-400",  items: ["Topaz Image"] },
-  { label: "Upscalers", type: "enhance & enlarge images",   accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT", "SUPIR"] },
-  { label: "RunPod",    type: "local · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Real-ESRGAN (Local)", "DAT-2 (Local)", "Custom Flux LoRA"] },
+  { label: "Upscalers", type: "enhance & enlarge images · fal", accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"] },
+  { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
   VIDEO_MODEL_CONFIGS.map(m => [m.name, VIDEO_MODEL_COST[m.id] ?? "$$"])
 )
 const VIDEO_MODEL_GROUPS = [
   { label: "Kling",       type: "image to video",        accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling 3.0", "Kling V3 Motion"] },
-  { label: "ByteDance",   type: "image & text to video", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.5"] },
-  { label: "Wan",         type: "image to video",        accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5"] },
+  { label: "Kling O3 & Turbo", type: "text · image · refs to video · audio · clip edit", accent: "text-orange-300", dot: "bg-orange-300", items: ["Kling O3 Pro", "Kling O3 4K", "Kling V3 Turbo Pro", "Kling V3 Turbo", "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference"] },
+  { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1", "PixVerse V6 Extend"] },
+  { label: "Vidu", type: "text · image · start/end · refs to video · audio", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q3", "Vidu Q3 Turbo"] },
+  { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
+  { label: "MiniMax", type: "image & text to video · references · extend · recast", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast"] },
+  { label: "ByteDance",   type: "image & text to video · upscale", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "SeedVR2 Video", "ByteDance Video Upscale"] },
+  { label: "Google Veo", type: "text · image · first/last · refs · audio · extend", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite", "Veo 3.1 Extend", "Veo 3.1 Fast Extend"] },
+  { label: "Wan",         type: "image & text to video", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7"] },
+  { label: "Alibaba Wan 3.0", type: "text · image · refs · with audio", accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
+  { label: "Pixelcut", type: "product loops · background removal", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Looping Video", "Pixelcut Video Background Removal"] },
+  { label: "Tencent", type: "text & image to video", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["Hunyuan Video 1.5"] },
+  { label: "Luma", type: "text & image to video · start + end · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Ray 3.2", "Luma Ray 2", "Luma Ray 2 Flash", "Luma Ray 3.2 Edit", "Luma Ray 3.2 Reframe", "Luma Ray 2 Modify", "Luma Ray 2 Flash Modify", "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe"] },
+  // The clip tools used to share one "Video Tools" group (~30 rows); since
+  // 2026-10-02 each sits with its maker. Topaz makes only tools, and FlashVSR
+  // is an open-source model with no company of its own.
+  { label: "Topaz", type: "upscale · interpolate · deblur · HDR", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Upscale · Precision", "Topaz Upscale · Creative", "Topaz Upscale · Starlight", "Topaz Frame Interpolate", "Topaz Deblur", "Topaz SDR → HDR"] },
+  { label: "Open Source", type: "community video upscaler", accent: "text-slate-300", dot: "bg-slate-400", items: ["FlashVSR"] },
   { label: "Lipsync",     type: "lip sync video",        accent: "text-pink-400",    dot: "bg-pink-400",    items: ["Lipsync v3"] },
   { label: "Alibaba",     type: "image to video",        accent: "text-yellow-400",  dot: "bg-yellow-400",  items: ["Happy Horse"] },
-  { label: "Lightricks",  type: "text & image to video · directed camera", accent: "text-lime-400", dot: "bg-lime-400", items: ["LTX 2.5 Pro"] },
-]
-const ADMIN_VIDEO_MODEL_GROUPS = [
-  { label: "Alibaba", type: "text · image · refs · with audio · pricing TBD",  accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
-  { label: "Google", type: "text · image · ref · edit to video · pricing TBD", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
-  { label: "Lightricks", type: "text & image to video · up to 4K · pricing TBD", accent: "text-lime-400", dot: "bg-lime-400",   items: ["LTX 2.5 Fast"] },
-  { label: "Luma", type: "text & image to video · start + end frame", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Ray 3.2", "Luma Ray 2", "Luma Ray 2 Flash"] },
-  { label: "Kling · new", type: "text · image · refs to video · audio", accent: "text-orange-300", dot: "bg-orange-300", items: ["Kling O3 Pro", "Kling O3 4K", "Kling V3 Turbo Pro", "Kling V3 Turbo"] },
-  { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1"] },
-  { label: "xAI", type: "text · image · refs to video", accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine Video 1.5"] },
-  { label: "Vidu", type: "text · image · start/end · refs to video · audio", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q3", "Vidu Q3 Turbo"] },
-  { label: "Google Veo", type: "text · image · first/last · refs · audio", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite"] },
-  { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
+  { label: "Lightricks",  type: "text & image to video · directed camera · up to 4K", accent: "text-lime-400", dot: "bg-lime-400", items: ["LTX 2.5 Pro", "LTX 2.5 Fast"] },
+  // Public 2026-10-01 (priced from fal's rates, tested end to end)
+  { label: "Google", type: "text · image · refs · edit to video · native audio", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
+  { label: "Black Forest Labs", type: "text · image · first/last · keyframes · extend · audio · upscale", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3", "Flux Video Upscale"] },
+  { label: "xAI", type: "text · image · refs to video · edit · extend", accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine Video 1.5", "Grok Imagine Video 1.5 Lite", "Grok Video Edit", "Grok Video Extend"] },
+  // Public 2026-10-02 (fal flat rates, tested)
   { label: "Hailuo", type: "MiniMax · text & image to video", accent: "text-rose-300", dot: "bg-rose-300", items: ["Hailuo 2.3 Pro", "Hailuo 2.3", "Hailuo 2.3 Fast Pro", "Hailuo 2.3 Fast"] },
+]
+const HOME_VIDEO_TOOL_NAMES = VIDEO_MODEL_CONFIGS.filter(m => m.isVideoTool).map(m => m.name)
+const ADMIN_VIDEO_MODEL_GROUPS = [
   /*
    * Wired but NOT listed (2026-09-28): Marey (t2v/i2v, motion + pose transfer)
    * and Pika 2 Turbo. Every test - including fal's own minimal inputs - came
@@ -1513,40 +1549,16 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    *   { label: "Moonvalley", type: "licensed-data video", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Marey"] },
    *   "Pika 2 Turbo" to the Pika group, and the two Marey tools to Video Tools.
    */
-  { label: "Pixelcut", type: "looping product video from one photo", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Looping Video"] },
-  { label: "More video", type: "SeeDance Mini · Hunyuan Video", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["SeeDance 2.0 Mini", "Hunyuan Video 1.5"] },
-  { label: "MiniMax", type: "image & text to video · pricing TBD",            accent: "text-rose-400",   dot: "bg-rose-400",   items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References"] },
-  { label: "Black Forest Labs", type: "text · image · keyframes · extend · with audio · pricing TBD", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3"] },
-  { label: "Wan",    type: "image & text to video · pricing TBD",             accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.7", "Wan 2.2 LoRA"] },
-  { label: "Video Tools", type: "upload a clip · upscale · restore · pricing TBD", accent: "text-teal-400", dot: "bg-teal-400",
-    items: ["Flux Video Upscale", "Topaz Upscale · Precision", "Topaz Upscale · Creative", "Topaz Upscale · Starlight",
-            "SeedVR2 Video", "FlashVSR", "ByteDance Video Upscale", "Topaz Frame Interpolate",
-            "Topaz Colorize", "Topaz Deblur", "Topaz SDR → HDR",
-            "Luma Ray 3.2 Edit", "Luma Ray 3.2 Reframe", "Luma Ray 2 Modify", "Luma Ray 2 Flash Modify",
-            "Luma Ray 2 Reframe", "Luma Ray 2 Flash Reframe",
-            "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference",
-            "PixVerse V6 Extend", "Grok Video Edit", "Grok Video Extend",
-            "Veo 3.1 Extend", "Veo 3.1 Fast Extend", "MiniMax H3 Max Extend",
-            "Pixelcut Video Background Removal"] },
+  { label: "Wan",    type: "LoRA video · pricing TBD",                        accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA"] },
+  { label: "Topaz", type: "colorize · fal's endpoint is down", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Colorize"] },
 ]
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
-  "gemini-omni-flash", "wan-2.7", "wan-2.2-lora", "minimax-h3-max", "flux-3",
-  "wan-3.0", "wan-3.0-prime", "gemini-omni-1.1", "ltx-2.5-fast",
-  "luma-ray-2", "luma-ray-2-flash", "luma-ray-3.2",
-  "luma-ray-2-modify", "luma-ray-2-flash-modify", "luma-ray-2-reframe",
-  "luma-ray-2-flash-reframe", "luma-ray-3.2-edit", "luma-ray-3.2-reframe",
-  "kling-v3-turbo-pro", "kling-v3-turbo", "kling-o3-pro", "kling-o3-4k",
-  "pixverse-v6", "pixverse-c1", "grok-video-1.5", "vidu-q3", "vidu-q3-turbo",
-  "kling-o3-pro-edit", "kling-o3-pro-reference", "kling-o3-4k-edit", "kling-o3-4k-reference",
-  "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
-  "pika-2.2", "pikaframes", "pika-2-turbo", "hailuo-2.3-pro", "hailuo-2.3", "hailuo-2.3-fast-pro", "hailuo-2.3-fast",
-  "veo-3.1", "veo-3.1-fast", "veo-3.1-lite", "minimax-h3-max-turbo", "minimax-h3-max-ref",
-  "marey", "seedance-2.0-mini", "hunyuan-video-1.5",
-  "veo-3.1-extend", "veo-3.1-fast-extend", "minimax-h3-max-extend", "marey-motion-transfer", "marey-pose-transfer",
-  "flux-video-upscale", "topaz-upscale-precision", "topaz-upscale-creative", "topaz-upscale-generative",
-  "seedvr2-video", "flashvsr-video", "bytedance-video-upscale",
-  "topaz-interpolate", "topaz-colorize", "topaz-deblur", "topaz-sdr-to-hdr",
+  "wan-2.2-lora",
+  "pika-2-turbo",
+  "marey",
+  "marey-motion-transfer", "marey-pose-transfer",
+  "topaz-colorize",
 ])
 
 // ── Wan 2.2 custom-LoRA picker (admin) ─────────────────────────────────────
@@ -2049,11 +2061,13 @@ const MODEL_BLURBS: Record<string, string> = {
   "Wan 2.7 Pro":               "Detailed scenes, strong composition",
   "FLUX 1 Dev":                "Open model, LoRA friendly",
   "FLUX 2":                    "Fast with strong prompt adherence",
+  "FLUX 3":                    "BFL's newest; edits with up to 10 refs",
   "ChatGPT Images 2.0":        "Best for text and diagrams",
   "Z-Image Base":              "Balanced quality for the price",
   "Z-Image Turbo":             "Fastest, cheapest drafts",
   "Topaz Image":               "Upscale, restore, sharpen, denoise",
-  "Recraft V4":                "Styled raster or SVG vector",
+  "Recraft V4":                "Copies your reference's style; raster or SVG",
+  "Ideogram v4.5":             "Sharp text; precise edits with references",
   "Ideogram v4":               "Text inside images, two speeds",
   "Qwen Image 3":              "Alibaba flagship; edits with refs",
   "Reve 2.1":                  "Prompt-accurate; edits with a ref",
@@ -2134,6 +2148,9 @@ const MODEL_BLURBS: Record<string, string> = {
   "PixVerse V6":               "Cheap and quick; start/end transitions",
   "PixVerse C1":               "PixVerse with @Image references",
   "Grok Imagine Video 1.5":    "xAI video; up to 7 references",
+  "Grok Imagine Video 1.5 Lite": "Cheapest Grok video, text or image",
+  "MiniMax H3 Max Turbo Extend": "Continue a clip, half price, up to 2K",
+  "MiniMax H3 Max Recast":     "Swap the people in a clip for your photos",
   "Vidu Q3":                   "Up to 16s; refs, start/end, audio",
   "Vidu Q3 Turbo":             "Faster, half-price Vidu Q3",
   "Kling O3 Pro Video Edit":   "Edit a clip by instruction",
@@ -2241,18 +2258,42 @@ function ModelMenuPanel({
   // here. Video media renders its first frame rather than autoplaying: a list
   // can hold fifty rows, and fifty decoders is not a menu.
   const [modelQuery, setModelQuery] = useState("")
-  // Split groups across two columns by running item count, so both sides end
-  // up a similar height and neither leaves a gap waiting for the other.
-  const splitColumns = <T extends { items: string[] }>(gs: T[]): [T[], T[]] => {
-    const cols: [T[], T[]] = [[], []]
-    const weight = [0, 0]
+  /*
+   * How many columns fit. The menu used to be a fixed two columns in a 720px
+   * box, which was fine at twenty models and is a long scroll at a hundred:
+   * on a laptop or a big monitor most of the list sat below the fold while
+   * the rest of the screen stayed empty. The panel now measures itself (it
+   * is as wide as wherever it is opened) and lays out one column per ~240px -
+   * one on a portrait phone (still a scrolling list), two or three on a
+   * tablet, four to eight on laptops and desktop monitors.
+   */
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [panelW, setPanelW] = useState(0)
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const measure = () => setPanelW(el.getBoundingClientRect().width / cssZoomOf(el) || el.offsetWidth)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const columnCount = panelW > 0 ? Math.max(1, Math.min(8, Math.floor((panelW - 20) / 240))) : 2
+  // Split groups across the columns by running item count, so the columns end
+  // up a similar height and none leaves a gap waiting for the others. Each
+  // group goes to the currently shortest column.
+  const splitColumns = <T extends { items: string[] }>(gs: T[], n = columnCount): T[][] => {
+    const cols: T[][] = Array.from({ length: n }, () => [])
+    const weight = new Array(n).fill(0)
     for (const g of gs) {
-      const i = weight[0] <= weight[1] ? 0 : 1
+      const i = weight.indexOf(Math.min(...weight))
       cols[i].push(g)
       weight[i] += g.items.length + 1.6   // +1.6 ≈ the header's own height
     }
-    return cols
+    return cols.filter(c => c.length > 0)
   }
+  // Cards: as many tiles per row as fit, a little larger on big screens
+  const cardGridStyle = { gridTemplateColumns: `repeat(auto-fill, minmax(${panelW >= 1400 ? 180 : panelW >= 700 ? 150 : 120}px, 1fr))` }
   const q = modelQuery.trim().toLowerCase()
   const matches = (item: string) => !q || item.toLowerCase().includes(q)
   const filterGroups = <T extends { label: string; items: string[] }>(gs: T[] | undefined) =>
@@ -2321,7 +2362,7 @@ function ModelMenuPanel({
   }
 
   return (
-    <>
+    <div ref={rootRef}>
           {/* Header — synced site logo + what this menu is for + display toggle */}
           <div className="flex items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-white/[0.06]">
             <SiteLogoBox size={22} rounded={7} />
@@ -2427,7 +2468,7 @@ function ModelMenuPanel({
               >
                 {/* Every model, one continuous grid — no per-company rows to
                     leave half empty. The company reads off each tile. */}
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="grid gap-1.5" style={cardGridStyle}>
                   {[...filterGroups(groups), ...(sections ?? []).flatMap(sec => filterGroups(sec.groups))]
                     .flatMap(g => g.items.map(it => renderCard(it, g.label)))}
                 </div>
@@ -2439,7 +2480,7 @@ function ModelMenuPanel({
                       <span className="text-[9px] font-bold tracking-widest uppercase text-violet-300">Admin Models</span>
                       <span className="text-[8px] text-slate-600">· admin only</span>
                     </div>
-                    <div className="p-2 grid grid-cols-3 gap-1.5">
+                    <div className="p-2 grid gap-1.5" style={cardGridStyle}>
                       {filterGroups(adminGroups).flatMap(g => g.items.map(it => renderCard(it, g.label)))}
                     </div>
                   </div>
@@ -2451,66 +2492,86 @@ function ModelMenuPanel({
             className="p-2.5 overflow-y-auto"
             style={{ maxHeight: bodyMaxHeight }}
           >
-           <div className="flex gap-2 items-start">
-            {splitColumns(filterGroups(groups)).map((col, ci) => (
-             <div key={ci} className="flex-1 min-w-0 space-y-2">
-              {col.map((group) => (
-              <div key={group.label}>
-                {/* Company label — monochrome text; the small colored dot alone
-                    carries the per-company wayfinding */}
-                <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
-                  <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{group.label}</span>
-                  <span className="text-[8px] text-slate-600 leading-none truncate">· {group.type}</span>
-                </div>
-                {/* Model rows */}
-                <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
-                  {group.items.map(renderItem)}
-                </div>
-              </div>
-              ))}
-             </div>
-            ))}
-           </div>
-
-            {/* Named sections — a tool category, subdivided by maker */}
-            {(sections ?? []).map(sec => {
-              const subs = filterGroups(sec.groups)
-              if (subs.length === 0) return null
-              return (
-                <div key={sec.label} className="col-span-2">
-                  {/* Same header the companies get — this is a heading in the
-                      list, not a block bolted onto the side of it. */}
-                  <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sec.dot ?? "bg-slate-500"}`} />
-                    <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sec.label}</span>
-                    {sec.note && <span className="text-[8px] text-slate-600 leading-none truncate">· {sec.note}</span>}
-                  </div>
-                  {/* One indent, one hairline: enough to read as nested under
-                      the heading without becoming a panel of its own. */}
-                  <div className="ml-[3px] pl-2 border-l border-white/[0.06]">
-                    <div className="flex gap-2 items-start">
-                      {splitColumns(subs).map((col, ci) => (
-                        <div key={ci} className="flex-1 min-w-0 space-y-2">
-                          {col.map(sub => (
-                            <div key={sub.label}>
-                              <div className="flex items-center gap-1.5 px-1.5 pb-1">
-                                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
-                                <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sub.label}</span>
-                                <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
-                              </div>
-                              <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
-                                {sub.items.map(renderItem)}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+           {/* Companies AND the named tool sections flow through one set of
+               balanced columns. A section is a single block (its heading with
+               the makers stacked under it), so on a wide screen it fills a
+               column beside the companies instead of starting below all of
+               them, half off the bottom of the menu. */}
+           {(() => {
+             const companyGroups = filterGroups(groups)
+             const sectionBlocks = (sections ?? [])
+               .map(sec => ({ sec, subs: filterGroups(sec.groups) }))
+               .filter(b => b.subs.length > 0)
+             type Unit = { key: string; items: string[]; node: ReactNode }
+             const renderGroup = (group: { label: string; type: string; dot: string; items: string[] }) => (
+               <div key={group.label}>
+                 {/* Company label — monochrome text; the small colored dot alone
+                     carries the per-company wayfinding */}
+                 <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                   <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${group.dot}`} />
+                   <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{group.label}</span>
+                   <span className="text-[8px] text-slate-600 leading-none truncate">· {group.type}</span>
+                 </div>
+                 {/* Model rows */}
+                 <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
+                   {group.items.map(renderItem)}
+                 </div>
+               </div>
+             )
+             /*
+              * A group longer than a column's fair share (Video Tools is ~36
+              * rows) is cut into pieces that continue in the next columns -
+              * otherwise one group sets the menu's height and the rest of
+              * the screen sits empty beside it. Each piece repeats the
+              * heading, marked "continued".
+              */
+             const totalRows = companyGroups.reduce((n, g) => n + g.items.length + 1.6, 0)
+               + sectionBlocks.reduce((n, b) => n + b.subs.reduce((m, s) => m + s.items.length + 2, 0), 0)
+             const fairShare = Math.max(8, Math.ceil(totalRows / columnCount))
+             const pieces = companyGroups.flatMap(g => {
+               if (columnCount < 2 || g.items.length <= fairShare) return [g]
+               const n = Math.ceil(g.items.length / fairShare)
+               const size = Math.ceil(g.items.length / n)
+               return Array.from({ length: n }, (_, i) => ({
+                 ...g,
+                 label: i === 0 ? g.label : `${g.label} · continued`,
+                 items: g.items.slice(i * size, (i + 1) * size),
+               }))
+             })
+             const units: Unit[] = [
+               ...pieces.map(g => ({ key: g.label, items: g.items, node: renderGroup(g) })),
+               ...sectionBlocks.map(({ sec, subs }) => ({
+                 key: `sec:${sec.label}`,
+                 // Weighted like its rows plus one header per maker
+                 items: subs.flatMap(sub => [...sub.items, "", ""]),
+                 node: (
+                   <div key={`sec:${sec.label}`}>
+                     {/* Same header the companies get — this is a heading in the
+                         list, not a block bolted onto the side of it. */}
+                     <div className="flex items-center gap-1.5 px-1.5 pb-1">
+                       <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sec.dot ?? "bg-slate-500"}`} />
+                       <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sec.label}</span>
+                       {sec.note && <span className="text-[8px] text-slate-600 leading-none truncate">· {sec.note}</span>}
+                     </div>
+                     {/* One indent, one hairline: enough to read as nested under
+                         the heading without becoming a panel of its own. */}
+                     <div className="ml-[3px] pl-2 border-l border-white/[0.06] space-y-2">
+                       {subs.map(renderGroup)}
+                     </div>
+                   </div>
+                 ),
+               })),
+             ]
+             return (
+               <div className="flex gap-2 items-start">
+                 {splitColumns(units).map((col, ci) => (
+                   <div key={ci} className="flex-1 min-w-0 space-y-2">
+                     {col.map(u => u.node)}
+                   </div>
+                 ))}
+               </div>
+             )
+           })()}
 
             {/* Admin Models — full-width block containing subsections */}
             {filterGroups(adminGroups).length > 0 && (
@@ -2556,7 +2617,7 @@ function ModelMenuPanel({
             <span className="text-[9px] text-slate-600">·</span>
             <span className="text-[9px] text-slate-500"><span className="text-rose-300 font-bold font-mono">$$$+</span> expensive</span>
           </div>
-    </>
+    </div>
   )
 }
 
@@ -2606,7 +2667,7 @@ function GroupedTaskbarDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 428, z: 1 })
 
   const activeCost = activeItem && itemCosts ? itemCosts[activeItem] : undefined
 
@@ -2621,15 +2682,31 @@ function GroupedTaskbarDropdown({
   }, [open, onToggle])
 
   useEffect(() => {
-    if (open && buttonRef.current) {
+    if (!open) return
+    const place = () => {
+      if (!buttonRef.current) return
       const rect = buttonRef.current.getBoundingClientRect()
-      // Cap the menu to the viewport and clamp so it never hangs off either
-      // edge — in VISUAL pixels (the taskbar may be zoomed), then convert to
+      // Work in VISUAL pixels (the taskbar may be zoomed), then convert to
       // local coords for the fixed menu inside the zoomed subtree
       const z = cssZoomOf(buttonRef.current)
-      const menuW = Math.min(428 * z, window.innerWidth - 16)
-      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)) / z, z })
+      // clientWidth, not innerWidth: innerWidth counts the page's vertical
+      // scrollbar, and a menu that wide pokes under it and adds a sideways one
+      const vw = document.documentElement.clientWidth || window.innerWidth
+      if (vw >= 640) {
+        // Tablet and up: the menu takes the screen under the taskbar, edge to
+        // edge, so the list spreads into as many columns as fit instead of
+        // scrolling a narrow box
+        const w = vw - 16
+        setMenuPos({ top: (rect.bottom + 8) / z, left: (vw - w) / 2 / z, width: w / z, z })
+      } else {
+        // Phones: the full-width scrolling list it always was
+        const w = vw - 16
+        setMenuPos({ top: (rect.bottom + 8) / z, left: 8 / z, width: w / z, z })
+      }
     }
+    place()
+    window.addEventListener("resize", place)
+    return () => window.removeEventListener("resize", place)
   }, [open])
 
   return (
@@ -2658,7 +2735,7 @@ function GroupedTaskbarDropdown({
       {open && (
         <div
           className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain"
-          style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(720, (window.innerWidth - 16) / menuPos.z) }}
+          style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: menuPos.width }}
         >
           <ModelMenuPanel
             label={label}
@@ -24750,6 +24827,8 @@ function VideoCustomizationPanel({
   onLipsyncSyncModeChange,
   safetyChecker,
   ltxFps = "25",
+  toolFactor = "2",
+  toolCreativity = "0.35",
   onLtxFpsChange,
   lumaMode = "flex_1",
   onLumaModeChange,
@@ -24811,6 +24890,9 @@ function VideoCustomizationPanel({
   onLipsyncSyncModeChange?: (m: string) => void
   safetyChecker?: boolean
   ltxFps?: string
+  /** Video tools' upscale factor and creativity - Flux Video Upscale's price depends on both */
+  toolFactor?: string
+  toolCreativity?: string
   onLtxFpsChange?: (fps: string) => void
   lumaMode?: string
   onLumaModeChange?: (mode: string) => void
@@ -24920,8 +25002,10 @@ function VideoCustomizationPanel({
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-") || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration })
+    : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration, fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+        // Omni / Flux 3: a source clip in the refs panel makes it an edit (Flux 3: extend)
+        sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && (editSourceDuration ?? 0) > 0 ? "edit" : undefined })
     : isSD20Family
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * sd20ResMultiplier)
     : model.id === "happy-horse"
@@ -25740,6 +25824,16 @@ function VideoTile({ natural, initialAspect, className, onClick, videoSrc, still
   )
 }
 
+/**
+ * A failure message as plain text for a feed card. Providers send markdown
+ * links ("Google's [Generative AI Prohibited Use policy](https://policies...)"),
+ * and that unbroken URL could not wrap: the card took its width, outgrew its
+ * column and lay over the card beside it.
+ */
+function plainFailError(msg?: string | null): string {
+  return String(msg ?? "").replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, "$1").replace(/https?:\/\/\S+/g, "").trim()
+}
+
 function VideoFeed({
   pendingSlots,
   items,
@@ -26031,7 +26125,7 @@ function VideoFeed({
     items.forEach(item => headNodes.push(item.failed ? { weight: W169, key: item.id, node: (
       <div
         key={item.id}
-        className="relative rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
+        className="relative min-w-0 w-full overflow-hidden rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
         style={{ aspectRatio: "16/9" }}
         onClick={() => onVideoClick({ videoUrl: "", prompt: item.prompt, model: item.model, duration: item.duration, createdAt: item.createdAt, failed: true, failError: item.failError, failId: item.id, queueRowId: item.queueRowId, failKey: item.failKey })}
       >
@@ -26047,8 +26141,8 @@ function VideoFeed({
         <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
           <X size={10} className="text-red-400" />
         </div>
-        <p className="text-[10px] text-red-400/80 text-center line-clamp-2">{item.failError}</p>
-        <p className="text-[9px] text-slate-600 italic line-clamp-1">"{item.prompt}"</p>
+        <p className="w-full text-[10px] text-red-400/80 text-center line-clamp-2 [overflow-wrap:anywhere]">{plainFailError(item.failError)}</p>
+        <p className="w-full text-center text-[9px] text-slate-600 italic line-clamp-1 [overflow-wrap:anywhere]">"{item.prompt}"</p>
       </div>
     )} : { weight: tileWeight(item.aspectRatio), key: item.id, node: (
       <VideoTile
@@ -26121,7 +26215,7 @@ function VideoFeed({
       nodes.push({ weight: W169, node: (
         <div
           key={`sf-${item.id}`}
-          className="relative rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
+          className="relative min-w-0 w-full overflow-hidden rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
           style={{ aspectRatio: "16/9" }}
           onClick={() => onVideoClick({ videoUrl: "", prompt: item.prompt, model: item.model, duration: item.duration, createdAt: item.createdAt, failed: true, failError: item.failError, failId: item.id, queueRowId: item.queueRowId, failKey: item.failKey })}
         >
@@ -26137,8 +26231,8 @@ function VideoFeed({
           <div className="w-5 h-5 rounded-full border-2 border-red-500/60 flex items-center justify-center shrink-0">
             <X size={10} className="text-red-400" />
           </div>
-          <p className="text-[10px] text-red-400/80 text-center line-clamp-2">{item.failError}</p>
-          <p className="text-[9px] text-slate-600 italic line-clamp-1">"{item.prompt}"</p>
+          <p className="w-full text-[10px] text-red-400/80 text-center line-clamp-2 [overflow-wrap:anywhere]">{plainFailError(item.failError)}</p>
+          <p className="w-full text-center text-[9px] text-slate-600 italic line-clamp-1 [overflow-wrap:anywhere]">"{item.prompt}"</p>
         </div>
       )})
       return
@@ -26337,11 +26431,15 @@ function VideoPromptBar({
   promptScale = 1,
   onPromptChange,
   sourceSeconds = 0,
+  toolFactor = "2",
+  toolCreativity = "0.35",
 }: {
   model: VideoModelConfig
   onGenerate: (prompt: string) => void
   /** A clip tool's source length (seconds), for tools billed by it. */
   sourceSeconds?: number
+  toolFactor?: string
+  toolCreativity?: string
   onPromptChange?: (text: string) => void
   generating: boolean
   canGenerate: boolean
@@ -26428,8 +26526,6 @@ function VideoPromptBar({
   const isLipsyncModel = !!model.supportsLipsync
   const ticketCost = isLipsyncModel
     ? Math.max(10, Math.ceil((lipsyncVideoDuration ?? 0) * 6))
-    : model.id === "gemini-omni-flash"
-    ? (parseInt(duration) || 8) * 15
     : model.id === "kling-v3-motion"
     ? Math.ceil(motionVideoDuration ?? motionMaxSec) * 6
     : model.id === "kling-v3"
@@ -26437,8 +26533,9 @@ function VideoPromptBar({
     : model.id === "seedance-1.5"
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id === "ltx-2.5-pro" || model.id.startsWith("luma-ray-") || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds })
+    : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+        sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && sourceSeconds > 0 ? "edit" : undefined })
     : isSD20FamilyBar
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
     : model.id === "happy-horse"
@@ -27758,6 +27855,9 @@ export default function PortalV2Page() {
   // Rescan payload for the custom flux panel — full flux* settings from a generation
   const [fluxOverride, setFluxOverride] = useState<{ meta: Record<string, unknown>; version: number } | null>(null)
   const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null)
+  // When the viewer was opened from somewhere other than the feed (a storyboard's
+  // stills), its arrows step through that list instead of the feed
+  const [viewerNav, setViewerNav] = useState<ImageItem[] | null>(null)
   const [selectedVideo, setSelectedVideo] = useState<VideoDetailData | null>(null)
   const [pendingDetail, setPendingDetail] = useState<PendingSlot | null>(null)
   const [videoPendingDetail, setVideoPendingDetail] = useState<VideoPendingSlot | null>(null)
@@ -28335,7 +28435,6 @@ export default function PortalV2Page() {
   useEffect(() => {
     if (scannerMode === "chat" && adminChecked && !isAdminAccount) setScannerMode("image")
     // Audio Studio is admin-only while in development
-    if (scannerMode === "audio" && adminChecked && !isAdminAccount) setScannerMode("home")
     // Employees open to everyone once any one is released (lib/employees.ts);
     // until then, admin-only.
     if (scannerMode === "employees" && adminChecked && !isAdminAccount && !ANY_PUBLIC_EMPLOYEE) setScannerMode("image")
@@ -28349,7 +28448,7 @@ export default function PortalV2Page() {
     if (scannerMode === "threed") { setActiveEmployee("3d-studio"); setScannerMode("employees") }
   }, [scannerMode, adminChecked, isAdminAccount, activeEmployee])
   const [selectedVideoModel, setSelectedVideoModel] = useState<VideoModelConfig>(() => VIDEO_MODEL_CONFIGS[0])
-  // Audio Studio (admin only): the chosen model, remembered per browser
+  // Audio Studio: the chosen model, remembered per browser
   const [selectedAudioModelId, setSelectedAudioModelId] = useState<string>(() => {
     try { return localStorage.getItem("pv2-audio-model") || AUDIO_STUDIO_MODELS[0].id } catch { return AUDIO_STUDIO_MODELS[0].id }
   })
@@ -29018,8 +29117,11 @@ export default function PortalV2Page() {
 
   // A clip tool's source length: its own upload, or the clip in the refs panel
   // (Luma and Pixelcut background removal read their source from there)
+  // Gemini Omni's edit takes its source from the refs panel too, and renders
+  // that clip's length - so the price (shown and charged) needs that length,
+  // not the 8s fallback it was billed at before
   const videoToolSourceSec = videoEditSourceDuration
-    || ((selectedVideoModel.id.startsWith("luma-ray-") || selectedVideoModel.id === "pixelcut-video-bg-removal") ? videoRefVideoDuration : 0)
+    || ((selectedVideoModel.id.startsWith("luma-ray-") || selectedVideoModel.id === "pixelcut-video-bg-removal" || selectedVideoModel.id.startsWith("gemini-omni") || selectedVideoModel.id === "flux-3") ? videoRefVideoDuration : 0)
   const handleVideoGenerate = useCallback(async (promptText: string) => {
     const isMotion = selectedVideoModel.id === "kling-v3-motion"
     const isLipsync = !!selectedVideoModel.supportsLipsync
@@ -29143,6 +29245,9 @@ export default function PortalV2Page() {
           // Extend / edit source video (inferred from the refs panel)
           ...(sdMode === "edit" && {
             editVideoUrl:          sdEditVideoUrl,
+            // A tool's image references ride along with its clip (Recast's
+            // faces, Kling O3 edit's references); they were dropped before
+            ...(selectedVideoModel.isVideoTool && sdRefImageUrls.length > 0 ? { referenceImageUrls: sdRefImageUrls } : {}),
             // Luma tools bill by the clip's length: when it came in through the
             // refs panel, that panel's measured duration is the one to send
             editVideoDurationSec:  videoToolSourceSec,
@@ -32279,25 +32384,20 @@ function employeePending(
               cardMedia={homeCards}
               cardPrefix="video"
             />
-            {/* Audio - admin only while in development */}
-            {isAdminAccount && (
-              <GroupedTaskbarDropdown
-                label="Audio"
-                icon={Music}
-                groups={[]}
-                adminGroups={ADMIN_AUDIO_MODEL_GROUPS}
-                open={openDropdown === "audio"}
-                onToggle={() => toggle("audio")}
-                onSelect={handleSelectAudioModel}
-                activeItem={AUDIO_STUDIO_MODELS.find(m => m.id === selectedAudioModelId)?.name}
-                itemCosts={AUDIO_MODEL_COST_BY_NAME}
-                menuTitle="Audio Model"
-                menuDescription="Voices, dialogue, music, sound effects and audio tools. Admin only while in development."
-                cardMedia={homeCards}
-                cardPrefix="audio"
-                variant="admin"
-              />
-            )}
+            <GroupedTaskbarDropdown
+              label="Audio"
+              icon={Music}
+              groups={AUDIO_MODEL_GROUPS}
+              open={openDropdown === "audio"}
+              onToggle={() => toggle("audio")}
+              onSelect={handleSelectAudioModel}
+              activeItem={AUDIO_STUDIO_MODELS.find(m => m.id === selectedAudioModelId)?.name}
+              itemCosts={AUDIO_MODEL_COST_BY_NAME}
+              menuTitle="Audio Model"
+              menuDescription="Voices, dialogue, music, sound effects and audio tools. Models are grouped by what they make."
+              cardMedia={homeCards}
+              cardPrefix="audio"
+            />
             <TextDropdown
               open={openDropdown === "text"}
               onToggle={() => toggle("text")}
@@ -32661,7 +32761,12 @@ function employeePending(
               activeRefs={refLibrary
                 .filter(img => activeRefIds.includes(img.id))
                 .map(r => ({ id: r.id, url: r.url }))}
-              onRemoveRef={handleDeactivateRef}
+              // The whole Refs library, to fill the board's assets from
+              refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
+              // A still opens in the feed's full viewer; its arrows walk the board
+              onOpenStill={(item, list) => { setViewerNav(list as ImageItem[]); setSelectedImage(item as ImageItem) }}
+              // The feed popup's "Add to Refs": into the account library, switched on
+              onAddRef={url => addRefsToAccount([{ url }], null, { autoActivate: true })}
             />
           ) : null}
         </EmployeesView>
@@ -32672,6 +32777,8 @@ function employeePending(
           signedIn={user !== null}
           imageGroups={IMAGE_MODEL_GROUPS}
           imageSections={IMAGE_MODEL_SECTIONS}
+          imageUpscaleNames={HOME_IMAGE_UPSCALE_NAMES}
+          videoToolNames={HOME_VIDEO_TOOL_NAMES}
           adminImageGroups={ADMIN_IMAGE_MODEL_GROUPS}
           videoGroups={VIDEO_MODEL_GROUPS}
           adminVideoGroups={ADMIN_VIDEO_MODEL_GROUPS}
@@ -32680,7 +32787,7 @@ function employeePending(
           cards={homeCards}
           onSelectImageModel={handleSelectImageModel}
           onSelectVideoModel={handleSelectVideoModel}
-          adminAudioGroups={ADMIN_AUDIO_MODEL_GROUPS}
+          audioGroups={AUDIO_MODEL_GROUPS}
           audioCostByName={AUDIO_MODEL_COST_BY_NAME}
           onSelectAudioModel={handleSelectAudioModel}
           onGoChat={() => setScannerMode("chat")}
@@ -32805,8 +32912,8 @@ function employeePending(
           )}
         </>
       ) : scannerMode === "audio" ? (
-        /* Audio Studio - admin only (the redirect above sends anyone else home) */
-        isAdminAccount && user ? (
+        /* Audio Studio - public; signed-in users only (it spends tickets) */
+        user ? (
           <AudioStudio
             topOffsetPx={taskbarHeightPx}
             modelId={selectedAudioModelId}
@@ -32816,7 +32923,8 @@ function employeePending(
             onTicketsSpent={n => setUser(prev => prev ? { ...prev, ticketBalance: prev.ticketBalance - n } : prev)}
           />
         ) : (
-          <div className="flex items-center justify-center py-32"><Loader2 size={22} className="animate-spin text-slate-500" /></div>
+          /* Signed out: the same prompt the image and video views show */
+          <FeedSignInPrompt />
         )
       ) : !user ? (
         /* Video — not signed in */
@@ -32835,6 +32943,8 @@ function employeePending(
               setSafetyChecker={selectedVideoModel.id === "wan-2.5" ? setWan25VideoSafetyChecker : selectedVideoModel.id === "seedance-1.5" ? setSeedance15VideoSafetyChecker : selectedVideoModel.id === "wan-2.7" ? setWan27VideoSafetyChecker : selectedVideoModel.id === "minimax-h3-max" ? setH3MaxVideoSafetyChecker : selectedVideoModel.id === "flux-3" ? setFlux3VideoSafetyChecker : selectedVideoModel.id.startsWith("wan-3.0") ? setWan30VideoSafetyChecker : undefined}
               isAdminAccount={isAdminAccount}
               ltxFps={videoLtxFps}
+              toolFactor={videoToolFactor}
+              toolCreativity={videoToolCreativity}
               onLtxFpsChange={setVideoLtxFps}
               lumaMode={videoLumaMode}
               onLumaModeChange={setVideoLumaMode}
@@ -32936,6 +33046,8 @@ function employeePending(
           {/* Video prompt bar — fixed at bottom */}
           <VideoPromptBar
             sourceSeconds={videoToolSourceSec}
+            toolFactor={videoToolFactor}
+            toolCreativity={videoToolCreativity}
             key={`vpb-${user?.id ?? "anon"}`}
             cardMedia={homeCards}
             promptScale={feedPromptScale}
@@ -33090,14 +33202,14 @@ function employeePending(
       {selectedImage && (
         <ImageDetailModal
           image={selectedImage}
-          onClose={() => setSelectedImage(null)}
+          onClose={() => { setSelectedImage(null); setViewerNav(null) }}
           onRescan={handleRescan}
-          onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null) }}
+          onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null); setViewerNav(null) }}
           onDismissFail={handleDismissFail}
           onEditCanvas={handleEditCanvas}
           editCanvasLocked={!hasEffectiveDevAccess}
-          navList={imageNavList}
-          navIndex={imageNavList.findIndex(img => img.id === selectedImage.id)}
+          navList={viewerNav ?? imageNavList}
+          navIndex={(viewerNav ?? imageNavList).findIndex(img => img.id === selectedImage.id)}
           onNavigate={setSelectedImage}
           onAddRef={(url, r2Key) => {
             const addRef = (finalUrl: string) =>

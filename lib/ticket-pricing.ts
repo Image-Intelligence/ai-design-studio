@@ -24,6 +24,7 @@ export const VIDEO_TOOL_MODELS = new Set([
   // 2026-09-29 batch: extend / motion + pose transfer
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
+  'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
   // Pixelcut: cut the subject out of a clip
   'pixelcut-video-bg-removal',
 ])
@@ -71,6 +72,139 @@ export interface VideoTicketCostInput {
   hasStartImage?: boolean
   /** An end frame was sent (Veo's first-last-frame mode is 8s only). */
   hasEndImage?: boolean
+  /** Frames per second asked for (LTX 2.5 Fast: 48/50fps cap the length at 10s). */
+  fps?: string | number
+  /** Video tools' creativity 0-1 (Flux Video Upscale: >= 0.5 is its dearer creative mode). */
+  videoCreativity?: string | number
+  /** The source clip as MEASURED by the server (lib/video-probe) - video tools priced by output size. */
+  sourceHeight?: number
+  sourceWidth?: number
+  sourceFps?: number
+  /** Topaz interpolate's target frame rate. */
+  targetFps?: string | number
+}
+
+/*
+ * Topaz video tools, from fal's published rules (2026-10-01). fal bills by the
+ * OUTPUT's resolution tier, frame rate and length; its examples are per 10s at
+ * 30 fps, and 60 fps costs double. Per 10 seconds:
+ *   upscale precision    $0.10 720p / $0.20 1080p / $0.60 4K
+ *   upscale creative     $3.00 up to 1080p / $5.00 4K   (Astra 2)
+ *   upscale generative   $1.20 / $2.60                  (Starlight Precise 2.6)
+ *   colorize, deblur     $0.10 / $0.30
+ *   SDR -> HDR           $2.40 / $5.10                  (Hyperion 2.5)
+ *   interpolate          $0.30 / $0.60 per 30 NEW fps   (Apollo / Chronos)
+ * The source is measured by /api/video/generate (height, fps, length); the
+ * upscalers multiply the height by the factor. Unmeasured = 1080p at 30 fps.
+ * Billed at fal cost / $0.04 a ticket - 50% at the $0.08 subscription ticket.
+ */
+/*
+ * The three plain video upscalers, from fal's published rules (2026-10-02):
+ *   SeedVR2   $0.001  per megapixel of OUTPUT video data (width x height x frames)
+ *   FlashVSR  $0.0005 per megapixel of output video data
+ *   ByteDance $0.0072 / $0.0144 / $0.0288 per second at 1080p / 2K / 4K output,
+ *             at 30 fps; 60 fps doubles it (standard tier - the route pins it;
+ *             'pro' would be 10x). The route keeps the source's frame rate and
+ *             caps the output at 4K (6K/8K are unpriced), and its scale_ratio
+ *             minimum is 1.1.
+ * The source is measured by /api/video/generate; unmeasured = 1920x1080 at
+ * 30 fps. Billed at fal cost / $0.04 a ticket - 50% at the $0.08 ticket.
+ */
+export const BYTEDANCE_UPSCALE_MAX_SHORT_EDGE = 2160
+export function bytedanceUpscaleRatio(factor: number, shortEdge: number): number {
+  return Math.max(1.1, Math.min(factor, BYTEDANCE_UPSCALE_MAX_SHORT_EDGE / Math.max(1, shortEdge)))
+}
+export function upscalerVideoTicketCost(model: string, o: { seconds: number; width?: number; height?: number; fps?: number; factor?: number }): number {
+  const sec = Math.max(1, o.seconds || 5)
+  const w = o.width && o.width > 0 ? o.width : 1920
+  const h = o.height && o.height > 0 ? o.height : 1080
+  const fps = o.fps && o.fps > 0 ? o.fps : 30
+  const factor = Math.max(1, Math.min(4, o.factor || 2))
+  let usd: number
+  if (model === 'bytedance-video-upscale') {
+    const outShort = Math.min(w, h) * bytedanceUpscaleRatio(factor, Math.min(w, h))
+    const rate = outShort <= 1080 ? 0.0072 : outShort <= 1440 ? 0.0144 : 0.0288
+    const outFps = Math.max(24, Math.min(60, Math.round(fps)))
+    usd = rate * Math.max(1, outFps / 30) * sec
+  } else {
+    const mpFrames = (w * factor) * (h * factor) * Math.ceil(sec * fps) / 1e6
+    usd = mpFrames * (model === 'flashvsr-video' ? 0.0005 : 0.001)
+  }
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
+}
+
+export function topazVideoTicketCost(model: string, o: { seconds: number; height?: number; fps?: number; factor?: number; targetFps?: number }): number {
+  // To the tenth of a second (4.03s bills as 4.1s, not 5s); at least 1s
+  const sec = Math.max(1, Math.ceil((o.seconds || 5) * 10) / 10)
+  const srcH = o.height && o.height > 0 ? o.height : 1080
+  const srcFps = o.fps && o.fps > 0 ? o.fps : 30
+  const upscale = model.startsWith('topaz-upscale')
+  const outH = upscale ? srcH * Math.max(1, Math.min(4, o.factor || 2)) : srcH
+  const tier = outH <= 720 ? 0 : outH <= 1080 ? 1 : 2      // 720p / 1080p / 4K
+  const per10: Record<string, [number, number, number]> = {
+    'topaz-upscale-precision':  [0.10, 0.20, 0.60],
+    'topaz-upscale-creative':   [3.00, 3.00, 5.00],
+    'topaz-upscale-generative': [1.20, 1.20, 2.60],
+    'topaz-colorize':           [0.10, 0.10, 0.30],
+    'topaz-deblur':             [0.10, 0.10, 0.30],
+    'topaz-sdr-to-hdr':         [2.40, 2.40, 5.10],
+  }
+  let usd: number
+  if (model === 'topaz-interpolate') {
+    const target = Math.max(16, Math.min(120, o.targetFps || 60))
+    const newFps = Math.max(0, target - srcFps)
+    usd = (tier === 2 ? 0.6 : 0.3) * (newFps / 30) * (sec / 10)
+  } else {
+    const rates = per10[model] ?? [0.6, 0.6, 0.6]
+    usd = rates[tier] * (sec / 10) * Math.max(1, srcFps / 30)
+  }
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
+}
+
+/*
+ * Topaz image tools, priced from what fal bills (2026-10-01): $0.08 per
+ * STARTED block of OUTPUT megapixels, the block depending on the tool and its
+ * model. 2 tickets per block = a 50% margin at the $0.08 subscription ticket.
+ * Upscales multiply the source's pixel count by factor^2 (Transparent is a
+ * fixed 4x). The source is measured by /api/generate; an unmeasured one is
+ * priced as 4.2MP (2048x2048), the size most generations here come out at.
+ *   precision / transparent / adjust      24 MP
+ *   creative (Bloom family)                2 MP
+ *   generative: Wonder 3 / 3.5             8 MP, the rest 4 MP
+ *   sharpen: Super Focus V2/V3 20 MP, the rest 24 MP
+ *   denoise: Denoise Max 20 MP, the rest 24 MP
+ *   restore: Recover 3 4 MP, Dust-Scratch V2 24 MP
+ */
+export function topazImageTicketCost(model: string, o: { topazModel?: string; upscaleFactor?: number | string; width?: number; height?: number }): number {
+  const srcMP = o.width && o.height ? (o.width * o.height) / 1e6 : 4.2
+  const f = Math.max(1, Math.min(4, Number(o.upscaleFactor) || 2))
+  const m = String(o.topazModel ?? '')
+  let outMP = srcMP, block = 24
+  switch (model) {
+    case 'topaz-img-upscale-precision':   outMP = srcMP * f * f; block = 24; break
+    case 'topaz-img-upscale-creative':    outMP = srcMP * f * f; block = 2; break
+    case 'topaz-img-upscale-generative':  outMP = srcMP * f * f; block = m === 'Wonder 3' || m === 'Wonder 3.5' || !m ? 8 : 4; break
+    case 'topaz-img-upscale-transparent': outMP = srcMP * 16; block = 24; break
+    case 'topaz-sharpen':                 block = m.startsWith('Super Focus') ? 20 : 24; break
+    case 'topaz-denoise':                 block = m === 'Denoise Max' ? 20 : 24; break
+    case 'topaz-restore':                 block = m === 'Dust-Scratch V2' ? 24 : 4; break
+    default:                              block = 24   // topaz-adjust
+  }
+  return 2 * Math.max(1, Math.ceil(outMP / block - 1e-9))
+}
+
+/**
+ * LTX 2.5 Fast: the length that will actually render. fal's enum is 6-20s in
+ * steps of 2, but 48/50fps - and 1440p/2160p at any rate - stop at 10s, so a
+ * longer ask is a 422 after the charge. Shared by the route (what is sent) and
+ * the price (what is billed). 'auto' is sent as a concrete 10s: LTX's own
+ * auto can run to 20s at 720p, which no fixed price covers.
+ */
+export function ltxFastSeconds(duration: string | number, resolution: string, fps?: string | number): number {
+  const wanted = String(duration) === 'auto' ? 10 : parseInt(String(duration)) || 10
+  const cap = Number(fps) >= 48 || resolution === '1440p' || resolution === '2160p' ? 10 : 20
+  const allowed = [6, 8, 10, 12, 14, 16, 18, 20].filter(d => d <= cap)
+  return allowed.reduce((best, d) => Math.abs(d - wanted) < Math.abs(best - wanted) ? d : best, allowed[0])
 }
 
 /**
@@ -91,6 +225,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   const motionVideoDurationSec = input.motionVideoDurationSec
   const characterOrientation = input.characterOrientation ?? 'image'
   const videoUpscaleFactor = String(input.videoUpscaleFactor ?? '2')
+  const videoCreativity = Number(input.videoCreativity ?? 0) || 0
 
   const isLipsync = model === 'lipsync-v3'
   const isWanLora = model === 'wan-2.2-lora'
@@ -98,7 +233,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   let ticketCost: number
   if (model === 'pixelcut-looping-video' || model === 'pixelcut-video-bg-removal') {
     // Ahead of the generic tool branch, which would price by a flat placeholder
-    ticketCost = pixelcutVideoTicketCost(model, { duration, sourceSec: editVideoDurationSec })
+    ticketCost = pixelcutVideoTicketCost(model, { duration, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps })
   } else if (isLipsync) {
     ticketCost = Math.max(10, Math.ceil((lipsyncVideoDurationSec || 0) * 6));
   } else if (model === 'kling-v3-motion') {
@@ -136,11 +271,25 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     const effectiveDur = outputDurSec + (hasVideoRefs ? (referenceVideoDurationSec || 0) : 0)
     ticketCost = Math.ceil(effectiveDur * 12 * resMultiplier * videoInputMultiplier)
   } else if (model === 'gemini-omni-flash') {
-    // PLACEHOLDER ≈ SeeDance 2.0 (15 tickets/sec); no resolution knob on this model
+    // fal bills this one by tokens: about $0.125-0.13 per second of (720p)
+    // output, plus a sliver for input video tokens in edit mode. 4 tickets a
+    // second is $0.32 at the $0.08 subscription ticket - about a 59% margin.
+    // Edit renders the SOURCE clip's length, so that is what is billed (min
+    // 3s, 8s when unknown); otherwise fal's 3-10s range.
     const sec = effectiveSd20Mode === 'edit'
       ? Math.max(3, Math.ceil(editVideoDurationSec || 8))
-      : (parseInt(duration) || 8);
-    ticketCost = sec * 15;
+      : Math.min(10, Math.max(3, parseInt(duration) || 8));
+    ticketCost = sec * 4;
+  } else if (model === 'gemini-omni-1.1') {
+    // Ahead of the input-routed placeholder. fal: $0.03 / $0.10 / $0.15 /
+    // $0.30 per second at 360p / 720p / 1080p / 4K. 1 / 3 / 4 / 8 tickets a
+    // second = 62 / 58 / 53 / 53% margin at the $0.08 subscription ticket.
+    // Anything else renders at 720p (the route's fallback), so it bills as 720p.
+    const perSec = resolution === '4k' ? 8 : resolution === '1080p' ? 4 : resolution === '360p' ? 1 : 3;
+    const sec = effectiveSd20Mode === 'edit'
+      ? Math.max(3, Math.ceil(editVideoDurationSec || 8))
+      : Math.min(10, Math.max(3, parseInt(duration) || 8));
+    ticketCost = sec * perSec;
   } else if (model === 'wan-2.7') {
     // PLACEHOLDER — modeled on Wan 2.5's per-second rates (1080p 20/5s = 4/s,
     // 720p 13/5s = 2.6/s). ADMIN ONLY until priced manually.
@@ -152,18 +301,45 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     ticketCost = Math.ceil(sec * (resolution === '720p' ? 4 : 2.6));
   } else if (model.startsWith('luma-ray-')) {
     // Before the generic tool branch: the Luma tools price by their own rates
-    ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec)
+    ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec, !!input.hasStartImage)
   } else if (BATCH_0929_MODELS.has(model)) {
     ticketCost = batch0929TicketCost(model, {
       // Veo's references and first-last-frame modes render 8s whatever is asked
       duration: model.startsWith('veo-3.1') && !model.endsWith('extend') && ((input.referenceImageCount ?? 0) > 0 || (input.hasEndImage && input.hasStartImage)) ? '8' : duration,
       resolution, generateAudio, refs: input.referenceImageCount ?? 0,
+      sourceSec: editVideoDurationSec,
     })
   } else if (BATCH_0928_MODELS.has(model)) {
     // Also ahead of the generic tool and input-routed placeholder branches
     ticketCost = batch0928TicketCost(model, {
       duration, resolution, generateAudio, sourceSec: editVideoDurationSec,
       refs: input.referenceImageCount ?? 0, startImage: !!input.hasStartImage,
+    })
+  } else if (model === 'flux-video-upscale') {
+    /*
+     * fal bills per second of OUTPUT by the output's tier and the mode:
+     * precise $0.14 / $0.25 / $0.55 and creative $0.20 / $0.35 / $0.79 at
+     * 1080p / 2K / 4K. The source's resolution is not known when this is
+     * priced, so it is assumed to be 1080p (the dearer case): 1.5x lands in
+     * the 2K tier and 2x or more in 4K. Billed at fal cost / $0.04 a ticket
+     * (50% at the $0.08 subscription ticket) on the source clip's length.
+     */
+    const sec = Math.max(1, Math.ceil(editVideoDurationSec || 5))
+    const factor = Math.max(1.5, Math.min(3, parseFloat(videoUpscaleFactor) || 2))
+    // Measured source when the server has one; else assume 1080p (dearer)
+    const outH = (input.sourceHeight && input.sourceHeight > 0 ? input.sourceHeight : 1080) * factor
+    const tier = outH <= 1080 ? 0 : outH <= 1440 ? 1 : 2   // 0 = 1080p, 1 = 2K, 2 = 4K
+    const rate = (videoCreativity >= 0.5 ? [0.2, 0.35, 0.79] : [0.14, 0.25, 0.55])[tier]
+    ticketCost = Math.max(1, Math.ceil((sec * rate) / 0.04 - 1e-9))
+  } else if (model.startsWith('topaz-')) {
+    ticketCost = topazVideoTicketCost(model, {
+      seconds: editVideoDurationSec, height: input.sourceHeight, fps: input.sourceFps,
+      factor: parseFloat(videoUpscaleFactor) || 2, targetFps: Number(input.targetFps) || 60,
+    })
+  } else if (model === 'seedvr2-video' || model === 'flashvsr-video' || model === 'bytedance-video-upscale') {
+    ticketCost = upscalerVideoTicketCost(model, {
+      seconds: editVideoDurationSec, width: input.sourceWidth, height: input.sourceHeight,
+      fps: input.sourceFps, factor: parseFloat(videoUpscaleFactor) || 2,
     })
   } else if (VIDEO_TOOL_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Billed against the SOURCE clip's
@@ -208,6 +384,30 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     const sec = duration === 'auto' || !wanted ? 8
       : [6, 8, 10].reduce((best, d) => Math.abs(d - wanted) < Math.abs(best - wanted) ? d : best, 6)
     ticketCost = Math.ceil(sec * (resolution === '720p' ? 3 : 4.5))
+  } else if (model === 'ltx-2.5-fast') {
+    /*
+     * fal (2026-10-01): $0.09 / $0.13 / $0.19 / $0.30 per second at 720p /
+     * 1080p / 1440p / 2160p, native audio included. 2.5 / 3.5 / 5 / 8 tickets
+     * a second = a 55 / 54 / 52 / 53% margin at the $0.08 subscription ticket,
+     * and below LTX 2.5 Pro at every shared resolution. Bills the length the
+     * route actually sends (ltxFastSeconds - 'auto' is sent as 10s).
+     */
+    const perSec = resolution === '2160p' ? 8 : resolution === '1440p' ? 5 : resolution === '720p' ? 2.5 : 3.5
+    ticketCost = Math.ceil(ltxFastSeconds(duration, resolution, input.fps) * perSec)
+  } else if (model === 'wan-3.0' || model === 'wan-3.0-prime') {
+    /*
+     * fal (2026-10-01), per second: Wan 3.0 $0.05 / $0.10 / $0.20 and Prime
+     * $0.068 / $0.14 / $0.28 at 480p / 720p / 1080p. Tickets a second:
+     *   Wan 3.0  2 / 3 / 5      = 69 / 58 / 50% margin at the $0.08 ticket
+     *   Prime    2 / 3.5 / 7    = 57 / 50 / 50%
+     * The route sends 5s for 'auto' and anything else as asked (min 2s), and
+     * an unknown resolution as 1080p - billed the same way.
+     */
+    const prime = model === 'wan-3.0-prime'
+    const res = ['480p', '720p', '1080p'].includes(resolution) ? resolution : '1080p'
+    const perSec = res === '480p' ? 2 : res === '720p' ? (prime ? 3.5 : 3) : (prime ? 7 : 5)
+    const sec = duration === 'auto' ? 5 : Math.max(2, parseInt(duration) || 5)
+    ticketCost = Math.ceil(sec * perSec)
   } else if (INPUT_ROUTED_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Scaled by resolution the same
     // way the other per-second models are.
@@ -217,14 +417,26 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
       : resolution === '720p' ? 3 : 2;
     ticketCost = Math.ceil(sec * perSec);
   } else if (model === 'minimax-h3-max') {
-    // PLACEHOLDER — ADMIN ONLY. fal lists $0.025/s at 480P and $0.04/s at
-    // 768P (promotional), so this mirrors the shape of Wan 2.7's rates.
+    // fal's launch discount ended 2026-09-30; list price is $0.05 / $0.08 per
+    // second at 480P / 768P (the two the route sends). Billed at fal cost /
+    // $0.04 a ticket = 50% at the $0.08 subscription ticket. 5-15s, as sent.
     const sec = Math.min(15, Math.max(5, parseInt(duration) || 5));
-    ticketCost = Math.ceil(sec * (resolution === '480p' ? 2 : 3.2));
+    ticketCost = Math.ceil((sec * (resolution === '480p' ? 0.05 : 0.08)) / 0.04 - 1e-9);
   } else if (model === 'flux-3') {
-    // PLACEHOLDER — ADMIN ONLY. Priced above Wan 2.7 since it renders audio.
-    const sec = duration === 'auto' ? 5 : Math.min(20, Math.max(5, parseInt(duration) || 5));
-    ticketCost = Math.ceil(sec * (resolution === '1080p' ? 6 : 4));
+    /*
+     * fal (2026-10-01), per second of generated video: $0.17 / $0.29 at 720p /
+     * 1080p for text, image, first-last and keyframes; extend is $0.41 / $0.53.
+     * 4.5 / 7.5 and 11 / 14 tickets a second = a 52-53% margin at the $0.08
+     * subscription ticket (the old placeholder's 4/s LOST money on extend).
+     * 'auto' is never sent to fal: its own auto ran a test clip to 15s (and
+     * can reach 20s), which no fixed price covers. The route sends 10s for it
+     * - 5s for first-last and keyframes - and that is what is billed.
+     */
+    const extend = effectiveSd20Mode === 'edit'
+    const pinned = effectiveSd20Mode === 'r2v' || !!input.hasEndImage
+    const sec = duration === 'auto' ? (pinned ? 5 : 10) : Math.min(20, Math.max(5, parseInt(duration) || 5));
+    const perSec = extend ? (resolution === '1080p' ? 14 : 11) : (resolution === '1080p' ? 7.5 : 4.5)
+    ticketCost = Math.ceil(sec * perSec);
   } else if (model === 'happy-horse') {
     ticketCost = parseInt(duration) * (resolution === '1080p' ? 12 : 7);
   } else {
@@ -313,6 +525,9 @@ export interface VideoModelPricingSpec {
  * ($0.08, a subscription ticket): tickets = ceil(fal cost / $0.04).
  *
  *   Ray 2, Ray 3.2   $0.50 per 5s at 540p; 720p x2, 1080p x4; 9s/10s x2
+ *   Ray 3.2 from a start image (5s) is cheaper: $0.15 / $0.30 / $1.20 at
+ *                    540p / 720p / 1080p (10s from an image is keyframed and
+ *                    stays on the text-to-video rate - the dearer case)
  *   Ray 2 Flash      $0.20 per 5s at 540p; same multipliers
  *   Ray 3.2 edit     $0.72 / $1.08 / $2.16 per 5s (540p/720p/1080p); 10s x2
  *   Ray 3.2 reframe  $0.06 / $0.12 / $0.36 per started source second
@@ -324,7 +539,7 @@ export interface VideoModelPricingSpec {
  * charged. HDR is never requested, so its surcharge never applies.
  */
 const LUMA_TICKET_USD = 0.04
-function lumaTicketCost(model: string, duration: string, resolution: string, sourceSec: number): number {
+function lumaTicketCost(model: string, duration: string, resolution: string, sourceSec: number, fromImage = false): number {
   const res = resolution === '1080p' ? '1080p' : resolution === '720p' ? '720p' : '540p'
   const resX = res === '1080p' ? 4 : res === '720p' ? 2 : 1
   const secs = Math.ceil(sourceSec > 0 ? sourceSec : 10)
@@ -332,7 +547,11 @@ function lumaTicketCost(model: string, duration: string, resolution: string, sou
   switch (model) {
     case 'luma-ray-2':        usd = 0.5 * resX * (parseInt(duration) >= 9 ? 2 : 1); break
     case 'luma-ray-2-flash':  usd = 0.2 * resX * (parseInt(duration) >= 9 ? 2 : 1); break
-    case 'luma-ray-3.2':      usd = 0.5 * resX * (parseInt(duration) >= 10 ? 2 : 1); break
+    case 'luma-ray-3.2':
+      usd = fromImage && parseInt(duration) < 10
+        ? { '540p': 0.15, '720p': 0.3, '1080p': 1.2 }[res]
+        : 0.5 * resX * (parseInt(duration) >= 10 ? 2 : 1)
+      break
     // Output length follows the source: 10s past 5.5s of source, else 5s
     case 'luma-ray-3.2-edit': usd = { '540p': 0.72, '720p': 1.08, '1080p': 2.16 }[res] * (secs > 5.5 ? 2 : 1); break
     case 'luma-ray-3.2-reframe': usd = Math.min(secs, 10) * { '540p': 0.06, '720p': 0.12, '1080p': 0.36 }[res]; break
@@ -371,6 +590,7 @@ function lumaTicketCost(model: string, duration: string, resolution: string, sou
 const BATCH_0928_MODELS = new Set([
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',
   'pixverse-v6', 'pixverse-c1', 'grok-video-1.5', 'vidu-q3', 'vidu-q3-turbo',
+  'grok-video-1.5-lite',
   'kling-o3-pro-edit', 'kling-o3-pro-reference', 'kling-o3-4k-edit', 'kling-o3-4k-reference',
   'pixverse-v6-extend', 'grok-video-edit', 'grok-video-extend',
 ])
@@ -380,6 +600,8 @@ export function batch0928Seconds(model: string, duration: string): number {
   const clamp = (lo: number, hi: number) => Math.max(lo, Math.min(hi, d))
   if (model.startsWith('kling-')) return clamp(3, 15)
   if (model.startsWith('vidu-')) return clamp(1, 16)
+  // Grok extend's schema: the extension is 2-10 seconds
+  if (model === 'grok-video-extend') return clamp(2, 10)
   return clamp(1, 15)
 }
 const PIXVERSE_RATE: Record<string, Record<string, [number, number]>> = {
@@ -399,9 +621,11 @@ function batch0928TicketCost(model: string, o: {
     case 'kling-o3-pro':       usd = (o.generateAudio ? 0.14 : 0.112) * secs; break
     case 'kling-o3-4k':        usd = 0.42 * secs; break
     // Edit renders the clip's own length; reference renders the chosen length
-    case 'kling-o3-pro-edit':      usd = 0.14 * src(15, 15); break
+    // fal's catalog lists O3 Pro's video-to-video at $0.168/s (its pricing API
+    // still says $0.14) - priced at the dearer figure (2026-10-01)
+    case 'kling-o3-pro-edit':      usd = 0.168 * src(15, 15); break
     case 'kling-o3-4k-edit':       usd = 0.42 * src(15, 15); break
-    case 'kling-o3-pro-reference': usd = 0.14 * secs; break
+    case 'kling-o3-pro-reference': usd = 0.168 * secs; break
     case 'kling-o3-4k-reference':  usd = 0.42 * secs; break
     case 'pixverse-v6':
     case 'pixverse-c1':
@@ -411,12 +635,26 @@ function batch0928TicketCost(model: string, o: {
       usd = rate[o.generateAudio ? 1 : 0] * secs
       break
     }
+    // Lite (fal 2026-10-02): $0.02 / $0.03 / $0.14 per s + $0.01 an input image
+    case 'grok-video-1.5-lite': {
+      const rate = o.resolution === '1080p' ? 0.14 : o.resolution === '480p' ? 0.02 : 0.03
+      usd = rate * secs + (o.startImage ? 0.01 : 0)
+      break
+    }
     case 'grok-video-1.5': {
       const rate = o.resolution === '1080p' ? 0.25 : o.resolution === '480p' ? 0.08 : 0.14
       usd = rate * secs + 0.01 * (Math.min(7, o.refs) + (o.startImage ? 1 : 0))
       break
     }
-    case 'grok-video-edit':   usd = 0.08 * src(15, 15); break
+    // fal (2026-10-02): $0.05/s of output at 480p, $0.07/s at 720p, plus
+    // $0.01/s of input. Edit renders at most 8s (it truncates the source);
+    // the input second is billed on the whole clip - the dearer reading.
+    // The source length is measured by /api/video/generate.
+    case 'grok-video-edit': {
+      const s = src(15, 60)
+      usd = (o.resolution === '480p' ? 0.05 : 0.07) * Math.min(8, s) + 0.01 * s
+      break
+    }
     case 'grok-video-extend': usd = 0.07 * secs + 0.01 * src(15, 15); break
     case 'vidu-q3':
     case 'vidu-q3-turbo': {
@@ -459,6 +697,7 @@ const BATCH_0929_MODELS = new Set([
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
+  'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
 ])
 /** Seconds as the route will send them: snapped to what each endpoint takes. */
 export function batch0929Seconds(model: string, duration: string): number {
@@ -471,12 +710,13 @@ export function batch0929Seconds(model: string, duration: string): number {
     case 'hailuo-2.3': case 'hailuo-2.3-fast': return d >= 10 ? 10 : 6
     case 'veo-3.1': case 'veo-3.1-fast': case 'veo-3.1-lite': return d >= 8 ? 8 : d >= 6 ? 6 : 4
     case 'veo-3.1-extend': case 'veo-3.1-fast-extend': return 7
+    case 'minimax-h3-max-turbo-extend': return clamp(1, 15)
     case 'seedance-2.0-mini': return clamp(4, 15)
     case 'hunyuan-video-1.5': return clamp(2, 5)
     default: return clamp(5, 15)   // MiniMax H3 family
   }
 }
-function batch0929TicketCost(model: string, o: { duration: string; resolution: string; generateAudio: boolean; refs: number }): number {
+function batch0929TicketCost(model: string, o: { duration: string; resolution: string; generateAudio: boolean; refs: number; sourceSec?: number }): number {
   const secs = batch0929Seconds(model, o.duration)
   const hi = o.resolution === '1080p'
   const mm = (rates: [number, number, number]) => rates[o.resolution === '480p' ? 0 : o.resolution === '1080p' ? 2 : 1]
@@ -511,6 +751,14 @@ function batch0929TicketCost(model: string, o: { duration: string; resolution: s
     case 'minimax-h3-max-turbo': usd = mm([0.025, 0.04, 0.08]) * secs; break
     case 'minimax-h3-max-ref':
     case 'minimax-h3-max-extend': usd = mm([0.05, 0.08, 0.16]) * secs; break
+    // fal 2026-10-02: turbo extend $0.025 / $0.04 / $0.08 / $0.16 per s ADDED
+    // (480p / 768p / 1080p / 2K); recast $0.30 / $0.45 per s of OUTPUT (768p /
+    // 1080p) - the output is the source's length, measured by the route
+    // (unmeasured = 30s, the longest it takes)
+    case 'minimax-h3-max-turbo-extend':
+      usd = (o.resolution === '2k' ? 0.16 : o.resolution === '1080p' ? 0.08 : o.resolution === '480p' ? 0.025 : 0.04) * secs; break
+    case 'minimax-h3-max-recast':
+      usd = (o.resolution === '1080p' ? 0.45 : 0.30) * Math.min(30, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 30); break
     case 'marey':               usd = 0.3 * secs; break
     case 'marey-motion-transfer':
     case 'marey-pose-transfer': usd = 2.0; break
@@ -537,12 +785,12 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'seedance-2.0',       label: 'SeeDance 2.0',           kind: 'generator', durations: ['auto','3','5','8','10','12'],   resolutions: ['480p', '720p'],         supportsAudio: false, durationSource: 'none', note: 'r2v with video references: 0.6x multiplier, but the reference seconds are added to the billed duration.' },
   { id: 'seedance-2.0-fast',  label: 'SeeDance 2.0 Fast',      kind: 'generator', durations: ['auto','3','5','8','10','12'],   resolutions: ['480p', '720p'],         supportsAudio: false, durationSource: 'none', note: 'Same shape as SeeDance 2.0 at 12 tickets/sec.' },
   { id: 'seedance-2.5',       label: 'SeeDance 2.5',           kind: 'generator', durations: ['auto', '4', '5', '8', '10', '12'], resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'Public. 6 / 12 / 30 tickets per second at 480p / 720p / 1080p (50% margin at a $0.08 subscription ticket). Video refs: their seconds added, total x0.6. auto billed as 10s.' },
-  { id: 'gemini-omni-flash',  label: 'Gemini Omni Flash',      kind: 'generator', durations: ['4', '6', '8', '10', '12'],      resolutions: [],                       supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER 15 tickets/sec. In edit mode the SOURCE clip length is billed (min 3s, 8s when unknown).' },
-  { id: 'gemini-omni-1.1',    label: 'Gemini Omni Flash 1.1',  kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p', '1440p', '2160p', '4k'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
-  { id: 'minimax-h3-max',     label: 'MiniMax H3 Max',         kind: 'generator', durations: ['5', '8', '10', '15'],           resolutions: ['480p', '768p'],         supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER — seconds clamped to 5-15.' },
-  { id: 'flux-3',             label: 'FLUX 3 Video',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: 'PLACEHOLDER — seconds clamped to 5-20.' },
+  { id: 'gemini-omni-flash',  label: 'Gemini Omni Flash',      kind: 'generator', durations: ['3', '5', '8', '10'],            resolutions: [],                       supportsAudio: false, durationSource: 'none', note: '4 tickets/sec (fal ~$0.13/s, token-billed; ~59% margin at $0.08). Edit bills the SOURCE clip length (min 3s, 8s when unknown).' },
+  { id: 'gemini-omni-1.1',    label: 'Gemini Omni Flash 1.1',  kind: 'generator', durations: ['3', '5', '8', '10'],            resolutions: ['360p', '720p', '1080p', '4k'], supportsAudio: false, durationSource: 'none', note: '1 / 3 / 4 / 8 tickets/sec at 360p / 720p / 1080p / 4K (fal $0.03 / $0.10 / $0.15 / $0.30; 53-62% at $0.08). Edit bills the SOURCE clip length.' },
+  { id: 'minimax-h3-max',     label: 'MiniMax H3 Max',         kind: 'generator', durations: ['5', '8', '10', '15'],           resolutions: ['480p', '768p'],         supportsAudio: false, durationSource: 'none', note: 'fal list $0.05 / $0.08 per s (480P / 768P) at cost / $0.04. Seconds clamped to 5-15.' },
+  { id: 'flux-3',             label: 'FLUX 3 Video',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: '4.5 / 7.5 tickets/sec at 720p / 1080p (fal $0.17 / $0.29); extend 11 / 14 (fal $0.41 / $0.53). 52-53% at $0.08. auto billed as 10s.' },
   { id: 'ltx-2.5-pro',        label: 'LTX 2.5 Pro',            kind: 'generator', durations: ['auto', '6', '8', '10'],         resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: 'fal $0.12/s 720p, $0.17/s 1080p (audio included). Length snapped to 6/8/10s; auto billed as 8s.' },
-  { id: 'ltx-2.5-fast',       label: 'LTX 2.5 Fast',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['480p', '720p', '1080p', '1440p', '2160p'], supportsAudio: false, durationSource: 'none', note: 'Input-routed family — PLACEHOLDER pricing, admin only.' },
+  { id: 'ltx-2.5-fast',       label: 'LTX 2.5 Fast',           kind: 'generator', durations: ['auto', '6', '10', '16', '20'],  resolutions: ['720p', '1080p', '1440p', '2160p'], supportsAudio: false, durationSource: 'none', note: '2.5 / 3.5 / 5 / 8 tickets/sec at 720p / 1080p / 1440p / 2160p (fal $0.09 / $0.13 / $0.19 / $0.30; 52-55% at $0.08). 1440p+ and 48/50fps cap at 10s. auto billed as 10s.' },
   { id: 'happy-horse',        label: 'Happy Horse',            kind: 'generator', durations: DUR_5_10,                         resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none' },
   { id: 'lipsync-v3',         label: 'Lipsync v3',             kind: 'generator', durations: [],                               resolutions: [],                       supportsAudio: false, durationSource: 'lipsync', note: '6 tickets/sec of the source video, floor of 10 tickets.' },
   // ── Tools: billed against the source clip ──
@@ -573,15 +821,16 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'pixverse-v6',          label: 'PixVerse V6',            kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.025-0.09/s (+audio). Admin only.' },
   { id: 'pixverse-c1',          label: 'PixVerse C1',            kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.03-0.095/s (+audio). Admin only.' },
   { id: 'grok-video-1.5',       label: 'Grok Imagine Video 1.5', kind: 'generator', durations: ['5', '6', '10', '15'], resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.08/$0.14/$0.25 per s, +$0.01 per image. Admin only.' },
+  { id: 'grok-video-1.5-lite',  label: 'Grok Imagine Video 1.5 Lite', kind: 'generator', durations: ['5', '6', '10', '15'], resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.02/$0.03/$0.14 per s (480/720/1080) + $0.01 a start image.' },
   { id: 'vidu-q3',              label: 'Vidu Q3',                kind: 'generator', durations: ['5', '8', '10', '16'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.07/s at 360-540p, x2.2 at 720-1080p. Admin only.' },
   { id: 'vidu-q3-turbo',        label: 'Vidu Q3 Turbo',          kind: 'generator', durations: ['5', '8', '10', '16'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.035/s at 360-540p, x2.2 at 720-1080p. Admin only.' },
-  { id: 'kling-o3-pro-edit',    label: 'Kling O3 Pro Video Edit',      kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.14 per second of clip (3-15s).' },
-  { id: 'kling-o3-pro-reference', label: 'Kling O3 Pro Video Reference', kind: 'tool', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.14/s of output.' },
+  { id: 'kling-o3-pro-edit',    label: 'Kling O3 Pro Video Edit',      kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.168 per second of clip (3-15s).' },
+  { id: 'kling-o3-pro-reference', label: 'Kling O3 Pro Video Reference', kind: 'tool', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.168/s of output.' },
   { id: 'kling-o3-4k-edit',     label: 'Kling O3 4K Video Edit',       kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.42 per second of clip (3-15s).' },
   { id: 'kling-o3-4k-reference', label: 'Kling O3 4K Video Reference', kind: 'tool', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.42/s of output.' },
   { id: 'pixverse-v6-extend',   label: 'PixVerse V6 Extend',           kind: 'tool', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'PixVerse V6 rates on the extension length.' },
-  { id: 'grok-video-edit',      label: 'Grok Video Edit',              kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.08 per second of clip.' },
-  { id: 'grok-video-extend',    label: 'Grok Video Extend',            kind: 'tool', durations: ['5', '6', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.07/s extension + $0.01/s of source.' },
+  { id: 'grok-video-edit',      label: 'Grok Video Edit',              kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05/s (480p) or $0.07/s (720p) of output, max 8s, + $0.01/s of source.' },
+  { id: 'grok-video-extend',    label: 'Grok Video Extend',            kind: 'tool', durations: ['2', '6', '10'], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.07/s extension (2-10s) + $0.01/s of source.' },
   { id: 'pika-2.2',             label: 'Pika 2.2',               kind: 'generator', durations: ['5', '10'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.20 / $0.45 per 5s (720p / 1080p). Admin only.' },
   { id: 'pikaframes',           label: 'Pikaframes',             kind: 'generator', durations: ['5', '10'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.04 / $0.06 per s, 5s min. Admin only.' },
   { id: 'pika-2-turbo',         label: 'Pika 2 Turbo',           kind: 'generator', durations: ['5', '10'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.20 per 5s. Admin only.' },
@@ -599,6 +848,8 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'hunyuan-video-1.5',    label: 'Hunyuan Video 1.5',      kind: 'generator', durations: ['3', '5'], resolutions: ['480p', '720p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.075/s (720p assumed x2). Admin only.' },
   { id: 'veo-3.1-extend',       label: 'Veo 3.1 Extend',         kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo rates on the 7s it adds.' },
   { id: 'veo-3.1-fast-extend',  label: 'Veo 3.1 Fast Extend',    kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo Fast rates on the 7s it adds.' },
+  { id: 'minimax-h3-max-turbo-extend', label: 'MiniMax H3 Max Turbo Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'none', note: 'fal $0.025/$0.04/$0.08/$0.16 per s added.' },
+  { id: 'minimax-h3-max-recast', label: 'MiniMax H3 Max Recast', kind: 'tool', durations: [], resolutions: ['768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.30 / $0.45 per s of clip (5-30s).' },
   { id: 'minimax-h3-max-extend', label: 'MiniMax H3 Max Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05/$0.08/$0.16 per s added.' },
   { id: 'marey-motion-transfer', label: 'Marey Motion Transfer', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },
   { id: 'marey-pose-transfer',  label: 'Marey Pose Transfer',    kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },
@@ -671,6 +922,35 @@ export function ideogramTicketCost(o: IdeogramPriceInput): number {
   const perTicket = CHEAPEST_USD_PER_TICKET * (1 - IDEOGRAM_TARGET_MARGIN)
   // The small epsilon stops float noise turning an exact 1.0 into 2.
   return Math.max(1, Math.ceil(ideogramRunCostUsd(o) / perTicket - 1e-9))
+}
+
+// ── FLUX 3 Image ─────────────────────────────────────────────────────────────
+/*
+ * fal bills FLUX 3 Image per STARTED 1024x1024 block of output: $0.024 a block
+ * at launch, $0.048 from 2026-10-08 when the 50% launch discount ends - priced
+ * at the FULL rate so the margin holds when it does. MEASURED 2026-10-02 by
+ * balance delta, at the sizes it returns:
+ *   1k  1:1 1024x1024 = 1 block, 16:9 1360x768 = 1, 3:4 880x1184 = 1,
+ *       21:9 1568x672 = 2 (1,053,696 px - just over one block)
+ *   2k  16:9 2736x1536 = 5 blocks ($0.12 at launch; 4.2M px, over 4 blocks)
+ *   4k  16:9 5456x3072 = 16 blocks
+ * Shapes not measured are priced a block higher (a square 2k is exactly 4,
+ * every other 2k shape lands over). Mirrored shapes share a size.
+ * References are NOT billed: an edit with two refs (one 4.2MP, shrunk to fit
+ * the edit's 4MP cap by /api/generate) cost exactly its one output block.
+ */
+export const FLUX3_IMAGE_USD_PER_BLOCK = 0.048
+function flux3Blocks(tier: '1k' | '2k' | '4k', aspectRatio?: string): number {
+  const ar = aspectRatio ?? 'auto'
+  if (tier === '1k') return ['1:1', '16:9', '9:16', '4:3', '3:4'].includes(ar) ? 1 : 2
+  if (tier === '2k') return ar === '1:1' ? 4 : 5
+  return ['1:1', '16:9', '9:16'].includes(ar) ? 16 : 17
+}
+export function flux3ImageTicketCost(o: { quality?: string; aspectRatio?: string; refs?: number; refDims?: { width: number; height: number } | null }): number {
+  const tier = o.quality === '4k' || o.quality === '2k' ? o.quality : '1k'
+  // 'auto' with references takes the first reference's shape - unknown here
+  const usd = flux3Blocks(tier, o.aspectRatio) * FLUX3_IMAGE_USD_PER_BLOCK
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
 }
 
 // ── ChatGPT Images 2.5 ───────────────────────────────────────────────────────
@@ -769,13 +1049,15 @@ export function gptImage25TicketCost(o: GptImage25PriceInput): number {
  * up front, so it is priced for 60 fps (phones record at 60) - the house rule
  * of assuming the dearer case. At 30 fps that is double margin.
  */
-export function pixelcutVideoTicketCost(model: string, o: { duration: string; sourceSec?: number }): number {
+export function pixelcutVideoTicketCost(model: string, o: { duration: string; sourceSec?: number; sourceFps?: number }): number {
   if (model === 'pixelcut-looping-video') {
     const secs = Math.min(15, Math.max(5, Math.round(Number(o.duration) || 5)))
     return Math.max(1, Math.ceil((secs * 0.08) / LUMA_TICKET_USD - 1e-9))
   }
   // An unknown clip length is priced as the longest clip allowed (60s)
   const secs = o.sourceSec && o.sourceSec > 0 ? Math.min(o.sourceSec, 60) : 60
-  const usd = Math.ceil((secs * 60) / 30) * 0.022
+  // The server measures the clip's frame rate; unmeasured = 60 fps
+  const fps = o.sourceFps && o.sourceFps > 0 ? Math.min(o.sourceFps, 120) : 60
+  const usd = Math.ceil((secs * fps) / 30 - 1e-9) * 0.022
   return Math.max(1, Math.ceil(usd / LUMA_TICKET_USD - 1e-9))
 }

@@ -1301,6 +1301,13 @@ model Storyboard {
   /// The Final Cut: the running job (phase, plan, intermediate urls) and every
   /// finished version. Written only by /api/employees/storyboards/[id]/final-cut.
   finalCut  Json?
+  /// The board's assets: characters, vehicles, objects, places... each a set
+  /// of reference images, any of which can be switched on for the next still.
+  /// Added out-of-band 2026-10-01 (ALTER TABLE ... ADD COLUMN IF NOT EXISTS).
+  assets    Json     @default("[]")
+  /// What kind of video the board plans (story, trailer, ad, product, character...) -
+  /// shapes the AI drafts and the Final Cut's edit. Added out-of-band 2026-10-01.
+  mode      String   @default("story")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

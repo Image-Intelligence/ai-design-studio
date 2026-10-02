@@ -266,7 +266,10 @@ export async function POST(request: Request) {
           const mime = looksSvg ? 'image/svg+xml'
             : falType.startsWith('image/') ? falType
             : 'image/png'
-          const filename = `universe-scan-${queueItem.userId}-${Date.now()}-${i}.${ext}`
+          // The random part matters: two of a user's jobs finishing in the same
+          // millisecond got the SAME key, and the second upload overwrote the
+          // first image (seen 2026-10-02: two feed rows, one picture)
+          const filename = `universe-scan-${queueItem.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.${ext}`
           const url = await uploadToR2(filename, imgBuffer, mime)
           console.log(`Uploaded image ${i + 1} to blob: ${url}`)
 

@@ -9,7 +9,7 @@ import { isOurMedia } from '@/lib/media-url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import ffmpegPath from 'ffmpeg-static'
-import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import path from 'path'
 import crypto from 'crypto'
@@ -129,6 +129,16 @@ export async function POST(req: NextRequest) {
           '-hide_banner', '-y', '-ss', String(t), '-i', src,
           '-frames:v', '1', '-q:v', '3', out,
         ])
+        // The probed duration is the container's, and an audio track that runs
+        // past the picture makes it longer than the video - the seek then lands
+        // after the last frame and ffmpeg exits cleanly having written nothing.
+        // Decode the tail instead and keep the final frame it reaches.
+        if (which === 'last' && !(await stat(out).then(s => s.size > 0, () => false))) {
+          await exec(ffmpegPath as string, [
+            '-hide_banner', '-y', '-sseof', '-1.5', '-i', src,
+            '-update', '1', '-q:v', '3', out,
+          ])
+        }
         const buf = await readFile(out)
         frames[which] = await uploadToR2(`films/frame-${crypto.randomUUID()}.jpg`, buf, 'image/jpeg')
       }
@@ -167,6 +177,61 @@ export async function POST(req: NextRequest) {
       ], { maxBuffer: 1024 * 1024 * 32 })
       const url = await uploadToR2(`films/card-${crypto.randomUUID()}.mp4`, await readFile(out), 'video/mp4')
       return NextResponse.json({ url, durationSec: secs, width: W, height: H })
+    }
+
+    // ── conform ───────────────────────────────────────────────────────────
+    // { op: 'conform', videoUrl, aspect: '3:4' } -> { url, mode, width, height, srcWidth, srcHeight }
+    //
+    // Make a clip match a frame its model could not render. Video models take
+    // a short list of ratios (Kling 3.0: 16:9, 9:16, 1:1), so a 3:4 or 4:3
+    // storyboard's shot comes back in the nearest one. A small mismatch is
+    // centre-cropped; one that would lose more than 30% of the picture is
+    // fitted whole over a blurred, darkened fill of itself instead, so nothing
+    // that matters is cut off. mode 'none' = it already fits (same url back).
+    if (op === 'conform') {
+      const videoUrl = String(body.videoUrl ?? '')
+      if (!allowedSource(videoUrl)) {
+        return NextResponse.json({ error: 'videoUrl must be an R2 or fal URL' }, { status: 400 })
+      }
+      const [aw, ah] = String(body.aspect ?? '').split(':').map(Number)
+      if (!(aw > 0 && ah > 0)) return NextResponse.json({ error: 'aspect must look like 3:4' }, { status: 400 })
+      const src = path.join(dir, 'src.mp4')
+      await fetchTo(src, videoUrl)
+      const { width, height, hasAudio } = await probe(src)
+      if (!width || !height) return NextResponse.json({ error: 'Could not read the clip' }, { status: 400 })
+      const target = aw / ah
+      const have = width / height
+      if (Math.abs(Math.log(have / target)) < 0.02) {
+        return NextResponse.json({ url: videoUrl, mode: 'none', width, height })
+      }
+      const even = (n: number) => Math.max(2, Math.round(n / 2) * 2)
+      const loss = 1 - Math.min(have / target, target / have)
+      const mode = loss <= 0.3 ? 'crop' : 'fill'
+      let W: number, H: number
+      if (mode === 'crop') {
+        // Keep the full side that already fits; trim the other
+        if (have > target) { H = even(height); W = even(H * target) } else { W = even(width); H = even(W / target) }
+      } else {
+        // Grow the short side so the whole picture fits inside the new frame
+        if (have > target) { W = even(width); H = even(W / target) } else { H = even(height); W = even(H * target) }
+      }
+      const vf = mode === 'crop'
+        ? `[0:v]crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2,setsar=1,format=yuv420p[v]`
+        : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=28:2,eq=brightness=-0.08[bg];`
+          + `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg];`
+          + `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[v]`
+      const out = path.join(dir, 'conformed.mp4')
+      await exec(ffmpegPath as string, [
+        '-hide_banner', '-y', '-i', src,
+        '-filter_complex', vf,
+        '-map', '[v]', ...(hasAudio ? ['-map', '0:a:0', '-c:a', 'copy'] : []),
+        // Near-lossless: this clip is encoded again by the Final Cut's stitch,
+        // so the intermediate keeps everything (CRF 15, a slower preset)
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '15', '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart', out,
+      ], { maxBuffer: 1024 * 1024 * 32 })
+      const url = await uploadToR2(`films/conform-${crypto.randomUUID()}.mp4`, await readFile(out), 'video/mp4')
+      return NextResponse.json({ url, mode, width: W, height: H, srcWidth: width, srcHeight: height })
     }
 
     // ── stitch ────────────────────────────────────────────────────────────
@@ -264,15 +329,25 @@ export async function POST(req: NextRequest) {
       const labels: string[] = []
       const used: number[] = []
       files.forEach((f, i) => {
-        // Shots come from different models: different sizes, fps and pixel
-        // aspect. Normalise every one, or concat refuses / output stretches.
-        parts.push(
-          `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
-          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},format=yuv420p,setpts=PTS-STARTPTS[v${i}]`
-        )
         const dur = Math.max(0.1, (f.trimEnd || f.seconds) - (f.trimStart || 0))
         used.push(dur)
-        if (f.hasAudio) parts.push(`[${i}:a]aresample=48000,asetpts=PTS-STARTPTS[a${i}]`)
+        // Shots come from different models: different sizes, fps and pixel
+        // aspect. Normalise every one, or concat refuses / output stretches.
+        //
+        // EVERY SEGMENT IS FORCED TO EXACTLY `dur`. The probed length is the
+        // container's, and model clips routinely carry audio 0.1-0.2s longer
+        // than their picture (Kling and SeeDance both do). A keep window that
+        // runs to the "end" then has less picture than the timeline assumes,
+        // the next xfade's offset lands past the last frame, and ffmpeg ends
+        // the WHOLE film there without an error - a 37s cut came out 24s.
+        // Holding the last frame (tpad) and trimming to `dur` makes every
+        // offset true; the audio is padded and trimmed the same way.
+        parts.push(
+          `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},format=yuv420p,` +
+          `tpad=stop_mode=clone:stop_duration=2,trim=duration=${dur.toFixed(3)},setpts=PTS-STARTPTS[v${i}]`
+        )
+        if (f.hasAudio) parts.push(`[${i}:a]aresample=48000,apad,atrim=0:${dur.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`)
         else parts.push(`[${silentIdx}:a]atrim=0:${dur.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`)
         labels.push(`[v${i}][a${i}]`)
       })
@@ -340,11 +415,21 @@ export async function POST(req: NextRequest) {
         ...args,
         '-filter_complex', parts.join(';'),
         '-map', '[v]', '-map', '[a]',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+        // The film's final picture encode (mux after it copies the video), so
+        // it is a high-quality one: CRF 17 on the "fast" preset - about twice
+        // veryfast's time, still well inside a step's budget for a 2-minute cut
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '17', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
         '-movflags', '+faststart', out,
       ], { maxBuffer: 1024 * 1024 * 32 })
 
+      // The length is MEASURED, not trusted from the arithmetic: a graph that
+      // stops early still exits cleanly, and a planned length reported over a
+      // short file hides the loss from everything downstream.
+      const made = await probe(out)
+      if (made.seconds > 0 && made.seconds < outDur - 1) {
+        throw new Error(`The cut came out ${made.seconds.toFixed(1)}s instead of ${outDur.toFixed(1)}s - a clip ended early`)
+      }
       const buf = await readFile(out)
       const url = await uploadToR2(`films/film-${crypto.randomUUID()}.mp4`, buf, 'video/mp4')
       return NextResponse.json({
@@ -353,7 +438,7 @@ export async function POST(req: NextRequest) {
         // Every transition overlaps two shots, so the film is SHORTER than the
         // sum of its clips. Reporting the sum would make the runtime check
         // downstream believe in seconds that are not there.
-        durationSec: Math.round(outDur * 100) / 100,
+        durationSec: Math.round((made.seconds || outDur) * 100) / 100,
         width,
         height,
         transitions: joins.filter(Boolean).length,
@@ -557,7 +642,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ url, burned: caps.length, durationSec: Math.round(seconds * 100) / 100 })
     }
 
-    return NextResponse.json({ error: `Unknown op "${op}" — expected frames, card, stitch, mux or captions` }, { status: 400 })
+    return NextResponse.json({ error: `Unknown op "${op}" — expected frames, card, conform, stitch, mux or captions` }, { status: 400 })
   } catch (err: any) {
     const msg = String(err?.stderr || err?.message || err).slice(-600)
     console.error('[assemble] failed:', msg)

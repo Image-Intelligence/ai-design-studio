@@ -9,10 +9,10 @@ import { authenticateApiKey, invalidKeyResponse, requireScopes, canUseModel, mod
 import { enforceContentFilter } from '@/lib/content-filter'
 import { FAL_ENDPOINTS, ADMIN_ONLY_VIDEO_MODELS, LUMA_VIDEO_GENERATORS, LUMA_VIDEO_TOOLS, BATCH_0928_GENERATORS, BATCH_0928_TOOLS } from '@/lib/fal-video-endpoints'
 import { fitImageForFal } from '@/lib/fal-image-fit'
-import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS } from '@/lib/ticket-pricing'
+import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds } from '@/lib/ticket-pricing'
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
-import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
+import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
 
@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
       referenceVideoDurationSec = 0,
       // Gemini Omni Flash edit (video-to-video)
       editVideoUrl,
-      editVideoDurationSec = 0,
+      editVideoDurationSec: clientEditVideoDurationSec = 0,
       // Lipsync v3
       lipsyncVideoUrl,
       lipsyncAudioUrl,
@@ -151,6 +151,15 @@ export async function POST(request: NextRequest) {
       // Wan 2.2 LoRA serving: [{ path, scale, transformer }] — validated below
       loras = [],
     } = await normalizeVideoRefs(canonicalisePayload(await request.json()));
+
+    // Video tools that fal bills by the source's length, size or frame rate:
+    // measure the clip instead of trusting the browser (it sends no size or
+    // fps, and the length it sends could be anything). A failed probe falls
+    // back to the browser's figure.
+    const probed = VIDEO_TOOL_MODELS.has(model) && editVideoUrl
+      ? await (await import('@/lib/video-probe')).probeRemoteVideo(editVideoUrl).catch(() => null)
+      : null
+    const editVideoDurationSec: number = probed ? probed.seconds : (Number(clientEditVideoDurationSec) || 0)
 
     // CCBill compliance: fal content-safety flags from the client are only honored
     // for verified admins — regular users ALWAYS run with the checker ON, no matter
@@ -235,6 +244,10 @@ export async function POST(request: NextRequest) {
       'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'wan-2.7',
       'wan-2.2-lora', 'gemini-omni-flash', 'minimax-h3-max', 'flux-3',
       'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
+      // Input-routed models with a text-to-video endpoint. Missing from this
+      // list, they were refused a text-only run (LTX 2.5 Pro was public and
+      // could not do text-to-video). SeeDance 2.5 has no text endpoint.
+      'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-pro', 'ltx-2.5-fast',
       ...BATCH_0928_GENERATORS,
       ...BATCH_0929_TEXT_CAPABLE,
     ])
@@ -246,6 +259,13 @@ export async function POST(request: NextRequest) {
     }
     if (isOmni && effectiveSd20Mode === 'edit' && !editVideoUrl) {
       return NextResponse.json({ success: false, error: 'Edit mode requires a source video' }, { status: 400 });
+    }
+    // Omni Flash 1.1's edit endpoint refuses every prompt (2026-10-01: "Add
+    // falling snow." on two different clips, called straight on fal, came back
+    // content_policy_violation). Refuse before the charge and point at the
+    // base model, whose edit works; lift this when fal's endpoint recovers.
+    if (model === 'gemini-omni-1.1' && effectiveSd20Mode === 'edit') {
+      return NextResponse.json({ success: false, error: 'Omni Flash 1.1 can\'t edit videos right now - use Gemini Omni Flash for video edits.' }, { status: 400 });
     }
     if (isOmni && effectiveSd20Mode === 'r2v' && !(Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)) {
       return NextResponse.json({ success: false, error: 'Reference mode requires at least one reference image' }, { status: 400 });
@@ -259,11 +279,53 @@ export async function POST(request: NextRequest) {
       if (!editVideoUrl) {
         return NextResponse.json({ success: false, error: 'Add the source video to upscale or process.' }, { status: 400 });
       }
+      // Veo's extend schema: the clip "should be 720p or 1080p resolution in
+      // 16:9 or 9:16" - refuse other clips before the charge
+      if ((model === 'veo-3.1-extend' || model === 'veo-3.1-fast-extend') && probed) {
+        const short = Math.min(probed.width, probed.height)
+        const ratio = Math.max(probed.width, probed.height) / short
+        if (short < 700 || Math.abs(ratio - 16 / 9) > 0.06) {
+          return NextResponse.json({ success: false, error: `Veo extend needs a 720p or 1080p clip in 16:9 or 9:16 (this one is ${probed.width}x${probed.height}).` }, { status: 400 });
+        }
+      }
+      // Veo only extends videos VEO made (Google's rule; tested 2026-10-02: a
+      // 1280x720 24fps 4s clip from another model came back no_media_generated
+      // on both tiers, while a Veo clip of the same spec extended fine). The
+      // source must be a Veo generation in the feed - matched by its file name,
+      // since the browser may send a signed link.
+      if (model === 'veo-3.1-extend' || model === 'veo-3.1-fast-extend') {
+        const key = String(editVideoUrl).split('?')[0].split('/').pop() || ''
+        const src = key ? await prisma.generatedImage.findFirst({
+          where: { imageUrl: { endsWith: '/' + key } },
+          select: { model: true },
+        }).catch(() => null) : null
+        if (!src?.model?.startsWith('veo-')) {
+          return NextResponse.json({ success: false, error: 'Veo extend only works on videos made with Veo 3.1 - pick a Veo clip from your generations.' }, { status: 400 });
+        }
+      }
       // Ray 3.2's edit and reframe schemas REQUIRE a prompt (Ray 2's modify
       // and reframe take it as optional)
       // Every tool in the 2026-09-28 batch needs a prompt (their schemas require it)
-      if ((BATCH_0928_TOOLS.has(model) || BATCH_0929_TOOLS.has(model)) && !prompt?.trim()) {
+      if ((BATCH_0928_TOOLS.has(model) || BATCH_0929_TOOLS.has(model)) && !BATCH_0929_PROMPT_OPTIONAL.has(model) && !prompt?.trim()) {
         return NextResponse.json({ success: false, error: 'This tool needs a prompt - describe the change you want.' }, { status: 400 });
+      }
+      // ByteDance upscale: scale_ratio must be >= 1.1 and the output is held to
+      // 4K, so a clip already near 4K has nowhere to go
+      if (model === 'bytedance-video-upscale' && probed && Math.min(probed.width, probed.height) * 1.1 > 2160) {
+        return NextResponse.json({ success: false, error: 'This clip is already 4K - ByteDance upscale tops out at 4K.' }, { status: 400 });
+      }
+      // H3 Max Recast (schema 2026-10-02): a 5-30s source and 1-4 face photos
+      if (model === 'minimax-h3-max-recast') {
+        const faces = Array.isArray(referenceImageUrls) ? referenceImageUrls.length : 0
+        if (faces < 1) {
+          return NextResponse.json({ success: false, error: 'Recast needs a photo of each new person - add 1 to 4 images as references.' }, { status: 400 });
+        }
+        if (editVideoDurationSec > 0 && (editVideoDurationSec < 4.9 || editVideoDurationSec > 30.5)) {
+          return NextResponse.json({ success: false, error: 'Recast takes clips of 5 to 30 seconds.' }, { status: 400 });
+        }
+      }
+      if (model === 'minimax-h3-max-turbo-extend' && editVideoDurationSec > 0 && (editVideoDurationSec < 1.6 || editVideoDurationSec > 60.5)) {
+        return NextResponse.json({ success: false, error: 'H3 Max Turbo extend takes clips of 1.6 to 60 seconds.' }, { status: 400 });
       }
       if (model === 'pixelcut-video-bg-removal' && editVideoDurationSec > PIXELCUT_BG_MAX_SECONDS + 0.5) {
         return NextResponse.json({ success: false, error: `Background removal takes clips up to ${PIXELCUT_BG_MAX_SECONDS} seconds.` }, { status: 400 });
@@ -336,11 +398,17 @@ export async function POST(request: NextRequest) {
     const batchRefs = effectiveSd20Mode === 'r2v' && Array.isArray(referenceImageUrls) ? referenceImageUrls.length : 0
     const ticketCost: number = videoTicketCost({
       model,
+      videoCreativity: videoToolCreativity,
+      sourceHeight: probed?.height,
+      sourceWidth: probed?.width,
+      sourceFps: probed?.fps,
+      targetFps: videoTargetFps,
       duration: LUMA_VIDEO_GENERATORS.has(model) ? lumaDuration : duration,
       resolution: BATCH_0928_GENERATORS.has(model) ? batchRes : resolution,
       referenceImageCount: batchRefs,
-      hasStartImage: batchMode === 'i2v' || batchMode === 'transition' || (BATCH_0929_GENERATORS.has(model) && !!imageUrl),
+      hasStartImage: batchMode === 'i2v' || batchMode === 'transition' || ((BATCH_0929_GENERATORS.has(model) || LUMA_VIDEO_GENERATORS.has(model)) && !!imageUrl),
       hasEndImage: !!endImageUrl,
+      fps: ltxFps,
       generateAudio,
       sd20Mode,
       effectiveSd20Mode,
@@ -449,9 +517,12 @@ export async function POST(request: NextRequest) {
         prompt,
         start_image_url: imageUrl,
         duration: String(duration),
-        aspect_ratio: klingAspectRatio,
         generate_audio: generateAudio,
       };
+      // The frame follows the start image. fal still validates an aspect_ratio
+      // if one is sent (16:9 / 9:16 / 1:1 only), so anything else - a 3:4 or
+      // 4:3 storyboard - is left out rather than failing the shot
+      if (['16:9', '9:16', '1:1'].includes(klingAspectRatio)) falInput.aspect_ratio = klingAspectRatio;
       if (endImageUrl) falInput.end_image_url = endImageUrl;
     } else if (model === 'kling-o3') {
       falInput = {
@@ -503,7 +574,8 @@ export async function POST(request: NextRequest) {
       // Edit (video-to-video) takes ONLY prompt + video_url.
       const omniBase: Record<string, any> = { prompt };
       if (effectiveSd20Mode !== 'edit') {
-        if (duration && duration !== 'auto') omniBase.duration = parseInt(duration) || 8;
+        // fal takes 3-10 (an integer); anything outside is a 422 after the charge
+        if (duration && duration !== 'auto') omniBase.duration = Math.min(10, Math.max(3, parseInt(duration) || 8));
         if (klingAspectRatio === '9:16' || klingAspectRatio === '16:9') omniBase.aspect_ratio = klingAspectRatio;
       }
       if (effectiveSd20Mode === 'i2v') {
@@ -614,7 +686,13 @@ export async function POST(request: NextRequest) {
       } else if (model === 'seedvr2-video' || model === 'flashvsr-video') {
         falInput.upscale_factor = factor;
       } else if (model === 'bytedance-video-upscale') {
-        falInput.scale_ratio = factor;
+        // Same ratio, tier and frame rate the price was computed on
+        // (upscalerVideoTicketCost): output capped at 4K, standard tier, the
+        // source's own frame rate instead of fal's default 30
+        const { bytedanceUpscaleRatio } = await import('@/lib/ticket-pricing')
+        falInput.scale_ratio = bytedanceUpscaleRatio(factor, probed ? Math.min(probed.width, probed.height) : 1080);
+        falInput.enhancement_tier = 'standard';
+        falInput.target_fps = Math.max(24, Math.min(60, Math.round(probed?.fps || 30)));
       } else if (model === 'topaz-interpolate') {
         falInput.target_fps = Math.max(16, Math.min(120, parseInt(videoTargetFps) || 60));
         falInput.H264_output = true;
@@ -677,7 +755,7 @@ export async function POST(request: NextRequest) {
         falInput = {
           prompt,
           resolution: omniRes,
-          duration: Math.max(1, parseInt(duration) || 8),
+          duration: Math.min(10, Math.max(3, parseInt(duration) || 8)), // fal's 3-10 range
           aspect_ratio: klingAspectRatio === '9:16' ? '9:16' : '16:9',
         };
         if (effectiveSd20Mode === 'r2v') {
@@ -691,16 +769,21 @@ export async function POST(request: NextRequest) {
     } else if (model === 'ltx-2.5-pro' || model === 'ltx-2.5-fast') {
       const fastTier = model === 'ltx-2.5-fast';
       const allowedRes = fastTier ? ['720p', '1080p', '1440p', '2160p'] : ['720p', '1080p'];
-      const allowedDur = fastTier ? [6, 8, 10, 12, 14, 16, 18, 20] : [6, 8, 10];
       const wanted = parseInt(duration) || 0;
+      const ltxRes = allowedRes.includes(resolution) ? resolution : '1080p';
+      // Fast takes 48fps too (Pro doesn't); 48/50fps and 1440p+ cap Fast at 10s
+      const ltxFpsNum = (fastTier ? [24, 25, 48, 50] : [24, 25, 50]).includes(parseInt(ltxFps)) ? parseInt(ltxFps) : 25;
       falInput = {
         prompt,
-        resolution: allowedRes.includes(resolution) ? resolution : '1080p',
-        // Enum durations only — snap to the nearest the tier supports
-        duration: duration === 'auto' || !wanted
+        resolution: ltxRes,
+        // Enum durations only — snap to the nearest the tier supports (the
+        // same function the price uses, so the charge matches the render)
+        duration: fastTier
+          ? ltxFastSeconds(duration, ltxRes, ltxFpsNum)
+          : duration === 'auto' || !wanted
           ? 'auto'
-          : allowedDur.reduce((best, d) => Math.abs(d - wanted) < Math.abs(best - wanted) ? d : best, allowedDur[0]),
-        fps: [24, 25, 50].includes(parseInt(ltxFps)) ? parseInt(ltxFps) : 25,
+          : [6, 8, 10].reduce((best, d) => Math.abs(d - wanted) < Math.abs(best - wanted) ? d : best, 6),
+        fps: ltxFpsNum,
         generate_audio: generateAudio,
         aspect_ratio: ['auto', '16:9', '9:16'].includes(klingAspectRatio) ? klingAspectRatio : 'auto',
       };
@@ -745,9 +828,11 @@ export async function POST(request: NextRequest) {
       if (['auto', '21:9', '2:1', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(klingAspectRatio)) {
         falInput.aspect_ratio = klingAspectRatio;
       }
+      // 'auto' is sent as 10s: fal's own auto ran a test to 15s (it can reach
+      // 20s), and the price is fixed up front (lib/ticket-pricing bills 10s)
       if (effectiveSd20Mode === 'edit') {
         falInput.video_url = editVideoUrl;
-        if (secs) falInput.duration = secs;
+        falInput.duration = secs || 10;
       } else if (effectiveSd20Mode === 'r2v') {
         // Keyframes are pinned to FRAME positions in a 24fps render, must be
         // unique, and must not exceed duration * 24 — so spread them evenly
@@ -766,9 +851,9 @@ export async function POST(request: NextRequest) {
         falInput.duration = secs || 5;      // this endpoint has no 'auto'
       } else if (imageUrl) {
         falInput.image_url = imageUrl;
-        if (secs) falInput.duration = secs;
-      } else if (secs) {
-        falInput.duration = secs;
+        falInput.duration = secs || 10;
+      } else {
+        falInput.duration = secs || 10;
       }
     } else if (isWanLora) {
       // Wan 2.2 A14B */lora schema (verified via fal OpenAPI): resolution

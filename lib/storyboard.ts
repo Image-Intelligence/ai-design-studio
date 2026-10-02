@@ -8,6 +8,10 @@
  * so a reorder or an edit is a single write.
  */
 
+import { getCreateModel, computeCreateCost } from '@/lib/chat-hub-models'
+import { getTicketCost } from '@/config/ai-models.config'
+import { flux3ImageTicketCost, gptImage25TicketCost, ideogramTicketCost } from '@/lib/ticket-pricing'
+
 export type StoryboardShot = {
   id: string
   title: string
@@ -24,9 +28,48 @@ export type StoryboardShot = {
   duration: number
   /** How this shot hands over to the next one (cut, match cut, dissolve...). */
   transition: string
+  /** The still's quality (2k / 4k / ...): one of its model's options; empty = the model's default. */
+  imageQuality?: string
+  /**
+   * The still model's other settings (FLUX 3's nothing, Ideogram's speed,
+   * Krea's creativity...), keyed as stillSettings(imageModel) lists them.
+   * A key missing here is that setting's default. Cleared when the model changes.
+   */
+  imageOptions?: Record<string, string>
   /** The shot's video, once it has been shot (see /api/employees/storyboards/[id]/shoot). */
   video?: ShotVideo | null
+  /**
+   * Every finished clip this slot has had, oldest first - the video takes, the
+   * way `stills` keeps the still takes. Written only by the server (a reshoot
+   * keeps the clip it replaces; a finished render is added), and the slot
+   * plays whichever take `video` is; picking another goes through the shoot
+   * route's `pick`, never the autosave.
+   */
+  videos?: ShotVideo[]
+  /**
+   * Every still this slot has had, oldest first. Make and Redo add one; the
+   * slot shows whichever `stillUrl` points at, so an earlier take is one tap
+   * away instead of lost to the redo.
+   */
+  stills?: StillVersion[]
+  /**
+   * Final Cut keeps this shot's whole clip instead of trimming it - for a
+   * moment worth watching in full (the edit plan otherwise picks the window).
+   */
+  keepWhole?: boolean
 }
+
+/** One take of a slot's still. */
+export type StillVersion = { url: string; prompt: string; model: string; at: number }
+export const MAX_STILL_VERSIONS = 24
+/** Video takes kept per slot - the oldest drop off first (they stay in My Generations). */
+export const MAX_VIDEO_TAKES = 16
+/**
+ * A still's identity across signing: the page holds signed links and the
+ * board stores canonical ones, but the file name (storyboard-<user>-<board>-
+ * <time>.png) is the same in both.
+ */
+export const stillKey = (url: string) => url.split('?')[0].split('/').pop() ?? url
 
 export type ShotVideo = {
   /** The GenerationQueue row the render owns. */
@@ -41,6 +84,23 @@ export type ShotVideo = {
   fromStill: string | null
   fromPrompt: string
   at: number
+  /**
+   * The clip as the model rendered it, when that was not the board's frame
+   * (Kling 3.0 has no 3:4) - `url` is then the conformed copy (lib/storyboard-shoot).
+   */
+  rawUrl?: string | null
+  /** The original's pixel size ("1080x1920"), to label the toggle between the two. */
+  rawSize?: string | null
+}
+
+/** "1080x1920" -> "9:16" (the nearest common frame), else the pixel size. */
+export function frameLabel(size: string | null | undefined): string {
+  const [w, h] = String(size ?? '').split('x').map(Number)
+  if (!(w > 0 && h > 0)) return 'Original'
+  const r = Math.log(w / h)
+  const known = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '3:2', '2:3', '4:5', '5:4']
+  const best = known.reduce((b, k) => { const [a, c] = k.split(':').map(Number); const d = Math.abs(Math.log(a / c) - r); return d < b.d ? { k, d } : b }, { k: '', d: Infinity })
+  return best.d < 0.03 ? best.k : `${w}×${h}`
 }
 
 export type StoryboardDoc = {
@@ -50,12 +110,338 @@ export type StoryboardDoc = {
   look: string
   aspect: string
   shots: StoryboardShot[]
+  /** The cast, vehicles, props and places, each with its reference images. */
+  assets: StoryAsset[]
+  /** What kind of video this board plans (BOARD_MODES) - shapes drafting and the Final Cut. */
+  mode: BoardModeId
   updatedAt?: string
+}
+
+// ── Board modes ──────────────────────────────────────────────────────────────
+//
+// What kind of video a board plans. A mode is a brief for the AI: the shape of
+// the piece, what every shot must hold to, and how the Final Cut should edit
+// it. It applies to every draft action (new board, polish, rewrite, extend),
+// so a character board stays a character board when it is extended.
+
+export const BOARD_MODES = [
+  {
+    id: 'story', label: 'Story', shots: 8,
+    blurb: 'A short film - beginning, middle and end, shots that cut together.',
+    placeholder: 'Describe the video: who, where, what happens, the feeling…',
+    brief: 'A short narrative film with a clear beginning, middle and end. Shots cut together into one continuous piece: motivated cuts, match cuts, continuity of light, place and time.',
+    edit: 'Edit for story: let moments breathe, cut on action, dissolve only for time passing.',
+  },
+  {
+    id: 'trailer', label: 'Trailer', shots: 10,
+    blurb: 'Hook, rising tension, a title beat - sells the film without spoiling it.',
+    placeholder: 'The film being sold: genre, hero, the threat, the tone…',
+    brief: 'A movie trailer. Open on an arresting hook, set up the world and the hero, escalate with faster and bigger moments, land a title beat near the end and a final sting after it. Tease, never resolve. Pace accelerates: early shots longer, late shots shorter.',
+    edit: 'Edit like a trailer: start measured, accelerate, hard cuts and fade-to-black beats between acts, a sting after the title.',
+  },
+  {
+    id: 'ad', label: 'Advertisement', shots: 8,
+    blurb: 'Hook in 2 seconds, desire, the product, the payoff, a brand end card.',
+    placeholder: 'The brand and product, who it is for, the one thing it should make people feel or do…',
+    brief: 'A video advertisement. Shot 1 is a scroll-stopping hook (under 3 seconds). Then the desire or problem, the product revealed as the answer, two or three benefits SHOWN not told, the payoff (the life with it), and a final brand / call-to-action shot with clean space for an end card. Every shot polished, commercial lighting, the product always recognisable. No on-screen text in the stills.',
+    edit: 'Edit like a commercial: tight, rhythmic hard cuts, the hook short, the product reveal held a beat longer, end on the brand shot.',
+  },
+  {
+    id: 'product', label: 'Product showcase', shots: 6,
+    blurb: 'The product is the hero of every shot, placed in full scenes.',
+    placeholder: 'The product - what it is, its materials and colours - and the world it belongs in…',
+    brief: 'A product showcase. THE PRODUCT IS THE HERO OF EVERY SHOT: describe it IDENTICALLY in every imagePrompt (same shape, materials, colours, logo placement) so it stays the same object. Place it in complete, believable scenes - in use, in its environment, in hero close-ups and detail macros - with premium product-photography lighting. Camera moves are slow and deliberate (orbits, push-ins, rack focus).',
+    edit: 'Edit for the product: smooth dissolves and slow moves, each shot held long enough to see the product, end on the hero shot.',
+  },
+  {
+    id: 'character', label: 'Character board', shots: 8,
+    blurb: 'One character, one outfit - every shot a different pose, angle and expression.',
+    placeholder: 'The character - face, build, hair, the exact outfit - and the setting or backdrop…',
+    brief: 'A character board: ONE character in ONE outfit throughout. Repeat the same full character and wardrobe description VERBATIM in every imagePrompt (face, hair, build, every garment and accessory, colours) so the model draws the same person every time. Each shot changes only the pose, action, camera angle, framing (full body, medium, close-up, profile, three-quarter, back) and expression. Keep one consistent backdrop or setting. Motion is small and in character (a turn, a gesture, a look).',
+    edit: 'Edit as a character reel: steady hard cuts on the beat of each pose, every shot held long enough to read the character.',
+  },
+  {
+    id: 'lookbook', label: 'Fashion lookbook', shots: 8,
+    blurb: 'One model and setting, a different look in every shot.',
+    placeholder: 'The model, the setting, the collection - colours, fabrics, the mood…',
+    brief: 'A fashion lookbook film. The same model (describe them identically every time) in the same setting and light; each shot is a NEW LOOK described garment by garment, with an editorial pose. Camera language of a fashion film: walking shots, slow turns, fabric in motion, detail close-ups of texture and accessories.',
+    edit: 'Edit like a fashion film: cut on the walk and the turn, one look per beat, smooth and confident.',
+  },
+  {
+    id: 'music', label: 'Music video', shots: 10,
+    blurb: 'Performance and story B-roll, cut to a beat.',
+    placeholder: 'The song - genre, tempo, mood - the artist, the visual concept…',
+    brief: 'A music video. Alternate performance shots (the artist performing, consistent look) with concept / story B-roll that carries a visual idea. Strong stylised lighting, bold compositions, motion that would cut on a beat. Shots are short (2-4 seconds) except one or two signature moments.',
+    edit: 'Edit to the music: short hard cuts on the beat, a couple of held signature shots, energy building to the end.',
+  },
+  {
+    id: 'social', label: 'Social short', shots: 6,
+    blurb: 'Vertical-first, a thumb-stopping first shot, fast beats, a loopable end.',
+    placeholder: 'The idea in one line - the hook, the payoff, who it is for…',
+    brief: 'A short-form social video (Reels / TikTok / Shorts). The first shot must stop the scroll in under 2 seconds. Fast beats, one idea, a satisfying payoff, and a last shot that loops back into the first. Compose for a phone screen: subject large and centred, close framing.',
+    edit: 'Edit for social: fast hard cuts, no slow fades, the end flowing back into the start.',
+  },
+  {
+    id: 'location', label: 'Location tour', shots: 8,
+    blurb: 'A place shown space by space - property, venue, destination.',
+    placeholder: 'The place - what it is, its style, the spaces and views worth showing…',
+    brief: 'A location tour (property, venue, hotel, destination). Open on an establishing exterior or vista, then move through the space in a logical path - arrival, main spaces, details, the signature view - ending on the best shot. Architectural / travel photography: level verticals, wide lenses, golden or soft natural light, smooth gimbal and drone moves.',
+    edit: 'Edit as a tour: smooth dissolves and directional moves that carry you from one space to the next.',
+  },
+  {
+    id: 'explainer', label: 'Explainer', shots: 7,
+    blurb: 'How something works, step by step, in clear visuals.',
+    placeholder: 'What is being explained, to whom, the steps or idea in order…',
+    brief: 'An explainer: show how something works or how to do something, one clear step per shot, in order. Clean, uncluttered compositions with the subject obvious; consistent style (e.g. one setting or one visual language) across shots; the last shot shows the result or the takeaway.',
+    edit: 'Edit for clarity: steady pacing, simple cuts, each step held long enough to understand.',
+  },
+] as const
+export type BoardModeId = (typeof BOARD_MODES)[number]['id']
+export type BoardMode = (typeof BOARD_MODES)[number]
+export const boardMode = (id: string | null | undefined): BoardMode => BOARD_MODES.find(m => m.id === id) ?? BOARD_MODES[0]
+export const isBoardMode = (id: unknown): id is BoardModeId => BOARD_MODES.some(m => m.id === id)
+
+// ── Assets ───────────────────────────────────────────────────────────────────
+//
+// What a cut is made of - characters, vehicles, objects, places - each a set of
+// reference images. Any ref of any asset can be switched on, and the switched-on
+// refs (in asset order) go with the next still, up to what that still's model
+// takes. Lives on the board (Storyboard.assets), autosaved with it.
+
+export const ASSET_KINDS = [
+  { id: 'character', label: 'Character' },
+  { id: 'creature', label: 'Creature' },
+  { id: 'vehicle', label: 'Vehicle' },
+  { id: 'object', label: 'Object / prop' },
+  { id: 'wardrobe', label: 'Wardrobe' },
+  { id: 'location', label: 'Location' },
+  { id: 'landmark', label: 'Landmark' },
+  { id: 'scenery', label: 'Scenery' },
+  { id: 'style', label: 'Style / look' },
+  { id: 'other', label: 'Other' },
+] as const
+export type AssetKind = (typeof ASSET_KINDS)[number]['id']
+export type AssetRef = { id: string; url: string; active: boolean }
+export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[] }
+export const MAX_ASSETS = 40
+export const MAX_ASSET_REFS = 24
+
+const newId = (p: string) => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${p}${Date.now()}${Math.random().toString(36).slice(2, 9)}`)
+export const newAsset = (kind: AssetKind, name: string): StoryAsset => ({ id: newId('a'), kind, name, notes: '', refs: [] })
+export const newAssetRef = (url: string, active = true): AssetRef => ({ id: newId('r'), url, active })
+
+export function sanitizeAssets(raw: unknown): StoryAsset[] {
+  if (!Array.isArray(raw)) return []
+  const kinds = ASSET_KINDS.map(k => k.id) as string[]
+  return raw.slice(0, MAX_ASSETS).map((a: any) => ({
+    id: str(a?.id, 64) || newId('a'),
+    kind: (kinds.includes(a?.kind) ? a.kind : 'other') as AssetKind,
+    name: str(a?.name, 80) || 'Untitled',
+    notes: str(a?.notes, 1000),
+    refs: (Array.isArray(a?.refs) ? a.refs : [])
+      .filter((r: any) => /^https:\/\//.test(str(r?.url, 2000)))
+      .slice(0, MAX_ASSET_REFS)
+      .map((r: any) => ({ id: str(r?.id, 64) || newId('r'), url: str(r?.url, 2000), active: r?.active === true })),
+  }))
+}
+
+/** The switched-on refs, in asset order then ref order. */
+export const activeAssetRefs = (assets: StoryAsset[]) => assets.flatMap(a => a.refs.filter(r => r.active).map(r => ({ ...r, assetId: a.id, assetName: a.name })))
+
+// ── A still model's knobs: quality options, reference limit, ticket price ───
+// From the chat hub's create catalog (lib/chat-hub-models), so a storyboard
+// still is priced and limited exactly like the same model anywhere else.
+
+/**
+ * One setting a still's model offers in the shot's Details. `key` 'quality'
+ * is the shot's imageQuality; any other key lives in imageOptions and is
+ * passed to the model's builder (lib/fal-image-models reads it from
+ * ctx.options under the same name). `as` says how the builder wants it.
+ */
+export type StillSetting = {
+  key: string
+  label: string
+  options: { value: string; label: string }[]
+  def: string
+  as?: 'bool' | 'number'
+  /** One line on what it changes, under the buttons. */
+  hint?: string
+}
+const o = (...vals: (string | [string, string])[]) => vals.map(v => Array.isArray(v) ? { value: v[0], label: v[1] } : { value: v, label: v.toUpperCase() })
+const RES = (vals: string[], def: string): StillSetting => ({ key: 'quality', label: 'Resolution', options: o(...vals), def })
+
+/*
+ * The settings of the models built from lib/fal-image-models (buildFalCall's
+ * registry fallback) - the chat hub's catalog has no fields for them, which is
+ * why FLUX 3 & co showed no resolution at all. Mirrors the portal's prompt bar
+ * (IMAGE_MODEL_CONFIGS qualityOptions) and the ctx.options each builder reads.
+ * Defaults are what the still route used before, so nothing re-prices itself.
+ */
+const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
+  'gpt-image-2.5': [
+    RES(['1k', '2k', '4k'], '2k'),
+    { key: 'gptVariant', label: 'Renderer', options: o(['sunburst', 'Sunburst'], ['flare', 'Flare']), def: 'sunburst', hint: 'Two renderers of the same model - Flare leans more stylised' },
+  ],
+  'ideogram-4.5': [
+    { key: 'quality', label: 'Quality', options: o(['low', 'Low'], ['medium', 'Medium'], ['high', 'High']), def: 'medium', hint: 'Size is always the largest for the frame; quality sets the detail' },
+  ],
+  'ideogram-v4': [
+    RES(['1k', '2k'], '2k'),
+    { key: 'ideogramRenderingSpeed', label: 'Speed', options: o(['TURBO', 'Turbo'], ['BALANCED', 'Balanced'], ['QUALITY', 'Quality']), def: 'BALANCED' },
+    { key: 'ideogramExpansionModel', label: 'Magic prompt', options: o(['None', 'Off'], ['Medium', 'Medium'], ['Large', 'Large']), def: 'Medium', hint: 'Lets Ideogram expand the prompt - Off keeps it word for word' },
+  ],
+  'flux-3-image': [RES(['1k', '2k', '4k'], '2k')],
+  'qwen-image-3': [
+    RES(['1k', '2k'], '2k'),
+    { key: 'qwenPromptExpansion', label: 'Prompt expansion', options: o(['true', 'On'], ['false', 'Off']), def: 'true', as: 'bool' },
+  ],
+  'grok-imagine-2': [
+    RES(['1k', '2k'], '2k'),
+    { key: 'grokQuality', label: 'Detail', options: o(['low', 'Low'], ['medium', 'Medium']), def: 'medium' },
+  ],
+  'bria-fibo': [
+    { key: 'quality', label: 'Resolution', options: o(['1k', '1MP'], ['4k', '4MP']), def: '4k' },
+    { key: 'briaStyle', label: 'Style', options: o(['none', 'None'], ['photoreal', 'Photoreal'], ['illustration', 'Illustration'], ['cinematic', 'Cinematic']), def: 'none' },
+  ],
+  'krea-2-large': [{ key: 'kreaCreativity', label: 'Creativity', options: o(['raw', 'Raw'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']), def: 'medium', hint: 'Raw follows the prompt closely; High takes more liberties' }],
+  'luma-photon': [{ key: 'lumaStrength', label: 'Reference pull', options: o(['0.3', 'Light'], ['0.6', 'Medium'], ['0.9', 'Strong']), def: '0.6', as: 'number', hint: 'How closely it keeps the first reference (only with refs on)' }],
+  'luma-uni-1': [{ key: 'lumaUniStyle', label: 'Style', options: o(['auto', 'Auto'], ['manga', 'Manga']), def: 'auto' }],
+}
+REGISTRY_STILL_SETTINGS['krea-2-medium'] = REGISTRY_STILL_SETTINGS['krea-2-large']
+REGISTRY_STILL_SETTINGS['krea-2-medium-turbo'] = REGISTRY_STILL_SETTINGS['krea-2-large']
+REGISTRY_STILL_SETTINGS['luma-photon-flash'] = REGISTRY_STILL_SETTINGS['luma-photon']
+REGISTRY_STILL_SETTINGS['luma-uni-1-max'] = REGISTRY_STILL_SETTINGS['luma-uni-1']
+
+/** Every setting this still model offers, quality first. Empty = the model has none (it renders one size). */
+export function stillSettings(id: string): StillSetting[] {
+  const reg = REGISTRY_STILL_SETTINGS[id]
+  if (reg) return reg
+  // Hand-built models: their quality field from the chat hub's catalog
+  const q = getCreateModel(id)?.fields?.find(f => f.key === 'quality')
+  if (!q || q.options.length < 2) return []
+  const label = q.options.every(x => /^\dk$/.test(x)) ? 'Resolution' : 'Quality'
+  return [{ key: 'quality', label, options: o(...q.options.map(x => /^\dk$/.test(x) ? x : [x, x[0].toUpperCase() + x.slice(1)] as [string, string])), def: q.def }]
+}
+
+/** The shot's value for one setting, falling back to its default. */
+export function stillSettingValue(set: StillSetting, quality: string | undefined, options: Record<string, string> | undefined): string {
+  const v = set.key === 'quality' ? quality : options?.[set.key]
+  return v && set.options.some(x => x.value === v) ? v : set.def
+}
+
+/**
+ * A shot's options as the model's builder takes them: only known keys with
+ * allowed values, typed per `as`. Server-side guard and client both use it.
+ */
+export function stillBuildOptions(id: string, options: unknown): Record<string, string | number | boolean> {
+  const src = options && typeof options === 'object' ? options as Record<string, unknown> : {}
+  const out: Record<string, string | number | boolean> = {}
+  for (const set of stillSettings(id)) {
+    if (set.key === 'quality') continue
+    const raw = typeof src[set.key] === 'string' ? src[set.key] as string : ''
+    const v = set.options.some(x => x.value === raw) ? raw : set.def
+    out[set.key] = set.as === 'bool' ? v === 'true' : set.as === 'number' ? Number(v) : v
+  }
+  return out
+}
+
+export type StillModelSpec = { qualities: string[]; defQuality: string; maxRefs: number; settings: StillSetting[] }
+export function stillModelSpec(id: string): StillModelSpec {
+  const m = getCreateModel(id)
+  const settings = stillSettings(id)
+  const q = settings.find(s => s.key === 'quality')
+  return {
+    qualities: q?.options.map(x => x.value) ?? [],
+    defQuality: q?.def ?? '',
+    maxRefs: m?.noRefs ? 0 : Math.max(0, m?.maxRefs ?? 0),
+    settings,
+  }
+}
+/** GPT Image takes pixel sizes, not ratios: the nearest it offers to the board's frame. */
+export const GPT_SIZE_FOR_ASPECT: Record<string, string> = {
+  '16:9': '1920x1080', '21:9': '1920x1080', '9:16': '1024x1536', '3:4': '1024x1536', '4:3': '1024x768', '1:1': '1024x1024',
+}
+/**
+ * Tickets for one still on this model with these settings and frame (what a
+ * user would pay) - the registry models priced as app/api/generate prices
+ * them, so a 4K FLUX 3 or a high Ideogram costs what it does in the portal.
+ */
+export function stillTickets(id: string, quality: string | undefined, aspect: string, options?: Record<string, string>, refs = 0): number {
+  const m = getCreateModel(id)
+  if (!m) return 0
+  const spec = stillModelSpec(id)
+  const q = quality && spec.qualities.includes(quality) ? quality : spec.defQuality || undefined
+  const opt = (key: string) => {
+    const set = spec.settings.find(s => s.key === key)
+    return set ? stillSettingValue(set, q, options) : undefined
+  }
+  try {
+    if (REGISTRY_STILL_SETTINGS[id] || !m.fields) {
+      switch (id) {
+        case 'gpt-image-2.5': return gptImage25TicketCost({ quality: q ?? '2k', aspectRatio: aspect, refCount: refs })
+        case 'flux-3-image': return flux3ImageTicketCost({ quality: q, aspectRatio: aspect, refs })
+        case 'qwen-image-3': return (q === '1k' ? 1 : 2) + (refs > 0 ? 1 : 0)
+        case 'ideogram-v4': return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })
+        case 'grok-imagine-2': return getTicketCost(refs > 0 ? 'grok-imagine-2-edit' : id, q)
+        case 'mai-image-2.5-pro': return getTicketCost(refs > 0 ? 'mai-image-2.5-pro-edit' : id, q)
+        default: return getTicketCost(id, q)
+      }
+    }
+    // The chat catalog prices Z-Image Turbo flat; the portal charges by size
+    if (id === 'z-image-turbo') return q === '4k' ? 8 : q === '2k' ? 2 : 1
+    const size = id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[aspect] ?? '1024x1024') : aspect
+    return computeCreateCost(m, q ? { quality: q, aspect: size } : { aspect: size })
+  } catch { return m.ticketCost ?? 0 }
 }
 
 export const STORYBOARD_ASPECTS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'] as const
 export const MAX_SHOTS = 40
 export const DURATIONS = [2, 3, 4, 5, 6, 8, 10, 12, 15] as const
+/** How many shots one draft (or one Extend) may ask for. A board holds MAX_SHOTS in all. */
+export const MAX_DRAFT_SHOTS = 20
+/** Target lengths a draft can aim for, in seconds; 0 = Auto (the kind of video decides). */
+export const TARGET_LENGTHS = [0, 15, 30, 45, 60, 90, 120, 180] as const
+/** A target length as a person says it: 30s, 1 min, 1:30, 3 min. */
+export const lengthLabel = (s: number) => s === 0 ? 'Auto' : s < 60 ? `${s}s` : s % 60 === 0 ? `${s / 60} min` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+/** The runtimes `count` shots can reach with the lengths a shot may have. */
+export const runtimeRange = (count: number) => ({ min: count * DURATIONS[0], max: count * DURATIONS[DURATIONS.length - 1] })
+
+/**
+ * Make shot lengths add up to `target` seconds - the planner aims for it, but
+ * models add up loosely. Every shot is scaled by the same factor first (so the
+ * pacing the planner chose survives: the long shot stays the long one), then
+ * snapped to the lengths a shot may have (DURATIONS), and the leftover is
+ * nudged one notch at a time onto the shot furthest from its scaled length.
+ * Stops at the closest sum it can reach.
+ */
+export function fitDurations(shots: StoryboardShot[], target: number): StoryboardShot[] {
+  if (!target || !shots.length) return shots
+  const steps = DURATIONS as readonly number[]
+  const total = shots.reduce((a, s) => a + (s.duration > 0 ? s.duration : 5), 0)
+  const ideal = shots.map(s => ((s.duration > 0 ? s.duration : 5) * target) / total)
+  const snap = (d: number) => steps.reduce((a, b) => (Math.abs(b - d) < Math.abs(a - d) ? b : a))
+  const out = shots.map((s, i) => ({ ...s, duration: snap(ideal[i]) }))
+  const sum = () => out.reduce((a, s) => a + s.duration, 0)
+  for (let guard = 0; guard < 400; guard++) {
+    const diff = target - sum()
+    if (diff === 0) break
+    const up = diff > 0
+    // The shot furthest short of (or past) its scaled length, that can still move
+    let best = -1
+    for (let i = 0; i < out.length; i++) {
+      const k = steps.indexOf(out[i].duration)
+      if (up ? k >= steps.length - 1 : k <= 0) continue
+      const gap = up ? ideal[i] - out[i].duration : out[i].duration - ideal[i]
+      if (best < 0 || gap > (up ? ideal[best] - out[best].duration : out[best].duration - ideal[best])) best = i
+    }
+    if (best < 0) break
+    const next = steps[steps.indexOf(out[best].duration) + (up ? 1 : -1)]
+    // Stop rather than overshoot further than we are now
+    if (Math.abs(diff - (next - out[best].duration)) >= Math.abs(diff)) break
+    out[best].duration = next
+  }
+  return out
+}
 
 /**
  * The image models a still can be made with: the ones whose fal call
@@ -75,6 +461,29 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'recraft-v4.1', label: 'Recraft v4.1', refs: false },
   { id: 'gpt-image-2', label: 'ChatGPT Images 2.0', refs: true },
   { id: 'z-image-turbo', label: 'Z-Image Turbo', refs: true },
+  // Public 2026-10-01/02 - built through lib/fal-image-models (buildFalCall's
+  // registry fallback), references through each model's edit endpoint
+  { id: 'gpt-image-2.5', label: 'ChatGPT Images 2.5', refs: true },
+  { id: 'ideogram-4.5', label: 'Ideogram v4.5', refs: true },
+  { id: 'ideogram-v4', label: 'Ideogram v4', refs: true },
+  { id: 'flux-3-image', label: 'FLUX 3', refs: true },
+  { id: 'qwen-image-3', label: 'Qwen Image 3', refs: true },
+  { id: 'meta-muse', label: 'Meta Muse', refs: true },
+  { id: 'seedream-5-flash', label: 'SeeDream 5.0 Flash', refs: true },
+  { id: 'grok-imagine-2', label: 'Grok Imagine 2', refs: true },
+  { id: 'nano-banana-2-lite', label: 'NanoBanana 2 Lite', refs: false },
+  { id: 'mai-image-2.5-pro', label: 'MAI Image 2.5 Pro', refs: true },
+  { id: 'hunyuan-image-3', label: 'Hunyuan Image 3', refs: false },
+  { id: 'hunyuan-image-3-instruct', label: 'Hunyuan Image 3 Instruct', refs: true },
+  { id: 'krea-2-large', label: 'Krea 2 Large', refs: true },
+  { id: 'krea-2-medium', label: 'Krea 2 Medium', refs: true },
+  { id: 'krea-2-medium-turbo', label: 'Krea 2 Medium Turbo', refs: true },
+  { id: 'bria-fibo', label: 'Bria FIBO 1.5', refs: true },
+  { id: 'luma-photon', label: 'Luma Photon', refs: true },
+  { id: 'luma-photon-flash', label: 'Luma Photon Flash', refs: true },
+  { id: 'luma-uni-1', label: 'Luma Uni-1', refs: true },
+  { id: 'luma-uni-1-max', label: 'Luma Uni-1 Max', refs: true },
+  { id: 'recraft-v4.1-flash', label: 'Recraft V4.1 Flash', refs: false },
 ]
 export const DEFAULT_IMAGE_MODEL = 'nano-banana-pro-2'
 
@@ -82,6 +491,13 @@ export const DEFAULT_IMAGE_MODEL = 'nano-banana-pro-2'
 export const STORYBOARD_VIDEO_MODELS = [
   'SeeDance 2.5', 'SeeDance 2.0', 'Kling 3.0', 'Kling O3 Pro', 'Veo 3.1', 'LTX 2.5 Pro',
   'Wan 2.7', 'Wan 2.5', 'Hailuo 2.3 Pro', 'Luma Ray 3.2', 'PixVerse V6', 'Happy Horse',
+  // public 2026-10-01
+  'LTX 2.5 Fast', 'Gemini Omni Flash', 'Omni Flash 1.1', 'Flux 3', 'Grok Imagine 1.5',
+  // public 2026-10-01/02 - every one animates a start frame
+  'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Kling O3 4K', 'Kling V3 Turbo Pro', 'Kling V3 Turbo',
+  'SeeDance 2.0 Fast', 'SeeDance 2.0 Mini', 'SeeDance 1.5', 'PixVerse C1', 'Vidu Q3', 'Vidu Q3 Turbo',
+  'Pika 2.2', 'Hailuo 2.3', 'Hailuo 2.3 Fast Pro', 'Hailuo 2.3 Fast', 'MiniMax H3 Max', 'MiniMax H3 Max Turbo',
+  'Wan 3.0', 'Wan 3.0 Prime', 'Luma Ray 2', 'Luma Ray 2 Flash', 'Hunyuan Video 1.5', 'Grok Imagine 1.5 Lite',
 ] as const
 export const DEFAULT_VIDEO_MODEL = 'SeeDance 2.5'
 /**
@@ -92,6 +508,72 @@ export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
   'SeeDance 2.5': 'seedance-2.5', 'SeeDance 2.0': 'seedance-2.0', 'Kling 3.0': 'kling-v3', 'Kling O3 Pro': 'kling-o3-pro',
   'Veo 3.1': 'veo-3.1', 'LTX 2.5 Pro': 'ltx-2.5-pro', 'Wan 2.7': 'wan-2.7', 'Wan 2.5': 'wan-2.5', 'Hailuo 2.3 Pro': 'hailuo-2.3-pro',
   'Luma Ray 3.2': 'luma-ray-3.2', 'PixVerse V6': 'pixverse-v6', 'Happy Horse': 'happy-horse',
+  'LTX 2.5 Fast': 'ltx-2.5-fast', 'Gemini Omni Flash': 'gemini-omni-flash', 'Omni Flash 1.1': 'gemini-omni-1.1',
+  'Flux 3': 'flux-3', 'Grok Imagine 1.5': 'grok-video-1.5',
+  'Veo 3.1 Fast': 'veo-3.1-fast', 'Veo 3.1 Lite': 'veo-3.1-lite', 'Kling O3 4K': 'kling-o3-4k',
+  'Kling V3 Turbo Pro': 'kling-v3-turbo-pro', 'Kling V3 Turbo': 'kling-v3-turbo',
+  'SeeDance 2.0 Fast': 'seedance-2.0-fast', 'SeeDance 2.0 Mini': 'seedance-2.0-mini', 'SeeDance 1.5': 'seedance-1.5',
+  'PixVerse C1': 'pixverse-c1', 'Vidu Q3': 'vidu-q3', 'Vidu Q3 Turbo': 'vidu-q3-turbo', 'Pika 2.2': 'pika-2.2',
+  'Hailuo 2.3': 'hailuo-2.3', 'Hailuo 2.3 Fast Pro': 'hailuo-2.3-fast-pro', 'Hailuo 2.3 Fast': 'hailuo-2.3-fast',
+  'MiniMax H3 Max': 'minimax-h3-max', 'MiniMax H3 Max Turbo': 'minimax-h3-max-turbo',
+  'Wan 3.0': 'wan-3.0', 'Wan 3.0 Prime': 'wan-3.0-prime', 'Luma Ray 2': 'luma-ray-2', 'Luma Ray 2 Flash': 'luma-ray-2-flash',
+  'Hunyuan Video 1.5': 'hunyuan-video-1.5', 'Grok Imagine 1.5 Lite': 'grok-video-1.5-lite',
+}
+
+/**
+ * What each storyboard model is FOR, in one planning line - what the AI draft
+ * reads to cast a model per shot. Plain craft notes (not prices): the
+ * catalog's own text is pricing detail, which says nothing about which shot a
+ * model suits.
+ */
+export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
+  // images (by id)
+  'nano-banana-pro-2': 'best all-rounder; keeps a character consistent across many references; photoreal or stylised',
+  'nano-banana-pro': 'strong photoreal edits that hold likeness from references',
+  'seedream-5-pro': 'sharp 2K photoreal detail; cinematic lighting',
+  'seedream-5-lite': 'quick, cheap drafts', 'seedream-4.5': 'dependable general images',
+  'seedream-5-flash': 'fast and cheap; fine for many filler or background shots',
+  'flux-2': 'fast, strong prompt adherence', 'flux-3-image': 'newest FLUX; crisp detail, follows long prompts; edits with up to 10 refs',
+  'kling-o3-image': 'high-fidelity stylised art', 'kling-image-v3': 'stylised art and illustration',
+  'wan-2.7-pro': 'detailed scenes, strong composition', 'recraft-v4.1': 'design work, logos and layout',
+  'recraft-v4.1-flash': 'cheap design-y graphics', 'gpt-image-2': 'follows instructions exactly; short text in scene',
+  'gpt-image-2.5': 'best at complex instructions, diagrams and in-scene text', 'z-image-turbo': 'fastest cheap drafts',
+  'ideogram-4.5': 'TITLE CARDS, signage, posters - the most reliable lettering; precise edits from refs',
+  'ideogram-v4': 'text inside images, speed tiers', 'qwen-image-3': 'strong text rendering; edits with refs',
+  'meta-muse': 'cheap, clean general images; edits with up to 10 refs', 'grok-imagine-2': 'expressive, bold style',
+  'nano-banana-2-lite': 'cheap NanoBanana for simple frames', 'mai-image-2.5-pro': 'photoreal people and products',
+  'hunyuan-image-3': 'rich detailed illustration', 'hunyuan-image-3-instruct': 'follows complex instructions; edits up to 3 images',
+  'krea-2-large': 'aesthetic, art-directed looks; copies a style from refs', 'krea-2-medium': 'art-directed looks, cheaper',
+  'krea-2-medium-turbo': 'fastest Krea look', 'bria-fibo': 'licensed-data, commercially safe imagery',
+  'luma-photon': 'cinematic, moody photographic frames', 'luma-photon-flash': 'cheap cinematic frames',
+  'luma-uni-1': 'stylised scenes with refs', 'luma-uni-1-max': 'highest-quality Luma stills',
+  // videos (by plan label)
+  'SeeDance 2.5': 'best general motion and acting, native audio; refuses close-ups of realistic faces',
+  'SeeDance 2.0': 'multi-reference motion with audio', 'SeeDance 2.0 Fast': 'cheaper SeeDance 2.0',
+  'SeeDance 2.0 Mini': 'budget SeeDance with audio', 'SeeDance 1.5': 'reliable simple image-to-video',
+  'Kling 3.0': 'smooth realistic motion, good with faces', 'Kling O3 Pro': 'expressive motion with audio',
+  'Kling O3 4K': 'Kling O3 at 4K for hero shots', 'Kling V3 Turbo Pro': 'fast Kling up to 15s', 'Kling V3 Turbo': 'cheapest Kling',
+  'Veo 3.1': "Google's flagship: cinematic realism and synced dialogue/sound", 'Veo 3.1 Fast': 'Veo quality, faster and cheaper',
+  'Veo 3.1 Lite': 'lowest-cost Veo for simple shots', 'LTX 2.5 Pro': 'fast 1080p with directed camera and audio',
+  'LTX 2.5 Fast': 'up to 4K and long takes, cheap', 'Wan 2.7': 'start/end frame control', 'Wan 2.5': 'solid 1080p image-to-video',
+  'Wan 3.0': 'latest Wan, native audio', 'Wan 3.0 Prime': 'top Wan quality', 'Hailuo 2.3 Pro': 'MiniMax Hailuo at 1080p, dynamic action',
+  'Hailuo 2.3': 'Hailuo 6 or 10s', 'Hailuo 2.3 Fast Pro': 'fast Hailuo at 1080p', 'Hailuo 2.3 Fast': 'cheapest Hailuo',
+  'MiniMax H3 Max': 'strong prompt following', 'MiniMax H3 Max Turbo': 'fast cheap H3',
+  'Luma Ray 3.2': 'cinematic camera moves, start + end frames', 'Luma Ray 2': 'Dream Machine motion', 'Luma Ray 2 Flash': 'cheaper Ray 2',
+  'PixVerse V6': 'cheap and quick, stylised', 'PixVerse C1': 'PixVerse with stronger subjects',
+  'Vidu Q3': 'up to 16s with audio, anime and stylised', 'Vidu Q3 Turbo': 'faster half-price Vidu',
+  'Pika 2.2': 'playful stylised effects', 'Happy Horse': 'stylised character animation',
+  'Gemini Omni Flash': 'versatile, follows complex direction', 'Omni Flash 1.1': 'Omni with 4K',
+  'Flux 3': 'keyframe-precise motion with audio', 'Grok Imagine 1.5': 'bold expressive motion', 'Grok Imagine 1.5 Lite': 'cheapest Grok motion',
+  'Hunyuan Video 1.5': 'open model, permissive, simple motion',
+}
+
+/** The planner's menu: one line per model, image ids and video labels. */
+export function storyboardModelMenu(): { images: string; videos: string } {
+  return {
+    images: STORYBOARD_IMAGE_MODELS.map(m => `- ${m.id} (${m.label}${m.refs ? '' : ', no reference images'}): ${STORYBOARD_MODEL_NOTES[m.id] ?? 'general image model'}`).join('\n'),
+    videos: STORYBOARD_VIDEO_MODELS.map(l => `- ${l}: ${STORYBOARD_MODEL_NOTES[l] ?? 'image-to-video'}`).join('\n'),
+  }
 }
 export const SHOOT_RESOLUTIONS = ['720p', '1080p'] as const
 /** The shortest length the model offers that covers the planned one (the edit trims), else its longest. */
@@ -117,6 +599,61 @@ export function newShot(partial: Partial<StoryboardShot> = {}): StoryboardShot {
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '')
 
+/** A shot's still settings: short string pairs only (values are checked against the model at generation). */
+function sanitizeImageOptions(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>).slice(0, 12)) {
+    if (/^[a-zA-Z]{1,40}$/.test(k) && typeof v === 'string' && v.length <= 24) out[k] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+function sanitizeStills(raw: unknown, current: string | null, prompt: string, model: string): StillVersion[] {
+  const out: StillVersion[] = []
+  const seen = new Set<string>()
+  for (const v of Array.isArray(raw) ? raw : []) {
+    const url = str((v as any)?.url, 2000)
+    if (!/^https:\/\//.test(url) || seen.has(stillKey(url))) continue
+    seen.add(stillKey(url))
+    const at = Number((v as any)?.at)
+    out.push({ url, prompt: str((v as any)?.prompt, 4000), model: str((v as any)?.model, 60), at: Number.isFinite(at) ? at : 0 })
+  }
+  // A slot from before versions (or a still set some other way) still lists
+  // the still it shows, so its first redo does not lose it
+  if (current && !seen.has(stillKey(current))) out.push({ url: current, prompt, model, at: 0 })
+  return out.slice(-MAX_STILL_VERSIONS)
+}
+
+/**
+ * The stored takes plus any the page adds, never fewer: autosave sends the
+ * page's copy of the board, and a stale copy must not drop a take made
+ * meanwhile (from another tab or device).
+ */
+export function mergeStills(stored: StillVersion[] | undefined, incoming: StillVersion[] | undefined): StillVersion[] {
+  const out = [...(stored ?? [])]
+  const seen = new Set(out.map(v => stillKey(v.url)))
+  for (const v of incoming ?? []) if (!seen.has(stillKey(v.url))) { seen.add(stillKey(v.url)); out.push(v) }
+  return out.slice(-MAX_STILL_VERSIONS)
+}
+
+/** Finished takes only, one per clip, the newest MAX_VIDEO_TAKES. */
+function sanitizeVideoTakes(raw: unknown): ShotVideo[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  let out: ShotVideo[] = []
+  for (const r of raw.slice(-MAX_VIDEO_TAKES * 2)) {
+    const v = sanitizeVideo(r)
+    if (v && v.status === 'done' && v.url) out = addVideoTake(out, v)
+  }
+  return out.length ? out : undefined
+}
+/** A take added to a slot's list - an already-kept clip moves to the end rather than repeating. */
+export function addVideoTake(list: ShotVideo[] | undefined, v: ShotVideo): ShotVideo[] {
+  if (v.status !== 'done' || !v.url) return list ?? []
+  const k = stillKey(v.url)
+  return [...(list ?? []).filter(t => !t.url || stillKey(t.url) !== k), v].slice(-MAX_VIDEO_TAKES)
+}
+
 function sanitizeVideo(v: any): ShotVideo | null {
   if (!v || typeof v !== 'object' || !Number.isInteger(v.queueId)) return null
   const url = str(v.url, 2000)
@@ -130,7 +667,30 @@ function sanitizeVideo(v: any): ShotVideo | null {
     fromStill: /^https:\/\//.test(str(v.fromStill, 2000)) ? str(v.fromStill, 2000) : null,
     fromPrompt: str(v.fromPrompt, 4000),
     at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0,
+    rawUrl: /^https:\/\//.test(str(v.rawUrl, 2000)) ? str(v.rawUrl, 2000) : null,
+    rawSize: /^\d{2,5}x\d{2,5}$/.test(str(v.rawSize, 20)) ? str(v.rawSize, 20) : null,
   }
+}
+
+/**
+ * The frame to ask a video model for: the board's when the model offers it,
+ * else the closest one in the SAME ORIENTATION - a 3:4 board asks for 9:16, a
+ * 4:3 or 21:9 board for 16:9 - so the clip is conformed by trimming the long
+ * side only, at full resolution (never squeezed or upscaled). Square only when
+ * the model has nothing in that orientation.
+ *
+ * Models that animate a still mostly ignore this and follow the still, which
+ * is already in the board's frame (Kling 3.0: a 3:4 still renders 3:4).
+ */
+export function shootAspect(aspectOptions: string[] | undefined, boardAspect: string): string {
+  const opts = (aspectOptions ?? []).filter(o => /^\d+:\d+$/.test(o))
+  if (!opts.length || opts.includes(boardAspect)) return boardAspect
+  const lr = (a: string) => { const [w, h] = a.split(':').map(Number); return Math.log(w / h) }
+  const t = lr(boardAspect)
+  const side = (x: number) => Math.sign(Math.round(x * 1000))   // -1 portrait, 0 square, 1 landscape
+  const same = opts.filter(o => side(lr(o)) === side(t))
+  const pool = same.length ? same : opts
+  return pool.reduce((best, o) => (Math.abs(lr(o) - t) < Math.abs(lr(best) - t) - 1e-9 ? o : best))
 }
 
 /** Clean whatever arrived into a valid shot list - the server never stores raw client JSON. */
@@ -139,18 +699,26 @@ export function sanitizeShots(raw: unknown): StoryboardShot[] {
   return raw.slice(0, MAX_SHOTS).map((r: any) => {
     const d = Number(r?.duration)
     const still = str(r?.stillUrl, 2000)
+    // An id, or a label from a planner that wrote the name
+    const im = STORYBOARD_IMAGE_MODELS.find(m => m.id === r?.imageModel || m.label === r?.imageModel)
+    const imageModel = im?.id ?? DEFAULT_IMAGE_MODEL
     return newShot({
       id: str(r?.id, 64) || undefined,
       title: str(r?.title, 120),
       description: str(r?.description, 2000),
       imagePrompt: str(r?.imagePrompt, 4000),
-      imageModel: STORYBOARD_IMAGE_MODELS.some(m => m.id === r?.imageModel) ? r.imageModel : DEFAULT_IMAGE_MODEL,
+      imageModel,
+      imageQuality: str(r?.imageQuality, 12),
+      imageOptions: sanitizeImageOptions(r?.imageOptions),
       stillUrl: /^https:\/\//.test(still) ? still : null,
       videoPrompt: str(r?.videoPrompt, 4000),
       videoModel: str(r?.videoModel, 60) || DEFAULT_VIDEO_MODEL,
       duration: Number.isFinite(d) ? Math.min(30, Math.max(1, Math.round(d * 2) / 2)) : 5,
       transition: str(r?.transition, 300) || 'Cut',
+      keepWhole: r?.keepWhole === true ? true : undefined,
       video: sanitizeVideo(r?.video),
+      videos: sanitizeVideoTakes(r?.videos),
+      stills: sanitizeStills(r?.stills, /^https:\/\//.test(still) ? still : null, str(r?.imagePrompt, 4000), imageModel),
     })
   })
 }
@@ -186,7 +754,11 @@ export const FINAL_CUT_PHASES = [
 ] as const
 export type FinalCutPhase = (typeof FINAL_CUT_PHASES)[number]['key']
 
-export type FinalCutVersion = { n: number; url: string; durationSec: number; at: number; imageId: number | null; note: string }
+export type FinalCutVersion = {
+  n: number; url: string; durationSec: number; at: number; imageId: number | null; note: string
+  /** A frame from the middle of the cut. Every cut opens on black (the title card fades in), so without it the player is a black box. */
+  posterUrl?: string | null
+}
 
 /** The board's Final Cut record: the running (or last) job, and every version made. */
 export type FinalCutState = {
