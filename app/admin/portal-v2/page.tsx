@@ -10076,20 +10076,37 @@ function usePinchZoom(resetKey: unknown, maxScale = 4) {
     // Keep the view centred on the same spot as it scales
     setOffset(o => (s === 1 ? { x: 0, y: 0 } : clampOffset(o.x * (s / scale), o.y * (s / scale), s)))
   }
-  const onWheel = (e: React.WheelEvent) => {
-    if (Math.abs(e.deltaY) < 1) return
-    const s = Math.max(1, Math.min(maxScale, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)))
-    setSmooth(false)
+  /*
+   * Wheel = zoom toward the cursor, like a map. Bound NATIVELY with
+   * passive:false: React registers wheel listeners as passive, so a React
+   * onWheel can't cancel the scroll - the feed behind the viewer scrolled on
+   * every zoom step. The live scale/offset ride in a ref, so the listener is
+   * bound once rather than on every zoom step.
+   */
+  const viewRef = useRef({ scale, offset })
+  viewRef.current = { scale, offset }
+  useEffect(() => {
     const pane = paneRef.current
-    if (pane) {
-      // Zoom toward the cursor, like a map
+    if (!pane) return
+    const onWheel = (e: WheelEvent) => {
+      // No picture (a failed run's scrollable error panel): leave the wheel alone
+      if (!pane.querySelector('img')) return
+      e.preventDefault()
+      if (Math.abs(e.deltaY) < 1) return
+      const { scale: cur, offset: off } = viewRef.current
+      const s = Math.max(1, Math.min(maxScale, cur * (e.deltaY < 0 ? 1.15 : 1 / 1.15)))
+      setSmooth(false)
       const r = pane.getBoundingClientRect()
       const cx = e.clientX - (r.left + r.width / 2), cy = e.clientY - (r.top + r.height / 2)
-      const k = s / scale
-      setOffset(s === 1 ? { x: 0, y: 0 } : clampOffset(cx - (cx - offset.x) * k, cy - (cy - offset.y) * k, s))
+      const k = s / cur
+      setOffset(s < 1.02 ? { x: 0, y: 0 } : clampOffset(cx - (cx - off.x) * k, cy - (cy - off.y) * k, s))
+      setScale(s < 1.02 ? 1 : s)
     }
-    setScale(s < 1.02 ? 1 : s)
-  }
+    pane.addEventListener('wheel', onWheel, { passive: false })
+    return () => pane.removeEventListener('wheel', onWheel)
+  // clampOffset reads the pane's live size; nothing else it needs can change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maxScale, resetKey])
   const mouseRef = useRef<{ x: number; y: number; offX: number; offY: number; moved: boolean } | null>(null)
   const lastDragRef = useRef(0)
   const onMouseDown = (e: React.MouseEvent) => {
@@ -10120,13 +10137,32 @@ function usePinchZoom(resetKey: unknown, maxScale = 4) {
     shouldSuppressClick,
     maxScale,
     zoomTo,
-    zoomHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel, onWheel, onMouseDown, onMouseMove, onMouseUp: endDrag, onMouseLeave: endDrag },
+    zoomHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel, onMouseDown, onMouseMove, onMouseUp: endDrag, onMouseLeave: endDrag },
     paneStyle: { touchAction: "none" as const, cursor: scale > 1 ? "grab" : undefined },
     imgStyle: {
       transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
       transition: smooth ? "transform 200ms ease-out" : "none",
     },
   }
+}
+
+/*
+ * While a viewer is open the feed behind it must not move: wheel-zooming the
+ * picture scrolled the feed too, and so did a wheel that strayed onto the
+ * backdrop. The page scroller is locked for the viewer's lifetime (its
+ * scrollbar's width held as padding so nothing shifts sideways) and restored,
+ * scroll position intact, on close.
+ */
+function useLockPageScroll() {
+  useEffect(() => {
+    const el = document.documentElement
+    const prevOverflow = el.style.overflow
+    const prevPad = el.style.paddingRight
+    const bar = window.innerWidth - el.clientWidth
+    el.style.overflow = "hidden"
+    if (bar > 0) el.style.paddingRight = `${bar}px`
+    return () => { el.style.overflow = prevOverflow; el.style.paddingRight = prevPad }
+  }, [])
 }
 
 function ImageDetailModal({
@@ -10165,6 +10201,7 @@ function ImageDetailModal({
   // Failed generations: permanently remove this error from the feed
   onDismissFail?: (image: ImageItem) => void
 }) {
+  useLockPageScroll()
   const [copied, setCopied] = useState(false)
   const [addedRef, setAddedRef] = useState(false)
   const modalImgRef = useRef<HTMLImageElement>(null)
@@ -11003,6 +11040,7 @@ function VideoDetailModal({
   // Failed generations: permanently remove this error from the feed
   onDismissFail?: (video: VideoDetailData) => void
 }) {
+  useLockPageScroll()
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const videoPaneRef = useRef<HTMLDivElement>(null)
