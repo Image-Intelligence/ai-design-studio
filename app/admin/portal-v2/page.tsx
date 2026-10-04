@@ -1546,7 +1546,7 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Kling",             type: "text to image",             accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling V3", "Kling O3"] },
   { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro", "SeeDream 5.0 Flash", "SeedVR2 Upscale", "SeeDream 5 Layerize", "SeeDream 5 Flash Layerize"] },
   { label: "xAI",               type: "text to image · edit",      accent: "text-slate-300",   dot: "bg-slate-300",   items: ["Grok Imagine 2.0"] },
-  { label: "Recraft",           type: "text to image",             accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1", "Recraft V4.1 Flash"] },
+  { label: "Recraft",           type: "text to image · image to SVG", accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1", "Recraft V4.1 Flash", "Recraft Vectorize"] },
   // Public 2026-10-02: V4 copies the style of the attached references (one is required)
   { label: "Recraft V4",        type: "style refs · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4"] },
   { label: "Wan",               type: "text to image",             accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.7 Pro"] },
@@ -1607,8 +1607,6 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // items still resolve; they just aren't offered.
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "Upscalers", type: "enhance & enlarge images · fal", accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"] },
-  // Under test 2026-10-03
-  { label: "Image Tools", type: "vectors", accent: "text-sky-300", dot: "bg-sky-400", items: ["Recraft Vectorize"] },
   { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
@@ -9971,7 +9969,7 @@ function useModalSwipeNav({ hasPrev, hasNext, onPrev, onNext, disabled = false }
 // Pinch-to-zoom + pan + double-tap for the image detail modal. Applied to the
 // media pane (which gets touch-action: none so iOS doesn't page-zoom there).
 // While zoomed (scale > 1) the caller should disable swipe navigation.
-function usePinchZoom(resetKey: unknown) {
+function usePinchZoom(resetKey: unknown, maxScale = 4) {
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [smooth, setSmooth] = useState(false)
@@ -10012,7 +10010,7 @@ function usePinchZoom(resetKey: unknown) {
   const onTouchMove = (e: React.TouchEvent) => {
     if (e.touches.length === 2 && pinchRef.current) {
       const p = pinchRef.current
-      const s = Math.max(1, Math.min(4, p.scale * (touchDist(e.touches) / p.dist)))
+      const s = Math.max(1, Math.min(maxScale, p.scale * (touchDist(e.touches) / p.dist)))
       const m = touchMid(e.touches)
       setScale(s)
       setOffset(clampOffset(p.offX + (m.x - p.midX), p.offY + (m.y - p.midY), s))
@@ -10066,16 +10064,64 @@ function usePinchZoom(resetKey: unknown) {
     tapStartRef.current = null
   }
 
+  /*
+   * Desktop: the zoom bar, the mouse wheel and drag-to-pan. Added for Recraft
+   * Vectorize - an SVG's whole point is that it stays sharp however far in
+   * you go, and the viewer had no way in except a phone pinch.
+   */
+  const zoomTo = (next: number) => {
+    const s = Math.max(1, Math.min(maxScale, next))
+    setSmooth(true)
+    setScale(s)
+    // Keep the view centred on the same spot as it scales
+    setOffset(o => (s === 1 ? { x: 0, y: 0 } : clampOffset(o.x * (s / scale), o.y * (s / scale), s)))
+  }
+  const onWheel = (e: React.WheelEvent) => {
+    if (Math.abs(e.deltaY) < 1) return
+    const s = Math.max(1, Math.min(maxScale, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)))
+    setSmooth(false)
+    const pane = paneRef.current
+    if (pane) {
+      // Zoom toward the cursor, like a map
+      const r = pane.getBoundingClientRect()
+      const cx = e.clientX - (r.left + r.width / 2), cy = e.clientY - (r.top + r.height / 2)
+      const k = s / scale
+      setOffset(s === 1 ? { x: 0, y: 0 } : clampOffset(cx - (cx - offset.x) * k, cy - (cy - offset.y) * k, s))
+    }
+    setScale(s < 1.02 ? 1 : s)
+  }
+  const mouseRef = useRef<{ x: number; y: number; offX: number; offY: number; moved: boolean } | null>(null)
+  const lastDragRef = useRef(0)
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (scale <= 1 || e.button !== 0) return
+    e.preventDefault()
+    setSmooth(false)
+    mouseRef.current = { x: e.clientX, y: e.clientY, offX: offset.x, offY: offset.y, moved: false }
+  }
+  const onMouseMove = (e: React.MouseEvent) => {
+    const m = mouseRef.current
+    if (!m) return
+    if (Math.abs(e.clientX - m.x) + Math.abs(e.clientY - m.y) > 3) m.moved = true
+    setOffset(clampOffset(m.offX + (e.clientX - m.x), m.offY + (e.clientY - m.y), scale))
+  }
+  const endDrag = () => {
+    if (mouseRef.current?.moved) lastDragRef.current = Date.now()
+    mouseRef.current = null
+  }
+
   // Touch taps should never trigger the desktop click action (open in new tab) —
-  // on touch, tapping is part of the double-tap zoom gesture instead
-  const shouldSuppressClick = () => Date.now() - lastTouchEndRef.current < 500
+  // on touch, tapping is part of the double-tap zoom gesture instead. Nor
+  // should the end of a mouse drag-pan.
+  const shouldSuppressClick = () => Date.now() - lastTouchEndRef.current < 500 || Date.now() - lastDragRef.current < 300
 
   return {
     scale,
     paneRef,
     shouldSuppressClick,
-    zoomHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel },
-    paneStyle: { touchAction: "none" as const },
+    maxScale,
+    zoomTo,
+    zoomHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel, onWheel, onMouseDown, onMouseMove, onMouseUp: endDrag, onMouseLeave: endDrag },
+    paneStyle: { touchAction: "none" as const, cursor: scale > 1 ? "grab" : undefined },
     imgStyle: {
       transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
       transition: smooth ? "transform 200ms ease-out" : "none",
@@ -10204,8 +10250,12 @@ function ImageDetailModal({
   // Top/bottom modes render the info as a compact horizontal band so the image keeps priority
   const horiz = infoPos === "top" || infoPos === "bottom"
 
-  // Pinch zoom on the image; swipe nav pauses while zoomed
-  const zoom = usePinchZoom(image.imageUrl)
+  // A vector result (Recraft Vectorize writes an .svg): it can be zoomed much
+  // further - it stays sharp - and downloads as an editable .svg
+  const isSvg = !image.failed && (/\.svg(\?|#|$)/i.test(image.imageUrl) || image.model === "recraft-vectorize")
+  // Pinch zoom on the image (plus the zoom bar / wheel / drag on desktop);
+  // swipe nav pauses while zoomed
+  const zoom = usePinchZoom(image.imageUrl, isSvg ? 16 : 4)
   const { swipeHandlers, cardStyle } = useModalSwipeNav({
     hasPrev: !!hasPrev,
     hasNext: !!hasNext,
@@ -10340,6 +10390,32 @@ function ImageDetailModal({
               onClick={() => { if (zoom.shouldSuppressClick()) return; window.open(shownSrc, "_blank") }}
             />
           )}
+          {/* Zoom bar - top left, clear of the close button and the layer strip */}
+          {!image.failed && (
+            <div
+              data-no-swipe
+              onClick={e => e.stopPropagation()}
+              onMouseDown={e => e.stopPropagation()}
+              onTouchStart={e => e.stopPropagation()}
+              onTouchEnd={e => e.stopPropagation()}
+              className="absolute top-3 left-3 z-10 flex items-center gap-1.5"
+            >
+              <div className="flex items-center rounded-full border border-white/15 bg-black/65 backdrop-blur-sm overflow-hidden">
+                <button onClick={() => zoom.zoomTo(zoom.scale / 1.5)} disabled={zoom.scale <= 1} title="Zoom out"
+                  className="w-7 h-7 flex items-center justify-center text-slate-300 hover:text-white disabled:text-slate-600 transition-colors text-base leading-none">−</button>
+                <button onClick={() => zoom.zoomTo(1)} title="Fit to screen"
+                  className="min-w-[3rem] h-7 px-1 text-[10px] font-mono text-slate-300 hover:text-white transition-colors">{Math.round(zoom.scale * 100)}%</button>
+                <button onClick={() => zoom.zoomTo(zoom.scale * 1.5)} disabled={zoom.scale >= zoom.maxScale} title="Zoom in"
+                  className="w-7 h-7 flex items-center justify-center text-slate-300 hover:text-white disabled:text-slate-600 transition-colors text-base leading-none">+</button>
+              </div>
+              {isSvg && (
+                <span className="px-2 py-1 rounded-full border border-emerald-400/30 bg-emerald-500/15 text-[9px] font-bold tracking-wider text-emerald-200 backdrop-blur-sm"
+                  title="A vector: shapes, not pixels - it stays sharp at any size">
+                  SVG · SHARP AT ANY ZOOM
+                </span>
+              )}
+            </div>
+          )}
           {/* Layerize: switch between the layers, or see them all stacked */}
           {layerData && layerData.layers.length > 1 && !image.failed && (
             <div
@@ -10419,11 +10495,18 @@ function ImageDetailModal({
             {measuredSize && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Size</p>
+                {isSvg ? (
+                  // A vector has no pixel size - the numbers are just its drawing's proportions
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    Vector <span className="text-slate-600">&middot; scales to any size &middot; {measuredSize.w}:{measuredSize.h}</span>
+                  </p>
+                ) : (
                 <p className="text-[11px] text-slate-400 font-mono tabular-nums">
                   {measuredSize.w} &times; {measuredSize.h}
                   <span className="text-slate-600"> px</span>
                   <span className="text-slate-600"> &middot; {(measuredSize.w * measuredSize.h / 1e6).toFixed(1)} MP</span>
                 </p>
+                )}
               </div>
             )}
             {/* Which renderer ran — GPT Image 2.5 ships as two sibling
@@ -10798,7 +10881,7 @@ function ImageDetailModal({
                         const url = URL.createObjectURL(blob)
                         const a = document.createElement("a")
                         a.href = url
-                        const ext = blob.type.includes("webp") ? "webp" : blob.type.includes("jpeg") ? "jpg" : blob.type.includes("png") ? "png" : "img"
+                        const ext = blob.type.includes("svg") || isSvg ? "svg" : blob.type.includes("webp") ? "webp" : blob.type.includes("jpeg") ? "jpg" : blob.type.includes("png") ? "png" : "img"
                         a.download = `${image.prompt.substring(0, 40).replace(/[^a-z0-9]/gi, "_")}.${ext}`
                         document.body.appendChild(a)
                         a.click()
@@ -10809,7 +10892,7 @@ function ImageDetailModal({
                     className="flex-1 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/8 text-[11px] text-slate-300 hover:text-white transition-all flex items-center justify-center gap-1.5"
                   >
                     <Download size={11} />
-                    Download
+                    {isSvg ? "Download SVG" : "Download"}
                   </button>
                 </>
               )}

@@ -121,6 +121,7 @@ export async function GET(
     const audioExt = (image.imageUrl.split('?')[0].match(/\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i)?.[1]
       ?? (contentType.startsWith('audio/') ? ({ 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/flac': 'flac', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg' } as Record<string, string>)[contentType.split(';')[0]] ?? 'mp3' : null))?.toLowerCase()
     const ext = audioExt ? audioExt
+              : contentType.includes('svg') || /\.svg(\?|#|$)/i.test(image.imageUrl) ? 'svg'
               : contentType.includes('jpeg') ? 'jpg'
               : contentType.includes('webp') ? 'webp'
               : contentType.includes('mp4')  ? 'mp4'

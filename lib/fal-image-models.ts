@@ -1859,6 +1859,8 @@ export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
   'seedream-5-pro-layerize', 'seedream-5-flash-layerize', 'qwen-multi-angle',
   // and Marigold V2 Depth ($0.03 -> 1 ticket), the same day
   'marigold-v2',
+  // Recraft Vectorize ($0.01 -> 1 ticket; image -> SVG, best on logos and flat art)
+  'recraft-vectorize',
   // Public 2026-10-01 (priced from fal's rates, tested): SeeDream 5.0 Flash
   // ($0.027 -> 1 ticket) and Grok Imagine 2 (2 tickets, edit 3)
   'seedream-5-flash',
