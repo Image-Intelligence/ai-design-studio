@@ -30,6 +30,10 @@ const nextConfig: NextConfig = {
     '/api/employees/storyboards/[id]/shoot': ['./node_modules/ffmpeg-static/**'],
     // Topaz / Flux video tools are priced from the measured source (lib/video-probe)
     '/api/video/generate': ['./node_modules/ffmpeg-static/**'],
+    // VOID results are re-timed to the source's speed as they are saved (lib/video-probe retimeVideo)
+    '/api/video/status': ['./node_modules/ffmpeg-static/**'],
+    // ...and the portal's own poller, which re-times VOID the same way
+    '/api/admin/video-status': ['./node_modules/ffmpeg-static/**'],
     // The Audio Studio measures uploaded inputs (lib/video-probe) to bill them
     '/api/audio/generate': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/dataset/thumb/[id]': ['./node_modules/ffmpeg-static/**'],

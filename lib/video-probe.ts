@@ -57,3 +57,26 @@ export async function probeRemoteVideo(url: string, timeoutMs = 12_000): Promise
     fps: f ? parseFloat(f[1]) : 30,
   }
 }
+
+/**
+ * Play a clip faster or slower WITHOUT re-encoding: every timestamp is scaled
+ * by `scale` (0.5 = twice as fast). Used to put VOID's 12 fps output back at
+ * its source's speed. Audio, if any, is dropped - it would no longer match.
+ */
+export async function retimeVideo(input: Buffer, scale: number): Promise<Buffer> {
+  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'retime-'))
+  try {
+    const src = join(dir, 'in.mp4'), out = join(dir, 'out.mp4')
+    await writeFile(src, input)
+    await promisify(execFile)(ffmpegPath as unknown as string, [
+      '-y', '-hide_banner', '-loglevel', 'error', '-itsscale', String(scale), '-i', src,
+      '-an', '-c:v', 'copy', '-movflags', '+faststart', out,
+    ], { timeout: 60_000, maxBuffer: 1 << 26 })
+    return await readFile(out)
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}

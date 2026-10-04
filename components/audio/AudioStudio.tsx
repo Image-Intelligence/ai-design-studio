@@ -139,7 +139,7 @@ function AudioCard({ item, onUsePrompt }: { item: AudioItem; onUsePrompt?: (t: s
 function AudioSettings({
   model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
   instrumental, setInstrumental, style, setStyle, lyrics, setLyrics, audioFile, audioUploading, onAudioPick, onAudioClear,
-  voiceConsent, setVoiceConsent,
+  voiceConsent, setVoiceConsent, isAdmin,
 }: {
   model: AudioStudioModel
   onModelChange: (id: string) => void
@@ -155,6 +155,8 @@ function AudioSettings({
   onAudioPick: (f: File) => void
   onAudioClear: () => void
   voiceConsent: boolean; setVoiceConsent: (v: boolean) => void
+  /** Admin-only models (under test) are listed for admins only. */
+  isAdmin: boolean
 }) {
   const g = groupOf(model)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -170,7 +172,7 @@ function AudioSettings({
         <select value={model.id} onChange={e => onModelChange(e.target.value)} className={`${field} font-bold text-sm`}>
           {AUDIO_GROUPS.map(gr => (
             <optgroup key={gr.key} label={gr.label}>
-              {AUDIO_STUDIO_MODELS.filter(m => m.group === gr.key).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {AUDIO_STUDIO_MODELS.filter(m => m.group === gr.key && (!m.admin || isAdmin)).map(m => <option key={m.id} value={m.id}>{m.name}{m.admin ? " (admin)" : ""}</option>)}
             </optgroup>
           ))}
         </select>
@@ -444,7 +446,7 @@ export function AudioStudio({
     model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
     instrumental, setInstrumental, style, setStyle, lyrics, setLyrics,
     audioFile: audio, audioUploading, onAudioPick, onAudioClear: () => setAudio(null),
-    voiceConsent, setVoiceConsent,
+    voiceConsent, setVoiceConsent, isAdmin,
   }
   const shown = [...session, ...past.filter(p => !session.some(s => s.id === p.id))]
   const g = groupOf(model)

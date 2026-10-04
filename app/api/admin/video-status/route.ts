@@ -42,7 +42,10 @@ export async function POST(req: Request) {
       })
 
       const result = await fal.queue.result<any>(falEndpoint, { requestId })
-      const falVideoUrl = result.data?.video?.url
+      // Some endpoints return the video as a one-item list
+      const falVideoUrl: string | undefined = result.data?.video?.url ?? result.data?.video?.[0]?.url ?? result.data?.videos?.[0]?.url
+      // A SeeDance 2.5 draft: its id is what "Complete in 1080p" re-renders
+      const draftId: string | null = result.data?.draft_id ? String(result.data.draft_id) : null
       if (!falVideoUrl) {
         return jsonPrivate({ status: 'failed', error: 'No video URL in FAL result' })
       }
@@ -60,7 +63,7 @@ export async function POST(req: Request) {
           })
           if (saved) { cachedVideoId = saved.id; cachedVideoUrl = saved.imageUrl }
         } catch {}
-        return jsonPrivate({ status: 'completed', videoUrl: cachedVideoUrl, videoId: cachedVideoId })
+        return jsonPrivate({ status: 'completed', videoUrl: cachedVideoUrl, videoId: cachedVideoId, draft: !!draftId })
       }
 
       console.log(`✓ Video generation completed [${requestId}] model=${model} duration=${duration} url=${falVideoUrl}`)
@@ -72,7 +75,27 @@ export async function POST(req: Request) {
         if (videoRes.ok) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'
-          const videoBuffer = Buffer.from(await videoRes.arrayBuffer())
+          let videoBuffer = Buffer.from(await videoRes.arrayBuffer())
+          /*
+           * VOID writes its result at 12 fps but reads the source at the
+           * source's own rate, so it plays at half speed for a 24 fps clip.
+           * Re-time it back (timestamps only - no re-encode) from the frame
+           * rate the generate route measured and stored on the job. (Same as
+           * /api/video/status - this is the route the portal polls.)
+           */
+          if (model === 'void-video-removal') {
+            try {
+              const job = await prisma.generationQueue.findFirst({ where: { falRequestId: requestId }, select: { parameters: true } })
+              const srcFps = Number((job?.parameters as { sourceFps?: number } | null)?.sourceFps) || 24
+              const { VOID_OUTPUT_FPS } = await import('@/lib/batch-1003-video')
+              if (Math.abs(srcFps - VOID_OUTPUT_FPS) > 0.5) {
+                const { retimeVideo } = await import('@/lib/video-probe')
+                videoBuffer = Buffer.from(await retimeVideo(videoBuffer, VOID_OUTPUT_FPS / srcFps))
+              }
+            } catch (e) {
+              console.error('[admin/video-status] VOID re-time failed (keeping the timing fal returned):', e)
+            }
+          }
           const filename = `video-admin-${Date.now()}.${ext}`
           permanentVideoUrl = await uploadToR2(filename, videoBuffer, contentType)
           console.log(`[admin/video-status] Uploaded video to blob: ${permanentVideoUrl}`)
@@ -102,16 +125,17 @@ export async function POST(req: Request) {
               prompt:      prompt || '',
               imageUrl:    permanentVideoUrl,
               model:       model || 'wan-2.5',
-              quality:     resolution || '1080p',
+              quality:     draftId ? 'draft' : (resolution || '1080p'),
               aspectRatio: aspectRatio || '16:9',
               ticketCost:  ticketCost || 0,
               expiresAt:   new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
               falRequestId: requestId,
               videoMetadata: {
                 duration:             duration || '5',
-                resolution:           resolution || '1080p',
+                resolution:           draftId ? 'draft' : (resolution || '1080p'),
                 aspectRatio:          aspectRatio || '16:9',
                 isVideo:              true,
+                ...(draftId ? { seedanceDraftId: draftId } : {}),
                 audioEnabled:         audioEnabled ?? false,
                 startFrameUrl:        startFrameUrl || null,
                 endFrameUrl:          endFrameUrl || null,
@@ -123,13 +147,30 @@ export async function POST(req: Request) {
             select: { id: true },
           })
           savedVideoId = created.id
+          /*
+           * Two overlapping polls (a second tab, a restored session) can both
+           * get past the "already completed" probe and both save - VOID came
+           * back twice on 2026-10-04. The lowest id wins; a later twin removes
+           * itself and answers with the survivor.
+           */
+          const first = await prisma.generatedImage.findFirst({
+            where: { falRequestId: requestId, isDeleted: false },
+            orderBy: { id: 'asc' },
+            select: { id: true, imageUrl: true },
+          })
+          if (first && first.id !== created.id) {
+            await prisma.generatedImage.delete({ where: { id: created.id } }).catch(() => {})
+            savedVideoId = first.id
+            permanentVideoUrl = first.imageUrl
+          }
         }
       } catch (dbErr) {
         console.error('Admin video-status: failed to save to DB (non-fatal):', dbErr)
       }
 
       await releaseQueueSlot(requestId, false)
-      return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId })
+      // draft: the session tile marks itself a draft so its viewer offers "Complete in 1080p"
+      return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
       await releaseQueueSlot(requestId, true, 'Video generation failed on FAL servers')

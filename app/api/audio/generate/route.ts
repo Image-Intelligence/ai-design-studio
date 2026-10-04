@@ -75,6 +75,11 @@ export async function POST(req: Request) {
     // Required inputs
     if (spec.text?.required && !input.text) return jsonPrivate({ error: `${spec.text.label} is required` }, { status: 400 })
     if (spec.lyrics?.required && !input.lyrics) return jsonPrivate({ error: 'Lyrics are required for this model' }, { status: 400 })
+    // Admin-only models (under test) are refused for everyone else, whatever the client sent
+    if (spec.admin) {
+      const { checkIsAdmin } = await import('@/lib/admin-check')
+      if (!(await checkIsAdmin(user.email))) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
+    }
     if (spec.audioIn?.required && !input.audioUrl) return jsonPrivate({ error: `${spec.audioIn.label} is required` }, { status: 400 })
     if (input.audioUrl && !/^https:\/\//.test(input.audioUrl)) return jsonPrivate({ error: 'Invalid audio URL' }, { status: 400 })
 

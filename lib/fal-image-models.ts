@@ -1393,6 +1393,154 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     },
   },
 
+  // —— 2026-10-03 image tools (admin) ————————————
+  //
+  // Each verified against its live Input schema on 2026-10-03.
+  // Pixelcut background removal: sync_mode defaults to TRUE there, which
+  // returns a data: URL instead of a stored file - the feed needs a URL.
+  'pixelcut-bg-removal': {
+    id: 'pixelcut-bg-removal',
+    endpoint: 'pixelcut/background-removal',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Cut-out with transparency (rgba PNG). Output is `image`.',
+    build: (ctx) => ({ image_url: ctx.imageUrls[0], output_format: 'rgba', sync_mode: false }),
+  },
+  // Recraft vectorize: PNG/JPG/WEBP under 5 MB, 16 MP and 4096 px - app/api/generate
+  // shrinks the source to 2048 px (re-encoded), which keeps it inside all three
+  'recraft-vectorize': {
+    id: 'recraft-vectorize',
+    endpoint: 'fal-ai/recraft/vectorize',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Raster -> SVG. Output is `image` (an .svg file).',
+    build: (ctx) => ({ image_url: ctx.imageUrls[0] }),
+  },
+  // SeeDream 5.0 Pro Layerize: one image in, the base plus up to 16 layers
+  // out (`images`, each a transparent PNG). Billed PER LAYER: $0.03375 each
+  // while the base is under 1536x1536, double above. auto_1.5K is NOT under
+  // it for a wide image (tested 2026-10-03: a 16:9 still came back 2064x1152,
+  // 2.38 MP - the dear tier), so auto_1K, which always is.
+  'seedream-5-pro-layerize': {
+    id: 'seedream-5-pro-layerize',
+    endpoint: 'bytedance/seedream/v5/pro/layerize',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Splits an image into a base + transparent layers (images[]). Priced per layer.',
+    build: (ctx) => compact({
+      image_url: ctx.imageUrls[0], image_size: 'auto_1K', enhance_prompt_mode: 'standard',
+      prompt: ctx.prompt ? ctx.prompt.slice(0, 2000) : undefined,
+    }),
+  },
+  // Qwen Image Edit 2511 Multiple Angles: the same scene re-shot from a camera
+  // angle. Billed $0.035 per output megapixel and the output takes the
+  // source's size, so app/api/generate holds the source to 1536 px.
+  'qwen-multi-angle': {
+    id: 'qwen-multi-angle',
+    endpoint: 'fal-ai/qwen-image-edit-2511-multiple-angles',
+    needsImage: true, imageParam: 'image_urls', maxInputImages: 1, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Re-shoot from an angle: horizontal 0-360, vertical -30..90, zoom 0-10.',
+    build: (ctx) => compact({
+      image_urls: [ctx.imageUrls[0]],
+      horizontal_angle: num(Number(ctx.options.angleH), 0, 360) ?? 45,
+      vertical_angle: num(Number(ctx.options.angleV), -30, 90) ?? 0,
+      zoom: num(Number(ctx.options.angleZoom), 0, 10) ?? 5,
+      num_images: 1, output_format: 'png',
+      additional_prompt: ctx.prompt ? ctx.prompt.slice(0, 500) : undefined,
+    }),
+  },
+  // Bria FIBO Edit 1.5 Product Holding: a person (or a mannequin, a hand) and
+  // 1-3 product shots -> the person holding the product. $0.04 flat.
+  'bria-product-holding': {
+    id: 'bria-product-holding',
+    endpoint: 'bria/fibo-edit-1.5/product-holding',
+    needsImage: true, imageParam: 'person_image_url', maxInputImages: 4, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'needs TWO+ images: refs[0] = who holds it, refs[1..3] = the product',
+    build: (ctx) => compact({
+      person_image_url: ctx.imageUrls[0],
+      product_image_urls: ctx.imageUrls.slice(1, 4),
+      instruction: ctx.prompt ? ctx.prompt.slice(0, 500) : undefined,
+    }),
+  },
+
+  // —— 2026-10-03 second round (admin) ————————————
+  // SAM 3.1: the subject named in the prompt, masked. apply_mask returns the
+  // image with only that subject kept (`image`); the bare masks come too.
+  'sam-3.1-image': {
+    id: 'sam-3.1-image',
+    endpoint: 'fal-ai/sam-3-1/image',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: true, promptMax: 500,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Text-prompted segmentation. Output `image` (masked preview) + `masks`.',
+    build: (ctx) => ({ image_url: ctx.imageUrls[0], prompt: ctx.prompt.slice(0, 500), apply_mask: true, output_format: 'png' }),
+  },
+  // Bria Replace Background: keeps the subject, paints a new background from the prompt
+  'bria-replace-background': {
+    id: 'bria-replace-background',
+    endpoint: 'bria/replace-background',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: true, promptMax: 1000,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'New background from a prompt; subject kept. $0.04.',
+    build: (ctx) => ({ image_url: ctx.imageUrls[0], prompt: ctx.prompt.slice(0, 1000) }),
+  },
+  // Bria Embed Product: refs[0] = the scene, refs[1] = the product, placed in a
+  // box worked out from the scene's measured size (ctx.options.refDims) and the
+  // where/size presets - the schema wants pixel coordinates.
+  'bria-embed-product': {
+    id: 'bria-embed-product',
+    endpoint: 'bria/embed-product',
+    needsImage: true, imageParam: null, maxInputImages: 2, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'needs TWO images: refs[0] = scene, refs[1] = product. $0.04.',
+    build: (ctx) => {
+      const d = ctx.options.refDims as { width?: number; height?: number } | null | undefined
+      const W = d?.width && d.width > 0 ? d.width : 1024, H = d?.height && d.height > 0 ? d.height : 1024
+      const frac = ctx.options.embedSize === 'small' ? 0.22 : ctx.options.embedSize === 'large' ? 0.5 : 0.34
+      const side = Math.round(Math.min(W, H) * frac)
+      const place = String(ctx.options.embedPlace ?? 'center')
+      const cx = place === 'left' ? W * 0.27 : place === 'right' ? W * 0.73 : W / 2
+      const cy = place === 'bottom' ? H * 0.72 : place === 'top' ? H * 0.3 : H / 2
+      const x = Math.max(0, Math.min(W - side, Math.round(cx - side / 2)))
+      const y = Math.max(0, Math.min(H - side, Math.round(cy - side / 2)))
+      return { image_source: ctx.imageUrls[0], products: [{ image_source: ctx.imageUrls[1], coordinates: { x, y, width: side, height: side } }] }
+    },
+  },
+  // SeeDream 5.0 Flash Layerize: the cheaper Layerize - $0.027 a layer at any size
+  'seedream-5-flash-layerize': {
+    id: 'seedream-5-flash-layerize',
+    endpoint: 'bytedance/seedream/v5/flash/layerize',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Base + transparent layers (images[]). $0.027 per layer, any size.',
+    build: (ctx) => compact({
+      image_url: ctx.imageUrls[0], image_size: 'auto_1.5K',
+      prompt: ctx.prompt ? ctx.prompt.slice(0, 2000) : undefined,
+    }),
+  },
+
+  // —— Marigold V2 Depth (2026-10-03, admin) ————————
+  //
+  // Verified against the live Input schema on 2026-10-03: image_url is the only
+  // required field. One deterministic pass returns a colourised depth map
+  // (Spectral colormap: near is warm, far is cool) as `image`, sized to the
+  // input rounded to a multiple of 16. image_size may not exceed 2048 px a
+  // side, and the default follows the input - so app/api/generate shrinks a
+  // larger source to 2048 before the upload. $0.03 an image, any size.
+  'marigold-v2': {
+    id: 'marigold-v2',
+    endpoint: 'fal-ai/marigold-v2',
+    needsImage: true,
+    imageParam: 'image_url',
+    maxInputImages: 1,
+    promptRequired: false,
+    aspectRatios: null,
+    usesImageSize: false,
+    notes: 'Depth map from one image. Output is `image` (singular). Source must be <= 2048 px a side.',
+    build: (ctx) => ({ image_url: ctx.imageUrls[0] }),
+  },
+
   // —— Topaz image suite ——————————————————————————
   'topaz-img-upscale-precision': {
     id: 'topaz-img-upscale-precision',
@@ -1704,6 +1852,13 @@ export const FAL_IMAGE_MODEL_IDS = Object.keys(FAL_IMAGE_MODELS)
  * reference.
  */
 export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
+  // Public 2026-10-04 (priced from fal's rates, each run through the portal UI):
+  // Background Removal, SAM 3.1 Select, the three Bria tools, both Layerizes
+  // (Pro re-priced 8 -> 10 tickets) and Multi-Angle Reshoot
+  'pixelcut-bg-removal', 'sam-3.1-image', 'bria-replace-background', 'bria-product-holding', 'bria-embed-product',
+  'seedream-5-pro-layerize', 'seedream-5-flash-layerize', 'qwen-multi-angle',
+  // and Marigold V2 Depth ($0.03 -> 1 ticket), the same day
+  'marigold-v2',
   // Public 2026-10-01 (priced from fal's rates, tested): SeeDream 5.0 Flash
   // ($0.027 -> 1 ticket) and Grok Imagine 2 (2 tickets, edit 3)
   'seedream-5-flash',
@@ -1802,6 +1957,12 @@ export function buildFalImageInput(
   }
   if (spec.needsImage && ctx.imageUrls.length === 0) {
     throw new Error(`${spec.id} requires an input image`)
+  }
+  if (spec.id === 'bria-embed-product' && ctx.imageUrls.length < 2) {
+    throw new Error('Embed Product needs two images: the scene, then the product.')
+  }
+  if (spec.id === 'bria-product-holding' && ctx.imageUrls.length < 2) {
+    throw new Error('Product in hand needs two images: who holds it, then the product.')
   }
   if (spec.id === 'google-virtual-try-on' && ctx.imageUrls.length < 2) {
     throw new Error('Virtual Try-On needs two images: a person photo and a product photo')

@@ -23,20 +23,10 @@
 
 import crypto from 'crypto'
 
-export type CcbillPlan = {
-  id: 'biweekly' | 'monthly'
-  name: string
-  price: number          // USD, charged per cycle
-  periodDays: number     // recurring period in days
-  tickets: number        // tickets credited per successful charge
-}
-
-// Server-authoritative plan catalog (yearly was dropped by product decision
-// 2026-07 — only these plans can be purchased, whatever the client sends)
-export const CCBILL_PLANS: CcbillPlan[] = [
-  { id: 'biweekly', name: 'Biweekly Plan', price: 20, periodDays: 14, tickets: 250 },
-  { id: 'monthly',  name: 'Monthly Plan',  price: 40, periodDays: 30, tickets: 500 },
-]
+// The plan catalog lives in lib/dev-tier-plans.ts (plain data, so the
+// subscribe page can import the very same list); re-exported here.
+import { CCBILL_PLANS, type CcbillPlan } from '@/lib/dev-tier-plans'
+export { CCBILL_PLANS, type CcbillPlan, type CcbillPlanId } from '@/lib/dev-tier-plans'
 
 export function getCcbillPlan(id: unknown): CcbillPlan | undefined {
   return CCBILL_PLANS.find(p => p.id === id)

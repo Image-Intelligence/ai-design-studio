@@ -96,6 +96,8 @@ export interface AudioStudioModel {
    * by /api/audio/generate, not just the checkbox.
    */
   audioIn?: { label: string; required: boolean; maxMinutes: number; hint?: string; clonesVoice?: boolean }
+  /** Admin-only while under test: hidden from the menus and refused by /api/audio/generate for everyone else. */
+  admin?: boolean
   price: AudioPrice
   build: (i: AudioRunInput) => Record<string, unknown>
   outputs: (data: any) => AudioOutput[]
@@ -227,6 +229,19 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     text: SPEECH(2000), voices: { options: QWEN_AUDIO3_VOICES, default: 'Cherry' }, languages: { options: QWEN_AUDIO3_LANGS, default: 'Auto' },
     price: { usd: 0.05, per: 'kchar' },
     build: i => clean({ text: i.text, voice: i.voice || 'Cherry', language: i.language || 'Auto' }), outputs: audioOut,
+  },
+  {
+    // 2026-10-03 (ADMIN): music composed to a video's own cuts and pacing. The
+    // "audio" input takes the clip (the upload accepts MP4). fal $0.009 per
+    // second of output and sample; one sample, scored over the whole clip.
+    id: 'sonilo-video-music', name: 'Sonilo Video to Music', group: 'music', provider: 'Sonilo', endpoint: 'sonilo/v1.1/video-to-music',
+    blurb: 'Scores a video: music that follows its cuts and pacing.',
+    text: { label: 'Style (optional)', placeholder: 'e.g. warm cinematic strings, hopeful - leave empty to let it choose', max: 500, required: false },
+    audioIn: { label: 'Video to score', required: true, maxMinutes: 5, hint: 'MP4 - the music follows its cuts' },
+    admin: true,
+    price: { usd: 0.009, per: 'inSecond' },
+    build: i => clean({ video_url: i.audioUrl, num_samples: 1, prompt: i.text?.trim() || undefined }),
+    outputs: (d: any) => (Array.isArray(d?.audios) && d.audios.length ? d.audios : d?.audio ? [d.audio] : []).filter((a: any) => a?.url).map((a: any) => ({ url: a.url })),
   },
   {
     id: 'chatterbox-hd', name: 'Chatterbox HD', group: 'tts', provider: 'Resemble AI', endpoint: 'resemble-ai/chatterboxhd/text-to-speech',

@@ -1,8 +1,11 @@
 "use client"
 
+import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost } from "@/lib/ticket-pricing"
+import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, TICKET_PACKAGES } from "@/lib/ticket-pricing"
+import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
+import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -182,6 +185,19 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "google-virtual-try-on", apiId: "google-virtual-try-on",   name: "Virtual Try-On",      aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4, isUpscaler: true, isTryOn: true },
   // SeedVR2 — one source image, no prompt; the shared upscaler controls
   // (source picker + factor) drive it, same as the Topaz suite.
+  // 2026-10-03 second round (admin)
+  { id: "sam-3.1-image",        apiId: "sam-3.1-image",            name: "SAM 3.1 Select",      aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "bria-replace-background", apiId: "bria-replace-background", name: "Bria Replace Background", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "bria-embed-product",   apiId: "bria-embed-product",       name: "Bria Embed Product",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 1, isUpscaler: true, isTryOn: true },
+  { id: "seedream-5-flash-layerize", apiId: "seedream-5-flash-layerize", name: "SeeDream 5 Flash Layerize", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  // 2026-10-03 image tools (admin): one image in (Bria: two, on the try-on picker)
+  { id: "pixelcut-bg-removal",  apiId: "pixelcut-bg-removal",      name: "Background Removal",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "recraft-vectorize",    apiId: "recraft-vectorize",        name: "Recraft Vectorize",   aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "seedream-5-pro-layerize", apiId: "seedream-5-pro-layerize", name: "SeeDream 5 Layerize", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "qwen-multi-angle",     apiId: "qwen-multi-angle",         name: "Multi-Angle Reshoot", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "bria-product-holding", apiId: "bria-product-holding",     name: "Bria Product in Hand", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 1, isUpscaler: true, isTryOn: true },
+  // Marigold V2 Depth (admin): one image in, its depth map out - no prompt, no factor
+  { id: "marigold-v2",          apiId: "marigold-v2",              name: "Marigold V2 Depth",   aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "seedvr2-upscale",      apiId: "seedvr2-upscale",          name: "SeedVR2 Upscale",     aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   // Topaz image suite — all take one source image
   { id: "topaz-img-upscale-precision",  apiId: "topaz-img-upscale-precision",  name: "Topaz Upscale · Precision",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
@@ -655,6 +671,8 @@ interface VideoModelConfig {
   audioType: "toggle" | "upload" | "none"
   textToVideo?: boolean            // image is optional (supports text-to-video)
   supportsReferenceVideo?: boolean // SeeDance 2.0 r2v — accepts image_urls[], video_urls[], audio_urls[]
+  /** The unified reference panel with IMAGES only: no reference videos/audio and no end frame (Happy Horse 1.1 - a start frame, or 1-9 character references). */
+  refImagesOnly?: boolean
   supportsSD20Modes?: boolean      // SeeDance 2.0 — shows T2V/I2V/Ref mode switcher inside panel
   supportsLipsync?: boolean        // Lipsync v3 — takes video + audio, no prompt
   startFrameLocksAspect?: boolean  // when a start frame is provided, aspect ratio is ignored by the model
@@ -668,11 +686,15 @@ interface VideoModelConfig {
   lumaModes?: string[]          // Luma modify / Ray 3.2 edit: adhere_1 (closest) .. reimagine_3 (freest)
   toolPromptRequired?: boolean  // this tool can't run without a prompt (Ray 3.2 edit / reframe)
   /** A single named choice the model takes (Pixelcut: loop motion / background). Sent as videoChoice. */
-  choice?: { label: string; note?: string; options: { value: string; label: string }[] }
+  choice?: { label: string; note?: string; /** Shown to admins only (non-admins always get the first option) */ adminOnly?: boolean; options: { value: string; label: string }[] }
   /** The tool works on ONE clip and nothing else (Pixelcut background removal):
    *  the reference block shows just a "Source clip" slot, capped at this many
    *  seconds, instead of SeeDance's images + videos + audio (15s combined). */
   sourceClipMaxSec?: number
+  /** The audio upload's own wording, when it is the input that drives the model (lip sync, music video). */
+  audioUpload?: { label: string; hint: string; required?: boolean }
+  /** H3 Max Insert Shot: where the new shot starts in the source and where the source resumes. */
+  insertTimes?: boolean
 }
 
 // The 2026-09-28 / 09-29 video batches: priced by the billing function itself in the UI
@@ -687,6 +709,11 @@ const BATCH_0928_VIDEO = new Set([
   "pixverse-v6-extend", "grok-video-edit", "grok-video-extend",
   "pixelcut-looping-video", "pixelcut-video-bg-removal",
   "grok-video-1.5-lite", "minimax-h3-max-turbo-extend", "minimax-h3-max-recast",
+  // 2026-10-03 batch
+  "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "happy-horse-1.1",
+  "void-video-removal", "veed-subtitles", "minimax-h3-max-insert", "depth-anything-video",
+  "heygen-translate", "heygen-translate-fast", "mirelo-sfx-video",
+  "heygen-avatar4", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast", "sam-3.1-video", "elevenlabs-dubbing",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -930,6 +957,8 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     supportsEndFrame: true,
     audioType: "toggle",
     supportsReferenceVideo: true,
+    // Draft: a cheap 480p preview; the viewer can complete it at 1080p within 7 days
+    choice: { label: "Mode", note: "draft = 480p preview, finish the keepers in 1080p", options: [{ value: "final", label: "Final" }, { value: "draft", label: "Draft (480p)" }] },
   },
   {
     // ADMIN ONLY — Omni Flash 1.1. Adds 4K, keeps 16:9/9:16 only, and has no
@@ -1210,6 +1239,39 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     supportsEndFrame: false,
     audioType: "none",
   },
+  // ── 2026-10-03 batch (ADMIN ONLY while under test) - lib/batch-1003-video ──
+  { id: "minimax-h3-max-lipsync", name: "H3 Max Lip Sync", durations: [], resolutions: ["480p","768p","1080p"], supportsEndFrame: false, audioType: "upload",
+    audioUpload: { label: "Voice track", hint: "WAV / MP3, 5s - 15 min - the video runs as long as this", required: true } },
+  { id: "pixverse-music-video", name: "PixVerse Music Video", durations: [], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, textToVideo: true, audioType: "upload",
+    audioUpload: { label: "Song", hint: "MP3 / WAV, 10s - 6 min - a photo is an optional character; the prompt box takes lyrics", required: true },
+    choice: { label: "Visual style", options: [{ value: "Cinematic", label: "Cinematic" }, { value: "Lo-fi", label: "Lo-fi" }, { value: "Dreamscape", label: "Dreamscape" }, { value: "Woolen Felt", label: "Woolen Felt" }, { value: "Candy", label: "Candy" }, { value: "Golden Age", label: "Golden Age" }, { value: "Voxel", label: "Voxel" }, { value: "Retro Game", label: "Retro Game" }, { value: "Claymation", label: "Claymation" }, { value: "Woodland Tale", label: "Woodland Tale" }, { value: "Impressionism", label: "Impressionism" }, { value: "Decadence", label: "Decadence" }, { value: "Futuristic", label: "Futuristic" }, { value: "Chromatic Clash", label: "Chromatic Clash" }, { value: "Holiday", label: "Holiday" }] } },
+  { id: "minimax-h3-max-camera", name: "H3 Max Camera Controls", durations: ["3","4","5","6","8","10","12","15"], resolutions: ["480p","768p","1080p"], supportsEndFrame: false, audioType: "none",
+    choice: { label: "Camera move", note: "the scene holds still, the camera moves", options: [{ value: "arc-push", label: "Arc + push" }, { value: "orbit-right", label: "Orbit right" }, { value: "orbit-left", label: "Orbit left" }, { value: "orbit-360", label: "Full orbit" }, { value: "dolly-in", label: "Push in" }, { value: "dolly-out", label: "Pull back" }, { value: "crane-up", label: "Crane up" }, { value: "crane-down", label: "Low angle sweep" }] } },
+  { id: "happy-horse-1.1", name: "Happy Horse 1.1", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4","21:9","9:21","5:4","4:5"], supportsEndFrame: false, audioType: "none", supportsReferenceVideo: true, refImagesOnly: true },
+  { id: "void-video-removal", name: "VOID Object Removal", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 16 },
+  { id: "veed-subtitles", name: "VEED Subtitles", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 600,
+    choice: { label: "Caption style", note: "✦ animated styles cost 2x", options: [{ value: "simple", label: "Simple" }, { value: "plain", label: "Plain" }, { value: "corpo", label: "Corporate" }, { value: "karl", label: "Karl" }, { value: "mint", label: "Mint" }, { value: "vegas", label: "Vegas" }, { value: "beans", label: "Beans" }, { value: "hustle", label: "Hustle" }, { value: "rizz", label: "Rizz" }, { value: "lowkey", label: "Lowkey" }, { value: "glide", label: "Glide ✦" }, { value: "glass", label: "Glass ✦" }, { value: "handwritten", label: "Handwritten ✦" }, { value: "backdrop", label: "Backdrop ✦" }, { value: "terminal", label: "Terminal ✦" }, { value: "fusion", label: "Fusion ✦" }] } },
+  { id: "minimax-h3-max-insert", name: "H3 Max Insert Shot", durations: ["5","8","10","13"], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60, insertTimes: true },
+  { id: "depth-anything-video", name: "Depth Anything Video", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 100,
+    choice: { label: "Colours", options: [{ value: "turbo", label: "Turbo (near = warm)" }, { value: "grayscale", label: "Grayscale" }, { value: "inferno", label: "Inferno" }, { value: "magma", label: "Magma" }, { value: "viridis", label: "Viridis" }] } },
+  { id: "heygen-translate", name: "HeyGen Translate", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 480,
+    choice: { label: "Translate into", note: "dubbed, with the lips re-synced", options: [{ value: "Spanish", label: "Spanish" }, { value: "French", label: "French" }, { value: "German", label: "German" }, { value: "Italian", label: "Italian" }, { value: "Portuguese", label: "Portuguese" }, { value: "Japanese", label: "Japanese" }, { value: "Korean", label: "Korean" }, { value: "Chinese", label: "Chinese" }, { value: "Mandarin", label: "Mandarin" }, { value: "Hindi", label: "Hindi" }, { value: "Arabic", label: "Arabic" }, { value: "Dutch", label: "Dutch" }, { value: "Polish", label: "Polish" }, { value: "Turkish", label: "Turkish" }, { value: "Swedish", label: "Swedish" }, { value: "Danish", label: "Danish" }, { value: "Romanian", label: "Romanian" }, { value: "Greek", label: "Greek" }, { value: "Ukrainian", label: "Ukrainian" }, { value: "Indonesian", label: "Indonesian" }, { value: "Filipino", label: "Filipino" }, { value: "English", label: "English" }] } },
+  { id: "heygen-translate-fast", name: "HeyGen Translate Fast", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 480,
+    choice: { label: "Translate into", note: "faster and half the price of precision", options: [{ value: "Spanish", label: "Spanish" }, { value: "French", label: "French" }, { value: "German", label: "German" }, { value: "Italian", label: "Italian" }, { value: "Portuguese", label: "Portuguese" }, { value: "Japanese", label: "Japanese" }, { value: "Korean", label: "Korean" }, { value: "Chinese", label: "Chinese" }, { value: "Mandarin", label: "Mandarin" }, { value: "Hindi", label: "Hindi" }, { value: "Arabic", label: "Arabic" }, { value: "Dutch", label: "Dutch" }, { value: "Polish", label: "Polish" }, { value: "Turkish", label: "Turkish" }, { value: "Swedish", label: "Swedish" }, { value: "Danish", label: "Danish" }, { value: "Romanian", label: "Romanian" }, { value: "Greek", label: "Greek" }, { value: "Ukrainian", label: "Ukrainian" }, { value: "Indonesian", label: "Indonesian" }, { value: "Filipino", label: "Filipino" }, { value: "English", label: "English" }] } },
+  { id: "mirelo-sfx-video", name: "Mirelo SFX 1.6", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60 },
+  // second round (admin): a talking photo with HeyGen's voices, video from audio, tracking masks, dubbing
+  { id: "heygen-avatar4", name: "HeyGen Avatar 4", durations: [], resolutions: ["360p","480p","540p","720p","1080p"], aspectRatios: ["auto","16:9","9:16","1:1","4:5","5:4"], supportsEndFrame: false, audioType: "upload",
+    audioUpload: { label: "Own voice track", hint: "WAV / MP3 - replaces the typed script and voice", required: false },
+    choice: { label: "Voice", note: "the prompt box is what they say", options: HEYGEN_VOICES.map(v => ({ value: v, label: v.trim() })) } },
+  { id: "ltx-2.5-audio-pro", name: "LTX 2.5 Audio to Video Pro", durations: [], aspectRatios: ["auto","16:9","9:16"], supportsEndFrame: false, textToVideo: true, audioType: "upload",
+    audioUpload: { label: "Audio", hint: "MP3 / WAV, 2 - 10s - the video follows it (1080p)", required: true } },
+  { id: "ltx-2.5-audio-fast", name: "LTX 2.5 Audio to Video Fast", durations: [], aspectRatios: ["auto","16:9","9:16"], supportsEndFrame: false, textToVideo: true, audioType: "upload",
+    audioUpload: { label: "Audio", hint: "MP3 / WAV, 2 - 20s - the video follows it (1080p)", required: true } },
+  { id: "sam-3.1-video", name: "SAM 3.1 Track", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 120 },
+  { id: "elevenlabs-dubbing", name: "ElevenLabs Dubbing", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 900,
+    choice: { label: "Dub into", note: "voices re-recorded; lips not re-synced", options: DUB_LANGUAGES.map(([v, l]) => ({ value: v, label: l })) } },
+  // Never picked from a menu - the video viewer's "Complete in 1080p" on a SeeDance 2.5 draft runs it
+  { id: "seedance-2.5-complete", name: "SeeDance 2.5 (completed draft)", durations: [], supportsEndFrame: false, audioType: "none" },
 ]
 const VIDEO_MODELS = VIDEO_MODEL_CONFIGS.map(m => m.name)
 
@@ -1265,6 +1327,16 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "z-image-base":        "$$",
   "z-image-turbo":       "$",
   "seedvr2-upscale":     "$",
+  "marigold-v2":         "$",
+  "pixelcut-bg-removal": "$",
+  "recraft-vectorize":   "$",
+  "seedream-5-pro-layerize": "$$",
+  "qwen-multi-angle":    "$",
+  "bria-product-holding": "$",
+  "sam-3.1-image":       "$",
+  "bria-replace-background": "$",
+  "bria-embed-product":  "$",
+  "seedream-5-flash-layerize": "$$",
   "clarity-upscaler":    "$$",
   "aura-sr":             "$",
   "esrgan":              "$",
@@ -1284,6 +1356,22 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "seedance-2.0":       "$$$+",
   "kling-v3":           "$$$",
   "happy-horse":        "$$",
+  "happy-horse-1.1":    "$$$",
+  "minimax-h3-max-lipsync": "$$",
+  "pixverse-music-video": "$$$",
+  "minimax-h3-max-camera": "$$",
+  "void-video-removal": "$",
+  "veed-subtitles":     "$",
+  "minimax-h3-max-insert": "$$",
+  "depth-anything-video": "$",
+  "heygen-translate":   "$$$",
+  "heygen-translate-fast": "$$",
+  "mirelo-sfx-video":   "$",
+  "heygen-avatar4":     "$$",
+  "ltx-2.5-audio-pro":  "$$$",
+  "ltx-2.5-audio-fast": "$$$",
+  "sam-3.1-video":      "$",
+  "elevenlabs-dubbing": "$$",
   "minimax-h3-max":     "$$",
   "wan-3.0":            "$$$",
   "wan-3.0-prime":      "$$$+",
@@ -1361,8 +1449,13 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
 // lib/audio-studio's section order, and a $ tier from a typical run
 const AUDIO_MODEL_GROUPS = AUDIO_GROUPS.map(g => ({
   label: g.label, type: g.key, accent: g.accent, dot: g.dot, note: g.note,
-  items: AUDIO_STUDIO_MODELS.filter(m => m.group === g.key).map(m => m.name),
+  items: AUDIO_STUDIO_MODELS.filter(m => m.group === g.key && !m.admin).map(m => m.name),
 }))
+// Audio models still under test (admin flag in lib/audio-studio): admins only
+const ADMIN_AUDIO_MODEL_GROUPS = [
+  { label: "Under test", type: "admin", accent: "text-sky-300", dot: "bg-sky-400",
+    items: AUDIO_STUDIO_MODELS.filter(m => m.admin).map(m => m.name) },
+].filter(g => g.items.length > 0)
 const AUDIO_MODEL_COST_BY_NAME = Object.fromEntries(AUDIO_STUDIO_MODELS.map(m => [m.name, audioCostTier(m)])) as Record<string, "$" | "$$" | "$$$" | "$$$+">
 function CostBadge({ tier }: { tier: "$" | "$$" | "$$$" | "$$$+" }) {
   const color = tier === "$"    ? "text-green-400"
@@ -1451,7 +1544,7 @@ function modelDbKeysForName(name: string): string[] {
 const IMAGE_MODEL_GROUPS = [
   { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2", "NanoBanana 2 Lite"] },
   { label: "Kling",             type: "text to image",             accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling V3", "Kling O3"] },
-  { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro", "SeeDream 5.0 Flash", "SeedVR2 Upscale"] },
+  { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro", "SeeDream 5.0 Flash", "SeedVR2 Upscale", "SeeDream 5 Layerize", "SeeDream 5 Flash Layerize"] },
   { label: "xAI",               type: "text to image · edit",      accent: "text-slate-300",   dot: "bg-slate-300",   items: ["Grok Imagine 2.0"] },
   { label: "Recraft",           type: "text to image",             accent: "text-fuchsia-400", dot: "bg-fuchsia-400", items: ["Recraft v4.1", "Recraft V4.1 Flash"] },
   // Public 2026-10-02: V4 copies the style of the attached references (one is required)
@@ -1466,17 +1559,19 @@ const IMAGE_MODEL_GROUPS = [
   // Google, distinct from the Gemini row above: Virtual Try-On is a Google
   // model but not a Gemini one, and filing it under Gemini would be wrong.
   { label: "Google",            type: "virtual try-on",            accent: "text-emerald-400", dot: "bg-emerald-400", items: ["Virtual Try-On"] },
-  { label: "Pixelcut",          type: "product photography",       accent: "text-rose-400",    dot: "bg-rose-400",    items: ["Pixelcut Product Photo"] },
+  { label: "Pixelcut",          type: "product photography · background removal", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Product Photo", "Background Removal"] },
   // Public 2026-10-01 (priced from fal's rates, tested)
   { label: "Topaz",             type: "upscale · restore · adjust", accent: "text-lime-400",    dot: "bg-lime-400",    items: ["Topaz Image"] },
-  { label: "Bria",              type: "text to image · edit",      accent: "text-teal-400",    dot: "bg-teal-400",    items: ["Bria Fibo 1.5"] },
+  { label: "Bria",              type: "text to image · edit · product tools", accent: "text-teal-400", dot: "bg-teal-400", items: ["Bria Fibo 1.5", "Bria Replace Background", "Bria Product in Hand", "Bria Embed Product"] },
   { label: "Microsoft",         type: "text to image · edit",      accent: "text-sky-400",     dot: "bg-sky-400",     items: ["MAI Image 2.5 Pro"] },
   { label: "Tencent",           type: "text to image · edit",      accent: "text-sky-300",     dot: "bg-sky-300",     items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct"] },
   // Public 2026-10-02 (priced from fal's rates, tested)
-  { label: "Alibaba",           type: "text to image · edit",      accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Qwen Image 3"] },
-  { label: "Meta",              type: "text to image · edit",      accent: "text-blue-400",    dot: "bg-blue-400",    items: ["Meta Muse"] },
+  { label: "Alibaba",           type: "text to image · edit · new angles", accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3", "Multi-Angle Reshoot"] },
+  { label: "Meta",              type: "text to image · edit · cut-outs", accent: "text-blue-400", dot: "bg-blue-400", items: ["Meta Muse", "SAM 3.1 Select"] },
   // Public 2026-10-02 (priced from fal's rates, tested)
   { label: "Krea",              type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
+  // Public 2026-10-04: Marigold (ETH Zurich's open depth model)
+  { label: "Open Source",       type: "depth maps", accent: "text-slate-300", dot: "bg-slate-400", items: ["Marigold V2 Depth"] },
   { label: "Luma",              type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
 ]
 
@@ -1496,6 +1591,13 @@ const IMAGE_MODEL_GROUPS = [
 const IMAGE_MODEL_SECTIONS: { label: string; note?: string; accent?: string; dot?: string; groups: { label: string; type: string; accent: string; dot: string; items: string[] }[] }[] = []
 /** The home page's Upscale / Tools sub-sections, by model (see HomeView). */
 const HOME_IMAGE_UPSCALE_NAMES = ["SeedVR2 Upscale"]
+// Single-image tools with no upscale factor: no 2x/4x picker, no "2x" on the tile
+const NO_FACTOR_TOOLS = new Set(["marigold-v2", "pixelcut-bg-removal", "recraft-vectorize", "seedream-5-pro-layerize", "qwen-multi-angle", "sam-3.1-image", "bria-replace-background", "seedream-5-flash-layerize"])
+// Single-image tools that take a short text: what it acts on (sent as the prompt)
+const TOOL_TEXT: Record<string, { label: string; placeholder: string }> = {
+  "sam-3.1-image": { label: "Select", placeholder: "what to cut out - e.g. the fox, the red car" },
+  "bria-replace-background": { label: "Background", placeholder: "the new background - e.g. a sunlit beach at golden hour" },
+}
 const ADMIN_IMAGE_MODEL_GROUPS = [
   // The picker renders THESE groups, not IMAGE_MODEL_CONFIGS — a model missing
   // from here simply never appears, however complete its config is.
@@ -1505,6 +1607,8 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // items still resolve; they just aren't offered.
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "Upscalers", type: "enhance & enlarge images · fal", accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"] },
+  // Under test 2026-10-03
+  { label: "Image Tools", type: "vectors", accent: "text-sky-300", dot: "bg-sky-400", items: ["Recraft Vectorize"] },
   { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
@@ -1513,11 +1617,11 @@ const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Ob
 const VIDEO_MODEL_GROUPS = [
   { label: "Kling",       type: "image to video",        accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling 3.0", "Kling V3 Motion"] },
   { label: "Kling O3 & Turbo", type: "text · image · refs to video · audio · clip edit", accent: "text-orange-300", dot: "bg-orange-300", items: ["Kling O3 Pro", "Kling O3 4K", "Kling V3 Turbo Pro", "Kling V3 Turbo", "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference"] },
-  { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1", "PixVerse V6 Extend"] },
+  { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1", "PixVerse V6 Extend", "PixVerse Music Video"] },
   { label: "Vidu", type: "text · image · start/end · refs to video · audio", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q3", "Vidu Q3 Turbo"] },
   { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
-  { label: "MiniMax", type: "image & text to video · references · extend · recast", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast"] },
-  { label: "ByteDance",   type: "image & text to video · upscale", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "SeedVR2 Video", "ByteDance Video Upscale"] },
+  { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot"] },
+  { label: "ByteDance",   type: "image & text to video · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
   { label: "Google Veo", type: "text · image · first/last · refs · audio · extend", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite", "Veo 3.1 Extend", "Veo 3.1 Fast Extend"] },
   { label: "Wan",         type: "image & text to video", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7"] },
   { label: "Alibaba Wan 3.0", type: "text · image · refs · with audio", accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
@@ -1528,10 +1632,17 @@ const VIDEO_MODEL_GROUPS = [
   // 2026-10-02 each sits with its maker. Topaz makes only tools, and FlashVSR
   // is an open-source model with no company of its own.
   { label: "Topaz", type: "upscale · interpolate · deblur · HDR", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Upscale · Precision", "Topaz Upscale · Creative", "Topaz Upscale · Starlight", "Topaz Frame Interpolate", "Topaz Deblur", "Topaz SDR → HDR"] },
-  { label: "Open Source", type: "community video upscaler", accent: "text-slate-300", dot: "bg-slate-400", items: ["FlashVSR"] },
+  { label: "Open Source", type: "community models · upscale · object removal", accent: "text-slate-300", dot: "bg-slate-400", items: ["FlashVSR", "VOID Object Removal"] },
+  // Public 2026-10-04: SAM 3.1 tracks what you name through a clip
+  { label: "Meta", type: "track & mask objects through a clip", accent: "text-blue-400", dot: "bg-blue-400", items: ["SAM 3.1 Track"] },
+  { label: "HeyGen", type: "talking photo · translate with lip sync", accent: "text-teal-300", dot: "bg-teal-300", items: ["HeyGen Avatar 4", "HeyGen Translate", "HeyGen Translate Fast"] },
+  // Public 2026-10-04: captions, dubbing and sound for a clip you already have
+  { label: "VEED", type: "animated subtitles", accent: "text-violet-300", dot: "bg-violet-300", items: ["VEED Subtitles"] },
+  { label: "ElevenLabs", type: "dub a clip into another language", accent: "text-slate-200", dot: "bg-slate-200", items: ["ElevenLabs Dubbing"] },
+  { label: "Mirelo", type: "sound effects for a silent clip", accent: "text-orange-300", dot: "bg-orange-300", items: ["Mirelo SFX 1.6"] },
   { label: "Lipsync",     type: "lip sync video",        accent: "text-pink-400",    dot: "bg-pink-400",    items: ["Lipsync v3"] },
-  { label: "Alibaba",     type: "image to video",        accent: "text-yellow-400",  dot: "bg-yellow-400",  items: ["Happy Horse"] },
-  { label: "Lightricks",  type: "text & image to video · directed camera · up to 4K", accent: "text-lime-400", dot: "bg-lime-400", items: ["LTX 2.5 Pro", "LTX 2.5 Fast"] },
+  { label: "Alibaba",     type: "image & references to video", accent: "text-yellow-400", dot: "bg-yellow-400", items: ["Happy Horse", "Happy Horse 1.1"] },
+  { label: "Lightricks",  type: "text & image to video · directed camera · up to 4K · from audio", accent: "text-lime-400", dot: "bg-lime-400", items: ["LTX 2.5 Pro", "LTX 2.5 Fast", "LTX 2.5 Audio to Video Pro", "LTX 2.5 Audio to Video Fast"] },
   // Public 2026-10-01 (priced from fal's rates, tested end to end)
   { label: "Google", type: "text · image · refs · edit to video · native audio", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
   { label: "Black Forest Labs", type: "text · image · first/last · keyframes · extend · audio · upscale", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3", "Flux Video Upscale"] },
@@ -1551,7 +1662,25 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    */
   { label: "Wan",    type: "LoRA video · pricing TBD",                        accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA"] },
   { label: "Topaz", type: "colorize · fal's endpoint is down", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Colorize"] },
+  // 2026-10-03 batch, under test
 ]
+// Models fal runs without any prompt (their inputs are the image/audio)
+const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera"])
+// What the prompt box is FOR, per model, where "Describe the motion..." would
+// mislead (tools that act on a clip, audio-driven models, the talking photo)
+const VIDEO_PROMPT_HINTS: Record<string, string> = {
+  "void-video-removal": "Describe what to remove and where - e.g. the glowing lantern in the sky and its reflection in the water",
+  "sam-3.1-video": "What to track - e.g. the dog, the red car",
+  "minimax-h3-max-insert": "Describe the new shot to insert (optional)",
+  "mirelo-sfx-video": "Describe the sounds you want (optional)",
+  "minimax-h3-max-lipsync": "No prompt needed - the photo and voice track are all it takes",
+  "pixverse-music-video": "Lyrics to show as subtitles (optional) - the song drives the video",
+  "heygen-avatar4": "What they say - type the script (or upload a voice track)",
+  "ltx-2.5-audio-pro": "Describe the video (required without a start image)",
+  "ltx-2.5-audio-fast": "Describe the video (required without a start image)",
+  "happy-horse-1.1": "Describe the motion (required with character references)",
+  "minimax-h3-max-camera": "Describe the scene (optional) - the camera move is set on the left",
+}
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
   "wan-2.2-lora",
@@ -9768,6 +9897,13 @@ function useModalSwipeNav({ hasPrev, hasNext, onPrev, onNext, disabled = false }
         return
       }
     }
+    // Anything inside the card that scrolls sideways on its own (the Layerize
+    // layer strip) opts out with data-no-swipe: a drag there scrolls it, and
+    // must not page to the next generation
+    if ((e.target as HTMLElement).closest?.("[data-no-swipe]")) {
+      startRef.current = null
+      return
+    }
     startRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
     multiTouchRef.current = false
     axisLockRef.current = null
@@ -9986,6 +10122,15 @@ function ImageDetailModal({
   const [copied, setCopied] = useState(false)
   const [addedRef, setAddedRef] = useState(false)
   const modalImgRef = useRef<HTMLImageElement>(null)
+  /*
+   * SeeDream Layerize: one card holds every layer (lib/layerize-save). The
+   * card itself shows them stacked - the original picture - and the chips
+   * switch to one layer at a time (null = all of them, stacked).
+   */
+  const layerData = (image.videoMetadata as { layerize?: { width: number; height: number; layers: { name: string; z: number; url: string; box: number[] }[] } } | undefined)?.layerize
+  const [layerIdx, setLayerIdx] = useState<number | null>(null)
+  useEffect(() => { setLayerIdx(null) }, [image.imageUrl])
+  const shownSrc = layerData && layerIdx !== null ? layerData.layers[layerIdx]?.url ?? image.imageUrl : image.imageUrl
   const [chatEditOpen, setChatEditOpen] = useState(false)
   const [chatEditPrompt, setChatEditPrompt] = useState("")
   const [showRefConsent, setShowRefConsent] = useState(false)
@@ -10175,11 +10320,16 @@ function ImageDetailModal({
           ) : (
             <img
               ref={modalImgRef}
-              src={image.imageUrl}
+              src={shownSrc}
               alt={image.prompt}
               className="max-w-full max-h-full object-contain cursor-pointer hover:opacity-90"
               title="Open full size"
-              style={zoom.imgStyle}
+              // One layer alone sits on a checkerboard, so its transparency shows
+              style={layerData && layerIdx !== null ? {
+                ...zoom.imgStyle,
+                backgroundImage: "conic-gradient(#2a2f3a 25%, #1a1e27 0 50%, #2a2f3a 0 75%, #1a1e27 0)",
+                backgroundSize: "20px 20px",
+              } : zoom.imgStyle}
               onLoad={e => {
                 const el = e.currentTarget
                 if (el.naturalWidth > 0 && el.naturalHeight > 0) {
@@ -10187,8 +10337,34 @@ function ImageDetailModal({
                   setMeasuredSize({ w: el.naturalWidth, h: el.naturalHeight })
                 }
               }}
-              onClick={() => { if (zoom.shouldSuppressClick()) return; window.open(image.imageUrl, "_blank") }}
+              onClick={() => { if (zoom.shouldSuppressClick()) return; window.open(shownSrc, "_blank") }}
             />
+          )}
+          {/* Layerize: switch between the layers, or see them all stacked */}
+          {layerData && layerData.layers.length > 1 && !image.failed && (
+            <div
+              data-no-swipe
+              // The strip's own gestures stay with it: not the swipe-to-next
+              // (data-no-swipe) and not the pane's pinch/pan zoom
+              onTouchStart={e => e.stopPropagation()}
+              onTouchMove={e => e.stopPropagation()}
+              onTouchEnd={e => e.stopPropagation()}
+              className="absolute inset-x-0 bottom-0 z-10 p-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent"
+            >
+              <div className="flex gap-1.5 overflow-x-auto overscroll-contain touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {[{ label: `All layers · ${layerData.layers.length}`, idx: null as number | null }, ...layerData.layers.map((l, i) => ({ label: l.name, idx: i as number | null }))].map(c => (
+                  <button
+                    key={c.idx ?? "all"}
+                    onClick={e => { e.stopPropagation(); setLayerIdx(c.idx) }}
+                    className={`shrink-0 max-w-[14rem] truncate px-2.5 py-1 rounded-full border text-[11px] font-semibold transition-colors ${
+                      layerIdx === c.idx ? "bg-white text-black border-white" : "bg-black/60 border-white/20 text-slate-200 hover:border-white/50"
+                    }`}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
         </div>
 
@@ -10663,6 +10839,67 @@ function ImageDetailModal({
 }
 
 // --- VIDEO DETAIL MODAL ---
+/**
+ * SeeDance 2.5 Draft -> Complete: re-render a 480p draft at 1080p. The draft's
+ * fal id stays on the server (the route looks it up from the video's own id);
+ * this submits, then follows the render here while the viewer is open - the
+ * cron harvests it if the viewer is closed first.
+ */
+function DraftCompleteButton({ videoId, draftSeconds }: { videoId: number; draftSeconds?: number }) {
+  // The 1080p render bills by the draft's length - the server measures the
+  // file (a "4s" draft is ~4.04s), so the quote rounds the same way
+  const quote = videoTicketCost({ model: "seedance-2.5-complete", duration: "5", resolution: "1080p", generateAudio: false, editVideoDurationSec: (draftSeconds || 5) + 0.04 } as Parameters<typeof videoTicketCost>[0])
+  const [state, setState] = useState<"idle" | "running" | "done" | "error">("idle")
+  const [note, setNote] = useState<string | null>(null)
+  const [secs, setSecs] = useState(0)
+  const alive = useRef(true)
+  useEffect(() => () => { alive.current = false }, [])
+  const run = async () => {
+    setState("running"); setNote(null); setSecs(0)
+    try {
+      const r = await fetch("/api/video/generate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        // No adminMode: that path is admins-only (a 401 for everyone else) -
+        // the signed-in account is charged like any other generation
+        body: JSON.stringify({ model: "seedance-2.5-complete", draftVideoId: videoId, duration: "5", resolution: "1080p", prompt: "" }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !j.success) throw new Error(j.error || "Could not start the 1080p render")
+      setNote(`${j.ticketCost} tickets`)
+      if (!j.requestId) { setState("done"); setNote("Queued - it will appear in your feed"); return }
+      const started = Date.now()
+      for (let k = 0; k < 120 && alive.current; k++) {
+        await new Promise(res => setTimeout(res, 8000))
+        if (!alive.current) return
+        setSecs(Math.round((Date.now() - started) / 1000))
+        const s = await fetch("/api/video/status", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId: j.requestId, falEndpoint: j.falEndpoint, prompt: "SeeDance 2.5 draft completed at 1080p", model: "seedance-2.5-complete", duration: j.duration, resolution: "1080p", ticketCost: j.ticketCost }),
+        }).then(x => x.json()).catch(() => null)
+        if (s?.status === "completed") { setState("done"); setNote("Done - the 1080p version is in your feed"); return }
+        if (s?.status === "failed") throw new Error(s.error || "The 1080p render failed")
+      }
+    } catch (e: any) {
+      if (alive.current) { setState("error"); setNote(String(e?.message || e)) }
+    }
+  }
+  return (
+    <div className="space-y-1">
+      <button
+        onClick={run}
+        disabled={state === "running" || state === "done"}
+        className="w-full py-2 rounded-lg border border-sky-400/40 bg-sky-500/10 hover:bg-sky-500/20 text-[12px] font-semibold text-sky-100 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+      >
+        {state === "running" ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+        {state === "running" ? `Completing in 1080p… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : state === "done" ? "Completed in 1080p" : `Complete in 1080p · ${quote} tickets`}
+      </button>
+      <p className={`text-[10px] leading-snug ${state === "error" ? "text-red-400" : "text-slate-500"}`}>
+        {note ?? "Draft · 480p preview. Re-renders this exact take at 1080p - drafts keep for 7 days."}
+      </p>
+    </div>
+  )
+}
+
 function VideoDetailModal({
   video,
   onClose,
@@ -11020,6 +11257,9 @@ function VideoDetailModal({
                 {video.failed ? "Try Again" : "Use This Prompt"}
               </button>
             </div>
+            {!video.failed && video.model === "seedance-2.5" && video.resolution === "draft" && typeof video.id === "number" && (
+              <DraftCompleteButton videoId={video.id} draftSeconds={parseFloat(String(video.duration ?? "")) || undefined} />
+            )}
             {!video.failed && (
               <div className="flex gap-2">
                 <button
@@ -20024,6 +20264,16 @@ function PromptBox({
   const [selectedRefId, setSelectedRefId] = useState<string | null>(null)
   const upscaleFileInputRef = useRef<HTMLInputElement>(null)
   const [upscaleFactor, setUpscaleFactor] = useState<2 | 4>(2)
+  // Multi-Angle Reshoot: where the camera goes (fal's ranges: 0-360, -30..90, 0-10)
+  const [angleH, setAngleH] = useState(45)
+  const [angleV, setAngleV] = useState(0)
+  const [angleZoom, setAngleZoom] = useState(5)
+  const [angleConfigOpen, setAngleConfigOpen] = useState(false)
+  // SAM 3.1 / Replace Background: the text the tool acts on
+  const [toolText, setToolText] = useState("")
+  // Bria Embed Product: where the product goes in the scene, and how big
+  const [embedPlace, setEmbedPlace] = useState<"center" | "left" | "right" | "bottom" | "top">("center")
+  const [embedSize, setEmbedSize] = useState<"small" | "medium" | "large">("medium")
   /*
    * SeedVR2 settings, shaped by the endpoint rather than by the 2%s/4%s control
    * the older upscalers share: this model takes a continuous 1-10 factor, or a
@@ -20511,7 +20761,7 @@ function PromptBox({
   const canGenerate = model.isTryOn
     ? !isGenerationMaintenance && !!userId && tryOnPerson.url.startsWith("http") && tryOnGarment.url.startsWith("http") && !generating && !queueFull && hasEnoughTickets
     : model.isUpscaler
-    ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint) && hasEnoughTickets
+    ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint) && hasEnoughTickets && (!TOOL_TEXT[model.id] || toolText.trim().length > 0)
     : !isGenerationMaintenance && !!userId && prompt.trim().length > 0 && !generating && !needsRefImage && !queueFull && hasEnoughTickets
 
   // --- Quick Generate (pinned tab) ---
@@ -20605,7 +20855,7 @@ function PromptBox({
     // referenceImages, and lib/fal-image-models maps [0] to person_image_url
     // and [1] to product_image_url — so order here is the contract.
     if (model.isTryOn) {
-      const label = "Virtual try-on"
+      const label = model.id === "bria-product-holding" ? "Product in hand" : model.id === "bria-embed-product" ? "Embed product" : "Virtual try-on"
       // fal's num_images would return several images under ONE job; separate
       // jobs match how every other model here batches, so each result gets its
       // own feed tile, its own retry, and its own ticket line.
@@ -20636,6 +20886,7 @@ function PromptBox({
               aspectRatio: "auto",
               upscaleImageUrl: tryOnPerson.url,
               referenceImages: [tryOnGarment.url],
+              ...(model.id === "bria-embed-product" ? { embedPlace, embedSize } : {}),
             }),
           })
           const data = await res.json()
@@ -20671,11 +20922,19 @@ function PromptBox({
         : seedvrMode === "default" ? "SeedVR2"
         : `${seedvrFactor}× SeedVR2`
       const pendingLabel = model.id === "seedvr2-upscale" ? seedvrLabel
+        : model.id === "marigold-v2" ? "Marigold depth map"
+        : model.id === "pixelcut-bg-removal" ? "Background removal"
+        : model.id === "recraft-vectorize" ? "Vectorize to SVG"
+        : model.id === "seedream-5-pro-layerize" || model.id === "seedream-5-flash-layerize" ? "Split into layers"
+        : model.id === "sam-3.1-image" ? `Select · ${toolText.trim()}`
+        : model.id === "bria-replace-background" ? `New background · ${toolText.trim()}`
+        : model.id === "qwen-multi-angle" ? `Reshoot · ${angleH}° / ${angleV}° · zoom ${angleZoom}`
         : model.id === "aura-sr" ? `${upscaleFactor}x AuraSR` : model.id === "esrgan" ? `${upscaleFactor}x ESRGAN` : model.id === "drct" ? `${upscaleFactor}x DRCT` : model.id === "supir" ? `${upscaleFactor}x SUPIR` : `${upscaleFactor}x upscale`
       onAddPending({
         slotId, status: "loading", prompt: pendingLabel, modelId: model.apiId, aspectRatio: "auto",
         quality: (model.id === "seedvr2-upscale"
           ? (seedvrMode === "target" ? seedvrTarget : seedvrMode === "default" ? "auto" : `${seedvrFactor}x`)
+          : NO_FACTOR_TOOLS.has(model.id) ? "auto"
           : `${upscaleFactor}x`) as Quality,
         // The slot carries the settings from launch, so pressing the tile
         // answers "what did I run this at" while it is still running.
@@ -20710,6 +20969,10 @@ function PromptBox({
                   ? { esrganModel, esrganFace, esrganOutputFormat }
                   : model.id === "supir"
                     ? { supirModelName, supirSteps, supirUseLlava, supirCfg, supirColorFix, supirNegPrompt }
+                    : model.id === "qwen-multi-angle"
+                      ? { angleH, angleV, angleZoom }
+                    : TOOL_TEXT[model.id]
+                      ? { prompt: toolText.trim() }
                     : model.id === "seedvr2-upscale"
                       ? {
                           seedvrUpscaleMode: seedvrMode,
@@ -22221,7 +22484,20 @@ function PromptBox({
           {model.isTryOn && (
             <div className="px-4 pt-4 pb-3 border-b border-white/5">
               <div className="flex items-center justify-between mb-2.5">
-                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-[0.2em]">Virtual Try-On</span>
+                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-[0.2em]">{model.id === "bria-product-holding" ? "Product in hand" : model.id === "bria-embed-product" ? "Embed product" : "Virtual Try-On"}</span>
+                {model.id === "bria-embed-product" && (
+                  // Where the product goes and how big - turned into a pixel box server-side
+                  <span className="flex items-center gap-1.5 ml-auto mr-3">
+                    <select value={embedPlace} onChange={e => setEmbedPlace(e.target.value as typeof embedPlace)}
+                      className="rounded-md bg-slate-950 border border-white/10 px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none">
+                      {(["center", "left", "right", "bottom", "top"] as const).map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                    <select value={embedSize} onChange={e => setEmbedSize(e.target.value as typeof embedSize)}
+                      className="rounded-md bg-slate-950 border border-white/10 px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none">
+                      {(["small", "medium", "large"] as const).map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </span>
+                )}
                 {(tryOnPerson.url || tryOnGarment.url) && (
                   <button
                     onClick={() => {
@@ -22242,7 +22518,23 @@ function PromptBox({
                     Refs · tap to fill <span className="text-cyan-300">{tryOnSlot}</span>
                   </p>
                   {photoRefs.length > 0 ? (
-                    <div className="max-h-[260px] overflow-y-auto overscroll-contain pr-0.5 flex gap-1.5 items-start">
+                    <>
+                    {/* Phones: one sideways row instead of a 260px-tall masonry */}
+                    <div className="sm:hidden flex gap-1.5 overflow-x-auto overscroll-contain pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      {photoRefs.map(img => {
+                        const used = img.url === tryOnPerson.url || img.id === tryOnPerson.refId ? "person" : img.url === tryOnGarment.url || img.id === tryOnGarment.refId ? "garment" : null
+                        return (
+                          <button key={img.id} onClick={() => useRefForTryOn(img)} disabled={!!tryOnUploading} title={`Use as ${tryOnSlot}`}
+                            className={`relative shrink-0 h-16 rounded-lg overflow-hidden border disabled:opacity-50 ${used ? "border-cyan-400 ring-1 ring-cyan-400/40" : "border-white/10"}`}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={refTileThumb(img.url, 128)} alt="" decoding="async" className="h-full w-auto max-w-[7rem] object-cover block bg-slate-900"
+                              onError={e => { const el = e.target as HTMLImageElement; if (el.src !== img.url) el.src = img.url; else el.closest("button")?.classList.add("hidden") }} />
+                            {used && <span className="absolute bottom-0 inset-x-0 bg-cyan-500/85 text-[7px] font-mono uppercase text-black text-center">{model.id === "bria-product-holding" ? (used === "person" ? "holder" : "product") : used}</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <div className="hidden sm:flex max-h-[260px] overflow-y-auto overscroll-contain pr-0.5 gap-1.5 items-start">
                       {[0, 1, 2].map(col => (
                         <div key={col} className="flex-1 min-w-0 flex flex-col gap-1.5">
                           {photoRefs.filter((_, i) => i % 3 === col).map(img => {
@@ -22290,6 +22582,7 @@ function PromptBox({
                         </div>
                       ))}
                     </div>
+                    </>
                   ) : (
                     <p className="text-[11px] text-slate-500">
                       No photos in your Refs library yet — add some via the <span className="text-slate-400">Refs</span> section, or upload straight into a slot.
@@ -22301,10 +22594,10 @@ function PromptBox({
                     TALL box, which is the shape person photos actually are; a
                     landscape photo needs the opposite, so one wide image flips
                     the pair to stacked. */}
-                <div className={`min-w-0 flex gap-2 sm:h-[260px] ${tryOnStacked ? "flex-col" : "flex-row"}`}>
+                <div className={`min-w-0 flex gap-2 ${tryOnStacked ? "h-60" : "h-40"} sm:h-[260px] ${tryOnStacked ? "flex-col" : "flex-row"}`}>
                   {([
-                    { key: "person" as const,  label: "Person",  hint: "who wears it",   state: tryOnPerson,  set: setTryOnPerson },
-                    { key: "garment" as const, label: "Garment", hint: "what to try on", state: tryOnGarment, set: setTryOnGarment },
+                    { key: "person" as const,  label: model.id === "bria-product-holding" ? "Holder" : model.id === "bria-embed-product" ? "Scene" : "Person",   hint: model.id === "bria-product-holding" ? "who holds it" : model.id === "bria-embed-product" ? "where it goes" : "who wears it",   state: tryOnPerson,  set: setTryOnPerson },
+                    { key: "garment" as const, label: model.id === "bria-product-holding" || model.id === "bria-embed-product" ? "Product" : "Garment", hint: model.id === "bria-product-holding" ? "what they hold" : model.id === "bria-embed-product" ? "what to place" : "what to try on", state: tryOnGarment, set: setTryOnGarment },
                   ]).map(slot => (
                     <div
                       key={slot.key}
@@ -22437,7 +22730,69 @@ function PromptBox({
                 )}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Phones: the same picker, compact. The two-column layout below
+                  stacked into ~600px on an iPhone - a tall library, a big empty
+                  preview, then the buttons - and buried the feed under the
+                  prompt card. Here: refs as one sideways row, a small preview
+                  beside Upload, and the URL box. */}
+              <div className="sm:hidden space-y-2">
+                {photoRefs.length > 0 ? (
+                  <div className="flex gap-1.5 overflow-x-auto overscroll-contain pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {photoRefs.map(img => {
+                      const isSelected = selectedRefId === img.id || (img.url.startsWith("http") && upscaleSourceUrl === img.url)
+                      return (
+                        <button
+                          key={img.id}
+                          onClick={() => selectRefAsUpscaleSource(img)}
+                          disabled={upscaleUploading}
+                          title="Use as source"
+                          className={`relative shrink-0 h-16 rounded-lg overflow-hidden border transition-all disabled:opacity-50 ${
+                            isSelected ? "border-cyan-400 ring-1 ring-cyan-400/40" : "border-white/10"
+                          }`}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={refTileThumb(img.url, 128)}
+                            alt=""
+                            decoding="async"
+                            className="h-full w-auto max-w-[7rem] object-cover block bg-slate-900"
+                            onError={e => {
+                              const el = e.target as HTMLImageElement
+                              if (el.src !== img.url) el.src = img.url
+                              else el.closest("button")?.classList.add("hidden")
+                            }}
+                          />
+                          {isSelected && (
+                            <span className="absolute bottom-0 inset-x-0 bg-cyan-500/85 text-[7px] font-mono uppercase tracking-wide text-black text-center">source</span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500">No photos in your Refs yet - upload one below.</p>
+                )}
+                <div className="flex items-center gap-2">
+                  <div className="relative shrink-0 w-12 h-12 rounded-lg border border-white/10 bg-slate-950/60 overflow-hidden flex items-center justify-center">
+                    {upscaleSourceUrl.startsWith("http") ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={refTileThumb(upscaleSourceUrl, 128)} alt="source" decoding="async" className="w-full h-full object-cover" />
+                    ) : <ImagePlus size={14} className="text-slate-600" />}
+                    {upscaleUploading && (
+                      <div className="absolute inset-0 bg-black/60 flex items-center justify-center"><Loader2 size={12} className="animate-spin text-cyan-400" /></div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => upscaleFileInputRef.current?.click()}
+                    disabled={upscaleUploading}
+                    className="flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-white/[0.06] border border-white/[0.08] text-[11px] text-slate-300 disabled:opacity-50"
+                  >
+                    {upscaleUploading && !selectedRefId ? <><Loader2 size={11} className="animate-spin" />Uploading…</> : <><ImagePlus size={11} />Upload a photo</>}
+                  </button>
+                </div>
+              </div>
+
+              <div className="hidden sm:grid sm:grid-cols-2 gap-3">
                 {/* left: the library */}
                 <div className="min-w-0">
                   <p className="text-[9px] font-mono uppercase tracking-[0.18em] text-slate-500 mb-1.5">Refs · tap to use</p>
@@ -22533,13 +22888,6 @@ function PromptBox({
                     }
                   </button>
 
-                  <input
-                    type="text"
-                    value={upscaleSourceUrl}
-                    onChange={e => { setUpscaleSourceUrl(e.target.value); setUpscaleUploadError(null); setSelectedRefId(null) }}
-                    placeholder="Or paste an image URL…"
-                    className="shrink-0 w-full min-w-0 px-2 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-white/30"
-                  />
                 </div>
               </div>
 
@@ -22913,6 +23261,123 @@ function PromptBox({
                   {auraSrOverlappingTiles ? "On · 2× slower" : "Off"}
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Multi-Angle Reshoot: where the camera moves to. One slim row with a
+              summary that opens the settings popup (the SeedVR2 pattern) - as
+              an always-open block the three sliders made the prompt card tall
+              on a phone. */}
+          {model.id === "qwen-multi-angle" && (() => {
+            const turnLabel = (v: number) => v === 0 || v === 360 ? "front" : v === 90 ? "right side" : v === 180 ? "back" : v === 270 ? "left side" : `${v}°`
+            const heightLabel = (v: number) => v < 0 ? `${-v}° low` : v === 0 ? "eye level" : v === 90 ? "top down" : `${v}° high`
+            const zoomLabel = (v: number) => v <= 2 ? "wide" : v >= 8 ? "close-up" : v === 5 ? "medium" : `zoom ${v}`
+            return (
+              <div className="border-t border-white/[0.06] px-4 py-2.5 flex items-center justify-between gap-3">
+                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">Camera</span>
+                <button onClick={() => setAngleConfigOpen(true)}
+                  className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-slate-400 hover:text-white hover:border-white/20 transition-all">
+                  <SlidersHorizontal size={9} className="shrink-0" />
+                  <span className="truncate">{turnLabel(angleH)} · {heightLabel(angleV)} · {zoomLabel(angleZoom)}</span>
+                </button>
+                {angleConfigOpen && createPortal(
+                  <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+                    onClick={() => setAngleConfigOpen(false)}>
+                    <div className="w-full max-w-md rounded-2xl bg-[#0f0f1a] border border-white/[0.1] shadow-2xl flex flex-col max-h-[85vh]"
+                      onClick={e => e.stopPropagation()}>
+
+                      <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.07] shrink-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold text-white">Camera angle</p>
+                          <span className="px-1.5 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[9px] font-bold uppercase tracking-wider">Reshoot</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => { setAngleH(45); setAngleV(0); setAngleZoom(5) }}
+                            className="px-2 py-1 rounded text-[10px] font-mono text-slate-600 hover:text-slate-300 transition-colors">reset</button>
+                          <button onClick={() => setAngleConfigOpen(false)}
+                            className="p-1 rounded hover:bg-white/[0.06] text-slate-600 hover:text-slate-300 transition-colors">
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+                        <p className="text-[10px] text-slate-600 leading-relaxed">One new shot of the same scene, from where the camera is set here.</p>
+
+                        {/* Common shots in one tap; the sliders fine-tune */}
+                        <div className="space-y-1.5">
+                          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Quick angles</p>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {([
+                              ["Front", 0, 0, 5], ["Right side", 90, 0, 5], ["Back", 180, 0, 5], ["Left side", 270, 0, 5],
+                              ["Top down", 0, 90, 4], ["Low angle", 30, -30, 5], ["Close-up", 0, 0, 9], ["Wide", 0, 15, 1],
+                            ] as const).map(([label, h, v, z]) => {
+                              const on = angleH === h && angleV === v && angleZoom === z
+                              return (
+                                <button key={label} onClick={() => { setAngleH(h); setAngleV(v); setAngleZoom(z) }}
+                                  className={`px-1.5 py-1.5 rounded-md border text-[10px] font-mono transition-colors ${on ? "bg-white/15 border-white/30 text-white" : "border-white/10 text-slate-500 hover:text-slate-300"}`}>
+                                  {label}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+
+                        {([
+                          ["Turn", "around the subject", angleH, setAngleH, 0, 360, 15, turnLabel],
+                          ["Height", "low angle to top down", angleV, setAngleV, -30, 90, 15, heightLabel],
+                          ["Zoom", "wide to close-up", angleZoom, setAngleZoom, 0, 10, 1, zoomLabel],
+                        ] as const).map(([label, hint, val, set, min, max, step, fmt]) => (
+                          <div key={label} className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">{label} <span className="normal-case tracking-normal text-slate-600">· {hint}</span></p>
+                              <span className="text-[11px] font-mono text-white tabular-nums">{fmt(val)}</span>
+                            </div>
+                            <input type="range" min={min} max={max} step={step} value={val}
+                              onChange={e => set(Number(e.target.value))}
+                              className="w-full accent-white cursor-pointer h-0.5" />
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="px-5 py-3 border-t border-white/[0.07] shrink-0">
+                        <button onClick={() => setAngleConfigOpen(false)}
+                          className="w-full py-2 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-[12px] font-semibold text-white transition-colors">
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  </div>,
+                  document.body,
+                )}
+              </div>
+            )
+          })()}
+
+          {/* SAM 3.1 / Replace Background: the text the tool acts on */}
+          {TOOL_TEXT[model.id] && (
+            <div className="px-4 py-2.5 border-t border-white/[0.06] flex items-center gap-3">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">{TOOL_TEXT[model.id].label}</span>
+              <input
+                value={toolText}
+                onChange={e => setToolText(e.target.value)}
+                placeholder={TOOL_TEXT[model.id].placeholder}
+                maxLength={500}
+                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[12px] text-white placeholder-slate-600 focus:outline-none focus:border-white/30"
+              />
+            </div>
+          )}
+
+          {/* One-image tools with nothing to set: say what they do */}
+          {(model.id === "pixelcut-bg-removal" || model.id === "recraft-vectorize" || model.id === "seedream-5-pro-layerize" || model.id === "seedream-5-flash-layerize" || model.id === "marigold-v2") && (
+            <div className="px-4 py-3 border-t border-white/[0.06] flex items-start gap-2">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0 mt-0.5">{model.id === "pixelcut-bg-removal" ? "Cut-out" : model.id === "recraft-vectorize" ? "SVG" : model.id.includes("layerize") ? "Layers" : "Depth"}</span>
+              <p className="text-[11px] text-slate-500 leading-relaxed">{
+                model.id === "pixelcut-bg-removal" ? "Removes the background and keeps the subject on transparency (PNG). No settings - pick a photo and generate."
+                : model.id === "recraft-vectorize" ? "Turns a logo or flat graphic into a scalable SVG. Works best on clean shapes and few colours."
+                : model.id.includes("layerize") ? `Splits the image into a background plate and a transparent layer per object, saved as one card - switch layers in its viewer.${model.id.includes("flash") ? " Flash: faster and cheaper." : ""}`
+                : "A depth map of the photo: near is warm, far is cool. Useful for parallax, depth of field and relighting."
+              }</p>
             </div>
           )}
 
@@ -23393,7 +23858,7 @@ function PromptBox({
             {/* Upscale factor toggle — upscaler only. NOT SeedVR2: its factor
                 is continuous 1-10 and lives in its own settings block, so a
                 2x/4x pair here would silently disagree with what it sends. */}
-            {model.isUpscaler && !model.isTryOn && model.id !== "seedvr2-upscale" && (
+            {model.isUpscaler && !model.isTryOn && model.id !== "seedvr2-upscale" && !NO_FACTOR_TOOLS.has(model.id) && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
                 <div className="flex items-center rounded-md overflow-hidden border border-white/10 shrink-0">
@@ -24557,6 +25022,7 @@ function SD20RefPanel({
   sourceClipMaxSec,
   refTagHint = "prompt with @Image1…",
   allowFrameTags = false,
+  startTagOnly = false,
   startIdx = null,
   endIdx = null,
   onTagStart,
@@ -24581,6 +25047,8 @@ function SD20RefPanel({
   refTagHint?: string
   // SeeDance 2.0: pick the start/end frame out of the references (S/E tags per tile)
   allowFrameTags?: boolean
+  /** Only the S (start frame) tag - for models with no end frame */
+  startTagOnly?: boolean
   startIdx?: number | null
   endIdx?: number | null
   onTagStart?: (i: number | null) => void
@@ -24658,7 +25126,9 @@ function SD20RefPanel({
         </div>
         <p className="text-[10px] text-slate-600 leading-snug">
           {allowFrameTags
-            ? <>Guide the video with up to 9 images ({refTagHint}). Tap <span className="text-slate-200 font-semibold">S</span> / <span className="text-slate-200 font-semibold">E</span> on an image to make it the exact start / end frame.</>
+            ? startTagOnly
+              ? <>Up to 9 character references ({refTagHint}) - or tap <span className="text-slate-200 font-semibold">S</span> on one image to animate it as the exact first frame.</>
+              : <>Guide the video with up to 9 images ({refTagHint}). Tap <span className="text-slate-200 font-semibold">S</span> / <span className="text-slate-200 font-semibold">E</span> on an image to make it the exact start / end frame.</>
             : <>Guide the video with up to 9 images ({refTagHint}).</>}
         </p>
         <input ref={imgInputRef} type="file" accept="image/*" className="hidden"
@@ -24683,7 +25153,7 @@ function SD20RefPanel({
                     >
                       S
                     </button>
-                    <button
+                    {!startTagOnly && <button
                       onClick={() => onTagEnd?.(endIdx === i ? null : i)}
                       title="Use as the end frame"
                       className={`w-5 h-4 rounded text-[8px] font-bold leading-none flex items-center justify-center transition-all ${
@@ -24691,7 +25161,7 @@ function SD20RefPanel({
                       }`}
                     >
                       E
-                    </button>
+                    </button>}
                   </div>
                 )}
               </div>
@@ -24834,6 +25304,9 @@ function VideoCustomizationPanel({
   onLumaModeChange,
   choiceValue,
   onChoiceChange,
+  insertTimes,
+  onInsertTimesChange,
+  promptText,
   setSafetyChecker,
   isAdminAccount = false,
 }: {
@@ -24898,6 +25371,11 @@ function VideoCustomizationPanel({
   onLumaModeChange?: (mode: string) => void
   choiceValue?: string
   onChoiceChange?: (v: string) => void
+  /** The prompt box's text (HeyGen Avatar 4 is priced by how long the script takes to say). */
+  promptText?: string
+  /** H3 Max Insert Shot's two times, as typed. */
+  insertTimes?: { start: string; resume: string }
+  onInsertTimesChange?: (v: { start: string; resume: string }) => void
   setSafetyChecker?: (v: boolean) => void
   isAdminAccount?: boolean
 }) {
@@ -24911,6 +25389,11 @@ function VideoCustomizationPanel({
   const editSrcRef    = useRef<HTMLInputElement>(null)
   const [motionVideoError, setMotionVideoError] = useState<string | null>(null)
   const [lipsyncVideoError, setLipsyncVideoError] = useState<string | null>(null)
+  // The uploaded audio's length - what lip sync and the music video are priced by
+  const [audioSec, setAudioSec] = useState<number | undefined>(undefined)
+  useEffect(() => { if (!audioFile) setAudioSec(undefined) }, [audioFile])
+  // The track's length prices audio-driven models (see readAudioSeconds)
+  const measureAudio = (f: File) => { readAudioSeconds(f).then(d => { if (d) setAudioSec(d) }) }
   const { request: requestConsent, modal: consentModal } = useRefConsent()
 
   function handleMotionVideoFile(file: File) {
@@ -25004,6 +25487,9 @@ function VideoCustomizationPanel({
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
     ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration, fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+        audioDurationSec: audioSec, videoChoice: choiceValue,
+        promptWords: (promptText ?? "").trim().split(/\s+/).filter(Boolean).length,
+        ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}),
         // Omni / Flux 3: a source clip in the refs panel makes it an edit (Flux 3: extend)
         sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && (editSourceDuration ?? 0) > 0 ? "edit" : undefined })
     : isSD20Family
@@ -25293,6 +25779,7 @@ function VideoCustomizationPanel({
               videoRefVideoDuration={videoRefVideoDuration}
               sourceClipMaxSec={model.sourceClipMaxSec}
               allowFrameTags={!model.sourceClipMaxSec}
+              {...(model.refImagesOnly ? { maxVideos: 0, maxAudios: 0, startTagOnly: true, refTagHint: "name them @Image1… in the prompt" } : {})}
               startIdx={refStartIdx}
               endIdx={refEndIdx}
               onTagStart={onTagRefStart}
@@ -25450,17 +25937,52 @@ function VideoCustomizationPanel({
           )}
 
           {/* The model's named choice (config.choice) - e.g. Pixelcut's motion or background */}
-          {model.choice && (
+          {model.choice && !(model.choice.adminOnly && !isAdminAccount) && (
             <div className="space-y-1.5">
               <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
                 {model.choice.label} {model.choice.note && <span className="text-slate-600 normal-case font-normal">({model.choice.note})</span>}
               </p>
+              {/* A long list (HeyGen's 22 languages, VEED's styles) is a dropdown:
+                  as buttons it ran to a dozen rows on a phone */}
+              {model.choice.options.length > 8 ? (
+                <select
+                  value={choiceValue || model.choice.options[0].value}
+                  onChange={e => onChoiceChange?.(e.target.value)}
+                  className="w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-2 text-[12px] text-white focus:outline-none focus:border-white/30"
+                >
+                  {model.choice.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              ) : (
               <div className="grid grid-cols-2 gap-1.5">
                 {model.choice.options.map(o => (
                   <button key={o.value} onClick={() => onChoiceChange?.(o.value)}
                     className={`${btnBase} ${(choiceValue || model.choice!.options[0].value) === o.value ? btnActive : btnIdle}`}>
                     {o.label}
                   </button>
+                ))}
+              </div>
+              )}
+            </div>
+          )}
+
+          {/* H3 Max Insert Shot: the new shot replaces the source from "start" to "resume" */}
+          {model.insertTimes && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                Insert at <span className="text-slate-600 normal-case font-normal">(seconds into the clip - the new shot plays between these{editSourceDuration ? ` · resume by ${Math.floor((editSourceDuration - 1.4) * 10) / 10}s at the latest` : ""})</span>
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {([["start", "Starts at", 1.7], ["resume", "Clip resumes at", 1.7]] as const).map(([k, label, min]) => (
+                  <label key={k} className="flex flex-col gap-1">
+                    <span className="text-[9.5px] text-slate-500">{label}</span>
+                    <input
+                      type="number" inputMode="decimal" step="0.1" min={min}
+                      max={editSourceDuration ? Math.floor((editSourceDuration - 1.4) * 10) / 10 : 60}
+                      value={insertTimes?.[k] ?? ""}
+                      onChange={e => onInsertTimesChange?.({ start: insertTimes?.start ?? "2", resume: insertTimes?.resume ?? "4", [k]: e.target.value })}
+                      className="w-full rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-[12px] font-mono text-white focus:outline-none focus:border-white/30"
+                    />
+                  </label>
                 ))}
               </div>
             </div>
@@ -25505,14 +26027,14 @@ function VideoCustomizationPanel({
           {model.audioType === "upload" && (
             <div className="space-y-1.5">
               <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-                Background Audio <span className="text-slate-600 normal-case font-normal">(optional)</span>
+                {model.audioUpload?.label ?? "Background Audio"} <span className="text-slate-600 normal-case font-normal">({model.audioUpload?.required ? "required" : "optional"}{audioSec ? ` · ${Math.round(audioSec)}s` : ""})</span>
               </p>
               <input
                 ref={audioRef}
                 type="file"
-                accept="audio/wav,audio/mp3,audio/mpeg"
+                accept="audio/wav,audio/mp3,audio/mpeg,audio/mp4,audio/x-m4a"
                 className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onAudioFileChange(f) } }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; measureAudio(f); onAudioFileChange(f) } }}
               />
               <button
                 onClick={() => audioRef.current?.click()}
@@ -25523,7 +26045,7 @@ function VideoCustomizationPanel({
                 ) : audioFile ? (
                   <><Check size={11} className="text-green-400" />{audioFile.name.length > 24 ? audioFile.name.slice(0, 22) + "…" : audioFile.name}</>
                 ) : (
-                  <>+ Upload WAV / MP3 (3–30s)</>
+                  <>+ {model.audioUpload ? `Upload ${model.audioUpload.hint}` : "Upload WAV / MP3 (3–30s)"}</>
                 )}
               </button>
             </div>
@@ -25687,13 +26209,21 @@ function VideoTile({ natural, initialAspect, className, onClick, videoSrc, still
   silverRim?: false | "slim" | "fill" | "smart"
   children?: ReactNode
 }) {
-  const [measured, setMeasured] = useState<string | null>(null)
+  /*
+   * The tile's real shape, measured from its poster or video - REMEMBERED WITH
+   * THE VIDEO IT CAME FROM. The feed reuses a tile for a different video when
+   * it reshuffles (a session tile handing over to its feed row, columns
+   * re-packing), and a bare measurement then stuck: a square lip-sync clip sat
+   * in a 1926x1076 frame measured from the clip that had the tile before.
+   */
+  const [measuredFor, setMeasuredFor] = useState<{ src: string; ar: string } | null>(null)
+  const measured = measuredFor && measuredFor.src === videoSrc ? measuredFor.ar : null
   // Locked at mount: recomputing per render would rewrite animation-delay on
   // the running rim sweep and jump its phase
   const [rimDelay] = useState(() => rimPhase())
   const tileRef = useRef<HTMLDivElement>(null)
   const vidRef = useRef<HTMLVideoElement>(null)
-  const measure = (w: number, h: number) => { if (natural && w > 0 && h > 0) setMeasured(`${w}/${h}`) }
+  const measure = (w: number, h: number) => { if (natural && w > 0 && h > 0) setMeasuredFor({ src: videoSrc, ar: `${w}/${h}` }) }
 
   // The still. A poster being made right now answers 503 (the server makes a
   // couple at a time), so a failed load retries a few times before the tile
@@ -26239,7 +26769,14 @@ function VideoFeed({
     }
     const img = entry.img
     {
-      const dbAr = img.videoMetadata?.aspectRatio || img.aspectRatio
+      // The video's REAL shape first (recorded with its poster, or its
+      // dimensions), then what the run asked for - which is "16:9" by default
+      // and "auto" for many models, so a square or portrait clip used to start
+      // out (and pack) as a 16:9 tile
+      const vm = (img.videoMetadata ?? {}) as Record<string, unknown>
+      const shapeW = Number(vm.aspectW) || Number(vm.width) || 0
+      const shapeH = Number(vm.aspectH) || Number(vm.height) || 0
+      const dbAr = shapeW > 0 && shapeH > 0 ? `${shapeW}:${shapeH}` : (img.videoMetadata?.aspectRatio || img.aspectRatio)
       const vEntry = { weight: tileWeight(dbAr), node: (
         isVideoUrl(img.imageUrl) ? (
           <VideoTile
@@ -26420,6 +26957,48 @@ function VideoFeed({
   )
 }
 
+/*
+ * An audio file's length in seconds, for pricing audio-driven video models.
+ * Two readers race: an <audio> element's metadata, and decoding the file
+ * outright - Chrome can hold back media loading in a background tab, and the
+ * quote would then sit on the model's placeholder length. The server measures
+ * again when it bills; this is only the quote.
+ */
+function readAudioSeconds(f: File): Promise<number | null> {
+  return new Promise(resolve => {
+    // The two can differ by a few hundredths (MP3 padding): the server bills
+    // whole seconds off the container's length, so keep the LONGER reading -
+    // wait briefly for the second once the first is in.
+    let done = false
+    let best: number | null = null
+    let seen = 0
+    const finish = () => { if (!done) { done = true; resolve(best) } }
+    const take = (d: number | null) => {
+      if (done) return
+      if (d === null) { finish(); return }
+      if (!(Number.isFinite(d) && d > 0)) return
+      best = Math.max(best ?? 0, d)
+      if (++seen >= 2) finish(); else setTimeout(finish, 1500)
+    }
+    const url = URL.createObjectURL(f)
+    const a = document.createElement("audio")
+    a.preload = "metadata"
+    a.onloadedmetadata = () => { URL.revokeObjectURL(url); take(a.duration) }
+    a.onerror = () => URL.revokeObjectURL(url)
+    a.src = url
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (AC && f.size <= 30 * 1024 * 1024) {
+      const ctx = new AC()
+      f.arrayBuffer()
+        .then(buf => ctx.decodeAudioData(buf))
+        .then(decoded => take(decoded.duration))
+        .catch(() => {})
+        .finally(() => { ctx.close().catch(() => {}) })
+    }
+    setTimeout(() => take(null), 15000)
+  })
+}
+
 function VideoPromptBar({
   model, onGenerate, generating, canGenerate, queueFull, duration, resolution, aspectRatio, audioEnabled,
   onModelChange, promptOverride, characterOrientation, motionVideoDuration, onConfigOpen,
@@ -26433,9 +27012,15 @@ function VideoPromptBar({
   sourceSeconds = 0,
   toolFactor = "2",
   toolCreativity = "0.35",
+  audioSeconds,
+  choiceValue,
 }: {
   model: VideoModelConfig
   onGenerate: (prompt: string) => void
+  /** The uploaded track's length - audio-driven models are priced by it. */
+  audioSeconds?: number
+  /** The model's choice picker value (voice, style, draft…) - some price by it. */
+  choiceValue?: string
   /** A clip tool's source length (seconds), for tools billed by it. */
   sourceSeconds?: number
   toolFactor?: string
@@ -26535,6 +27120,10 @@ function VideoPromptBar({
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
     ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+        // The same inputs the settings panel prices with, so the two quotes agree
+        audioDurationSec: audioSeconds, videoChoice: choiceValue,
+        promptWords: prompt.trim().split(/\s+/).filter(Boolean).length,
+        ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}),
         sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && sourceSeconds > 0 ? "edit" : undefined })
     : isSD20FamilyBar
     ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
@@ -26563,8 +27152,17 @@ function VideoPromptBar({
     // A clip tool works on its source clip; only the ones whose schema demands
     // a prompt (toolPromptRequired) wait for text - the config already says so
     || (!!model.isVideoTool && !model.toolPromptRequired)
+    // fal needs no prompt for these: lip sync and the music video run from the
+    // audio, camera controls from the photo + move...
+    || PROMPTLESS_VIDEO_MODELS.has(model.id)
+    // ...these only once their image is in (else the text is what drives them)...
+    || (["happy-horse-1.1", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast"].includes(model.id) && !!startFramePreview)
+    // ...and the talking photo once a voice track replaces the typed script
+    || (model.id === "heygen-avatar4" && !!audioSeconds)
   const ready = !isGenerationMaintenance && ((model.id === "kling-v3-motion" || isLipsyncModel) ? canGenerate : canGenerate && (!!prompt.trim() || promptOptional))
-  const promptPlaceholder = model.id === "kling-v3-motion"
+  const promptPlaceholder = VIDEO_PROMPT_HINTS[model.id]
+    ?? (model.isVideoTool && !model.toolPrompt ? "No prompt needed - just upload the clip" : null)
+    ?? (model.id === "kling-v3-motion"
     ? "Describe additional details (optional)..."
     : isLipsyncModel
     ? "No prompt needed — just upload video and audio above"
@@ -26572,7 +27170,7 @@ function VideoPromptBar({
     ? "Describe the video..."
     : model.textToVideo
     ? "Describe the scene (required)..."
-    : "Describe the motion..."
+    : "Describe the motion...")
 
   return (
     <div ref={barRef} className="fixed bottom-0 left-0 sm:left-72 xl:left-80 2xl:left-96 right-0 z-30 border-t border-white/5 bg-[#050810]/95 backdrop-blur-md">
@@ -27511,15 +28109,59 @@ function NewsManagerModal({ initialSection, initialArticleId, onClose }: {
 }
 
 // --- SHOP DROPDOWN ---
+/*
+ * Redesigned 2026-10-04 to match the rebuilt shop pages (/buy-tickets and the
+ * Dev Tier subscribe page): two cinematic banners cut from those pages' hero
+ * loops (the silver ticket, the black membership card), with quick picks that
+ * open the page with that pack / plan already selected (?pack= / ?plan=).
+ * Packs and plans come from the same catalogs the pages and checkout use.
+ */
+const SHOP_MENU_MEDIA = {
+  ticketsVideo: `${SHOP_MEDIA}/shop/menu-tickets-aec4bf93-9143-4ce4-84d2-fccd2be0031b.mp4`,
+  ticketsPoster: `${SHOP_MEDIA}/shop/menu-tickets-3703229e-c5db-4f92-9a06-5649c0bc74d1.webp`,
+  devtierVideo: `${SHOP_MEDIA}/shop/menu-devtier-915e043d-7572-4164-9195-64cddb0722e0.mp4`,
+  devtierPoster: `${SHOP_MEDIA}/shop/menu-devtier-b315679e-1202-4138-8370-48b7cbd2f49e.webp`,
+}
+// The three packs offered as one-tap picks: a starter, the popular one, the best value
+const SHOP_QUICK_PACKS = [100, 250, 825]
+  .map(n => TICKET_PACKAGES.find(p => p.tickets === n))
+  .filter((p): p is (typeof TICKET_PACKAGES)[number] => !!p)
+
+/** A banner cut from a shop hero loop, with its title over the dark left side. */
+function ShopBanner({ video, poster, animate, eyebrow, title, sub, cta, onClick }: {
+  video: string; poster: string; animate: boolean
+  eyebrow: React.ReactNode; title: string; sub: React.ReactNode; cta: string; onClick: () => void
+}) {
+  return (
+    <button onClick={onClick} className="group relative block w-full aspect-[12/5] rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition-colors text-left bg-[#05080f]">
+      {animate
+        ? <LoopVideo src={video} poster={poster} className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" />
+        : <img src={poster} alt="" className="absolute inset-0 w-full h-full object-cover" />}
+      <div className="absolute inset-0 bg-gradient-to-r from-[#05080f] via-[#05080f]/70 to-transparent" />
+      <div className="relative h-full flex flex-col justify-center px-4 max-w-[62%]">
+        <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-slate-400">{eyebrow}</p>
+        <p className="mt-1 text-lg font-black leading-tight bg-gradient-to-r from-slate-100 via-white to-slate-400 bg-clip-text text-transparent">{title}</p>
+        <p className="mt-1 text-[11px] text-slate-300 leading-snug">{sub}</p>
+      </div>
+      <span className="absolute bottom-2.5 right-3 text-[10px] font-bold text-white bg-black/50 border border-white/20 backdrop-blur px-2 py-0.5 rounded-full">
+        {cta} <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
+      </span>
+    </button>
+  )
+}
+
 function ShopDropdown({
-  open, onToggle, user, isAdmin = false, effectsEnabled = true, onToggleEffects,
+  open, onToggle, user, isAdmin = false, isDevTier = false, effectsEnabled = true, onToggleEffects,
 }: {
   open: boolean
   onToggle: () => void
   user: UserData | null
   isAdmin?: boolean
-  // Animated shimmer/pulse/sheen — global flag (SystemState.shopEffectsEnabled),
-  // admins toggle it for ALL users from inside this dropdown
+  /** An active Dev Tier subscription: pack prices shown with the discount, the plan shown as active. */
+  isDevTier?: boolean
+  // The balance pulse + the banner loops - global flag
+  // (SystemState.shopEffectsEnabled), admins toggle it for ALL users from
+  // inside this dropdown
   effectsEnabled?: boolean
   onToggleEffects?: () => void
 }) {
@@ -27527,6 +28169,7 @@ function ShopDropdown({
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
   const [loginPrompt, setLoginPrompt] = useState(false)
+  const PANEL_W = 420
 
   useEffect(() => {
     if (!open) { setLoginPrompt(false); return }
@@ -27541,7 +28184,7 @@ function ShopDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const z = cssZoomOf(buttonRef.current!)
-      const panelW = Math.min(340 * z, window.innerWidth - 16)
+      const panelW = Math.min(PANEL_W * z, window.innerWidth - 16)
       setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
   }, [open])
@@ -27551,6 +28194,10 @@ function ShopDropdown({
     window.location.href = path
     onToggle()
   }
+
+  const packPrice = (p: (typeof TICKET_PACKAGES)[number]) => (isDevTier ? p.devTierPrice : p.freeTierPrice)
+  const bestRate = Math.min(...TICKET_PACKAGES.map(p => packPrice(p) / p.tickets))
+  const minPlan = Math.min(...CCBILL_PLANS.map(p => p.price))
 
   return (
     <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
@@ -27566,35 +28213,25 @@ function ShopDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl shadow-black/70 z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(340, (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14] shadow-2xl shadow-black/70 z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(PANEL_W, (window.innerWidth - 16) / menuPos.z) }}>
           {effectsEnabled && (
             <style>{`
               @keyframes pv2ShopPulse {
                 0%, 100% { box-shadow: 0 0 10px rgba(255,255,255,0.07), inset 0 0 12px rgba(0,0,0,0.6) }
                 50%      { box-shadow: 0 0 18px rgba(255,255,255,0.22), inset 0 0 12px rgba(0,0,0,0.6) }
               }
-              @keyframes pv2ShopSheen {
-                0%, 55%   { transform: translateX(-160%) skewX(-18deg) }
-                85%, 100% { transform: translateX(320%) skewX(-18deg) }
-              }
-              @keyframes pv2ShopBadge {
-                0%, 45%   { transform: translateX(-110%) }
-                70%, 100% { transform: translateX(110%) }
-              }
-              @keyframes pv2ShopTwinkle {
-                0%, 100% { opacity: 1;    transform: scale(1) }
-                50%      { opacity: 0.55; transform: scale(0.85) rotate(-8deg) }
-              }
             `}</style>
           )}
 
           {/* ── Header: synced logo + title + live balance ── */}
           <div className="relative px-4 py-3 flex items-center justify-between border-b border-white/[0.06] overflow-hidden">
-            {/* ambient glow wash */}
             <div className="absolute inset-0 bg-gradient-to-r from-white/[0.05] via-transparent to-white/[0.05] pointer-events-none" />
             <div className="relative flex items-center gap-2.5">
               <SiteLogoBox size={22} rounded={7} />
               <span className="text-sm font-bold text-white tracking-wide">Shop</span>
+              {isDevTier && (
+                <span className="text-[8.5px] font-black uppercase tracking-wider text-violet-200 bg-violet-500/15 border border-violet-400/30 px-1.5 py-0.5 rounded-full">Dev Tier</span>
+              )}
             </div>
             {user && (
               <div
@@ -27610,104 +28247,101 @@ function ShopDropdown({
             )}
           </div>
 
-          {/* ── Tickets card — clean silver ── */}
-          <div className="p-3 pb-1.5">
-            <button
+          {/* ── Tickets ── */}
+          <div className="p-3 space-y-2">
+            <ShopBanner
+              video={SHOP_MENU_MEDIA.ticketsVideo}
+              poster={SHOP_MENU_MEDIA.ticketsPoster}
+              animate={effectsEnabled}
+              eyebrow="Ticket Dispenser"
+              title="Fuel every idea"
+              sub={<>One-time packs that <span className="text-white">never expire</span></>}
+              cta="All packs"
               onClick={() => handleNav("/buy-tickets")}
-              className="relative w-full rounded-xl border border-white/15 bg-gradient-to-br from-white/[0.07] via-slate-900/50 to-transparent hover:border-white/35 hover:shadow-[0_0_24px_rgba(248,250,252,0.10)] transition-all duration-200 group overflow-hidden"
-            >
-              {/* periodic light sweep */}
-              {effectsEnabled && (
-                <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent pointer-events-none" style={{ animation: "pv2ShopSheen 7s ease-in-out infinite" }} />
-              )}
-              <div className="px-4 py-3.5 text-left">
-                <div className="flex items-center justify-between mb-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-white/10 border border-white/20 flex items-center justify-center shrink-0 group-hover:bg-white/15 transition-colors">
-                      <Ticket size={15} className="text-slate-200" />
-                    </div>
-                    <span className="text-[13px] font-bold text-white">Ticket Dispenser</span>
-                  </div>
-                  <span className="text-[10px] font-bold text-slate-300 group-hover:text-white transition-colors">
-                    Buy <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Tickets power every generation. Packs are <span className="text-white">one-time purchases</span> and <span className="text-white">never expire</span> — grab a pack and create whenever inspiration hits.
-                </p>
-              </div>
-              <div className="px-4 py-2 border-t border-white/10 bg-black/40 flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 font-medium">Packs from <span className="text-slate-300 font-bold">25</span> → <span className="text-slate-300 font-bold">1,000</span> tickets</span>
-                <span className="text-[10px] font-bold text-slate-300 group-hover:text-white transition-colors">
-                  Shop now <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
-                </span>
-              </div>
-            </button>
+            />
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              {SHOP_QUICK_PACKS.map(p => (
+                <button
+                  key={p.tickets}
+                  onClick={() => handleNav(`/buy-tickets?pack=${p.tickets}`)}
+                  className="relative rounded-lg border border-white/10 bg-white/[0.03] hover:border-white/30 hover:bg-white/[0.06] transition-all px-2 py-2 text-left"
+                >
+                  {(p.popular || p.bestValue) && (
+                    <span className={`absolute -top-1.5 right-1.5 text-[7.5px] font-black tracking-wider px-1.5 py-px rounded-full ${p.bestValue ? "bg-gradient-to-r from-slate-100 to-slate-400 text-black" : "bg-[#1a2030] border border-white/40 text-white"}`}>
+                      {p.bestValue ? "BEST VALUE" : "POPULAR"}
+                    </span>
+                  )}
+                  <p className="text-[8.5px] font-mono uppercase tracking-[0.18em] text-slate-500">{p.name}</p>
+                  <p className="text-sm font-black text-white leading-tight">{p.tickets} <span className="text-[10px] font-medium text-slate-500">tickets</span></p>
+                  <p className={`text-[11px] font-bold ${isDevTier ? "text-violet-200" : "text-slate-300"}`}>${packPrice(p).toFixed(2)}</p>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-slate-500 px-0.5">
+              {TICKET_PACKAGES.length} packs from {TICKET_PACKAGES[0].tickets} to {TICKET_PACKAGES[TICKET_PACKAGES.length - 1].tickets} tickets · as low as <span className="text-slate-300">${bestRate.toFixed(3)}</span> a ticket{isDevTier ? " with your 10% off" : ""}
+            </p>
           </div>
 
-          {/* ── Dev Tier card — the premium slot: wrapped in the animated silver rim ── */}
-          <div className="p-3 pt-1.5">
+          {/* ── Dev Tier: the premium slot, in the animated silver rim ── */}
+          <div className="px-3 pb-3 space-y-2">
             <div className="relative isolate rounded-xl overflow-hidden p-[1.5px]">
               <span
                 className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
                 style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
               />
-              <button
-                onClick={() => handleNav("/prompting-studio/subscribe")}
-                className="relative w-full rounded-[10px] bg-[#0a0f1a] hover:bg-[#0d1322] transition-all duration-200 group overflow-hidden"
-              >
-                {/* periodic light sweep — staggered behind the ticket card's */}
-                {effectsEnabled && (
-                  <div className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent pointer-events-none" style={{ animation: "pv2ShopSheen 7s ease-in-out 3.5s infinite" }} />
-                )}
-                <div className="px-4 py-3.5 text-left">
-                  <div className="flex items-center justify-between mb-2.5">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-white/10 border border-white/25 flex items-center justify-center shrink-0 group-hover:bg-white/15 transition-colors">
-                        <Sparkles size={14} className="text-slate-100" style={effectsEnabled ? { animation: "pv2ShopTwinkle 4s ease-in-out infinite" } : undefined} />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-bold text-white">Dev Tier</span>
-                        <span className="relative overflow-hidden text-[8.5px] font-black uppercase tracking-wider text-slate-900 bg-white border border-white px-1.5 py-0.5 rounded-full">
-                          Best value
-                          {/* shimmer sweep across the badge */}
-                          {effectsEnabled && (
-                            <span className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-400/40 to-transparent pointer-events-none" style={{ animation: "pv2ShopBadge 3.5s ease-in-out infinite" }} />
-                          )}
-                        </span>
-                      </div>
-                    </div>
-                    <span className="text-[10px] font-bold text-slate-300 group-hover:text-white transition-colors">
-                      View <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed mb-3">
-                    Unlock the full studio — tickets auto-delivered every cycle, <span className="text-white">10% off everything</span>, and more of every limit.
-                  </p>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                    {[
-                      { label: "10% off all ticket purchases", bright: true },
-                      { label: "250–500 tickets per cycle", bright: true },
-                      { label: "8 concurrent generations", bright: true },
-                      { label: "250 Refs slots (5× free tier)", bright: true },
-                      { label: "AI prompt generation", bright: false },
-                      { label: "Early feature access", bright: false },
-                    ].map(({ label, bright }) => (
-                      <div key={label} className="flex items-start gap-1.5">
-                        <Check size={9} className={`shrink-0 mt-0.5 ${bright ? "text-white" : "text-slate-600"}`} />
-                        <span className={`text-[10px] leading-snug ${bright ? "text-slate-200" : "text-slate-500"}`}>{label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="px-4 py-2 border-t border-white/10 bg-black/40 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-500 font-medium">Biweekly · Monthly · Yearly</span>
-                  <span className="text-[10px] font-bold text-slate-200 group-hover:text-white transition-colors">
-                    See plans <span className="inline-block transition-transform group-hover:translate-x-0.5">→</span>
-                  </span>
-                </div>
-              </button>
+              {isDevTier ? (
+                <ShopBanner
+                  video={SHOP_MENU_MEDIA.devtierVideo}
+                  poster={SHOP_MENU_MEDIA.devtierPoster}
+                  animate={effectsEnabled}
+                  eyebrow={<span className="text-emerald-300">Dev Tier · active</span>}
+                  title="You're on Dev Tier"
+                  sub={<>10% off every pack, 8 generations at once</>}
+                  cta="Manage"
+                  onClick={() => handleNav("/subscriptions")}
+                />
+              ) : (
+                <ShopBanner
+                  video={SHOP_MENU_MEDIA.devtierVideo}
+                  poster={SHOP_MENU_MEDIA.devtierPoster}
+                  animate={effectsEnabled}
+                  eyebrow="Dev Tier · monthly"
+                  title="Create on autopilot"
+                  sub={<>Tickets every month from <span className="text-white">${minPlan.toFixed(2)}</span></>}
+                  cta="See plans"
+                  onClick={() => handleNav("/prompting-studio/subscribe")}
+                />
+              )}
             </div>
+            {!isDevTier && (
+              <>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {CCBILL_PLANS.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => handleNav(`/prompting-studio/subscribe?plan=${p.id}`)}
+                      className={`rounded-lg border transition-all px-1 py-2 text-center ${
+                        p.id === "pro"
+                          ? "border-white/30 bg-white/[0.07] hover:bg-white/[0.1]"
+                          : "border-white/10 bg-white/[0.03] hover:border-white/30 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <p className="text-[8.5px] font-mono uppercase tracking-[0.12em] text-slate-400">{p.name}</p>
+                      <p className="text-[12px] font-black text-white leading-tight mt-0.5">{p.tickets.toLocaleString()}</p>
+                      <p className="text-[9px] text-slate-500 leading-tight">tickets/mo</p>
+                      <p className="text-[10px] font-bold text-slate-300 mt-0.5">${p.price.toFixed(2)}</p>
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 px-0.5">
+                  {["10% off every pack", "8 generations at once", "250 reference slots"].map(t => (
+                    <span key={t} className="inline-flex items-center gap-1 text-[10px] text-slate-400">
+                      <Check size={9} className="text-white" />{t}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           {loginPrompt && (
@@ -27720,7 +28354,12 @@ function ShopDropdown({
             </div>
           )}
 
-          {/* Admin only: global effects toggle (shimmer/pulse/sheen for ALL users) */}
+          <div className="px-4 py-2 border-t border-white/[0.06] flex items-center justify-center gap-1.5 text-[9.5px] text-slate-600">
+            <Lock size={9} className="text-slate-500" />
+            Secure checkout by CCBill · tickets never expire
+          </div>
+
+          {/* Admin only: global effects toggle (pulse + banner loops for ALL users) */}
           {isAdmin && onToggleEffects && (
             <div className="px-4 py-2 border-t border-white/[0.06] bg-black/30 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
@@ -28467,6 +29106,14 @@ export default function PortalV2Page() {
   const [videoResolution, setVideoResolution] = useState("1080p")
   const [videoAudioEnabled, setVideoAudioEnabled] = useState(false)
   const [videoAudioFile, setVideoAudioFile] = useState<File | null>(null)
+  // Its length, for the prompt bar's quote (the settings panel measures its own)
+  const [videoAudioSec, setVideoAudioSec] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    if (!videoAudioFile) { setVideoAudioSec(undefined); return }
+    let live = true
+    readAudioSeconds(videoAudioFile).then(d => { if (live) setVideoAudioSec(d ?? undefined) })
+    return () => { live = false }
+  }, [videoAudioFile])
   const [videoAudioUrl, setVideoAudioUrl] = useState<string | null>(null)
   const [videoStartFramePreview, setVideoStartFramePreview] = useState<string | null>(null)
   const [videoStartFrameUrl, setVideoStartFrameUrl] = useState<string | null>(null)
@@ -28498,6 +29145,13 @@ export default function PortalV2Page() {
   const [videoRefAudioFilenames, setVideoRefAudioFilenames] = useState<string[]>([])
   const [videoRefAudioUrls, setVideoRefAudioUrls] = useState<(string | null)[]>([])
   const [videoRefVideoDuration, setVideoRefVideoDuration] = useState<number>(0)
+  // No clips, no length. Removing a clip subtracts its own length, but a clip
+  // restored from a saved session has no remembered length to subtract - the
+  // total then went stale (and kept growing), mispricing clip tools and
+  // tripping SeeDance's 15s cap on clips that were no longer there.
+  useEffect(() => {
+    if (videoRefVideoUrls.length === 0) setVideoRefVideoDuration(d => (d === 0 ? d : 0))
+  }, [videoRefVideoUrls.length])
   // SeeDance 2.0: which reference image (by index) is the start / end frame
   const [videoRefStartIdx, setVideoRefStartIdx] = useState<number | null>(null)
   const [videoRefEndIdx, setVideoRefEndIdx] = useState<number | null>(null)
@@ -28528,6 +29182,8 @@ export default function PortalV2Page() {
   const [videoLumaMode, setVideoLumaMode] = useState("flex_1")
   // The model's single named choice (config.choice), e.g. Pixelcut's loop motion
   const [videoChoice, setVideoChoice] = useState("")
+  // H3 Max Insert Shot: where the new shot starts and where the clip resumes (seconds)
+  const [videoInsertTimes, setVideoInsertTimes] = useState({ start: "2", resume: "4" })
   // Always one of the CURRENT model's options: a model restored on load (not
   // picked through applyVideoModel) kept the last model's value - Looping's
   // "subtle" on Background Removal, where nothing showed as selected.
@@ -29078,7 +29734,8 @@ export default function PortalV2Page() {
             prompt:               slot.prompt,
             model:                slot.model,
             duration:             slot.duration,
-            resolution:           slot.resolution,
+            // A SeeDance 2.5 draft says so, so its viewer offers "Complete in 1080p"
+            resolution:           data.draft ? "draft" : slot.resolution,
             aspectRatio:          slot.aspectRatio,
             audioEnabled:         slot.audioEnabled,
             startFrameUrl:        slot.startFrameUrl,
@@ -29122,6 +29779,24 @@ export default function PortalV2Page() {
   // not the 8s fallback it was billed at before
   const videoToolSourceSec = videoEditSourceDuration
     || ((selectedVideoModel.id.startsWith("luma-ray-") || selectedVideoModel.id === "pixelcut-video-bg-removal" || selectedVideoModel.id.startsWith("gemini-omni") || selectedVideoModel.id === "flux-3") ? videoRefVideoDuration : 0)
+    // Every single-clip tool (the refs panel's one "Source clip" slot): VOID,
+    // SAM Track, Insert Shot, VEED... priced and limited by that clip's length
+    || (selectedVideoModel.sourceClipMaxSec ? videoRefVideoDuration : 0)
+  // Insert Shot: pull the times inside what this clip allows (fal wants the
+  // clip to keep ~1.4s after the resume point) - the 2s/4s defaults overrun a 5s clip
+  useEffect(() => {
+    if (!selectedVideoModel.insertTimes || !videoToolSourceSec) return
+    const maxResume = Math.floor((videoToolSourceSec - 1.4) * 10) / 10
+    // Too short to insert into at all (needs ~1.7s before and ~1.4s after):
+    // leave the times be - the server says so in words
+    if (maxResume < 1.8) return
+    setVideoInsertTimes(t => {
+      // Fine as it is: resume after start, inside what the clip allows
+      if (Number(t.resume) <= maxResume && Number(t.resume) > Number(t.start)) return t
+      const start = Math.min(Number(t.start) || 2, Math.max(1.7, maxResume - 1))
+      return { start: String(Math.round(start * 10) / 10), resume: String(maxResume) }
+    })
+  }, [selectedVideoModel, videoToolSourceSec])
   const handleVideoGenerate = useCallback(async (promptText: string) => {
     const isMotion = selectedVideoModel.id === "kling-v3-motion"
     const isLipsync = !!selectedVideoModel.supportsLipsync
@@ -29268,6 +29943,7 @@ export default function PortalV2Page() {
           ...(selectedVideoModel.fpsOptions ? { ltxFps: videoLtxFps } : {}),
           ...(selectedVideoModel.lumaModes ? { lumaMode: videoLumaMode } : {}),
           ...(selectedVideoModel.choice ? { videoChoice: videoChoice || selectedVideoModel.choice.options[0].value } : {}),
+          ...(selectedVideoModel.insertTimes ? { insertStartSec: Number(videoInsertTimes.start), insertResumeSec: Number(videoInsertTimes.resume) } : {}),
           ...(selectedVideoModel.isVideoTool ? {
             videoUpscaleFactor: videoToolFactor,
             videoToolCreativity: videoToolCreativity,
@@ -29334,7 +30010,7 @@ export default function PortalV2Page() {
     } finally {
       setVideoGenerating(false)
     }
-  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec])
+  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec, videoInsertTimes])
 
   const applyVideoModel = useCallback((model: VideoModelConfig) => {
     setSelectedVideoModel(model)
@@ -32388,6 +33064,7 @@ function employeePending(
               label="Audio"
               icon={Music}
               groups={AUDIO_MODEL_GROUPS}
+              adminGroups={isAdminAccount ? ADMIN_AUDIO_MODEL_GROUPS : undefined}
               open={openDropdown === "audio"}
               onToggle={() => toggle("audio")}
               onSelect={handleSelectAudioModel}
@@ -32443,6 +33120,7 @@ function employeePending(
               onToggle={() => toggle("shop")}
               user={user}
               isAdmin={isAdminAccount}
+              isDevTier={hasPromptStudioDev}
               effectsEnabled={shopEffects}
               onToggleEffects={handleToggleShopEffects}
             />
@@ -32950,6 +33628,9 @@ function employeePending(
               onLumaModeChange={setVideoLumaMode}
               choiceValue={videoChoice}
               onChoiceChange={setVideoChoice}
+              insertTimes={videoInsertTimes}
+              onInsertTimesChange={setVideoInsertTimes}
+              promptText={videoPromptText}
               duration={videoDuration}
               onDurationChange={setVideoDuration}
               aspectRatio={videoAspectRatio}
@@ -33046,6 +33727,8 @@ function employeePending(
           {/* Video prompt bar — fixed at bottom */}
           <VideoPromptBar
             sourceSeconds={videoToolSourceSec}
+            audioSeconds={videoAudioSec}
+            choiceValue={videoChoice}
             toolFactor={videoToolFactor}
             toolCreativity={videoToolCreativity}
             key={`vpb-${user?.id ?? "anon"}`}
@@ -33127,6 +33810,9 @@ function employeePending(
                   onLumaModeChange={setVideoLumaMode}
                   choiceValue={videoChoice}
                   onChoiceChange={setVideoChoice}
+                  insertTimes={videoInsertTimes}
+                  onInsertTimesChange={setVideoInsertTimes}
+                  promptText={videoPromptText}
                   duration={videoDuration}
                   onDurationChange={setVideoDuration}
                   aspectRatio={videoAspectRatio}

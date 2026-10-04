@@ -937,12 +937,20 @@ export async function POST(request: Request) {
           modelEndpoint = newFalSpec.endpoint
 
           const falImageUrls: string[] = []
+          // Why a reference could not be used - reported instead of a bare
+          // "requires an input image" when every one of them failed to load
+          const refFailures: string[] = []
           // The first reference's shape, for models that offer "auto".
           let refDims: { width: number; height: number } | null = null
           // Qwen Image 3's edit refuses references over 2048px on a side (its
           // schema: 384-2048px each dimension) - a 2K storyboard still is
           // 2752 wide. Those are shrunk to fit before the upload.
-          const maxRefEdge = model.startsWith('qwen-image-3') ? 2048 : 0
+          // Marigold V2 sizes its depth map from the source and stops at 2048
+          // px a side, so a bigger source is shrunk to fit the same way
+          // Vectorize takes < 5 MB / 4096 px (2048 re-encoded fits); Multi-Angle
+          // bills per output megapixel and takes the source's size (1536 caps it)
+          const maxRefEdge = model.startsWith('qwen-image-3') || model === 'marigold-v2' || model === 'recraft-vectorize' ? 2048
+            : model === 'qwen-multi-angle' ? 1536 : 0
           // FLUX 3 Image's edit takes references of at most 4 megapixels (a 2K
           // storyboard still is 4.23); those are scaled down to fit
           const maxRefPixels = model === 'flux-3-image' ? 4_000_000 : 0
@@ -964,6 +972,10 @@ export async function POST(request: Request) {
                 continue
               }
               const imageBuffer = await refToBuffer(ref)
+              // An empty or broken reference (a layered ref whose layers did not
+              // load, a truncated paste) would be uploaded and fail at fal - or
+              // run on garbage. Refuse it here, with a reason the user can act on.
+              if (imageBuffer.length < 64) throw new Error('the image was empty')
               let uploadBuffer: Buffer = imageBuffer
               /*
                * Measure while the bytes are here. This costs a header read on
@@ -1007,6 +1019,7 @@ export async function POST(request: Request) {
                     .jpeg({ quality: 92 }).toBuffer()
                 }
               } catch { /* unreadable: "auto" falls back to square */ }
+              if (!dims) throw new Error('it is not a readable image')
               if (!refDims && dims) refDims = dims
               const blob = new Blob([new Uint8Array(uploadBuffer)], { type: 'image/jpeg' })
               const uploadedUrl = await fal.storage.upload(blob)
@@ -1022,7 +1035,15 @@ export async function POST(request: Request) {
               }
             } catch (uploadError) {
               console.error(`[${model}] failed to upload input image:`, uploadError)
+              refFailures.push(uploadError instanceof Error ? uploadError.message : String(uploadError))
             }
+          }
+          if (rawSources.length > 0 && falImageUrls.length === 0 && newFalSpec.maxInputImages > 0) {
+            // Every attached image failed to load - say so (and why), rather
+            // than letting the model's own "needs an input image" check fire
+            return jsonPrivate({
+              error: `Your reference image${rawSources.length > 1 ? 's' : ''} couldn't be loaded (${refFailures[0] ?? 'unknown error'}). Re-activate ${rawSources.length > 1 ? 'them' : 'it'} in Refs and try again.`,
+            }, { status: 400 })
           }
 
           /*

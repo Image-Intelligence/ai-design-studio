@@ -71,7 +71,18 @@ export async function GET(
         if (!poster) return new NextResponse('Poster unavailable', { status: 502 })
         try {
           const thumbUrl = await uploadToR2(`thumb/${id}-${Date.now()}.webp`, poster, 'image/webp')
-          await prisma.generatedImage.update({ where: { id }, data: { thumbnailUrl: thumbUrl } })
+          // The poster is the first frame at the video's own shape: keep that
+          // shape (aspectW/aspectH - a ratio, not the video's resolution) so the
+          // feed can size the tile before anything loads
+          let shape: { aspectW: number; aspectH: number } | null = null
+          try {
+            const m = await sharp(poster).metadata()
+            if (m.width && m.height) shape = { aspectW: m.width, aspectH: m.height }
+          } catch { /* no shape - the tile measures itself */ }
+          await prisma.generatedImage.update({
+            where: { id },
+            data: { thumbnailUrl: thumbUrl, ...(shape ? { videoMetadata: { ...vmeta, ...shape } as object } : {}) },
+          })
         } catch (storeErr) {
           console.error('Video poster store failed (non-fatal):', storeErr)
         }

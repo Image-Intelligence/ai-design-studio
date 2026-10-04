@@ -92,13 +92,15 @@ export async function POST(request: Request) {
           userId,
           tier: 'prompt-studio-dev',
           status: 'active',
-          billingCycle: plan.id,
+          // The cycle, not the plan id: admin tools compute periods from it.
+          // Which plan it is lives in metadata.planId.
+          billingCycle: plan.cycle,
           billingAmount: plan.price,
           nextBillingDate: nextBilling,
           autoRenew: true,
           ccbillSubscriptionId: subscriptionId,
           ccbillLastTransactionId: transactionId || null,
-          metadata: { provider: 'ccbill', planName: plan.name, ticketsPerCycle: plan.tickets },
+          metadata: { provider: 'ccbill', planId: plan.id, planName: plan.name, ticketsPerCycle: plan.tickets },
         },
       })
       await creditTickets(userId, plan.tickets)
@@ -118,7 +120,7 @@ export async function POST(request: Request) {
       if (transactionId && sub.ccbillLastTransactionId === transactionId) {
         return NextResponse.json({ received: true })
       }
-      const plan = getCcbillPlan(sub.billingCycle)
+      const plan = getCcbillPlan((sub.metadata as any)?.planId)
       const tickets = plan?.tickets
         ?? (typeof (sub.metadata as any)?.ticketsPerCycle === 'number' ? (sub.metadata as any).ticketsPerCycle : 0)
       const nextBilling = body.renewalDate

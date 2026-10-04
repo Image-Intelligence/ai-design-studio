@@ -1,3 +1,4 @@
+import { LAYERIZE_MODELS, saveLayerizeResult } from '@/lib/layerize-save'
 import { NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { uploadToR2 } from '@/lib/r2'
@@ -204,6 +205,8 @@ export async function POST(request: Request) {
       // FAL.ai wraps the model output in payload.images[] for image models
       // Clarity upscaler returns payload.image (singular); all other models return payload.images[]
       const images: { url: string }[] = payload?.images || (payload?.image?.url ? [payload.image] : [])
+      // SeeDream Layerize: its layers are kept together as ONE card (lib/layerize-save)
+      const isLayerize = LAYERIZE_MODELS.has(queueItem.modelId) && Array.isArray(payload?.layers) && payload.layers.length > 0
 
       if (images.length === 0) {
         console.error('Webhook payload has no images:', JSON.stringify(payload).substring(0, 300))
@@ -239,7 +242,20 @@ export async function POST(request: Request) {
       const expiresAt = new Date()
       expiresAt.setFullYear(expiresAt.getFullYear() + 100)
 
-      for (let i = 0; i < images.length; i++) {
+      if (isLayerize) {
+        const saved = await saveLayerizeResult({
+          userId: queueItem.userId, prompt: params?.savePrompt || queueItem.prompt, modelId: queueItem.modelId,
+          falRequestId: queueItem.falRequestId, createdAt: queueItem.createdAt,
+          ticketCost: isAdminMode ? 0 : queueItem.ticketCost,
+          referenceImageUrls: (params?.referenceImageUrls as string[]) || [],
+          layers: payload.layers,
+        }).catch(e => { console.error('Layerize save failed:', e); return null })
+        if (saved) {
+          uploadedImages.push(saved)
+          after(() => { void ensureThumbnail(saved.id) })
+        }
+      }
+      for (let i = 0; i < (isLayerize ? 0 : images.length); i++) {
         const falImageUrl = images[i].url
         console.log(`Downloading image ${i + 1}/${images.length} from FAL.ai: ${falImageUrl}`)
 

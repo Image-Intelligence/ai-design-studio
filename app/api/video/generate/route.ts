@@ -12,6 +12,7 @@ import { fitImageForFal } from '@/lib/fal-image-fit'
 import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds } from '@/lib/ticket-pricing'
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
+import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
@@ -150,6 +151,11 @@ export async function POST(request: NextRequest) {
       videoTargetFps = '60',
       // Wan 2.2 LoRA serving: [{ path, scale, transformer }] — validated below
       loras = [],
+      // H3 Max Insert Shot: where the new shot goes in the source clip, seconds
+      insertStartSec,
+      insertResumeSec,
+      // SeeDance 2.5 Complete: the draft video (a GeneratedImage id) to re-render at 1080p
+      draftVideoId,
     } = await normalizeVideoRefs(canonicalisePayload(await request.json()));
 
     // Video tools that fal bills by the source's length, size or frame rate:
@@ -160,6 +166,32 @@ export async function POST(request: NextRequest) {
       ? await (await import('@/lib/video-probe')).probeRemoteVideo(editVideoUrl).catch(() => null)
       : null
     const editVideoDurationSec: number = probed ? probed.seconds : (Number(clientEditVideoDurationSec) || 0)
+    /*
+     * SeeDance 2.5 Complete: the draft is a video in the user's own feed. Its
+     * fal draft id never leaves the server - the page sends the video's id,
+     * and the draft's length (measured) is what the 1080p render is priced on.
+     */
+    let draftInfo: { draftId: string; seconds: number } | null = null
+    if (model === 'seedance-2.5-complete') {
+      const row = Number.isInteger(Number(draftVideoId)) ? await prisma.generatedImage.findFirst({
+        where: { id: Number(draftVideoId), ...(_u ? { userId: _u.id } : {}) },
+        select: { imageUrl: true, createdAt: true, videoMetadata: true },
+      }).catch(() => null) : null
+      const meta = (row?.videoMetadata ?? null) as { seedanceDraftId?: string } | null
+      if (!row || !meta?.seedanceDraftId) {
+        return NextResponse.json({ success: false, error: 'That video is not a SeeDance 2.5 draft.' }, { status: 400 });
+      }
+      if (Date.now() - row.createdAt.getTime() > 7 * 24 * 3600 * 1000 - 5 * 60 * 1000) {
+        return NextResponse.json({ success: false, error: 'This draft is more than 7 days old - fal keeps drafts for a week. Make a new one.' }, { status: 400 });
+      }
+      const secs = await (await import('@/lib/video-probe')).probeRemoteMediaSeconds(row.imageUrl).catch(() => null)
+      draftInfo = { draftId: meta.seedanceDraftId, seconds: secs && secs > 0 ? secs : 10 }
+    }
+    // Audio-driven models (lip sync, music video) bill by the audio's length:
+    // measured here, never taken from the browser
+    const audioDurationSec: number = BATCH_1003_AUDIO_DRIVEN.has(model) && audioUrl
+      ? await (await import('@/lib/video-probe')).probeRemoteMediaSeconds(audioUrl).catch(() => 0) ?? 0
+      : 0
 
     // CCBill compliance: fal content-safety flags from the client are only honored
     // for verified admins — regular users ALWAYS run with the checker ON, no matter
@@ -175,7 +207,15 @@ export async function POST(request: NextRequest) {
       if (denied) return denied
       if (!canUseModel(apiAuth, 'video', model)) return modelNotPermittedResponse(model)
     }
-    const userId = apiAuth ? apiAuth.user.id : userIdRaw
+    // WHO PAYS comes from the login, never the request body: the body's userId
+    // used to decide whose tickets were spent, so a request naming another
+    // account billed them (found 2026-10-04). Every legitimate caller - the
+    // portal, the scanners, the chat hub calling this handler in-process - is
+    // that same signed-in user anyway.
+    if (!apiAuth && userIdRaw && _u && Number(userIdRaw) !== _u.id) {
+      console.warn(`Video submit: body userId ${userIdRaw} ignored for session user ${_u.id}`)
+    }
+    const userId: number | undefined = apiAuth ? apiAuth.user.id : _u?.id
     const adminMode = apiAuth ? false : adminModeRaw
 
     // Admin-only models: hard server gate, regardless of what the client sent
@@ -250,6 +290,10 @@ export async function POST(request: NextRequest) {
       'wan-3.0', 'wan-3.0-prime', 'gemini-omni-1.1', 'ltx-2.5-pro', 'ltx-2.5-fast',
       ...BATCH_0928_GENERATORS,
       ...BATCH_0929_TEXT_CAPABLE,
+      // starts from its song (the photo is an optional character reference)
+      'pixverse-music-video',
+      // audio-driven (the photo is optional) and the draft completion (no inputs but the draft)
+      'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast', 'seedance-2.5-complete',
     ])
     const hasNonImageInput = !!editVideoUrl || !!motionVideoUrl
       || (Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)
@@ -306,6 +350,43 @@ export async function POST(request: NextRequest) {
       // Ray 3.2's edit and reframe schemas REQUIRE a prompt (Ray 2's modify
       // and reframe take it as optional)
       // Every tool in the 2026-09-28 batch needs a prompt (their schemas require it)
+      if (BATCH_1003_PROMPT_REQUIRED.has(model) && !prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Say what to remove - e.g. "the red car" or "the man on the left".' }, { status: 400 });
+      }
+      // VOID's widest window is 197 frames of the source: ~8s at 24 fps, ~6.5s at 30
+      if (model === 'void-video-removal' && editVideoDurationSec * (probed?.fps || 24) > 197.5) {
+        return NextResponse.json({ success: false, error: `VOID removes objects from up to 197 frames - about ${Math.floor(197 / (probed?.fps || 24) * 10) / 10}s of this clip. Trim it first.` }, { status: 400 });
+      }
+      if (model === 'minimax-h3-max-insert') {
+        // fal's limits (seen 2026-10-04): the shot starts >= 1.625s in, and
+        // the clip must keep ~1.375s AFTER the resume point ("resume_time
+        // must be at most 3.667 seconds" on a 5.06s clip) - 1.4s held here
+        const start = Number(insertStartSec), resume = Number(insertResumeSec)
+        const maxResume = editVideoDurationSec > 0 ? Math.floor((editVideoDurationSec - 1.4) * 10) / 10 : 60
+        if (maxResume < 1.75) {
+          return NextResponse.json({ success: false, error: 'This clip is too short to insert a shot into - use one at least 3.2 seconds long.' }, { status: 400 });
+        }
+        if (!Number.isFinite(start) || start < 1.65) {
+          return NextResponse.json({ success: false, error: 'Set where the new shot starts - at least 1.7 seconds into the clip.' }, { status: 400 });
+        }
+        if (!Number.isFinite(resume) || resume < start) {
+          return NextResponse.json({ success: false, error: 'Set where the clip resumes - after the start.' }, { status: 400 });
+        }
+        if (resume > maxResume + 0.001) {
+          return NextResponse.json({ success: false, error: maxResume >= start
+            ? `The clip has to keep going after the new shot - resume by ${maxResume}s at the latest for this clip.`
+            : 'This clip is too short to insert a shot into - use one at least 3.1 seconds long.' }, { status: 400 });
+        }
+        if (editVideoDurationSec > 60.5) {
+          return NextResponse.json({ success: false, error: 'Insert Shot takes clips up to 60 seconds.' }, { status: 400 });
+        }
+      }
+      if ((model === 'mirelo-sfx-video') && editVideoDurationSec > 60.5) {
+        return NextResponse.json({ success: false, error: 'Mirelo SFX takes clips up to 60 seconds.' }, { status: 400 });
+      }
+      if ((model === 'heygen-translate' || model === 'heygen-translate-fast') && editVideoDurationSec > 480.5) {
+        return NextResponse.json({ success: false, error: 'HeyGen translates clips up to 8 minutes.' }, { status: 400 });
+      }
       if ((BATCH_0928_TOOLS.has(model) || BATCH_0929_TOOLS.has(model)) && !BATCH_0929_PROMPT_OPTIONAL.has(model) && !prompt?.trim()) {
         return NextResponse.json({ success: false, error: 'This tool needs a prompt - describe the change you want.' }, { status: 400 });
       }
@@ -344,6 +425,37 @@ export async function POST(request: NextRequest) {
       if (model === 'luma-ray-3.2-reframe' && editVideoDurationSec > 10.5) {
         return NextResponse.json({ success: false, error: 'Ray 3.2 reframe takes clips up to 10 seconds.' }, { status: 400 });
       }
+    } else if (BATCH_1003_GENERATORS.has(model)) {
+      // The 2026-10-03 generators: a photo and/or an audio track, prompt optional
+      if (BATCH_1003_NEEDS_IMAGE.has(model) && !imageUrl) {
+        return NextResponse.json({ success: false, error: 'Add the photo to animate as the start frame.' }, { status: 400 });
+      }
+      if (BATCH_1003_AUDIO_DRIVEN.has(model) && !audioUrl) {
+        return NextResponse.json({ success: false, error: model === 'pixverse-music-video' ? 'Upload the song (10 seconds to 6 minutes).' : 'Upload the voice track (at least 5 seconds).' }, { status: 400 });
+      }
+      if (model === 'minimax-h3-max-lipsync' && audioDurationSec > 0 && audioDurationSec < 4.9) {
+        return NextResponse.json({ success: false, error: 'The voice track must be at least 5 seconds long.' }, { status: 400 });
+      }
+      if (model === 'pixverse-music-video' && audioDurationSec > 0 && (audioDurationSec < 9.9 || audioDurationSec > 360.5)) {
+        return NextResponse.json({ success: false, error: 'The song must be 10 seconds to 6 minutes long.' }, { status: 400 });
+      }
+      if (model === 'heygen-avatar4' && !audioUrl && !prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Type what the avatar says, or upload a voice track.' }, { status: 400 });
+      }
+      if (LTX_AUDIO_MAX_SEC[model]) {
+        if (audioDurationSec > 0 && (audioDurationSec < 1.9 || audioDurationSec > LTX_AUDIO_MAX_SEC[model] + 0.3)) {
+          return NextResponse.json({ success: false, error: `The audio must be 2 to ${LTX_AUDIO_MAX_SEC[model]} seconds long for this model.` }, { status: 400 });
+        }
+        if (!imageUrl && !prompt?.trim()) {
+          return NextResponse.json({ success: false, error: 'Add a start image or describe the video.' }, { status: 400 });
+        }
+      }
+      if (model === 'happy-horse-1.1' && effectiveSd20Mode === 'r2v' && !prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Describe the video - references need a prompt (name them character1, character2...).' }, { status: 400 });
+      }
+      if (model === 'happy-horse-1.1' && effectiveSd20Mode !== 'r2v' && !imageUrl) {
+        return NextResponse.json({ success: false, error: 'Happy Horse 1.1 needs a start image (or references).' }, { status: 400 });
+      }
     } else if (model !== 'kling-v3-motion' && !isLipsync && !prompt && !(model === 'wan-2.7' && imageUrl) && model !== PIXELCUT_LOOPING) {
       // Name the field — a bare "missing required fields" tells nobody anything
       console.warn('Video submit rejected: no prompt', { model, mode: effectiveSd20Mode, hasImage: !!imageUrl, hasEditVideo: !!editVideoUrl })
@@ -373,7 +485,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (!adminMode && !userId) {
-      return NextResponse.json({ success: false, error: 'Missing userId' }, { status: 400 });
+      return NextResponse.json({ success: false, error: 'Please sign in to generate.' }, { status: 401 });
     }
 
     // Calculate ticket cost based on model. The formula lives in
@@ -419,6 +531,12 @@ export async function POST(request: NextRequest) {
       motionVideoDurationSec,
       characterOrientation,
       videoUpscaleFactor,
+      audioDurationSec,
+      videoChoice: typeof videoChoice === 'string' ? videoChoice : undefined,
+      promptWords: typeof prompt === 'string' ? prompt.trim().split(/\s+/).filter(Boolean).length : 0,
+      ...(draftInfo ? { editVideoDurationSec: draftInfo.seconds } : {}),
+      // SeeDance 2.5 Draft renders (and bills) at 480p whatever was picked
+      ...(model === 'seedance-2.5' && videoChoice === 'draft' ? { resolution: '480p' } : {}),
     });
 
     // CCBill content filter — must pass BEFORE any charge or provider submit
@@ -475,6 +593,8 @@ export async function POST(request: NextRequest) {
       ? FAL_ENDPOINTS[imageUrl ? 'minimax-h3-max' : 'minimax-h3-max-text']
       : BATCH_0928_GENERATORS.has(model)
       ? FAL_ENDPOINTS[`${model}-${batchMode}`]
+      : BATCH_1003_GENERATORS.has(model)
+      ? FAL_ENDPOINTS[batch1003EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode })]
       : BATCH_0929_GENERATORS.has(model)
       ? FAL_ENDPOINTS[batch0929EndpointKey(model, batch0929Mode(model, { imageUrl, endImageUrl, effectiveMode: effectiveSd20Mode }))]
       : (model === 'ltx-2.5-pro' || model === 'ltx-2.5-fast' || LUMA_VIDEO_GENERATORS.has(model))
@@ -609,6 +729,17 @@ export async function POST(request: NextRequest) {
         prompt, imageUrl, editVideoUrl, duration, resolution, generateAudio,
         choice: typeof videoChoice === 'string' ? videoChoice : undefined,
       });
+    } else if (BATCH_1003_TOOLS.has(model) || BATCH_1003_GENERATORS.has(model)) {
+      // lib/batch-1003-video builds the exact input (inputs checked above)
+      falInput = batch1003Input(model, {
+        prompt, imageUrl, editVideoUrl, audioUrl,
+        referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
+        duration, resolution, aspectRatio: klingAspectRatio, effectiveMode: effectiveSd20Mode,
+        choice: typeof videoChoice === 'string' ? videoChoice : undefined,
+        insertStartSec: Number(insertStartSec), insertResumeSec: Number(insertResumeSec),
+        sourceSec: editVideoDurationSec, sourceFps: probed?.fps,
+        draftId: draftInfo?.draftId,
+      });
     } else if (BATCH_0929_TOOLS.has(model) || BATCH_0929_GENERATORS.has(model)) {
       // lib/batch-0929-video builds the exact input (tools' prompts checked above)
       falInput = batch0929Input(model, {
@@ -734,6 +865,9 @@ export async function POST(request: NextRequest) {
         // decode - the result would play black in the feed. H.264 plays everywhere.
         codec: 'H264',
       };
+      // Draft: a 480p preview at the 480p rate, returning a draft id that
+      // seedance-2.5-complete re-renders at 1080p within seven days
+      if (videoChoice === 'draft') { falInput.draft = true; falInput.resolution = '480p' }
       if (['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(klingAspectRatio)) {
         falInput.aspect_ratio = klingAspectRatio;
       }
@@ -934,7 +1068,7 @@ export async function POST(request: NextRequest) {
             modelId:    model,
             modelType:  'video',
             prompt:     (prompt || '').trim(),
-            parameters: { falEndpoint, falInput, usePolling: true },
+            parameters: { falEndpoint, falInput, usePolling: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
             status:     'queued',
             ticketCost: ticketCost, // real cost — admin video is debited client-side; refunded server-side on failure
           },
@@ -1001,7 +1135,7 @@ export async function POST(request: NextRequest) {
           modelId:     model,
           modelType:   'video',
           prompt:      (prompt || '').trim(),
-          parameters:  { falEndpoint, falInput, usePolling: true },
+          parameters:  { falEndpoint, falInput, usePolling: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
           status:      'processing',
           ticketCost:  ticketCost,
           falRequestId: requestId,
@@ -1016,7 +1150,7 @@ export async function POST(request: NextRequest) {
           modelId:      model,
           modelType:    'video',
           prompt:       (prompt || '').trim(),
-          parameters:   { falEndpoint, falInput, usePolling: true },
+          parameters:   { falEndpoint, falInput, usePolling: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
           status:       'processing',
           ticketCost:   ticketCost,
           falRequestId: requestId,

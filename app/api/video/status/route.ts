@@ -105,7 +105,8 @@ export async function POST(request: NextRequest) {
         throw err
       }
 
-      const falVideoUrl = result.data?.video?.url;
+      // Most models return one `video`; a few (Mirelo SFX) return a list of takes
+      const falVideoUrl = result.data?.video?.url ?? (Array.isArray(result.data?.video) ? result.data.video[0]?.url : undefined);
       if (!falVideoUrl) {
         return jsonPrivate({ status: 'failed', error: 'No video URL in result' });
       }
@@ -135,7 +136,26 @@ export async function POST(request: NextRequest) {
         if (videoRes.ok) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'
-          const videoBuffer = Buffer.from(await videoRes.arrayBuffer())
+          let videoBuffer = Buffer.from(await videoRes.arrayBuffer())
+          /*
+           * VOID writes its result at 12 fps but reads the source at the
+           * source's own rate, so it plays at half speed for a 24 fps clip.
+           * Re-time it back (timestamps only - no re-encode) from the frame
+           * rate the generate route measured and stored on the job.
+           */
+          if (model === 'void-video-removal') {
+            try {
+              const job = await prisma.generationQueue.findFirst({ where: { falRequestId: requestId }, select: { parameters: true } })
+              const srcFps = Number((job?.parameters as { sourceFps?: number } | null)?.sourceFps) || 24
+              const { VOID_OUTPUT_FPS } = await import('@/lib/batch-1003-video')
+              if (Math.abs(srcFps - VOID_OUTPUT_FPS) > 0.5) {
+                const { retimeVideo } = await import('@/lib/video-probe')
+                videoBuffer = Buffer.from(await retimeVideo(videoBuffer, VOID_OUTPUT_FPS / srcFps))
+              }
+            } catch (e) {
+              console.error('[video/status] VOID re-time failed (keeping the timing fal returned):', e)
+            }
+          }
           const filename = `video-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
           permanentVideoUrl = await uploadToR2(filename, videoBuffer, contentType)
           console.log(`[video/status] Uploaded video to blob: ${permanentVideoUrl}`)
@@ -161,15 +181,17 @@ export async function POST(request: NextRequest) {
           prompt: actualPrompt,
           imageUrl: permanentVideoUrl,
           model: model || 'wan-2.5',
-          quality: resolution || '1080p',
+          // A SeeDance 2.5 draft is marked as one: the viewer offers to complete it
+          quality: result.data?.draft_id ? 'draft' : (resolution || '1080p'),
           aspectRatio: realAspect || '16:9',
           ticketCost: ticketCost || 0,
           expiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
           falRequestId: requestId,
           videoMetadata: {
             duration: duration || '5',
-            resolution: resolution || '1080p',
+            resolution: result.data?.draft_id ? 'draft' : (resolution || '1080p'),
             isVideo: true,
+            ...(result.data?.draft_id ? { seedanceDraftId: String(result.data.draft_id) } : {}),
             thumbnailUrl: thumbnailUrl || permanentVideoUrl,
             ...(realAspect ? { aspectRatio: realAspect } : {}),
           } as any,

@@ -1,3 +1,4 @@
+import { LAYERIZE_MODELS, saveLayerizeResult, type FalLayer } from '@/lib/layerize-save'
 import { after, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
@@ -293,7 +294,22 @@ export async function GET(request: Request) {
           }
           continue // young rows: transient, retry next minute
         }
-        const data = await res.json() as { images?: { url: string; width?: number; height?: number }[] }
+        const data = await res.json() as { images?: { url: string; width?: number; height?: number }[]; layers?: FalLayer[] }
+        // SeeDream Layerize: one card holding every layer (lib/layerize-save)
+        if (LAYERIZE_MODELS.has(j.modelId) && Array.isArray(data?.layers) && data.layers.length > 0) {
+          const saved = await saveLayerizeResult({
+            userId: j.userId, prompt: j.prompt || '', modelId: j.modelId, falRequestId: j.falRequestId,
+            createdAt: j.createdAt, ticketCost: j.ticketCost,
+            referenceImageUrls: Array.isArray(params.permanentReferenceUrls) ? params.permanentReferenceUrls : [],
+            layers: data.layers,
+          }).catch(e => { console.error('[cron-drain] layerize save failed:', e); return null })
+          if (saved) {
+            await prisma.generationQueue.update({ where: { id: j.id }, data: { resultUrl: saved.url, resultImageId: saved.id } }).catch(() => {})
+            await releaseQueueSlot(j.falRequestId, false)
+            harvested++
+          }
+          continue
+        }
         const falImages = Array.isArray(data?.images) ? data.images : []
         if (falImages.length === 0) {
           await releaseQueueSlot(j.falRequestId, true, 'The model did not generate the expected output — content may have been filtered')

@@ -25,6 +25,12 @@ export const VIDEO_TOOL_MODELS = new Set([
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
   'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
+  // 2026-10-03 batch: remove an object, caption, insert a shot, depth, dub,
+  // add sound effects
+  'void-video-removal', 'veed-subtitles', 'minimax-h3-max-insert', 'depth-anything-video',
+  'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
+  // 2026-10-03 second round: text-prompted tracking masks, audio-only dubbing
+  'sam-3.1-video', 'elevenlabs-dubbing',
   // Pixelcut: cut the subject out of a clip
   'pixelcut-video-bg-removal',
 ])
@@ -44,6 +50,8 @@ export const INPUT_ROUTED_MODELS = new Set([
   'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
   'minimax-h3-max-turbo', 'minimax-h3-max-ref',
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
+  // 2026-10-03: references -> r2v, else the start frame (priced by batch1003TicketCost)
+  'happy-horse-1.1',
 ])
 
 export interface VideoTicketCostInput {
@@ -82,6 +90,12 @@ export interface VideoTicketCostInput {
   sourceFps?: number
   /** Topaz interpolate's target frame rate. */
   targetFps?: string | number
+  /** The uploaded audio's MEASURED length (audio-driven models: lip sync, music video). */
+  audioDurationSec?: number
+  /** The model's single choice (VEED's caption style decides its tier). */
+  videoChoice?: string
+  /** The prompt's word count (HeyGen Avatar IV bills the seconds the script takes to say). */
+  promptWords?: number
 }
 
 /*
@@ -302,6 +316,13 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   } else if (model.startsWith('luma-ray-')) {
     // Before the generic tool branch: the Luma tools price by their own rates
     ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec, !!input.hasStartImage)
+  } else if (BATCH_1003_MODELS.has(model)) {
+    // Ahead of the generic tool branch: these price by their own rates
+    ticketCost = batch1003TicketCost(model, {
+      duration, resolution, sourceSec: editVideoDurationSec, sourceHeight: input.sourceHeight,
+      audioSec: input.audioDurationSec, choice: input.videoChoice, refs: input.referenceImageCount ?? 0,
+      sourceFps: input.sourceFps, promptWords: input.promptWords,
+    })
   } else if (BATCH_0929_MODELS.has(model)) {
     ticketCost = batch0929TicketCost(model, {
       // Veo's references and first-last-frame modes render 8s whatever is asked
@@ -475,22 +496,40 @@ export const DEV_TIER_PRICING_NOTES: Record<string, string> = {
 // ── Ticket packs ─────────────────────────────────────────────────────────────
 // Dev Tier discount is 10% (cut from 20/30% on 2026-07-29 — keep in sync with
 // the subscribe page, shop dropdown, and dashboard copy)
+//
+// Re-cut 2026-10-04 for CCBill, which caps a single charge at $99.99: the old
+// 1000-for-$120 pack could not be sold, so the ladder now tops out at 825 for
+// $99 (the same $0.12 a ticket) and gains in-between steps. Every step is a
+// whole-dollar price and is cheaper per ticket than the one before it.
+//
+// Margin floor: model prices are set so a ticket costs fal at most $0.04 -
+// half of the $0.08 subscription ticket. Packs never go below that: the
+// cheapest pack ticket is $0.108 (825 pack, Dev Tier), so every model keeps
+// >= 63% gross before processor fees and no model price had to move.
 export interface TicketPackage {
   tickets: number
   freeTierPrice: number
   devTierPrice: number
+  /** Short name shown on the shop card. */
+  name?: string
   popular?: boolean
   bestValue?: boolean
 }
 
 export const TICKET_PACKAGES: TicketPackage[] = [
-  { tickets: 25,   freeTierPrice: 5.00,   devTierPrice: 4.50  },
-  { tickets: 50,   freeTierPrice: 9.00,   devTierPrice: 8.10,  popular: true  },
-  { tickets: 100,  freeTierPrice: 16.00,  devTierPrice: 14.40 },
-  { tickets: 250,  freeTierPrice: 35.00,  devTierPrice: 31.50 },
-  { tickets: 500,  freeTierPrice: 65.00,  devTierPrice: 58.50, bestValue: true },
-  { tickets: 1000, freeTierPrice: 120.00, devTierPrice: 108.00 },
+  { tickets: 25,  name: 'Single',    freeTierPrice: 5.00,  devTierPrice: 4.50  },
+  { tickets: 50,  name: 'Spark',     freeTierPrice: 9.00,  devTierPrice: 8.10  },
+  { tickets: 100, name: 'Stack',     freeTierPrice: 16.00, devTierPrice: 14.40 },
+  { tickets: 175, name: 'Reel',      freeTierPrice: 26.00, devTierPrice: 23.40 },
+  { tickets: 250, name: 'Tower',     freeTierPrice: 35.00, devTierPrice: 31.50, popular: true },
+  { tickets: 375, name: 'Case',      freeTierPrice: 50.00, devTierPrice: 45.00 },
+  { tickets: 500, name: 'Chest',     freeTierPrice: 65.00, devTierPrice: 58.50 },
+  { tickets: 650, name: 'Dispenser', freeTierPrice: 82.00, devTierPrice: 73.80 },
+  { tickets: 825, name: 'Vault',     freeTierPrice: 99.00, devTierPrice: 89.10, bestValue: true },
 ]
+
+/** CCBill's ceiling for one charge - no pack may cost more. */
+export const MAX_SINGLE_CHARGE_USD = 99.99
 
 /** USD a single ticket cost the buyer, per pack and tier. */
 export function usdPerTicket(pack: TicketPackage, tier: 'free' | 'dev'): number {
@@ -689,6 +728,113 @@ function batch0928TicketCost(model: string, o: {
  *   SeeDance 2.0 Mini     $0.0721/s (480p), $0.1547/s (720p); auto = 10s
  *   Hunyuan Video 1.5     $0.075/s (720p assumed x2)
  */
+// ── 2026-10-03 batch ─────────────────────────────────────────────────────────
+/*
+ * From fal's published rates (2026-10-03), billed at fal cost / $0.04 a ticket
+ * - a 50% gross margin at the $0.08 subscription ticket:
+ *   H3 Max Lip Sync        $0.05 / $0.08 / $0.16 per s (480p / 768p / 1080p)
+ *                          of output = the audio's length, 5s min, x1.2 over 15s
+ *   PixVerse Music Video   $0.06 / $0.09 per s of audio (720p / 1080p),
+ *                          whole seconds, 10s min, 6 min max
+ *   H3 Max Camera Controls $0.05 / $0.08 / $0.16 per s - the REGULAR rates; fal
+ *                          runs 40% off until 2026-10-15, so the margin is
+ *                          wider until then rather than gone after. The output
+ *                          can run ~0.7s past the length asked, priced in.
+ *   Happy Horse 1.1        $0.14 / $0.18 per s (720p / 1080p)
+ *   VOID object removal    $0.05 a clip + $0.05 for the SAM-3 mask it makes
+ *                          from the text (pass 2 refinement is left off)
+ *   VEED Subtitles         $0.10 per started minute of source (1 min min), x2
+ *                          for the dynamic caption styles, x2 above 1080p
+ *   H3 Max Insert Shot     $0.05 / $0.06 per s of the NEW shot (480p / 768p);
+ *                          reference images can pass the free 4,096 tokens,
+ *                          so each is priced a ticket
+ *   Depth Anything Video   $0.04 per s of source
+ *   HeyGen Translate       $0.10 (precision) / $0.05 (fast) per s of output;
+ *                          dynamic duration can run long, priced at +15%
+ *   Mirelo SFX 1.6         $0.01 per s, one sample, as long as the clip (60s max)
+ */
+const BATCH_1003_MODELS = new Set([
+  'minimax-h3-max-lipsync', 'pixverse-music-video', 'minimax-h3-max-camera', 'happy-horse-1.1',
+  'heygen-avatar4', 'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast', 'seedance-2.5-complete', 'sam-3.1-video', 'elevenlabs-dubbing',
+  'void-video-removal', 'veed-subtitles', 'minimax-h3-max-insert', 'depth-anything-video',
+  'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
+])
+const VEED_DYNAMIC = new Set(['glass', 'whisper', 'glide2', 'fusion', 'glide', 'terminal', 'handwritten', 'backdrop', 'backdrop2'])
+export function batch1003TicketCost(model: string, o: {
+  duration?: string | number; resolution?: string; sourceSec?: number; sourceHeight?: number
+  audioSec?: number; choice?: string; refs?: number; sourceFps?: number; promptWords?: number
+}): number {
+  const res = String(o.resolution ?? '').toLowerCase()
+  const secs = Math.max(1, parseInt(String(o.duration ?? '5')) || 5)
+  const src = o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10
+  let usd: number
+  switch (model) {
+    case 'minimax-h3-max-lipsync': {
+      const s = Math.max(5, o.audioSec && o.audioSec > 0 ? o.audioSec : 10)
+      const rate = res === '1080p' ? 0.16 : res === '480p' ? 0.05 : 0.08
+      usd = s * rate * (s > 15 ? 1.2 : 1)
+      break
+    }
+    case 'pixverse-music-video': {
+      const s = Math.min(360, Math.max(10, Math.ceil(o.audioSec && o.audioSec > 0 ? o.audioSec : 30)))
+      usd = s * (res === '1080p' ? 0.09 : 0.06)
+      break
+    }
+    case 'minimax-h3-max-camera':
+      usd = (Math.min(15, secs) + 0.7) * (res === '1080p' ? 0.16 : res === '480p' ? 0.05 : 0.08)
+      break
+    case 'happy-horse-1.1':
+      usd = Math.min(15, Math.max(3, secs)) * (res === '720p' ? 0.14 : 0.18)
+      break
+    case 'void-video-removal':
+      usd = 0.10
+      break
+    case 'veed-subtitles':
+      usd = Math.max(1, Math.ceil(src / 60)) * 0.10 * (VEED_DYNAMIC.has(o.choice ?? '') ? 2 : 1) * ((o.sourceHeight ?? 0) > 1080 ? 2 : 1)
+      break
+    case 'minimax-h3-max-insert':
+      usd = Math.min(13, Math.max(5, secs)) * (res === '480p' ? 0.05 : 0.06) + (o.refs ?? 0) * 0.04
+      break
+    case 'depth-anything-video':
+      usd = src * 0.04
+      break
+    case 'heygen-translate':
+    case 'heygen-translate-fast':
+      usd = src * 1.15 * (model === 'heygen-translate' ? 0.10 : 0.05)
+      break
+    case 'mirelo-sfx-video':
+      usd = Math.min(60, Math.max(1, Math.ceil(src))) * 0.01
+      break
+    case 'heygen-avatar4': {
+      // $0.10 per output second: the audio's length, or the script's at 2.5
+      // words a second (+15% for pauses and a slow voice)
+      const s = o.audioSec && o.audioSec > 0 ? o.audioSec : Math.max(3, ((o.promptWords ?? 15) / 2.5) * 1.15)
+      usd = Math.ceil(s) * 0.10
+      break
+    }
+    case 'ltx-2.5-audio-pro':
+    case 'ltx-2.5-audio-fast':
+      // Per second of the input audio (1080p - the only tier)
+      usd = Math.ceil(Math.max(2, o.audioSec && o.audioSec > 0 ? o.audioSec : 10)) * (model === 'ltx-2.5-audio-pro' ? 0.17 : 0.13)
+      break
+    case 'seedance-2.5-complete':
+      // The draft re-rendered at 1080p: $1.164 per second of the draft
+      usd = Math.max(4, src) * 1.164
+      break
+    case 'sam-3.1-video':
+      // $0.01 per 16 frames of source
+      usd = Math.ceil((src * (o.sourceFps && o.sourceFps > 0 ? o.sourceFps : 30)) / 16) * 0.01
+      break
+    case 'elevenlabs-dubbing':
+      // $0.60 per started minute
+      usd = Math.max(1, Math.ceil(src / 60)) * 0.60
+      break
+    default:
+      usd = 1
+  }
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
+}
+
 const BATCH_0929_MODELS = new Set([
   'pika-2.2', 'pikaframes', 'pika-2-turbo',
   'hailuo-2.3-pro', 'hailuo-2.3', 'hailuo-2.3-fast-pro', 'hailuo-2.3-fast',
@@ -849,6 +995,18 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'veo-3.1-extend',       label: 'Veo 3.1 Extend',         kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo rates on the 7s it adds.' },
   { id: 'veo-3.1-fast-extend',  label: 'Veo 3.1 Fast Extend',    kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo Fast rates on the 7s it adds.' },
   { id: 'minimax-h3-max-turbo-extend', label: 'MiniMax H3 Max Turbo Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'none', note: 'fal $0.025/$0.04/$0.08/$0.16 per s added.' },
+  // 2026-10-03 batch (admin, under test)
+  { id: 'minimax-h3-max-lipsync', label: 'H3 Max Lip Sync', kind: 'generator', durations: [], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05 / $0.08 / $0.16 per s of the audio (5s min, x1.2 over 15s).' },
+  { id: 'pixverse-music-video', label: 'PixVerse Music Video', kind: 'generator', durations: [], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.06 / $0.09 per s of audio (10s min).' },
+  { id: 'minimax-h3-max-camera', label: 'H3 Max Camera Controls', kind: 'generator', durations: ['3', '5', '8', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05 / $0.08 / $0.16 per s (regular rates; 40% off until Oct 15).' },
+  { id: 'happy-horse-1.1', label: 'Happy Horse 1.1', kind: 'generator', durations: ['3', '5', '8', '10', '15'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.14 / $0.18 per s.' },
+  { id: 'void-video-removal', label: 'VOID Object Removal', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 a clip + $0.05 for the text mask.' },
+  { id: 'veed-subtitles', label: 'VEED Subtitles', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.10 per started minute; x2 dynamic styles, x2 above 1080p.' },
+  { id: 'minimax-h3-max-insert', label: 'H3 Max Insert Shot', kind: 'tool', durations: ['5', '8', '10', '13'], resolutions: ['480p', '768p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05 / $0.06 per s of the new shot.' },
+  { id: 'depth-anything-video', label: 'Depth Anything Video', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.04 per s of clip.' },
+  { id: 'heygen-translate', label: 'HeyGen Translate', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.10 per s of output (+15% for dynamic duration).' },
+  { id: 'heygen-translate-fast', label: 'HeyGen Translate Fast', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 per s of output (+15%).' },
+  { id: 'mirelo-sfx-video', label: 'Mirelo SFX 1.6', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.01 per s, one sample (60s max).' },
   { id: 'minimax-h3-max-recast', label: 'MiniMax H3 Max Recast', kind: 'tool', durations: [], resolutions: ['768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.30 / $0.45 per s of clip (5-30s).' },
   { id: 'minimax-h3-max-extend', label: 'MiniMax H3 Max Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05/$0.08/$0.16 per s added.' },
   { id: 'marey-motion-transfer', label: 'Marey Motion Transfer', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },

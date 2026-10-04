@@ -29,11 +29,12 @@ AI Design Studio (prompt-protocol.vercel.app) is an AI creative platform that le
 ## TICKETS (The Currency)
 
 - All AI generations cost tickets.
-- **Buy ticket packs** at /buy-tickets: 25 for $5, 50 for $9, 100 for $16, 250 for $35, 500 for $65, 1000 for $120.
-- **Dev Tier subscription** gives you recurring tickets each period AND 30% off all ticket purchases:
-  - Biweekly: $20 → 250 tickets
-  - Monthly: $40 → 500 tickets
-  - Yearly: $480 → 500 tickets/month (6000 tickets upfront)
+- **Buy ticket packs** at /buy-tickets: 25 for $5, 50 for $9, 100 for $16, 175 for $26, 250 for $35, 375 for $50, 500 for $65, 650 for $82, 825 for $99.
+- **Dev Tier subscription** (/prompting-studio/subscribe) gives you tickets every month AND 10% off all ticket packs. Four monthly plans, all at $0.08 a ticket:
+  - Creator: $19.99/month → 250 tickets
+  - Pro: $39.99/month → 500 tickets
+  - Studio: $69.99/month → 875 tickets
+  - Max: $99.99/month → 1,250 tickets
 - Dev Tier members see a "DEV" badge on their profile.
 - Ticket balance shown in the top right corner of the dashboard.
 

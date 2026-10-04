@@ -725,6 +725,40 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  // 2026-10-03 image tools (admin), fal cost / $0.04 a ticket:
+  //   background removal $0.016 -> 1; vectorize $0.01 -> 1; product in hand
+  //   $0.04 -> 1; multi-angle $0.035/MP with the source held to 1536 px
+  //   (<= 2.36 MP, $0.083) -> 3; layerize $0.03375 PER LAYER at 1K (base + up
+  //   to 16 layers). Raised 8 -> 10 tickets on going public (2026-10-04): the
+  //   Flash test came back as 11 images, and 10 keeps 50% up to 11 layers
+  //   ($0.37) and stays profitable at the 17-layer maximum ($0.57)
+  { id: 'pixelcut-bg-removal', name: 'pixelcut/background-removal', displayName: 'Background Removal', description: 'Cut the subject out with a transparent background', ticketCost: 1, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'recraft-vectorize', name: 'fal-ai/recraft/vectorize', displayName: 'Recraft Vectorize', description: 'Turn a logo or image into a scalable SVG', ticketCost: 1, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'seedream-5-pro-layerize', name: 'bytedance/seedream/v5/pro/layerize', displayName: 'SeeDream 5 Layerize', description: 'Split an image into editable transparent layers', ticketCost: 10, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'qwen-multi-angle', name: 'fal-ai/qwen-image-edit-2511-multiple-angles', displayName: 'Multi-Angle Reshoot', description: 'Re-shoot the scene from another camera angle', ticketCost: 3, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'bria-product-holding', name: 'bria/fibo-edit-1.5/product-holding', displayName: 'Bria Product in Hand', description: 'Put a product in someone\'s hands for an ad shot', ticketCost: 1, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  // Second round (admin): SAM 3.1 $0.01 -> 1; Bria replace background / embed
+  // product $0.04 -> 1; Flash Layerize $0.027 per output image, flat any size:
+  // the test still came back as 11 images ($0.30) and the most it can return is
+  // 17 ($0.46) -> 8 tickets keeps 50% up to 11 images, still profitable at 17
+  { id: 'sam-3.1-image', name: 'fal-ai/sam-3-1/image', displayName: 'SAM 3.1 Select', description: 'Cut out whatever you name - "the fox", "the red car"', ticketCost: 1, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'bria-replace-background', name: 'bria/replace-background', displayName: 'Bria Replace Background', description: 'Keep the subject, paint a new background from a prompt', ticketCost: 1, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'bria-embed-product', name: 'bria/embed-product', displayName: 'Bria Embed Product', description: 'Place a product photo into a scene', ticketCost: 1, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'seedream-5-flash-layerize', name: 'bytedance/seedream/v5/flash/layerize', displayName: 'SeeDream 5 Flash Layerize', description: 'Faster Layerize', ticketCost: 8, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  // Marigold V2 Depth (admin, 2026-10-03): a colourised depth map from one
+  // image. fal $0.03 an image at any size -> 1 ticket (62% at the $0.08 ticket)
+  {
+    id: 'marigold-v2',
+    name: 'fal-ai/marigold-v2',
+    displayName: 'Marigold V2 Depth',
+    description: 'Depth map from a single image - near is warm, far is cool',
+    ticketCost: 1,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
   // SeedVR2 upscaler
   {
     id: 'seedvr2-upscale',

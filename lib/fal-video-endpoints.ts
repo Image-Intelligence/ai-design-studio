@@ -1,4 +1,5 @@
 import { BATCH_0929_ENDPOINTS } from '@/lib/batch-0929-video'
+import { BATCH_1003_ENDPOINTS, BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PUBLIC } from '@/lib/batch-1003-video'
 import { PIXELCUT_VIDEO_ENDPOINTS } from '@/lib/pixelcut-video'
 
 // Every fal video endpoint this app can submit to, keyed by the model id the
@@ -146,6 +147,9 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   // extend, Marey, SeeDance 2.0 Mini, Hunyuan Video 1.5) - kept with the
   // code that routes them in lib/batch-0929-video
   ...BATCH_0929_ENDPOINTS,
+  // 2026-10-03 batch (lip sync, music video, camera controls, Happy Horse 1.1
+  // and the clip tools) - routed by lib/batch-1003-video
+  ...BATCH_1003_ENDPOINTS,
   // Pixelcut video (looping product video, background removal)
   ...PIXELCUT_VIDEO_ENDPOINTS,
 };
@@ -230,6 +234,9 @@ export const VIDEO_FILE_EXTS = ['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']
  * a user is offered a model the server will refuse.
  */
 export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
+  // The 2026-10-03 batch while under test - minus the ones made public
+  // 2026-10-04 (BATCH_1003_PUBLIC)
+  ...[...BATCH_1003_GENERATORS, ...BATCH_1003_TOOLS].filter(id => !BATCH_1003_PUBLIC.has(id)),
   // Pixelcut video: looping public 2026-10-01, background removal 2026-10-02
   // (priced per measured frame)
   // Public 2026-10-01 (priced, tested): gemini-omni-flash, gemini-omni-1.1,

@@ -544,7 +544,7 @@ export default function DashboardPage() {
                     <Sparkles size={12} className="text-slate-300 shrink-0 xl:w-4 xl:h-4" />
                     <div className="min-w-0">
                       <p className="text-[11px] xl:text-[13px] font-semibold text-white truncate">{hasPromptStudioDev ? "Dev Tier Active" : "Upgrade to Dev Tier"}</p>
-                      <p className="text-[9px] xl:text-[11px] text-slate-600 truncate">{hasPromptStudioDev ? "Manage subscription" : "10% off tickets · From $20"}</p>
+                      <p className="text-[9px] xl:text-[11px] text-slate-600 truncate">{hasPromptStudioDev ? "Manage subscription" : "10% off tickets · From $19.99"}</p>
                     </div>
                   </div>
                   <ArrowRight size={11} className="text-slate-500 group-hover:text-white transition-colors shrink-0" />
