@@ -9,7 +9,7 @@ import { fal } from '@/lib/fal-client'
 import { getAudioStudioModel } from '@/lib/audio-studio'
 import { submitShots, settleShots, boardFolder } from '@/lib/storyboard-shoot'
 import {
-  sanitizeShots, totalSeconds, DEFAULT_FINAL_CUT_OPTIONS, NARRATOR_VOICES, SHOOT_RESOLUTIONS,
+  sanitizeShots, sanitizeScenes, orderByScenes, totalSeconds, DEFAULT_FINAL_CUT_OPTIONS, NARRATOR_VOICES, SHOOT_RESOLUTIONS,
   FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS,
   boardMode,
   type FinalCutOptions, type FinalCutPhase, type FinalCutState, type StoryboardShot,
@@ -19,7 +19,8 @@ import {
  * The Final Cut: from a storyboard to a finished, scored film.
  *
  *   GET                              the board's Final Cut state
- *   POST { action: 'start', options }  begin (shoots whatever is missing first)
+ *   POST { action: 'start', options, sceneId? }  begin (shoots whatever is missing first);
+ *                                    with a sceneId, cut that scene alone
  *   POST { action: 'advance' }       do the next step - the page calls this in a loop
  *   POST { action: 'resume' }        retry a failed job from the step it failed on
  *   POST { action: 'cancel' }
@@ -259,7 +260,19 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const { user, board } = r
   const body = await req.json().catch(() => ({})) as Record<string, any>
   const st = stateOf(board.finalCut)
-  const shots = sanitizeShots(board.shots)
+  /*
+   * The shots this cut is of: the whole board, or one scene - named by the
+   * request when a cut starts, then carried on the job for every later step.
+   */
+  const scenes = sanitizeScenes(board.scenes)
+  const sceneId = body.action === 'start' ? (typeof body.sceneId === 'string' ? body.sceneId : null) : st.job?.sceneId ?? null
+  const scene = sceneId ? scenes.find(c => c.id === sceneId) ?? null : null
+  if (sceneId && !scene && body.action === 'start') return jsonPrivate({ error: 'That scene is gone - reload the board' }, { status: 400 })
+  const allShots = orderByScenes(sanitizeShots(board.shots), scenes)
+  const shots = scene ? allShots.filter(s => s.sceneId === scene.id) : allShots
+  const sceneLabel = scene ? `Scene ${scenes.indexOf(scene) + 1}${scene.title ? ` · ${scene.title}` : ''}` : null
+  // What the edit plan and cards are told: the scene's own title and story when it is one
+  const cutBoard = scene ? { ...board, title: `${board.title} - ${sceneLabel}`, story: [scene.setting, scene.summary || board.story].filter(Boolean).join('. ') } : board
 
   if (body.action === 'cancel') {
     if (st.job?.status === 'running') st.job = { ...st.job, status: 'cancelled', message: 'Cancelled', error: null }
@@ -270,9 +283,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   if (body.action === 'start') {
     if (st.job?.status === 'running') return jsonPrivate({ finalCut: publicState(st) })
-    if (shots.length === 0) return jsonPrivate({ error: 'Add shots first' }, { status: 400 })
-    if (shots.length > FINAL_CUT_MAX_SHOTS) return jsonPrivate({ error: `The Final Cut takes up to ${FINAL_CUT_MAX_SHOTS} shots for now - split the board` }, { status: 400 })
-    if (totalSeconds(shots) > FINAL_CUT_MAX_SECONDS) return jsonPrivate({ error: `The Final Cut takes up to ${FINAL_CUT_MAX_SECONDS}s for now - trim the plan` }, { status: 400 })
+    if (shots.length === 0) return jsonPrivate({ error: scene ? 'This scene has no shots yet' : 'Add shots first' }, { status: 400 })
+    if (shots.length > FINAL_CUT_MAX_SHOTS) return jsonPrivate({ error: `The Final Cut takes up to ${FINAL_CUT_MAX_SHOTS} shots for now - ${scene ? 'split the scene' : scenes.length ? 'cut it a scene at a time' : 'split the board into scenes'}` }, { status: 400 })
+    if (totalSeconds(shots) > FINAL_CUT_MAX_SECONDS) return jsonPrivate({ error: `The Final Cut takes up to ${FINAL_CUT_MAX_SECONDS}s for now - ${scenes.length && !scene ? 'cut it a scene at a time' : 'trim the plan'}` }, { status: 400 })
     const missingStill = shots.findIndex(s => !s.stillUrl)
     if (missingStill >= 0) return jsonPrivate({ error: `Shot ${missingStill + 1} has no still yet - generate the stills first` }, { status: 400 })
     const o = (body.options ?? {}) as Partial<FinalCutOptions>
@@ -283,7 +296,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       resolution: (SHOOT_RESOLUTIONS as readonly string[]).includes(String(o.resolution)) ? String(o.resolution) : '720p',
     }
     const skip: FinalCutPhase[] = [...(options.cards ? [] : ['cards' as const]), ...(options.narration ? [] : ['voice' as const])]
-    st.job = { status: 'running', phase: 'shoot', message: 'Starting', error: null, startedAt: now(), options, skip }
+    st.job = { status: 'running', phase: 'shoot', message: scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null }
     st.work = {}
     await save(board.id, st)
     return jsonPrivate({ finalCut: publicState(st) })
@@ -326,7 +339,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         }
         const fresh = await prisma.storyboard.findUnique({ where: { id: board.id } })
         videos = await settleShots(user, fresh!)
-        const after = sanitizeShots((await prisma.storyboard.findUnique({ where: { id: board.id }, select: { shots: true } }))?.shots)
+        const ours = new Set(shots.map(s => s.id))
+        const after = sanitizeShots((await prisma.storyboard.findUnique({ where: { id: board.id }, select: { shots: true } }))?.shots).filter(s => ours.has(s.id))
         const failed = after.map((s, i) => [s, i] as const).filter(([s]) => s.video?.status === 'failed')
         if (failed.length) throw new Error(`Shot ${failed.map(([, i]) => i + 1).join(', ')} failed to shoot (${failed[0][0].video?.error}) - reshoot it, then resume`)
         const left = after.filter(s => !(s.video?.status === 'done' && s.video.url)).length
@@ -336,7 +350,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       }
       case 'plan': {
         if (shots.some(s => !s.video?.url)) { setPhase('shoot', 'A shot is missing its clip'); work.submitted = false; break }
-        work.plan = await stepPlan(board, shots, job.options)
+        work.plan = await stepPlan(cutBoard, shots, job.options)
         setPhase(nextPhase('plan', job.skip), job.skip.includes('cards') ? 'Cutting the picture' : 'Lettering the title and end cards')
         break
       }
@@ -476,17 +490,17 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           .then(f => (typeof f.frames?.mid === 'string' ? canonicalMediaUrl(f.frames.mid) : null))
           .catch(() => null) ?? shots[0]?.stillUrl ?? null
         const row = await prisma.generatedImage.create({ data: {
-          userId: user.id, prompt: `${board.title} - Final Cut ${n} (Storyboard Studio). ${board.story}`.slice(0, 5000),
+          userId: user.id, prompt: `${cutBoard.title} - Final Cut ${n} (Storyboard Studio). ${cutBoard.story}`.slice(0, 5000),
           imageUrl: work.mixUrl!, model: 'storyboard-final-cut', ticketCost: 0, referenceImageUrls: [],
           folderId: await boardFolder(user.id, board.title),
           expiresAt: new Date(now() + 100 * 365 * 24 * 3600 * 1000), quality: job.options.resolution, aspectRatio: board.aspect,
           videoMetadata: { isVideo: true, duration: String(Math.round(work.cutSeconds ?? 0)), thumbnailUrl: poster },
         } })
         st.versions = [...st.versions, {
-          n, url: work.mixUrl!, durationSec: Math.round((work.cutSeconds ?? 0) * 10) / 10, at: now(), imageId: row.id, posterUrl: poster,
+          n, url: work.mixUrl!, durationSec: Math.round((work.cutSeconds ?? 0) * 10) / 10, at: now(), imageId: row.id, posterUrl: poster, scene: sceneLabel,
           note: [job.options.cards ? 'cards' : 'no cards', job.options.narration ? `narrated (${job.options.voice})` : 'no narration', work.musicUrl ? 'scored' : 'no score'].join(' · '),
         }]
-        setPhase(null, work.musicNote ? `Final Cut ${n} is ready - ${work.musicNote}` : `Final Cut ${n} is ready`)
+        setPhase(null, `${sceneLabel ? `${sceneLabel}: ` : ''}${work.musicNote ? `Final Cut ${n} is ready - ${work.musicNote}` : `Final Cut ${n} is ready`}`)
         st.work = {}
         break
       }

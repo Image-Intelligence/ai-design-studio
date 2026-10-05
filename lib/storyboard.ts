@@ -6,6 +6,14 @@
  * shows, the prompt planned for its video and how it cuts to the next one.
  * Stored as one JSON array on the Storyboard row (see prisma/schema.prisma),
  * so a reorder or an edit is a single write.
+ *
+ * SCENES (2026-10-05): a board can be split into scenes, the way a film is
+ * shot - each scene a place and time, the cast and locations in it, and its
+ * own run of shots. Scenes are their own list (Storyboard.scenes); a shot
+ * names its scene by `sceneId`, and the shot array is kept in scene order, so
+ * everything that reads "the board in order" (the animatic, the Final Cut)
+ * still just reads `shots`. A board with no scenes is a single run of shots,
+ * exactly as before.
  */
 
 import { getCreateModel, computeCreateCost } from '@/lib/chat-hub-models'
@@ -57,6 +65,39 @@ export type StoryboardShot = {
    * moment worth watching in full (the edit plan otherwise picks the window).
    */
   keepWhole?: boolean
+  /** The scene this shot belongs to (StoryScene.id); absent on a board without scenes. */
+  sceneId?: string
+  /**
+   * This still's own references, each switched on or off - set by the AI
+   * draft (from the assets it says the shot shows) or by hand in Details.
+   * Absent = automatic: the scene's cast, else the board's switched-on refs.
+   */
+  refs?: ShotRef[]
+  /**
+   * The still being made for this slot, on the SERVER (the still route writes
+   * it): queued in a batch, being made, or failed. Every session of the
+   * account reads it, so a refresh or another device still shows "Queued" /
+   * the spinner, and queued stills carry on after a reload. Cleared when the
+   * still lands (the route puts it on the slot itself). Never the page's to set.
+   */
+  stillJob?: StillJob | null
+}
+
+/** One of a shot's own references; `assetId` = the asset it came from, if any. */
+export type ShotRef = { id: string; url: string; on: boolean; assetId?: string }
+export const MAX_SHOT_REFS = 40
+
+export type StillJob = { status: 'queued' | 'making' | 'failed'; at: number; model?: string; error?: string }
+/**
+ * A still that has been "making" this long is dead (the route gives up at
+ * 300s): the slot is free again. A queued one waits for a page to run it.
+ */
+export const STILL_JOB_STALE_MS = 6 * 60_000
+/** The job as it stands now: a stale "making" counts as none. */
+export function liveStillJob(j: StillJob | null | undefined, now = Date.now()): StillJob | null {
+  if (!j) return null
+  if (j.status === 'making' && now - j.at > STILL_JOB_STALE_MS) return null
+  return j
 }
 
 /** One take of a slot's still. */
@@ -114,6 +155,8 @@ export type StoryboardDoc = {
   assets: StoryAsset[]
   /** What kind of video this board plans (BOARD_MODES) - shapes drafting and the Final Cut. */
   mode: BoardModeId
+  /** The board's scenes, in order (empty = one run of shots, no scenes). */
+  scenes: StoryScene[]
   updatedAt?: string
 }
 
@@ -123,73 +166,102 @@ export type StoryboardDoc = {
 // the piece, what every shot must hold to, and how the Final Cut should edit
 // it. It applies to every draft action (new board, polish, rewrite, extend),
 // so a character board stays a character board when it is extended.
+// `framing`: the kind puts characters on screen, so the Draft box offers the
+// Framing choice (waist up / full body / mix) for it.
 
 export const BOARD_MODES = [
   {
-    id: 'story', label: 'Story', shots: 8,
+    id: 'story', label: 'Story', shots: 8, framing: true,
     blurb: 'A short film - beginning, middle and end, shots that cut together.',
     placeholder: 'Describe the video: who, where, what happens, the feeling…',
     brief: 'A short narrative film with a clear beginning, middle and end. Shots cut together into one continuous piece: motivated cuts, match cuts, continuity of light, place and time.',
     edit: 'Edit for story: let moments breathe, cut on action, dissolve only for time passing.',
   },
   {
-    id: 'trailer', label: 'Trailer', shots: 10,
+    id: 'trailer', label: 'Trailer', shots: 10, framing: true,
     blurb: 'Hook, rising tension, a title beat - sells the film without spoiling it.',
     placeholder: 'The film being sold: genre, hero, the threat, the tone…',
     brief: 'A movie trailer. Open on an arresting hook, set up the world and the hero, escalate with faster and bigger moments, land a title beat near the end and a final sting after it. Tease, never resolve. Pace accelerates: early shots longer, late shots shorter.',
     edit: 'Edit like a trailer: start measured, accelerate, hard cuts and fade-to-black beats between acts, a sting after the title.',
   },
   {
-    id: 'ad', label: 'Advertisement', shots: 8,
+    id: 'ad', label: 'Advertisement', shots: 8, framing: true,
     blurb: 'Hook in 2 seconds, desire, the product, the payoff, a brand end card.',
     placeholder: 'The brand and product, who it is for, the one thing it should make people feel or do…',
     brief: 'A video advertisement. Shot 1 is a scroll-stopping hook (under 3 seconds). Then the desire or problem, the product revealed as the answer, two or three benefits SHOWN not told, the payoff (the life with it), and a final brand / call-to-action shot with clean space for an end card. Every shot polished, commercial lighting, the product always recognisable. No on-screen text in the stills.',
     edit: 'Edit like a commercial: tight, rhythmic hard cuts, the hook short, the product reveal held a beat longer, end on the brand shot.',
   },
   {
-    id: 'product', label: 'Product showcase', shots: 6,
+    id: 'product', label: 'Product showcase', shots: 6, framing: false,
     blurb: 'The product is the hero of every shot, placed in full scenes.',
     placeholder: 'The product - what it is, its materials and colours - and the world it belongs in…',
     brief: 'A product showcase. THE PRODUCT IS THE HERO OF EVERY SHOT: describe it IDENTICALLY in every imagePrompt (same shape, materials, colours, logo placement) so it stays the same object. Place it in complete, believable scenes - in use, in its environment, in hero close-ups and detail macros - with premium product-photography lighting. Camera moves are slow and deliberate (orbits, push-ins, rack focus).',
     edit: 'Edit for the product: smooth dissolves and slow moves, each shot held long enough to see the product, end on the hero shot.',
   },
   {
-    id: 'character', label: 'Character board', shots: 8,
+    id: 'character', label: 'Character board', shots: 8, framing: true,
     blurb: 'One character, one outfit - every shot a different pose, angle and expression.',
     placeholder: 'The character - face, build, hair, the exact outfit - and the setting or backdrop…',
     brief: 'A character board: ONE character in ONE outfit throughout. Repeat the same full character and wardrobe description VERBATIM in every imagePrompt (face, hair, build, every garment and accessory, colours) so the model draws the same person every time. Each shot changes only the pose, action, camera angle, framing (full body, medium, close-up, profile, three-quarter, back) and expression. Keep one consistent backdrop or setting. Motion is small and in character (a turn, a gesture, a look).',
     edit: 'Edit as a character reel: steady hard cuts on the beat of each pose, every shot held long enough to read the character.',
   },
   {
-    id: 'lookbook', label: 'Fashion lookbook', shots: 8,
+    /*
+     * For a character known only by their face: references that show little
+     * or none of the body. Every shot is a head shot of that same face - the
+     * angles, expressions and light a face library needs - and nothing below
+     * the shoulders is invented. Always close, so no Framing choice.
+     */
+    id: 'face', label: 'Face study', shots: 8, framing: false,
+    blurb: 'Face-only references in - the same face from every angle, expression and light.',
+    placeholder: 'The character - add their face as references - and the look and lighting you want…',
+    brief: 'A FACE STUDY. The reference images show a character\'s FACE, with little or none of the body. Every shot is a head shot of THAT SAME FACE: keep every facial feature identical to the references - face shape, jaw and chin, eyes and eye colour, brows, nose, lips, ears, skin tone, freckles, marks and scars, hair colour, hairline and hairstyle, age - and repeat the same full face description VERBATIM in every imagePrompt. Vary only the angle (front, three-quarter left, three-quarter right, profile, slightly high, slightly low, looking back over the shoulder), the expression (neutral, gentle smile, laugh, serious, surprised, thoughtful, determined), where the eyes look, and the light (soft beauty key, window light, rim light, dramatic side light, golden hour). Frame close-ups, extreme close-ups and head-and-shoulders portraits only: never show or invent the body below the shoulders, and never change the identity, age or features of the face. Keep clothing at the neckline simple and the same throughout. A plain or softly blurred backdrop so the face reads. Motion is small and natural: a blink, a breath, a slow turn of the head, a change of expression, a gentle push-in.',
+    edit: 'Edit as a portrait reel: gentle cuts or slow dissolves, every face held long enough to read the expression.',
+  },
+  {
+    id: 'lookbook', label: 'Fashion lookbook', shots: 8, framing: true,
     blurb: 'One model and setting, a different look in every shot.',
     placeholder: 'The model, the setting, the collection - colours, fabrics, the mood…',
     brief: 'A fashion lookbook film. The same model (describe them identically every time) in the same setting and light; each shot is a NEW LOOK described garment by garment, with an editorial pose. Camera language of a fashion film: walking shots, slow turns, fabric in motion, detail close-ups of texture and accessories.',
     edit: 'Edit like a fashion film: cut on the walk and the turn, one look per beat, smooth and confident.',
   },
   {
-    id: 'music', label: 'Music video', shots: 10,
+    /*
+     * The garments alone - no model, no mannequin with a face - for building a
+     * library of a specific outfit. Each outfit (a Wardrobe asset, or one
+     * named in the brief) becomes its own scene with that asset attached, so
+     * every still of an outfit is made from that outfit's own photos only.
+     * `shots` here is per outfit.
+     */
+    id: 'outfit', label: 'Outfit pack', shots: 6, framing: false,
+    blurb: 'No people - each outfit shot from every angle, as clean assets.',
+    placeholder: 'The outfit(s) - or add them as Wardrobe assets - and the backdrop you want…',
+    brief: 'An OUTFIT ASSET PACK: the clothes themselves, with NO PEOPLE - no model, no body, no face, no hands, no mannequin head. Each outfit is shot as a set of clean, consistent product photographs of the garments alone, for example: a front flat lay of the whole outfit, a back flat lay, an invisible / ghost-mannequin front (the clothes holding their 3D shape with nothing inside), a ghost-mannequin side or three-quarter view, on a hanger against a plain wall, close-up detail macros (fabric weave, stitching, buttons, zips, hardware, trims), the shoes and accessories arranged together, and one styled still life. Describe EVERY garment of the outfit IDENTICALLY in every shot of that outfit - cut, colour, material, pattern, every visible detail from its reference photos - so it stays the same clothes. One backdrop for the whole pack (seamless paper or a plain surface, soft even studio light, gentle shadows) unless the brief asks for another. Never add a person. No readable text or brand names unless they are on the reference garment. Motion is minimal and product-like: a slow turntable spin, fabric settling, a gentle push-in or orbit.',
+    edit: 'Edit as a clean product reel: grouped by outfit, steady cuts or quick dissolves, every shot held long enough to read the garment.',
+  },
+  {
+    id: 'music', label: 'Music video', shots: 10, framing: true,
     blurb: 'Performance and story B-roll, cut to a beat.',
     placeholder: 'The song - genre, tempo, mood - the artist, the visual concept…',
     brief: 'A music video. Alternate performance shots (the artist performing, consistent look) with concept / story B-roll that carries a visual idea. Strong stylised lighting, bold compositions, motion that would cut on a beat. Shots are short (2-4 seconds) except one or two signature moments.',
     edit: 'Edit to the music: short hard cuts on the beat, a couple of held signature shots, energy building to the end.',
   },
   {
-    id: 'social', label: 'Social short', shots: 6,
+    id: 'social', label: 'Social short', shots: 6, framing: true,
     blurb: 'Vertical-first, a thumb-stopping first shot, fast beats, a loopable end.',
     placeholder: 'The idea in one line - the hook, the payoff, who it is for…',
     brief: 'A short-form social video (Reels / TikTok / Shorts). The first shot must stop the scroll in under 2 seconds. Fast beats, one idea, a satisfying payoff, and a last shot that loops back into the first. Compose for a phone screen: subject large and centred, close framing.',
     edit: 'Edit for social: fast hard cuts, no slow fades, the end flowing back into the start.',
   },
   {
-    id: 'location', label: 'Location tour', shots: 8,
+    id: 'location', label: 'Location tour', shots: 8, framing: false,
     blurb: 'A place shown space by space - property, venue, destination.',
     placeholder: 'The place - what it is, its style, the spaces and views worth showing…',
     brief: 'A location tour (property, venue, hotel, destination). Open on an establishing exterior or vista, then move through the space in a logical path - arrival, main spaces, details, the signature view - ending on the best shot. Architectural / travel photography: level verticals, wide lenses, golden or soft natural light, smooth gimbal and drone moves.',
     edit: 'Edit as a tour: smooth dissolves and directional moves that carry you from one space to the next.',
   },
   {
-    id: 'explainer', label: 'Explainer', shots: 7,
+    id: 'explainer', label: 'Explainer', shots: 7, framing: false,
     blurb: 'How something works, step by step, in clear visuals.',
     placeholder: 'What is being explained, to whom, the steps or idea in order…',
     brief: 'An explainer: show how something works or how to do something, one clear step per shot, in order. Clean, uncluttered compositions with the subject obvious; consistent style (e.g. one setting or one visual language) across shots; the last shot shows the result or the takeaway.',
@@ -197,6 +269,24 @@ export const BOARD_MODES = [
   },
 ] as const
 export type BoardModeId = (typeof BOARD_MODES)[number]['id']
+
+/**
+ * How the characters are framed, for the kinds of video with people in them.
+ * Mix is no rule at all - the kind of video and the shot decide.
+ */
+export const FRAMINGS = [
+  { id: 'mix', label: 'Mix', hint: 'No rule - each shot frames itself' },
+  { id: 'waist', label: 'Waist up', hint: 'Medium shots and closer - no full-body shots' },
+  { id: 'full', label: 'Full body', hint: 'Head to toe in frame, feet visible' },
+] as const
+export type FramingId = (typeof FRAMINGS)[number]['id']
+export const isFraming = (v: unknown): v is FramingId => FRAMINGS.some(f => f.id === v)
+/** The planner's rule for a framing (empty for mix). It overrides any framing the kind of video suggests. */
+export function framingRule(f: FramingId): string {
+  if (f === 'waist') return 'FRAMING - WAIST UP: frame the characters from the waist up in (nearly) every shot - medium shots, medium close-ups, close-ups and over-the-shoulder shots that show the head, shoulders, torso and hands, cut off at or above the waist. Do NOT plan full-body or wide shots that show a character\'s legs or feet; an establishing shot of a place may be wide only if the characters are absent or tiny in it. Say the framing in every imagePrompt (e.g. "waist-up medium shot"). This overrides any other framing the brief above suggests.'
+  if (f === 'full') return 'FRAMING - FULL BODY: frame the characters head to toe in (nearly) every shot - full shots and wide shots with the feet in frame and a little room above the head and below the feet; at most an occasional close-up insert of a detail. Say the framing in every imagePrompt (e.g. "full-body shot, head to toe"). This overrides any other framing the brief above suggests.'
+  return ''
+}
 export type BoardMode = (typeof BOARD_MODES)[number]
 export const boardMode = (id: string | null | undefined): BoardMode => BOARD_MODES.find(m => m.id === id) ?? BOARD_MODES[0]
 export const isBoardMode = (id: unknown): id is BoardModeId => BOARD_MODES.some(m => m.id === id)
@@ -247,6 +337,158 @@ export function sanitizeAssets(raw: unknown): StoryAsset[] {
 
 /** The switched-on refs, in asset order then ref order. */
 export const activeAssetRefs = (assets: StoryAsset[]) => assets.flatMap(a => a.refs.filter(r => r.active).map(r => ({ ...r, assetId: a.id, assetName: a.name })))
+
+// ── Scenes ───────────────────────────────────────────────────────────────────
+
+export type StoryScene = {
+  id: string
+  title: string
+  /** The slug line: where and when ("INT. LIGHTHOUSE - NIGHT"). */
+  setting: string
+  /** What happens in the scene - what its shots are drafted from. */
+  summary: string
+  /**
+   * The board assets in this scene (its cast, the location, the outfit...).
+   * Their references go with every still made in the scene, in place of the
+   * board-wide switched-on set - so scene 3's stills carry scene 3's cast.
+   */
+  assetIds: string[]
+}
+export const MAX_SCENES = 30
+export const newScene = (partial: Partial<StoryScene> = {}): StoryScene => ({
+  title: '', setting: '', summary: '', assetIds: [], ...partial, id: partial.id || newId('c'),
+})
+
+export function sanitizeScenes(raw: unknown): StoryScene[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const out: StoryScene[] = []
+  for (const r of raw.slice(0, MAX_SCENES) as any[]) {
+    const id = str(r?.id, 64) || newId('c')
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      title: str(r?.title, 120),
+      setting: str(r?.setting, 160),
+      summary: str(r?.summary, 2000),
+      assetIds: (Array.isArray(r?.assetIds) ? r.assetIds : []).filter((x: unknown) => typeof x === 'string').slice(0, MAX_ASSETS).map((x: string) => x.slice(0, 64)),
+    })
+  }
+  return out
+}
+
+/**
+ * Shots in scene order. Every shot is placed in a scene that exists (a shot
+ * with none, or a deleted scene's, joins the first), and within a scene shots
+ * keep their order. A board without scenes comes back with no scene ids.
+ */
+export function orderByScenes(shots: StoryboardShot[], scenes: StoryScene[]): StoryboardShot[] {
+  if (!scenes.length) return shots.some(s => s.sceneId) ? shots.map(({ sceneId: _drop, ...s }) => s) : shots
+  const rank = new Map(scenes.map((c, i) => [c.id, i]))
+  return shots
+    .map((s, i) => {
+      const placed = s.sceneId && rank.has(s.sceneId) ? s : { ...s, sceneId: scenes[0].id }
+      return { s: placed, i, r: rank.get(placed.sceneId!)! }
+    })
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map(x => x.s)
+}
+
+/**
+ * Shots always live in a scene: a board with shots and no scenes (one made
+ * before scenes, or drafted as a single run) gets a Scene 1 holding them all,
+ * and the shots are put in scene order. An empty board stays without scenes.
+ */
+export function ensureScenes<T extends { shots: StoryboardShot[]; scenes: StoryScene[] }>(b: T): T {
+  if (b.scenes.length) return { ...b, shots: orderByScenes(b.shots, b.scenes) }
+  if (!b.shots.length) return b
+  const first = newScene()
+  return { ...b, scenes: [first], shots: b.shots.map(s => ({ ...s, sceneId: first.id })) }
+}
+
+/** The shots of one scene, in order. */
+export const sceneShots = (shots: StoryboardShot[], sceneId: string) => shots.filter(s => s.sceneId === sceneId)
+
+type RefOut = { id: string; url: string; assetId?: string; assetName?: string }
+
+/**
+ * The references a shot's still is made with, before the model's limit: the
+ * shot's own list when it has one (the switched-on ones), else automatic -
+ * see autoShotRefs.
+ */
+export function shotRefs(board: Pick<StoryboardDoc, 'assets' | 'scenes'>, shot: Pick<StoryboardShot, 'sceneId' | 'refs'>): RefOut[] {
+  if (Array.isArray(shot.refs)) {
+    return shot.refs.filter(r => r.on).map(r => ({ id: r.id, url: r.url, assetId: r.assetId, assetName: board.assets.find(a => a.id === r.assetId)?.name }))
+  }
+  return autoShotRefs(board, shot)
+}
+
+/**
+ * Automatic references, for a shot without its own list: every photo of the
+ * assets cast in its scene - else none. Assets have no switches any more
+ * (2026-10-05): the AI draft gives each shot its own list, and a shot added
+ * by hand gets one from "Match references" or its Details.
+ */
+export function autoShotRefs(board: Pick<StoryboardDoc, 'assets' | 'scenes'>, shot: Pick<StoryboardShot, 'sceneId'>): RefOut[] {
+  const scene = shot.sceneId ? board.scenes?.find(c => c.id === shot.sceneId) : undefined
+  if (!scene?.assetIds.length) return []
+  return scene.assetIds.flatMap(id => {
+    const a = board.assets.find(x => x.id === id)
+    return a ? a.refs.map(r => ({ id: r.id, url: r.url, assetId: a.id, assetName: a.name })) : []
+  })
+}
+
+/**
+ * A board from the days of switched-on refs: the shots that used them (no
+ * list of their own, no scene cast) get those refs as their own list - so
+ * nothing changes for them, and it is now visible in Details - and the
+ * switches are cleared. Null when there is nothing to convert.
+ */
+export function migrateActiveRefs<T extends Pick<StoryboardDoc, 'assets' | 'scenes' | 'shots'>>(b: T): T | null {
+  const on = activeAssetRefs(b.assets)
+  if (!on.length) return null
+  const shots = b.shots.map(s => {
+    const scene = s.sceneId ? b.scenes.find(c => c.id === s.sceneId) : undefined
+    if (Array.isArray(s.refs) || scene?.assetIds.length) return s
+    return { ...s, refs: on.map(r => ({ id: newId('r'), url: r.url, on: true, assetId: r.assetId })).slice(0, MAX_SHOT_REFS) }
+  })
+  return { ...b, shots, assets: b.assets.map(a => ({ ...a, refs: a.refs.map(r => ({ ...r, active: false })) })) }
+}
+
+/** Every ref of these assets, switched on - a shot's list as the AI draft sets it. */
+export function refsFromAssets(assets: StoryAsset[], ids: string[]): ShotRef[] {
+  return ids.flatMap(id => {
+    const a = assets.find(x => x.id === id)
+    return a ? a.refs.map(r => ({ id: newId('r'), url: r.url, on: true, assetId: a.id })) : []
+  }).slice(0, MAX_SHOT_REFS)
+}
+
+/**
+ * The refs that fit the model: when there are more than it takes, they are
+ * taken in turns from each asset (one of each, then a second of each...), so
+ * two characters with six photos each both make it into a four-ref model.
+ */
+export function pickRefs<T extends { assetId?: string }>(list: T[], max: number): T[] {
+  if (max <= 0) return []
+  if (list.length <= max) return list
+  const groups = new Map<string, T[]>()
+  for (const r of list) {
+    const k = r.assetId ?? '_own'
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k)!.push(r)
+  }
+  const queues = [...groups.values()]
+  const out: T[] = []
+  for (let i = 0; out.length < max; i++) {
+    let any = false
+    for (const q of queues) {
+      if (i < q.length) { out.push(q[i]); any = true; if (out.length >= max) break }
+    }
+    if (!any) break
+  }
+  return out
+}
 
 // ── A still model's knobs: quality options, reference limit, ticket price ───
 // From the chat hub's create catalog (lib/chat-hub-models), so a storyboard
@@ -395,7 +637,8 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
 }
 
 export const STORYBOARD_ASPECTS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'] as const
-export const MAX_SHOTS = 40
+/** Shots a board holds in all - scenes made boards longer (it was 40). */
+export const MAX_SHOTS = 120
 export const DURATIONS = [2, 3, 4, 5, 6, 8, 10, 12, 15] as const
 /** How many shots one draft (or one Extend) may ask for. A board holds MAX_SHOTS in all. */
 export const MAX_DRAFT_SHOTS = 20
@@ -654,6 +897,26 @@ export function addVideoTake(list: ShotVideo[] | undefined, v: ShotVideo): ShotV
   return [...(list ?? []).filter(t => !t.url || stillKey(t.url) !== k), v].slice(-MAX_VIDEO_TAKES)
 }
 
+/** A shot's own refs: absent stays absent (automatic); an empty list means "none". */
+function sanitizeShotRefs(raw: unknown): ShotRef[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const seen = new Set<string>()
+  const out: ShotRef[] = []
+  for (const r of raw.slice(0, MAX_SHOT_REFS * 2) as any[]) {
+    const url = str(r?.url, 2000)
+    if (!/^https:\/\//.test(url) || seen.has(stillKey(url))) continue
+    seen.add(stillKey(url))
+    out.push({ id: str(r?.id, 64) || newId('r'), url, on: r?.on !== false, ...(str(r?.assetId, 64) ? { assetId: str(r?.assetId, 64) } : {}) })
+  }
+  return out.slice(0, MAX_SHOT_REFS)
+}
+
+function sanitizeStillJob(j: any): StillJob | undefined {
+  if (!j || typeof j !== 'object' || !['queued', 'making', 'failed'].includes(j.status)) return undefined
+  const at = Number(j.at)
+  return { status: j.status, at: Number.isFinite(at) ? at : 0, model: str(j.model, 60) || undefined, error: str(j.error, 400) || undefined }
+}
+
 function sanitizeVideo(v: any): ShotVideo | null {
   if (!v || typeof v !== 'object' || !Number.isInteger(v.queueId)) return null
   const url = str(v.url, 2000)
@@ -716,6 +979,9 @@ export function sanitizeShots(raw: unknown): StoryboardShot[] {
       duration: Number.isFinite(d) ? Math.min(30, Math.max(1, Math.round(d * 2) / 2)) : 5,
       transition: str(r?.transition, 300) || 'Cut',
       keepWhole: r?.keepWhole === true ? true : undefined,
+      sceneId: str(r?.sceneId, 64) || undefined,
+      refs: sanitizeShotRefs(r?.refs),
+      stillJob: sanitizeStillJob(r?.stillJob),
       video: sanitizeVideo(r?.video),
       videos: sanitizeVideoTakes(r?.videos),
       stills: sanitizeStills(r?.stills, /^https:\/\//.test(still) ? still : null, str(r?.imagePrompt, 4000), imageModel),
@@ -758,6 +1024,8 @@ export type FinalCutVersion = {
   n: number; url: string; durationSec: number; at: number; imageId: number | null; note: string
   /** A frame from the middle of the cut. Every cut opens on black (the title card fades in), so without it the player is a black box. */
   posterUrl?: string | null
+  /** The scene this cut is of ("Scene 2 · The Chase"); absent = the whole board. */
+  scene?: string | null
 }
 
 /** The board's Final Cut record: the running (or last) job, and every version made. */
@@ -771,10 +1039,15 @@ export type FinalCutState = {
     options: FinalCutOptions
     /** Skipped phases (no cards / no narration), so the page can grey them out. */
     skip: FinalCutPhase[]
+    /** Cutting one scene (its id) instead of the whole board. */
+    sceneId?: string | null
   } | null
   versions: FinalCutVersion[]
 }
 
-/** Shots the Final Cut can hold: the assembly route takes 16 clips (two are the cards) and 2 minutes. */
+/**
+ * Shots the Final Cut can hold: the assembly route takes 16 clips (two are the
+ * cards) and 2 minutes. A long board in scenes is cut a scene at a time.
+ */
 export const FINAL_CUT_MAX_SHOTS = 14
 export const FINAL_CUT_MAX_SECONDS = 105

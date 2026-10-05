@@ -18,12 +18,22 @@
  * just played rests on its still for REST_MS first; cards that have
  * never played go top-to-bottom, left-to-right, so the page wakes up in
  * reading order.
+ *
+ * HOLD: a viewer opened over the cards (holdCardVideos) freezes the cycle.
+ * Cards mid-turn pause on the frame they are showing - no fades, nothing new
+ * starts - and carry on from there when the last hold lets go. Left running,
+ * eight crossfading videos behind a popup made the page shimmer and competed
+ * with the popup's own video for decoders.
  */
 
 /** A card's side of a turn: the scheduler calls these, the card renders. */
 export type CardVideoHooks = {
   start: () => void
   stop: () => void
+  /** Freeze on the current frame (a hold began). Cards without it keep playing. */
+  pause?: () => void
+  /** Carry on after a hold. */
+  resume?: () => void
 }
 
 /** What a card reports back while it holds a turn. */
@@ -57,6 +67,7 @@ type Entry = {
   lastAt: number // when its last turn ended (0 = never played)
   startedAt: number // when the video began playing this turn (0 = not yet)
   watchdog: ReturnType<typeof setTimeout> | null
+  pausedAt: number // when a hold froze it mid-turn (0 = not frozen)
 }
 
 const entries = new Map<Element, Entry>()
@@ -67,6 +78,7 @@ let lastStartAt = 0
 let scheduleTimer: ReturnType<typeof setTimeout> | null = null
 let scheduleDue = 0
 let observer: IntersectionObserver | null = null
+let holds = 0 // open viewers holding the cycle still
 
 function deviceBudget(): number {
   const ua = navigator.userAgent
@@ -108,6 +120,7 @@ function release(entry: Entry, failed: boolean) {
   clearWatchdog(entry)
   entry.playing = false
   entry.startedAt = 0
+  entry.pausedAt = 0
   entry.lastAt = Date.now()
   entry.hooks.stop()
   if (failed) {
@@ -151,7 +164,7 @@ function nextCandidate(): { next: Entry | null; wait: number } {
 
 function run() {
   scheduleTimer = null
-  if (typeof document === "undefined" || document.hidden || blocked) return
+  if (typeof document === "undefined" || document.hidden || blocked || holds > 0) return
   if (budget < 0) budget = deviceBudget()
   if (playingCount() >= budget) return
   // One start per stagger window; come back for the next free slot.
@@ -199,19 +212,19 @@ if (typeof document !== "undefined") {
 }
 
 export function registerCardVideo(el: Element, hooks: CardVideoHooks): CardVideoHandle {
-  const entry: Entry = { el, hooks, ratio: 0, playing: false, lastAt: 0, startedAt: 0, watchdog: null }
+  const entry: Entry = { el, hooks, ratio: 0, playing: false, lastAt: 0, startedAt: 0, watchdog: null, pausedAt: 0 }
   entries.set(el, entry)
   getObserver().observe(el)
   return {
     started() {
-      if (!entry.playing) return
+      if (!entry.playing || entry.pausedAt) return
       if (!entry.startedAt) entry.startedAt = Date.now()
       failStreak = 0
       // The whole turn has a ceiling; a stall re-arms a shorter one.
       arm(entry, Math.max(1000, MAX_PLAY_MS - (Date.now() - entry.startedAt)))
     },
     stalled() {
-      if (entry.playing && entry.startedAt) arm(entry, STALL_TIMEOUT_MS)
+      if (entry.playing && entry.startedAt && !entry.pausedAt) arm(entry, STALL_TIMEOUT_MS)
     },
     ended() {
       if (!entry.playing) return false
@@ -240,5 +253,41 @@ export function registerCardVideo(el: Element, hooks: CardVideoHooks): CardVideo
       observer?.unobserve(el)
       if (wasPlaying) schedule(HANDOFF_GAP_MS)
     },
+  }
+}
+
+/**
+ * Freeze the cycle while something sits on top of the cards (a media viewer).
+ * Returns the release; holds stack, and the cycle carries on when the last
+ * one lets go.
+ */
+export function holdCardVideos(): () => void {
+  holds++
+  if (holds === 1) {
+    if (scheduleTimer) { clearTimeout(scheduleTimer); scheduleTimer = null }
+    const now = Date.now()
+    for (const e of entries.values()) {
+      if (!e.playing || !e.hooks.pause) continue
+      clearWatchdog(e) // a frozen turn must not time out
+      e.pausedAt = now
+      e.hooks.pause()
+    }
+  }
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    holds = Math.max(0, holds - 1)
+    if (holds > 0) return
+    const now = Date.now()
+    for (const e of entries.values()) {
+      if (!e.playing || !e.pausedAt) continue
+      // The frozen time doesn't count against the turn
+      if (e.startedAt) e.startedAt += now - e.pausedAt
+      e.pausedAt = 0
+      arm(e, e.startedAt ? Math.max(1000, MAX_PLAY_MS - (now - e.startedAt)) : START_TIMEOUT_MS)
+      e.hooks.resume?.()
+    }
+    schedule(START_STAGGER_MS)
   }
 }

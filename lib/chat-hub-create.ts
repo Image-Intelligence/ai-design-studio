@@ -14,6 +14,19 @@ const SEEDREAM_SIZES: Record<string, { width: number; height: number }> = {
   '3:2': { width: 1344, height: 896 },  '4:3': { width: 1152, height: 896 },
   '21:9': { width: 1536, height: 640 },
 }
+/**
+ * An exact width x height for a ratio ("16:9") at about `area` pixels, in
+ * multiples of 16 - for models that take any size within an area band
+ * (SeeDream 5). Without one their edit endpoints copy the REFERENCE's shape,
+ * so portrait refs made portrait stills on a 16:9 storyboard.
+ */
+function sizeForRatio(aspect: string | undefined, area: number): { width: number; height: number } | null {
+  const m = /^(\d+):(\d+)$/.exec(aspect ?? '')
+  if (!m) return null
+  const r = Number(m[1]) / Number(m[2])
+  if (!(r > 0)) return null
+  return { width: Math.floor(Math.sqrt(area * r) / 16) * 16, height: Math.floor(Math.sqrt(area / r) / 16) * 16 }
+}
 const FLUX2_SIZE_ENUM: Record<string, string> = {
   '1:1': 'square_hd', '4:3': 'landscape_4_3', '3:4': 'portrait_4_3',
   '16:9': 'landscape_16_9', '9:16': 'portrait_16_9', '4:5': 'portrait_4_3',
@@ -89,26 +102,34 @@ export function buildFalCall(modelId: string, prompt: string, refs: string[], s:
         },
       }
     }
-    case 'seedream-5-lite':
+    case 'seedream-5-lite': {
+      // The frame asked for, in Lite's band (2560x1440 to 4096x4096 pixels):
+      // 2k ~4.0MP, 3k ~9.4MP. No ratio given: FAL's auto sizes, as before
+      const size = sizeForRatio(s.aspect, s.quality === '3k' ? 3072 * 3072 : 4_000_000)
       return {
         endpoint: hasRefs ? 'fal-ai/bytedance/seedream/v5/lite/edit' : 'fal-ai/bytedance/seedream/v5/lite/text-to-image',
         input: {
           prompt, enable_safety_checker: false,
-          // 2k = FAL's auto_2K default (omit); 3k = explicit 3072px
-          ...(s.quality === '3k' ? { image_size: { width: 3072, height: 3072 } } : {}),
+          ...(size ? { image_size: size } : s.quality === '3k' ? { image_size: { width: 3072, height: 3072 } } : {}),
           ...(hasRefs ? { image_urls: refs } : {}),
         },
       }
+    }
     case 'seedream-5-pro':
       // Pro documents the bare `bytedance/` owner prefix — the recent-model
       // pattern (seedance-2.0, gemini-omni-flash); it is a separate model from
       // v5 Lite, whose older fal-ai/ path is not a template. 2K only.
-      return {
-        endpoint: hasRefs ? 'bytedance/seedream/v5/pro/edit' : 'bytedance/seedream/v5/pro/text-to-image',
-        input: {
-          prompt, enable_safety_checker: false,
-          ...(hasRefs ? { image_urls: refs.slice(0, 10) } : {}),
-        },
+      // The frame asked for, ~4.0MP (Pro takes 1024x1024 to 2048x2048 worth)
+      {
+        const size = sizeForRatio(s.aspect, 4_000_000)
+        return {
+          endpoint: hasRefs ? 'bytedance/seedream/v5/pro/edit' : 'bytedance/seedream/v5/pro/text-to-image',
+          input: {
+            prompt, enable_safety_checker: false,
+            ...(size ? { image_size: size } : {}),
+            ...(hasRefs ? { image_urls: refs.slice(0, 10) } : {}),
+          },
+        }
       }
     // ── Recraft ──────────────────────────────────────────────────────────
     case 'recraft-v4.1': {
@@ -168,13 +189,14 @@ export function buildFalCall(modelId: string, prompt: string, refs: string[], s:
     // ── OpenAI ───────────────────────────────────────────────────────────
     case 'gpt-image-2': {
       const quality = s.quality ?? 'medium'
+      const [w, h] = (s.aspect ?? '1024x1024').split('x').map(n => parseInt(n))
       if (hasRefs) {
         return {
           endpoint: 'openai/gpt-image-2/edit',
-          input: { prompt, image_urls: refs.slice(0, 8), quality },
+          // The size asked for - its default "auto" follows the input image
+          input: { prompt, image_urls: refs.slice(0, 8), quality, ...(w && h ? { image_size: { width: w, height: h } } : {}) },
         }
       }
-      const [w, h] = (s.aspect ?? '1024x1024').split('x').map(n => parseInt(n))
       return {
         endpoint: 'fal-ai/gpt-image-2',
         input: { prompt, quality, width: w || 1024, height: h || 1024, n: 1 },

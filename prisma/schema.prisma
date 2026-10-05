@@ -1308,6 +1308,10 @@ model Storyboard {
   /// What kind of video the board plans (story, trailer, ad, product, character...) -
   /// shapes the AI drafts and the Final Cut's edit. Added out-of-band 2026-10-01.
   mode      String   @default("story")
+  /// The board's scenes, in order: each a place and time, the assets in it and
+  /// a summary; shots name theirs by sceneId (lib/storyboard StoryScene).
+  /// Added out-of-band 2026-10-05 (ALTER TABLE ... ADD COLUMN IF NOT EXISTS).
+  scenes    Json     @default("[]")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

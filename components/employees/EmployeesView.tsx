@@ -1,9 +1,11 @@
 "use client"
 
-import { useState } from "react"
-import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd } from "lucide-react"
-import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import { useEffect, useRef, useState } from "react"
+import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart } from "lucide-react"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/employees"
+import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
+import { LoopVideo } from "@/components/shop/ShopKit"
+import { BrandButton } from "./StudioBrand"
 
 export type { EmployeeId }
 
@@ -35,6 +37,8 @@ export type EmployeeDef = {
    * two headers and two close buttons.
    */
   opensOverlay?: boolean
+  /** Three short "what it does" chips on the Studios page card. */
+  highlights: string[]
 }
 
 export const SITE_EMPLOYEES: EmployeeDef[] = [
@@ -47,6 +51,7 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
       + "It plans the film with you, shoots it shot by shot across the best video models, then cuts and scores it.",
     icon: Clapperboard,
     accent: "fuchsia",
+    highlights: ["Up to 16 references", "Plans the film with you", "Shoots, cuts and scores"],
   },
   {
     id: "face-swap",
@@ -57,6 +62,7 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
       + "cleanup, and the finished image lands in your feed.",
     icon: ScanFace,
     accent: "cyan",
+    highlights: ["Two uploads, no prompt", "Matching and blending handled", "Lands in your feed"],
   },
   {
     id: "character-design",
@@ -68,6 +74,7 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
       + "against the same face.",
     icon: UsersRound,
     accent: "violet",
+    highlights: ["Written canon description", "Turnarounds and expressions", "Every sheet face-checked"],
   },
   {
     id: "3d-studio",
@@ -78,6 +85,7 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
       + "Every result opens in the viewer and saves to your library.",
     icon: Box,
     accent: "emerald",
+    highlights: ["Image or prompt to mesh", "Texture, rig and animate", "Opens in the 3D viewer"],
   },
   {
     id: "frames",
@@ -88,6 +96,7 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
       + "worth keeping are at the top. Send them to your references or download them as a ZIP.",
     icon: Film,
     accent: "amber",
+    highlights: ["Every frame pulled", "Ranked by sharpness", "Send to refs or ZIP"],
     opensOverlay: true,
   },
   {
@@ -100,36 +109,43 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
       + "animatic, and only then shoot.",
     icon: GalleryHorizontalEnd,
     accent: "sky",
+    highlights: ["Ordered stills and story", "Per-shot video prompts", "Animatic playback"],
   },
 ]
 
-const ACCENTS: Record<string, { ring: string; icon: string; glow: string }> = {
+const ACCENTS: Record<string, { ring: string; icon: string; glow: string; rgb?: string }> = {
   fuchsia: {
+    rgb: "217,70,239",
     ring: "border-fuchsia-500/30 hover:border-fuchsia-400/60",
     icon: "text-fuchsia-400",
     glow: "from-fuchsia-500/[0.10]",
   },
   cyan: {
+    rgb: "34,211,238",
     ring: "border-cyan-500/30 hover:border-cyan-400/60",
     icon: "text-cyan-400",
     glow: "from-cyan-500/[0.10]",
   },
   violet: {
+    rgb: "167,139,250",
     ring: "border-violet-500/30 hover:border-violet-400/60",
     icon: "text-violet-400",
     glow: "from-violet-500/[0.10]",
   },
   emerald: {
+    rgb: "52,211,153",
     ring: "border-emerald-500/30 hover:border-emerald-400/60",
     icon: "text-emerald-400",
     glow: "from-emerald-500/[0.10]",
   },
   amber: {
+    rgb: "251,191,36",
     ring: "border-amber-500/30 hover:border-amber-400/60",
     icon: "text-amber-400",
     glow: "from-amber-500/[0.10]",
   },
   sky: {
+    rgb: "56,189,248",
     ring: "border-sky-500/30 hover:border-sky-400/60",
     icon: "text-sky-400",
     glow: "from-sky-500/[0.10]",
@@ -162,7 +178,6 @@ export function EmployeesView({
   /** The active employee's workspace, rendered by the page. */
   children?: React.ReactNode
 }) {
-  const [hovered, setHovered] = useState<EmployeeId | null>(null)
   // Only what this account may open. Admins see everything, badged.
   const visible = SITE_EMPLOYEES.filter(e => employeeVisibleTo(e.id, isAdmin))
 
@@ -204,56 +219,308 @@ export function EmployeesView({
     )
   }
 
+  // The headline studio: Movie Studio when this account has it, else the first
+  const featured = visible.find(e => e.id === "movie-studio") ?? visible[0]
+  const rest = visible.filter(e => e !== featured)
+
   return (
     // Its own scroll area: the page holds the Studios section at a fixed
-    // height with overflow hidden, so without this the picker was clipped at
-    // the bottom of the screen on a phone (desktop fits, so it never showed).
-    // The bottom padding clears iOS Safari's floating toolbar.
-    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-6 pt-6 sm:pt-10 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:pb-10">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex items-center gap-3 mb-1">
-          {logo}
-          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-100">Studios</h1>
-        </div>
-        <p className="text-xs text-slate-500 mb-6">
-          Workspaces built for one job each. Pick one to start.
-        </p>
+    // height with overflow hidden, so without this the page was clipped at
+    // the bottom of the screen on a phone. The bottom padding clears iOS
+    // Safari's floating toolbar.
+    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pb-[calc(6rem+env(safe-area-inset-bottom))] sm:pb-12">
+      <StudiosHero
+        logo={logo}
+        count={visible.length}
+        featured={featured}
+        onOpen={() => onSelect(featured.id)}
+      />
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          {visible.map(emp => {
-            const a = ACCENTS[emp.accent] ?? ACCENTS.cyan
-            return (
+      {/*
+       * The studios as a bento: one column on a phone, two on a tablet, three
+       * from xl with the headline studio as a 2x2 feature. Full width up to
+       * 2560px - the page used to sit in a narrow centre column like the rest.
+       */}
+      <section id="studios-grid" className="scroll-mt-4 max-w-[2560px] mx-auto px-4 sm:px-6 lg:px-10 pt-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5">
+          <StudioCard emp={featured} featured onSelect={onSelect} />
+          {rest.map((emp, i) => (
+            <StudioCard
+              key={emp.id}
+              emp={emp}
+              onSelect={onSelect}
+              // Two columns with an odd one out: the last card takes the
+              // whole row (laid out sideways) instead of leaving a hole
+              wide={rest.length % 2 === 1 && i === rest.length - 1}
+            />
+          ))}
+        </div>
+      </section>
+
+      <StudiosHowItWorks />
+    </div>
+  )
+}
+
+/*
+ * The page's art: a still per studio and a seamless loop made from it
+ * (SeeDance 2.5, first frame = last frame), generated for this page on
+ * 2026-10-04 and kept on promptandprotocol@gmail.com's feed. The web copies
+ * live in the public bucket under studios/.
+ */
+const STUDIO_MEDIA_BASE = "https://pub-738a6d61c61a473595356856a86615a1.r2.dev/studios"
+const STUDIOS_HERO = {
+  poster: `${STUDIO_MEDIA_BASE}/hero-6048e3e8-12c3-434e-bcc3-ba155eac2feb.webp`,
+  video: `${STUDIO_MEDIA_BASE}/hero-loop-ca2c251f-18a9-4075-894f-73332af39257.mp4` as string | null, // null shows the still alone
+}
+const STUDIO_MEDIA: Partial<Record<EmployeeId, { poster: string; video?: string }>> = {
+  "movie-studio": { poster: `${STUDIO_MEDIA_BASE}/movie-studio-a4f9f422-c928-4948-ba11-82c7405589ca.webp`, video: `${STUDIO_MEDIA_BASE}/movie-studio-loop-5eefcea9-c562-4a3e-a87f-e1713161d9f7.mp4` },
+  "face-swap": { poster: `${STUDIO_MEDIA_BASE}/face-swap-ae37324d-f8a9-482b-99c8-747e52d66e0c.webp`, video: `${STUDIO_MEDIA_BASE}/face-swap-loop-b8e65672-84f8-49b4-9edd-6746a35d9f38.mp4` },
+  "character-design": { poster: `${STUDIO_MEDIA_BASE}/character-design-3f089e44-4507-4ded-a592-5d33955f9763.webp`, video: `${STUDIO_MEDIA_BASE}/character-design-loop-0cf98d66-ead7-45c5-bdee-1349b2f34e25.mp4` },
+  "3d-studio": { poster: `${STUDIO_MEDIA_BASE}/3d-studio-2d5c8730-4355-4b96-8024-5ac23f6aa77d.webp`, video: `${STUDIO_MEDIA_BASE}/3d-studio-loop-eaab7f08-ebef-47dd-8c40-26be58f3f544.mp4` },
+  frames: { poster: `${STUDIO_MEDIA_BASE}/frames-1acc0c90-15f6-4072-8661-eb6703f62d21.webp`, video: `${STUDIO_MEDIA_BASE}/frames-loop-9e1a0281-d591-4a42-8354-99523afb40b4.mp4` },
+  storyboard: { poster: `${STUDIO_MEDIA_BASE}/storyboard-e04d364e-8058-4658-9423-23059fe8a9d3.webp`, video: `${STUDIO_MEDIA_BASE}/storyboard-loop-24fc505b-c45d-47b0-a86f-ac6ab4f2c5cb.mp4` },
+}
+
+function prefersReducedMotion() {
+  try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches } catch { return false }
+}
+
+/**
+ * Full-bleed banner: the soundstage loop behind the title. The still's left
+ * third is empty dark space for the words on a wide screen; on a phone the
+ * picture shifts right to keep the screens in view and the words sit under it.
+ */
+function StudiosHero({ logo, count, featured, onOpen }: {
+  logo?: React.ReactNode
+  count: number
+  featured: EmployeeDef
+  onOpen: () => void
+}) {
+  return (
+    <section className="relative isolate overflow-hidden">
+      {/* Taller on wide screens (up to the picture's own 16:9) so the badge
+          above the screens stays in frame instead of being cropped away */}
+      <div className="relative h-[46svh] min-h-[260px] sm:h-[max(420px,min(56.25vw,78vh))]">
+        {STUDIOS_HERO.video ? (
+          <LoopVideo
+            src={STUDIOS_HERO.video}
+            poster={STUDIOS_HERO.poster}
+            className="absolute inset-0 w-full h-full object-cover object-[72%_50%] sm:object-[50%_20%]"
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={STUDIOS_HERO.poster} alt="" className="absolute inset-0 w-full h-full object-cover object-[72%_50%] sm:object-[50%_20%]" />
+        )}
+        {/* Words over the dark left of the picture, and a fade into the page */}
+        <div className="absolute inset-0 hidden sm:block bg-gradient-to-r from-[#05080f] via-[#05080f]/75 via-35% to-transparent to-70%" />
+        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-[#05080f] to-transparent" />
+      </div>
+
+      <div className="relative -mt-20 sm:mt-0 sm:absolute sm:inset-0 flex items-end sm:items-center">
+        <div className="w-full max-w-[2560px] mx-auto px-4 sm:px-6 lg:px-10 pb-6 sm:pb-0">
+          <div className="max-w-xl min-[1800px]:max-w-2xl">
+            <div className="flex items-center gap-2.5 mb-3">
+              {logo}
+              <span className="text-[10px] font-mono uppercase tracking-[0.25em] text-slate-400">AI Design Studio</span>
+            </div>
+            <h1 className="text-4xl sm:text-6xl xl:text-7xl min-[1800px]:text-8xl font-black tracking-tight leading-[0.95] silver-shimmer-text silver-shimmer-text-slow">
+              Studios
+            </h1>
+            <p className="mt-3 sm:mt-4 text-sm sm:text-base min-[1800px]:text-lg text-slate-300 leading-relaxed">
+              Workspaces built for one job each. Bring your references and the goal - the studio asks only for what
+              that job needs, does the work, and saves the result to your account.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center gap-2.5">
+              <BrandButton primary size="lg" onClick={onOpen}>
+                Open {featured.name} <ArrowRight size={14} />
+              </BrandButton>
               <button
-                key={emp.id}
-                onClick={() => onSelect(emp.id)}
-                onPointerEnter={() => setHovered(emp.id)}
-                onPointerLeave={() => setHovered(null)}
-                className={`group relative overflow-hidden text-left rounded-2xl border bg-white/[0.02] p-4 sm:p-5 transition-all ${a.ring} ${
-                  hovered === emp.id ? "translate-y-[-1px]" : ""
-                }`}
+                onClick={() => document.getElementById("studios-grid")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-white/15 bg-black/30 text-[12.5px] font-semibold text-slate-200 hover:text-white hover:border-white/30 hover:bg-white/[0.06] transition-colors"
               >
-                {/* Same animated silver rim the home cards and prompt box use */}
-                <SilverRimOverlay />
-                <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${a.glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none`} />
-                <div className="relative flex items-start gap-3">
-                  <span className="shrink-0 w-10 h-10 rounded-xl border border-white/10 bg-black/40 flex items-center justify-center">
-                    <emp.icon size={18} className={a.icon} />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-bold text-slate-100">{emp.name}</div>
-                      {/* Per employee, so they can be released one at a time. */}
-                      {EMPLOYEE_ADMIN_ONLY[emp.id] && <AdminModelBadge />}
-                    </div>
-                    <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">{emp.tagline}</div>
-                    <p className="text-[11px] leading-relaxed text-slate-400">{emp.blurb}</p>
-                  </div>
-                </div>
+                All {count} studios <ArrowDown size={13} />
               </button>
-            )
-          })}
+            </div>
+          </div>
         </div>
       </div>
+    </section>
+  )
+}
+
+/**
+ * A card's picture: the still, and in the card's turn of the page-wide video
+ * cycle (components/home/card-video-scheduler - the home page's, so only a
+ * few clips decode at once, on screen only) its loop crossfading over it.
+ */
+const MEDIA_FADE_MS = 600
+function StudioMedia({ poster, video, className = "" }: { poster?: string; video?: string; className?: string }) {
+  const boxRef = useRef<HTMLDivElement>(null)
+  const vidRef = useRef<HTMLVideoElement>(null)
+  const handleRef = useRef<CardVideoHandle | null>(null)
+  const [live, setLive] = useState(false)
+  const [shown, setShown] = useState(false)
+  const [turn, setTurn] = useState(0)
+
+  useEffect(() => {
+    const el = boxRef.current
+    if (!el || !video || prefersReducedMotion()) return
+    let unmount: ReturnType<typeof setTimeout> | null = null
+    const handle = registerCardVideo(el, {
+      start: () => { if (unmount) clearTimeout(unmount); setLive(true); setTurn(t => t + 1) },
+      stop: () => {
+        setShown(false)
+        if (unmount) clearTimeout(unmount)
+        unmount = setTimeout(() => setLive(false), MEDIA_FADE_MS + 50)
+      },
+      pause: () => { vidRef.current?.pause() },
+      resume: () => { vidRef.current?.play()?.catch(() => handleRef.current?.failed()) },
+    })
+    handleRef.current = handle
+    return () => {
+      if (unmount) clearTimeout(unmount)
+      handle.unregister()
+      handleRef.current = null
+      setLive(false)
+      setShown(false)
+    }
+  }, [video])
+
+  // Each turn plays from the top, muted through the DOM property (browsers
+  // refuse unmuted autoplay and React's attribute is unreliable)
+  useEffect(() => {
+    const v = vidRef.current
+    if (!live || !v || !turn) return
+    v.muted = true
+    v.currentTime = 0
+    v.play()
+      ?.then(() => { setShown(true); handleRef.current?.started() })
+      .catch((e: unknown) => handleRef.current?.failed((e as DOMException)?.name === "NotAllowedError"))
+  }, [live, turn])
+
+  return (
+    <div ref={boxRef} className={`absolute inset-0 overflow-hidden ${className}`}>
+      {poster && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={poster} alt="" loading="lazy" decoding="async" className="absolute inset-0 w-full h-full object-cover" />
+      )}
+      {live && video && (
+        <video
+          ref={vidRef}
+          src={video}
+          muted
+          playsInline
+          preload="auto"
+          aria-hidden
+          className="absolute inset-0 w-full h-full object-cover transition-opacity ease-out"
+          style={{ opacity: shown ? 1 : 0, transitionDuration: `${MEDIA_FADE_MS}ms` }}
+          onPlaying={() => { setShown(true); handleRef.current?.started() }}
+          onWaiting={() => handleRef.current?.stalled()}
+          onEnded={() => {
+            const v = vidRef.current
+            if (v && handleRef.current?.ended()) { v.currentTime = 0; v.play()?.catch(() => handleRef.current?.failed()) }
+          }}
+          onError={() => handleRef.current?.failed()}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * One studio. Picture on top, words under it. `featured` is the 2x2 headline
+ * card (sideways on a tablet or small laptop, tall from xl); `wide` is a card
+ * that fills a two-column row on its own, also laid out sideways there.
+ */
+function StudioCard({ emp, featured = false, wide = false, onSelect }: {
+  emp: EmployeeDef
+  featured?: boolean
+  wide?: boolean
+  onSelect: (id: EmployeeId) => void
+}) {
+  const a = ACCENTS[emp.accent] ?? ACCENTS.cyan
+  const media = STUDIO_MEDIA[emp.id]
+  const sideways = featured || wide
+
+  const layout = featured
+    ? "sm:col-span-2 xl:row-span-2 lg:flex-row xl:flex-col"
+    : wide ? "sm:col-span-2 xl:col-span-1 lg:flex-row xl:flex-col" : ""
+  const mediaBox = featured
+    ? "aspect-video lg:aspect-auto lg:w-[58%] lg:min-h-[22rem] xl:w-full xl:flex-1 xl:min-h-[24rem]"
+    : wide ? "aspect-video lg:aspect-auto lg:w-1/2 lg:min-h-[16rem] xl:w-full xl:aspect-video xl:min-h-0" : "aspect-video"
+  const body = sideways ? "lg:flex-1 lg:justify-center xl:flex-none" : ""
+
+  return (
+    <button
+      onClick={() => onSelect(emp.id)}
+      className={`group relative isolate flex flex-col text-left rounded-2xl overflow-hidden border border-white/[0.08] bg-[#070b14] silver-edge transition-all duration-300 hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[0_18px_50px_-20px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${layout}`}
+    >
+      {/* The studio's colour, lit from below on hover */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-500"
+        style={{ background: `radial-gradient(120% 60% at 50% 100%, rgba(${a.rgb ?? "148,163,184"},0.16), transparent 70%)` }}
+      />
+
+      <div className={`relative overflow-hidden shrink-0 ${mediaBox}`}>
+        <div className="absolute inset-0 transition-transform duration-[1200ms] ease-out group-hover:scale-[1.04]">
+          <StudioMedia poster={media?.poster} video={media?.video} />
+        </div>
+        {/* Fade into the card body - downwards, or towards the words when sideways */}
+        <div className={`absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-[#070b14] to-transparent ${sideways ? "lg:hidden xl:block" : ""}`} />
+        {sideways && <div className="absolute inset-y-0 right-0 w-1/4 hidden lg:block xl:hidden bg-gradient-to-l from-[#070b14] to-transparent" />}
+        <span className="absolute top-3 left-3 w-9 h-9 rounded-xl border border-white/15 bg-black/55 flex items-center justify-center">
+          <emp.icon size={16} className={a.icon} />
+        </span>
+        {/* Per studio, so they can be released one at a time */}
+        {EMPLOYEE_ADMIN_ONLY[emp.id] && <span className="absolute top-3 right-3"><AdminModelBadge /></span>}
+      </div>
+
+      <div className={`relative flex flex-col gap-2 p-4 sm:p-5 ${featured ? "xl:p-6" : ""} ${body}`}>
+        <div className={`text-[10px] min-[1800px]:text-[11px] font-mono uppercase tracking-[0.18em] ${a.icon}`}>{emp.tagline}</div>
+        <div className={`font-black tracking-tight text-slate-50 ${featured ? "text-2xl sm:text-3xl min-[1800px]:text-4xl" : "text-lg sm:text-xl min-[1800px]:text-2xl"}`}>
+          {emp.name}
+        </div>
+        <p className={`text-[12.5px] min-[1800px]:text-sm leading-relaxed text-slate-400 ${featured || wide ? "" : "line-clamp-3"}`}>{emp.blurb}</p>
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {emp.highlights.map(h => (
+            <span key={h} className="px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.04] text-[10.5px] min-[1800px]:text-xs text-slate-300">{h}</span>
+          ))}
+        </div>
+        <div className={`pt-2 flex items-center gap-1.5 text-[12px] min-[1800px]:text-sm font-bold text-slate-200 group-hover:text-white ${sideways ? "mt-auto lg:mt-0 xl:mt-auto" : "mt-auto"}`}>
+          Open studio
+          <ArrowRight size={14} className="transition-transform duration-300 group-hover:translate-x-1" />
+        </div>
+      </div>
+    </button>
+  )
+}
+
+const HOW_IT_WORKS = [
+  { icon: Sparkles, title: "Pick the job", text: "Each studio does one thing well and asks only for what that job needs - no prompt engineering, no settings pages." },
+  { icon: Images, title: "Bring your references", text: "Your Refs library comes with you. Characters, settings and looks you have saved are one tap away in every studio." },
+  { icon: FolderHeart, title: "Keep the results", text: "Everything a studio makes is saved to your account - your feed, your library or the 3D viewer - ready to reuse." },
+]
+
+function StudiosHowItWorks() {
+  return (
+    <section className="max-w-[2560px] mx-auto px-4 sm:px-6 lg:px-10 mt-10 sm:mt-14">
+      <div className="text-[10px] font-mono uppercase tracking-[0.25em] text-slate-500 mb-3">How the studios work</div>
+      <div className="grid gap-3 sm:gap-4 md:grid-cols-3">
+        {HOW_IT_WORKS.map((s, i) => (
+          <div key={s.title} className="relative rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4 sm:p-5 silver-edge">
+            <div className="flex items-center gap-3 mb-2">
+              <span className="w-9 h-9 rounded-xl border border-white/10 bg-black/40 flex items-center justify-center shrink-0">
+                <s.icon size={16} className="text-slate-300" />
+              </span>
+              <span className="text-[10px] font-mono text-slate-600">0{i + 1}</span>
+              <span className="text-sm font-bold text-slate-100">{s.title}</span>
+            </div>
+            <p className="text-[12px] min-[1800px]:text-sm leading-relaxed text-slate-400">{s.text}</p>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }

@@ -10,8 +10,8 @@ import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import {
-  ASSET_KINDS, MAX_ASSETS, MAX_ASSET_REFS, newAsset, newAssetRef, stillKey,
-  type AssetKind, type StoryAsset,
+  ASSET_KINDS, MAX_ASSETS, MAX_ASSET_REFS, newAsset, newAssetRef, stillKey, pickRefs, MAX_SHOT_REFS,
+  type AssetKind, type StoryAsset, type ShotRef,
 } from "@/lib/storyboard"
 
 /**
@@ -54,12 +54,16 @@ export type RefCap = {
   shot: string
 }
 
-export function AssetsPanel({ assets, onChange, refLibrary, boardStills, cap }: {
+/*
+ * Assets are the board's organised references - nothing to switch on. The AI
+ * draft decides which assets each shot shows and sends their photos with
+ * that still (a shot's References, in its Details, is where to change it).
+ */
+export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
   assets: StoryAsset[]
   onChange: (fn: (a: StoryAsset[]) => StoryAsset[]) => void
   refLibrary: { id: string; url: string }[]
   boardStills: { url: string; label: string }[]
-  cap: RefCap
 }) {
   const [adding, setAdding] = useState(false)
   const [kind, setKind] = useState<AssetKind>("character")
@@ -71,7 +75,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, cap }: 
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadFor = useRef<string | null>(null)
 
-  const onCount = assets.reduce((n, a) => n + a.refs.filter(r => r.active).length, 0)
+  const refCount = assets.reduce((n, a) => n + a.refs.length, 0)
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(n => (n === msg ? null : n)), 3500) }
 
   const create = () => {
@@ -89,19 +93,6 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, cap }: 
     const fresh = urls.filter(u => !have.has(stillKey(u))).map(u => newAssetRef(u, false))
     return { ...a, refs: [...a.refs, ...fresh].slice(0, MAX_ASSET_REFS) }
   })
-  const toggle = (assetId: string, refId: string) => {
-    const ref = assets.find(a => a.id === assetId)?.refs.find(r => r.id === refId)
-    if (!ref) return
-    // Switching ON is capped by the model of the shot being worked on
-    if (!ref.active && onCount >= cap.max) {
-      flash(cap.max === 0
-        ? `${cap.model} (${cap.shot}) takes no references.`
-        : `${cap.model} (${cap.shot}) takes up to ${cap.max} - switch one off first.`)
-      return
-    }
-    patch(assetId, a => ({ ...a, refs: a.refs.map(r => (r.id === refId ? { ...r, active: !r.active } : r)) }))
-  }
-  const allOff = () => onChange(list => list.map(a => ({ ...a, refs: a.refs.map(r => ({ ...r, active: false })) })))
 
   const onFiles = async (files: FileList | null) => {
     const id = uploadFor.current
@@ -125,19 +116,17 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, cap }: 
         title="Assets"
         logo={22}
         size="sm"
-        eyebrow={<span className={onCount > cap.max ? "text-amber-300" : undefined}>{onCount} on · {cap.max === 0 ? `${cap.model} takes none` : `${cap.model} takes ${cap.max}`}</span>}
-        right={onCount > 0 ? <button onClick={allOff} className="text-[10px] text-slate-500 hover:text-white">All off</button> : undefined}
+        eyebrow={`${assets.length} asset${assets.length === 1 ? "" : "s"} · ${refCount} reference${refCount === 1 ? "" : "s"}`}
       />
       <p className="text-[10px] text-slate-600 leading-snug">
-        Characters, vehicles, props, places - tap a reference to switch it on. Switched-on refs go with the next still
-        (limit set by {cap.shot}&apos;s model).
+        Characters, vehicles, props, places, outfits - each a set of reference photos. The AI draft picks which ones go
+        with each shot; change a shot&apos;s picks in its Details.
       </p>
       {notice && <p className="text-[10.5px] text-amber-300 leading-snug">{notice}</p>}
 
       {assets.map(a => {
         const Icon = ASSET_ICONS[a.kind]
         const isOpen = open[a.id] ?? true
-        const on = a.refs.filter(r => r.active).length
         return (
           <div key={a.id} className="rounded-xl border border-white/10 bg-black/20">
             <div className="flex items-center gap-1.5 px-2 py-1.5">
@@ -151,7 +140,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, cap }: 
                 className="flex-1 min-w-0 bg-transparent text-[11.5px] font-semibold text-slate-100 focus:outline-none"
               />
               <span className="text-[9px] uppercase tracking-wider text-slate-600 shrink-0">{kindLabel(a.kind)}</span>
-              {on > 0 && <span className="text-[9.5px] font-mono text-slate-200 shrink-0">{on} on</span>}
+              <span className="text-[9.5px] font-mono text-slate-500 shrink-0">{a.refs.length}</span>
               <button onClick={() => onChange(list => list.filter(x => x.id !== a.id))} title="Delete this asset (the images stay in your library)" className="text-slate-600 hover:text-red-400 shrink-0"><Trash2 size={11} /></button>
             </div>
             {isOpen && (
@@ -159,16 +148,17 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, cap }: 
                 <div className="grid grid-cols-5 gap-1">
                   {a.refs.map((r, k) => (
                     <div key={r.id} className="relative group">
-                      <button
-                        onClick={() => toggle(a.id, r.id)}
-                        title={r.active ? "On - tap to switch off" : "Tap to use for the next still"}
-                        className={`relative block w-full aspect-square rounded-md overflow-hidden border transition-all ${r.active ? "border-slate-100 ring-2 ring-white/50" : "border-white/10 opacity-60 hover:opacity-100"}`}
+                      <a
+                        href={r.url}
+                        target="_blank"
+                        rel="noopener"
+                        title={`${a.name} - reference ${k + 1}`}
+                        className="relative block w-full aspect-square rounded-md overflow-hidden border border-white/10 hover:border-white/40 transition-colors"
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={r.url} alt="" className="absolute inset-0 w-full h-full object-cover" />
                         <span className="absolute bottom-0 left-0 px-1 bg-black/70 text-[8.5px] font-mono text-slate-200">{k + 1}</span>
-                        {r.active && <span className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-slate-100 flex items-center justify-center"><Check size={9} strokeWidth={3} className="text-black" /></span>}
-                      </button>
+                      </a>
                       <button
                         onClick={() => patch(a.id, x => ({ ...x, refs: x.refs.filter(y => y.id !== r.id) }))}
                         title="Remove from this asset"
@@ -352,5 +342,144 @@ export function AddToAssetMenu({ assets, onPick, onNew, onLibrary, onClose }: {
         )}
       </div>
     </>
+  )
+}
+
+/**
+ * The references one still is made with, in its shot's Details: every ref
+ * on the list with its switch, where it came from, and which ones will
+ * actually go (a model takes so many - they are taken a turn from each asset
+ * at a time, see lib/storyboard pickRefs). The list starts out automatic
+ * (the AI draft's pick, else the scene's cast, else the board's switched-on
+ * refs); any change here makes it the shot's own, and "Reset" hands it back.
+ */
+export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max, model, onChange }: {
+  /** The list shown: the shot's own, or the automatic one (all on). */
+  refs: ShotRef[]
+  /** True when the shot has no list of its own (it follows its scene / the board). */
+  auto: boolean
+  assets: StoryAsset[]
+  refLibrary: { id: string; url: string }[]
+  boardStills: { url: string; label: string }[]
+  /** How many its still model takes. */
+  max: number
+  model: string
+  /** The shot's new list - undefined = back to automatic. */
+  onChange: (next: ShotRef[] | undefined) => void
+}) {
+  const [adding, setAdding] = useState(false)
+  const [picker, setPicker] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const sent = new Set(pickRefs(refs.filter(r => r.on), max).map(r => r.id))
+  const onCount = refs.filter(r => r.on).length
+  const have = new Set(refs.map(r => stillKey(r.url)))
+  const rid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `r${Date.now()}${Math.random().toString(36).slice(2, 8)}`)
+  const add = (items: { url: string; assetId?: string }[]) => {
+    const fresh = items.filter(i => !have.has(stillKey(i.url))).map(i => ({ id: rid(), url: i.url, on: true, ...(i.assetId ? { assetId: i.assetId } : {}) }))
+    if (fresh.length) onChange([...refs, ...fresh].slice(0, MAX_SHOT_REFS))
+    setAdding(false)
+  }
+  const onFiles = async (files: FileList | null) => {
+    if (!files?.length) return
+    setUploading(true)
+    setErr(null)
+    try {
+      const urls: string[] = []
+      for (const f of Array.from(files).slice(0, 12)) urls.push(await uploadImage(f))
+      add(urls.map(url => ({ url })))
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ""
+    }
+  }
+  const nameOf = (id?: string) => (id ? assets.find(a => a.id === id)?.name : undefined)
+
+  return (
+    <div className="silver-edge rounded-xl p-2 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <BrandTitle title="References" logo={16} size="sm" />
+        <span className={`ml-auto px-1.5 py-0.5 rounded-md text-[9px] font-mono uppercase tracking-wider ${auto ? "bg-white/[0.06] text-slate-400" : "bg-sky-500/15 text-sky-200"}`}>
+          {auto ? "Automatic" : "This shot's own"}
+        </span>
+        {!auto && (
+          <button onClick={() => onChange(undefined)} title="Hand the references back to the scene / board" className="text-[10px] text-slate-500 hover:text-white">Reset</button>
+        )}
+      </div>
+      <p className="text-[9.5px] leading-snug text-slate-500">
+        {max === 0
+          ? `${model} takes no references - none will be sent.`
+          : `${Math.min(onCount, max)} of ${onCount} switched on will be sent · ${model} takes ${max}. Tap one to switch it.`}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {refs.map(r => {
+          const goes = sent.has(r.id)
+          const name = nameOf(r.assetId)
+          return (
+            <div key={r.id} className="relative group/ref">
+              <button
+                onClick={() => onChange(refs.map(x => (x.id === r.id ? { ...x, on: !x.on } : x)))}
+                title={`${name ? `${name} · ` : ""}${!r.on ? "Off - tap to switch on" : goes ? "Sent with this still" : `On, but ${model} takes only ${max}`}`}
+                className={`relative block w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${!r.on ? "border-transparent opacity-35 grayscale" : goes ? "border-sky-400/80" : "border-amber-400/60 opacity-70"}`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={r.url} alt="" className="w-full h-full object-cover" />
+                {r.on && goes && <span className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-sky-500 flex items-center justify-center"><Check size={9} className="text-white" /></span>}
+                {name && <span className="absolute inset-x-0 bottom-0 px-0.5 bg-black/70 text-[8px] text-slate-200 truncate">{name}</span>}
+              </button>
+              <button
+                onClick={() => onChange(refs.filter(x => x.id !== r.id))}
+                title="Take it off this shot"
+                className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-black border border-white/20 text-slate-300 hover:text-white items-center justify-center hidden group-hover/ref:flex"
+              >
+                <X size={9} />
+              </button>
+            </div>
+          )
+        })}
+        <button
+          onClick={() => setAdding(a => !a)}
+          disabled={uploading}
+          className="w-14 h-14 rounded-lg border border-dashed border-white/20 text-slate-500 hover:text-white hover:border-white/40 flex flex-col items-center justify-center gap-0.5 text-[9px]"
+        >
+          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add
+        </button>
+      </div>
+      {refs.length === 0 && <p className="text-[9.5px] text-slate-500">No references - the still is made from the prompt alone.</p>}
+      {adding && (
+        <div className="rounded-lg border border-white/10 bg-black/30 p-1.5 space-y-1">
+          {assets.filter(a => a.refs.length).map(a => (
+            <button key={a.id} onClick={() => add(a.refs.map(r => ({ url: r.url, assetId: a.id })))} className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-200 hover:bg-white/5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={a.refs[0].url} alt="" className="w-6 h-6 rounded object-cover" />
+              <span className="truncate">{a.name}</span>
+              <span className="ml-auto text-[9.5px] text-slate-500">all {a.refs.length}</span>
+            </button>
+          ))}
+          <button onClick={() => { setPicker(true); setAdding(false) }} className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-300 hover:bg-white/5">
+            <Images size={13} className="text-slate-500" /> From my Refs or this board&apos;s stills…
+          </button>
+          <button onClick={() => { setAdding(false); fileRef.current?.click() }} className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-300 hover:bg-white/5">
+            <Upload size={13} className="text-slate-500" /> Upload from this device…
+          </button>
+        </div>
+      )}
+      {err && <p className="text-[10px] text-red-400">{err}</p>}
+      <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
+      {picker && (
+        <RefPicker
+          title="This shot's references"
+          refLibrary={refLibrary}
+          boardStills={boardStills}
+          have={have}
+          onAdd={urls => { add(urls.map(url => ({ url }))); setPicker(false) }}
+          onUpload={() => { setPicker(false); fileRef.current?.click() }}
+          onClose={() => setPicker(false)}
+        />
+      )}
+    </div>
   )
 }

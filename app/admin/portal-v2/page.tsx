@@ -6,6 +6,7 @@ import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
 import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
 import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
+import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
@@ -25,7 +26,7 @@ import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
-import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
+import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
 
@@ -2022,13 +2023,8 @@ function OrbitMediaFrame({ containerRef, mediaRef, deps, hidden = false, innerHi
 // media covers the middle, the black bars show the brand. Fully static
 // (no animation) so it can never hit Safari's compositing bugs.
 function BrandBackdrop() {
-  const [logoUrl, setLogoUrl] = useState<string | null>(null)
-  useEffect(() => {
-    fetch("/api/admin/config")
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (d?.logoUrl) setLogoUrl(d.logoUrl) })
-      .catch(() => {})
-  }, [])
+  // Cached for the visit - fetching per open swapped all 120 marks a beat in
+  const logoUrl = useSiteLogoCached()
   return (
     <div aria-hidden className="absolute inset-0 -z-10 overflow-hidden pointer-events-none select-none">
       {/* soft center glow so the bars aren't dead black */}
@@ -7871,18 +7867,27 @@ function RefDropdown({
 }
 
 // --- TEXT DROPDOWN ---
+// Style chips for the Text panel's Enhance (kept in step with lib/prompt-enhance ENHANCE_STYLES)
+const ENHANCE_STYLE_CHIPS = ["Cinematic", "Photoreal", "Anime", "Illustration", "Product shot", "Logo", "Fantasy", "Moody"]
+
 function TextDropdown({
   open,
   onToggle,
-  hasDevAccess,
   imageModelName,
+  videoModelName,
+  mode,
+  isAdmin = false,
   onUsePrompt,
   signedIn,
 }: {
   open: boolean
   onToggle: () => void
-  hasDevAccess: boolean
   imageModelName: string
+  /** The selected video model - prompts are written for whichever mode is on */
+  videoModelName?: string
+  mode?: string
+  /** Only admins choose the Gemini model; everyone else gets Flash-Lite */
+  isAdmin?: boolean
   onUsePrompt: (text: string) => void
   signedIn: boolean
 }) {
@@ -7901,14 +7906,21 @@ function TextDropdown({
    * the inputs, and a full one gets rewritten with the inputs as direction.
    */
   const [targetSlot, setTargetSlot] = useState(0)
-  const [names, setNames] = useState<string[]>([""])
-  const [enhancements, setEnhancements] = useState<string[]>([""])
+  /*
+   * One idea box (2026-10-04) instead of the old Names + Enhancements lists:
+   * type the gist, optionally tap a style, Enhance writes the full prompt for
+   * the model that is selected - image or video.
+   */
+  const [idea, setIdea] = useState("")
+  const [styles, setStyles] = useState<string[]>([])
   const [generatedPrompt, setGeneratedPrompt] = useState<string>("")
   const [generating, setGenerating] = useState(false)
-  const [cooldownEnd, setCooldownEnd] = useState<number | null>(null)
-  const [cooldownLeft, setCooldownLeft] = useState(0)
   const [genError, setGenError] = useState<string | null>(null)
-  const [copiedGen, setCopiedGen] = useState(false)
+  const [limitHit, setLimitHit] = useState(false)
+  const allowance = useEnhanceAllowance(signedIn && open)
+  const left = enhancesLeft(allowance)
+  const target: "image" | "video" = mode === "video" ? "video" : "image"
+  const targetModelName = target === "video" ? (videoModelName || "a video model") : imageModelName
 
   // Saved prompts
   const [savedPrompts, setSavedPrompts] = useState<string[]>(Array(16).fill(""))
@@ -7922,8 +7934,8 @@ function TextDropdown({
       const s = JSON.parse(localStorage.getItem(TEXT_STATE_KEY) || "{}")
       if (s.promptModel && PROMPT_MODELS.some((m) => m.id === s.promptModel)) setPromptModel(s.promptModel)
       if (typeof s.targetSlot === "number" && s.targetSlot >= 0 && s.targetSlot < 16) setTargetSlot(s.targetSlot)
-      if (Array.isArray(s.names) && s.names.length > 0) setNames(s.names)
-      if (Array.isArray(s.enhancements) && s.enhancements.length > 0) setEnhancements(s.enhancements)
+      if (typeof s.idea === "string") setIdea(s.idea)
+      if (Array.isArray(s.styles)) setStyles(s.styles.filter((x: unknown) => typeof x === "string"))
       if (s.generatedPrompt) setGeneratedPrompt(s.generatedPrompt)
     } catch {}
   }, [])
@@ -7931,9 +7943,9 @@ function TextDropdown({
   // Persist text state (AI prompting) to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(TEXT_STATE_KEY, JSON.stringify({ promptModel, names, enhancements, generatedPrompt, targetSlot }))
+      localStorage.setItem(TEXT_STATE_KEY, JSON.stringify({ promptModel, idea, styles, generatedPrompt, targetSlot }))
     } catch {}
-  }, [promptModel, names, enhancements, generatedPrompt, targetSlot])
+  }, [promptModel, idea, styles, generatedPrompt, targetSlot])
 
   // Single effect: first run = restore (localStorage + DB), subsequent runs = save.
   // Using the same pattern as model settings to prevent overwriting stored data with defaults.
@@ -7975,16 +7987,6 @@ function TextDropdown({
     }
   }, [savedPrompts, signedIn])
 
-  // Cooldown countdown
-  useEffect(() => {
-    if (!cooldownEnd) return
-    const tick = setInterval(() => {
-      const left = Math.max(0, Math.ceil((cooldownEnd - Date.now()) / 1000))
-      setCooldownLeft(left)
-      if (left === 0) { setCooldownEnd(null); clearInterval(tick) }
-    }, 250)
-    return () => clearInterval(tick)
-  }, [cooldownEnd])
 
   // Outside click
   useEffect(() => {
@@ -8006,41 +8008,31 @@ function TextDropdown({
     }
   }, [open])
 
-  // Lite models are quick enough that a cooldown would only be in the way.
-  const isFlash = /flash-lite|flash/.test(promptModel)
-  const canGenerate = !generating && !cooldownEnd && hasDevAccess
+  const canGenerate = !generating && signedIn && !(left === 0)
 
   const handleGenerate = async () => {
     if (!canGenerate) return
-    const celebrity = names.filter((n) => n.trim()).join(", ")
-    const baseStyle = enhancements.filter((e) => e.trim()).join(", ")
     const existing = (savedPrompts[targetSlot] ?? "").trim()
-    // With a slot to rewrite, the inputs are optional direction; without one
+    // With a slot to rewrite, the idea is optional direction; without one
     // there is nothing to work from at all.
-    if (!celebrity && !baseStyle && !existing) {
-      setGenError("Enter a name or enhancement, or pick a slot that already has a prompt.")
+    if (!idea.trim() && !existing) {
+      setGenError("Type an idea, or pick a slot that already has a prompt.")
       return
     }
     setGenerating(true)
     setGenError(null)
+    setLimitHit(false)
     try {
-      const res = await fetch("/api/prompting-studio/generate-single", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject: celebrity, baseStyle, model: imageModelName, promptModel, existing }),
+      const out = await enhancePrompt({
+        idea: idea.trim(), existing, styles, target, modelName: targetModelName,
+        ...(isAdmin ? { promptModel } : {}),
       })
-      const data = await res.json()
-      if (!res.ok || data.error) {
-        setGenError(data.error || "Generation failed.")
-      } else {
-        const out = data.prompt || data.result || ""
-        // Straight into the slot. That is the whole point of choosing one.
-        setSavedPrompts(prev => prev.map((v, i) => (i === targetSlot ? out : v)))
-        setGeneratedPrompt(out)
-        if (!isFlash) { setCooldownEnd(Date.now() + 10000); setCooldownLeft(10) }
-      }
-    } catch (err: any) {
-      setGenError(err.message || "Network error.")
+      // Straight into the slot. That is the whole point of choosing one.
+      setSavedPrompts(prev => prev.map((v, i) => (i === targetSlot ? out : v)))
+      setGeneratedPrompt(out)
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : "Enhancement failed.")
+      if (err instanceof EnhanceError && err.limitReached) setLimitHit(true)
     } finally {
       setGenerating(false)
     }
@@ -8050,13 +8042,6 @@ function TextDropdown({
     if (!generatedPrompt) return
     onUsePrompt(generatedPrompt)
     onToggle()
-  }
-
-  const handleCopyGenerated = () => {
-    copyToClipboard(generatedPrompt).then(() => {
-      setCopiedGen(true)
-      setTimeout(() => setCopiedGen(false), 2000)
-    })
   }
 
   const handleCopySaved = (idx: number) => {
@@ -8086,7 +8071,7 @@ function TextDropdown({
             <SiteLogoBox size={22} rounded={7} />
             <div>
               <p className="text-[12px] font-semibold text-white leading-none">Text Tools</p>
-              <p className="text-[10px] text-slate-500 mt-1 leading-snug">Generate a prompt with AI, or load from 16 saved slots.</p>
+              <p className="text-[10px] text-slate-500 mt-1 leading-snug">Turn a short idea into a full prompt, or load from 16 saved slots.</p>
             </div>
           </div>
           {/* Mobile: panes stack and the whole body scrolls; sm+: side-by-side with per-pane scroll */}
@@ -8096,158 +8081,136 @@ function TextDropdown({
             <div className="p-4 space-y-3 sm:max-h-[520px] sm:overflow-y-auto">
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-white/70 shrink-0" />
-                <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.2em] font-mono">AI Prompting</p>
+                <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.2em] font-mono">Enhance a prompt</p>
               </div>
 
-              {!hasDevAccess ? (
-                <div className="py-8 text-center space-y-2">
-                  <p className="text-sm text-slate-500">Dev tier required</p>
-                  <a href="/prompting-studio/subscribe" className="text-[11px] text-white hover:underline">Upgrade →</a>
-                </div>
-              ) : (
-                <>
-                  {/* AI Model — grouped, cheapest first, default is the cheapest */}
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-1">AI Model</label>
-                    <select
-                      value={promptModel}
-                      onChange={(e) => setPromptModel(e.target.value)}
-                      className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
+              <p className="text-[10px] text-slate-500 leading-snug -mt-1">
+                Type the gist - Enhance writes a full {target} prompt for <span className="text-slate-300">{targetModelName}</span>.
+              </p>
+
+              {/* The idea */}
+              <textarea
+                value={idea}
+                onChange={(e) => setIdea(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleGenerate() } }}
+                placeholder={target === "video" ? "e.g. a fox astronaut exploring Mars, slow push in" : "e.g. a fox astronaut on Mars, golden hour"}
+                rows={3}
+                maxLength={1000}
+                className="w-full px-2.5 py-2 rounded-lg bg-black/30 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/30 resize-none leading-relaxed"
+              />
+
+              {/* One-tap style direction */}
+              <div className="flex flex-wrap gap-1.5">
+                {ENHANCE_STYLE_CHIPS.map(st => {
+                  const on = styles.includes(st)
+                  return (
+                    <button
+                      key={st}
+                      onClick={() => setStyles(p => (on ? p.filter(x => x !== st) : [...p, st].slice(-3)))}
+                      className={`px-2 py-0.5 rounded-full border text-[10px] transition-colors ${on ? "border-violet-400/50 bg-violet-500/20 text-violet-100" : "border-white/10 bg-white/[0.03] text-slate-400 hover:text-white hover:border-white/25"}`}
                     >
-                      {PROMPT_MODEL_GROUPS.map(g => (
-                        <optgroup key={g} label={g}>
-                          {PROMPT_MODELS.filter(m => m.group === g).map(m => (
-                            <option key={m.id} value={m.id}>
-                              {m.label}{m.note ? ` \u00b7 ${m.note}` : ""}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </div>
+                      {st}
+                    </button>
+                  )
+                })}
+              </div>
 
-                  {/*
-                   * WHICH SLOT this works on.
-                   *
-                   * An empty slot gets a prompt composed from the inputs below.
-                   * A slot with a prompt in it gets REWRITTEN, with those inputs
-                   * as the direction for the rewrite. Either way the answer
-                   * lands in the slot rather than in a panel of its own.
-                   */}
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-1">Write into</label>
-                    <select
-                      value={targetSlot}
-                      onChange={(e) => setTargetSlot(Number(e.target.value))}
-                      className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
-                    >
-                      {savedPrompts.map((v, i) => (
-                        <option key={i} value={i}>
-                          {`Slot ${i + 1} \u00b7 ${v.trim() ? `${v.trim().slice(0, 34)}${v.trim().length > 34 ? "\u2026" : ""}` : "empty"}`}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-1 text-[10px] leading-snug text-slate-500">
-                      {savedPrompts[targetSlot]?.trim()
-                        ? "This slot has a prompt \u2014 it will be rewritten, using the fields below as direction."
-                        : "This slot is empty \u2014 a new prompt will be written into it from the fields below."}
-                    </p>
-                  </div>
+              {/*
+               * WHICH SLOT this works on. An empty slot gets a new prompt from
+               * the idea; a slot with a prompt in it gets rewritten, with the
+               * idea as direction. Either way the answer lands in the slot.
+               */}
+              <div>
+                <label className="block text-[10px] text-slate-500 mb-1">Write into</label>
+                <select
+                  value={targetSlot}
+                  onChange={(e) => setTargetSlot(Number(e.target.value))}
+                  className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
+                >
+                  {savedPrompts.map((v, i) => (
+                    <option key={i} value={i}>
+                      {`Slot ${i + 1} \u00b7 ${v.trim() ? `${v.trim().slice(0, 34)}${v.trim().length > 34 ? "\u2026" : ""}` : "empty"}`}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[10px] leading-snug text-slate-500">
+                  {savedPrompts[targetSlot]?.trim()
+                    ? "This slot has a prompt \u2014 it will be improved, with your idea as direction."
+                    : "This slot is empty \u2014 a new prompt will be written into it."}
+                </p>
+              </div>
 
-                  {/* Names */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-[10px] text-slate-500">Names ({names.length}/5)</label>
-                      {names.length < 5 && (
-                        <button onClick={() => setNames((p) => [...p, ""])} className="text-[10px] text-slate-300 hover:text-white">+ Add</button>
-                      )}
-                    </div>
-                    <div className="space-y-1.5">
-                      {names.map((name, i) => (
-                        <div key={i} className="flex gap-1 items-center">
-                          <input
-                            value={name}
-                            onChange={(e) => setNames((p) => p.map((n, idx) => idx === i ? e.target.value : n))}
-                            placeholder={`Name ${i + 1}`}
-                            className="flex-1 px-2 py-1 rounded-md bg-black/30 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/30"
-                          />
-                          {names.length > 1 && (
-                            <button onClick={() => setNames((p) => p.filter((_, idx) => idx !== i))} className="text-slate-600 hover:text-red-400 transition-colors shrink-0">
-                              <X size={11} />
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Enhancements */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-[10px] text-slate-500">Enhancements ({enhancements.length}/10)</label>
-                      {enhancements.length < 10 && (
-                        <button onClick={() => setEnhancements((p) => [...p, ""])} className="text-[10px] text-slate-300 hover:text-white">+ Add</button>
-                      )}
-                    </div>
-                    <div className="space-y-1.5 max-h-28 overflow-y-auto">
-                      {enhancements.map((enh, i) => (
-                        <div key={i} className="flex gap-1 items-center">
-                          <input
-                            value={enh}
-                            onChange={(e) => setEnhancements((p) => p.map((en, idx) => idx === i ? e.target.value : en))}
-                            placeholder={`Enhancement ${i + 1}`}
-                            className="flex-1 px-2 py-1 rounded-md bg-black/30 border border-white/10 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-white/30"
-                          />
-                          {enhancements.length > 1 && (
-                            <button onClick={() => setEnhancements((p) => p.filter((_, idx) => idx !== i))} className="text-slate-600 hover:text-red-400 transition-colors shrink-0">
-                              <X size={11} />
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Generate */}
-                  {genError && <p className="text-[10px] text-red-400">{genError}</p>}
-                  <button
-                    onClick={handleGenerate}
-                    disabled={!canGenerate}
-                    className={`relative overflow-hidden w-full py-1.5 rounded-lg text-xs font-bold transition-all ${
-                      canGenerate
-                        ? "bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40"
-                        : "bg-white/5 border border-white/10 text-slate-600 cursor-not-allowed"
-                    }`}
+              {/* Admins only: which Gemini model does the writing */}
+              {isAdmin && (
+                <div>
+                  <label className="block text-[10px] text-slate-500 mb-1">AI model <span className="text-violet-300/70">· admin</span></label>
+                  <select
+                    value={promptModel}
+                    onChange={(e) => setPromptModel(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
                   >
-                    {canGenerate && (
-                      <span
-                        className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
-                        style={{ animation: "sheen-sweep 2.6s infinite" }}
-                      />
-                    )}
-                    {generating ? "Generating…" : cooldownEnd ? `Wait ${cooldownLeft}s` : "Generate Prompt"}
-                  </button>
+                    {PROMPT_MODEL_GROUPS.map(g => (
+                      <optgroup key={g} label={g}>
+                        {PROMPT_MODELS.filter(m => m.group === g).map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.label}{m.note ? ` \u00b7 ${m.note}` : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-                  {/*
-                   * No output panel any more: the result is in the slot, which
-                   * is on screen to the right and editable there. A second copy
-                   * here was a thing to reconcile, not a thing to read.
-                   */}
-                  {generatedPrompt && (
-                    <div className="flex items-center gap-2 rounded-md border border-emerald-500/25 bg-emerald-500/[0.07] px-2 py-1.5">
-                      <Check size={11} className="shrink-0 text-emerald-400" />
-                      <span className="text-[10px] leading-snug text-emerald-100/80">
-                        Written into slot {targetSlot + 1}.
-                      </span>
-                      <button
-                        onClick={handleUseGenerated}
-                        className="ml-auto shrink-0 rounded px-2 py-0.5 text-[10px] font-medium text-emerald-100 hover:bg-emerald-500/20 transition-colors"
-                      >
-                        Use now →
-                      </button>
-                    </div>
-                  )}
-                </>
+              {/* Enhance */}
+              {genError && (
+                <p className="text-[10px] text-red-400 leading-snug">
+                  {genError}
+                  {limitHit && <a href="/prompting-studio/subscribe" className="ml-1 text-violet-300 hover:text-violet-200 underline">See plans</a>}
+                </p>
+              )}
+              <button
+                onClick={handleGenerate}
+                disabled={!canGenerate}
+                className={`relative overflow-hidden w-full py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  canGenerate
+                    ? "bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40"
+                    : "bg-white/5 border border-white/10 text-slate-600 cursor-not-allowed"
+                }`}
+              >
+                {canGenerate && (
+                  <span
+                    className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
+                    style={{ animation: "sheen-sweep 2.6s infinite" }}
+                  />
+                )}
+                {generating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                {!signedIn ? "Sign in to enhance" : generating ? "Enhancing\u2026" : left === 0 ? "Daily limit reached" : "Enhance"}
+              </button>
+
+              {/* Today's allowance */}
+              {signedIn && allowance && (
+                <p className="text-[10px] text-slate-500 text-center leading-snug">
+                  {allowance.limit === null
+                    ? <>Unlimited <span className="text-slate-600">· {allowance.planLabel}</span></>
+                    : <>{left} of {allowance.limit} enhancements left today <span className="text-slate-600">· {allowance.planLabel}</span>
+                        {allowance.plan !== "max" && <> · <a href="/prompting-studio/subscribe" className="text-violet-300 hover:text-violet-200">more with Dev Tier</a></>}</>}
+                </p>
+              )}
+
+              {generatedPrompt && (
+                <div className="flex items-center gap-2 rounded-md border border-emerald-500/25 bg-emerald-500/[0.07] px-2 py-1.5">
+                  <Check size={11} className="shrink-0 text-emerald-400" />
+                  <span className="text-[10px] leading-snug text-emerald-100/80">
+                    Written into slot {targetSlot + 1}.
+                  </span>
+                  <button
+                    onClick={handleUseGenerated}
+                    className="ml-auto shrink-0 rounded px-2 py-0.5 text-[10px] font-medium text-emerald-100 hover:bg-emerald-500/20 transition-colors"
+                  >
+                    Use now {"\u2192"}
+                  </button>
+                </div>
               )}
             </div>
 
@@ -9513,7 +9476,7 @@ function PendingDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/90"
       onClick={onClose}
     >
       <div
@@ -9780,6 +9743,14 @@ const INFO_POS_CARD_CLS: Record<InfoPos, string> = {
   // Pinned height so the media pane has a real box to contain the image —
   // with h-auto the image renders unbounded and gets clipped at 90vh
   hidden: "sm:h-[90vh] flex-col",
+}
+// Side-panel layouts size the card from its content: the media pane takes the
+// media's shape (--pane-ar, set on the card) before anything has loaded, so
+// the card opens at its final size instead of jumping when the size arrives
+const SIDE_PANE_CLS: Record<InfoPos, string> = {
+  right: "sm:aspect-(--pane-ar) sm:max-h-[90vh]",
+  left: "sm:aspect-(--pane-ar) sm:max-h-[90vh]",
+  bottom: "", top: "", hidden: "",
 }
 const INFO_POS_PANEL_CLS: Record<InfoPos, string> = {
   right:  "sm:w-72 border-t border-white/8 sm:border-t-0 sm:border-l sm:border-white/8",
@@ -10152,8 +10123,13 @@ function usePinchZoom(resetKey: unknown, maxScale = 4) {
  * backdrop. The page scroller is locked for the viewer's lifetime (its
  * scrollbar's width held as padding so nothing shifts sideways) and restored,
  * scroll position intact, on close.
+ *
+ * The feed's video cycle is held too: tiles mid-turn freeze on their frame
+ * and nothing new crossfades in until the viewer closes. Left running, the
+ * tiles kept fading still<->video behind the popup and the page flickered.
  */
 function useLockPageScroll() {
+  useEffect(() => holdCardVideos(), [])
   useEffect(() => {
     const el = document.documentElement
     const prevOverflow = el.style.overflow
@@ -10315,7 +10291,20 @@ function ImageDetailModal({
   // the row, and measuring works for every past generation as well.
   const [measuredSize, setMeasuredSize] = useState<{ w: number; h: number } | null>(null)
   useEffect(() => { setMeasuredAr(null) }, [image.id, image.imageUrl])
-  const mediaAr = measuredAr ?? arFromMeta ?? 1
+  // The real shape before first paint, when the browser already holds the
+  // picture (the feed tile showed its thumbnail or the full image). Tools save
+  // "auto" as their ratio, and the card opened square and then widened.
+  const cachedAr = useMemo(() => {
+    if (typeof window === "undefined" || image.failed) return null
+    for (const u of [image.thumbnailUrl, image.imageUrl]) {
+      if (!u) continue
+      const probe = new window.Image()
+      probe.src = u
+      if (probe.complete && probe.naturalWidth > 0 && probe.naturalHeight > 0) return probe.naturalWidth / probe.naturalHeight
+    }
+    return null
+  }, [image.thumbnailUrl, image.imageUrl, image.failed])
+  const mediaAr = measuredAr ?? cachedAr ?? arFromMeta ?? 1
   const sidePanelPx = infoPos === "left" || infoPos === "right" ? 288 : 0
   const cardMaxWidth = mediaAr > 1.15
     ? `min(96vw, calc(86vh * ${Math.min(mediaAr, 2.5).toFixed(3)} + ${sidePanelPx}px))`
@@ -10323,7 +10312,7 @@ function ImageDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/90"
       onClick={onClose}
     >
       {/* Desktop prev/next arrows — outside the card, in the backdrop margins */}
@@ -10344,9 +10333,9 @@ function ImageDetailModal({
         </button>
       )}
       <div
-        className={`relative isolate w-full h-full sm:max-w-[var(--card-max)] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#05080f] sm:bg-[#070b14]/95 sm:backdrop-blur-md shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
+        className={`relative isolate w-full h-full sm:max-w-[var(--card-max)] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#05080f] sm:bg-[#070b14] shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
         onClick={(e) => e.stopPropagation()}
-        style={{ ...cardStyle, ["--card-max" as string]: cardMaxWidth } as React.CSSProperties}
+        style={{ ...cardStyle, ["--card-max" as string]: cardMaxWidth, ["--pane-ar" as string]: mediaAr.toFixed(4) } as React.CSSProperties}
         {...swipeHandlers}
       >
         {/* Close */}
@@ -10372,7 +10361,7 @@ function ImageDetailModal({
             image itself (not the letterboxed pane); hidden while pinch-zoomed. */}
         <div
           ref={zoom.paneRef}
-          className="relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0"
+          className={`relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0 ${SIDE_PANE_CLS[infoPos]}`}
           {...(!image.failed ? { ...zoom.zoomHandlers, style: zoom.paneStyle } : {})}
         >
           <BrandBackdrop />
@@ -11141,7 +11130,7 @@ function VideoDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/85 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/90"
       onClick={onClose}
     >
       {/* Desktop prev/next arrows */}
@@ -11162,9 +11151,9 @@ function VideoDetailModal({
         </button>
       )}
       <div
-        className={`relative isolate w-full h-full sm:max-w-[var(--card-max)] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#05080f] sm:bg-[#070b14]/95 sm:backdrop-blur-md shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
+        className={`relative isolate w-full h-full sm:max-w-[var(--card-max)] sm:rounded-2xl border-0 sm:border border-white/[0.08] bg-[#05080f] sm:bg-[#070b14] shadow-2xl overflow-hidden flex ${INFO_POS_CARD_CLS[infoPos]}`}
         onClick={(e) => e.stopPropagation()}
-        style={{ ...cardStyle, ["--card-max" as string]: cardMaxWidth } as React.CSSProperties}
+        style={{ ...cardStyle, ["--card-max" as string]: cardMaxWidth, ["--pane-ar" as string]: mediaAr.toFixed(4) } as React.CSSProperties}
         {...swipeHandlers}
       >
         {/* Close */}
@@ -11188,7 +11177,7 @@ function VideoDetailModal({
 
         {/* Video player — or error state. The silver orbit ring hugs the
             rendered video box itself (not the letterboxed pane). */}
-        <div ref={videoPaneRef} className="relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0">
+        <div ref={videoPaneRef} className={`relative isolate flex-1 bg-black flex items-center justify-center overflow-hidden min-h-0 ${SIDE_PANE_CLS[infoPos]}`} style={{ containerType: "size" }}>
           {!video.failed && <BrandBackdrop />}
           <OrbitMediaFrame
             containerRef={videoPaneRef}
@@ -11214,7 +11203,15 @@ function VideoDetailModal({
               autoPlay
               loop
               playsInline
-              className="max-w-full max-h-full object-contain"
+              className="object-contain"
+              // Its final box from the first frame: the largest mediaAr rect
+              // that fits the pane (cq units = the pane, a size container).
+              // Unsized, a video is 300x150 until its metadata loads - it
+              // grew into place a beat after opening, the orbit ring with it.
+              style={{
+                width: `min(100cqw, calc(100cqh * ${mediaAr.toFixed(4)}))`,
+                height: `min(100cqh, calc(100cqw / ${mediaAr.toFixed(4)}))`,
+              }}
               onLoadedMetadata={e => {
                 const el = e.currentTarget
                 if (el.videoWidth > 0 && el.videoHeight > 0) {
@@ -23053,6 +23050,10 @@ function PromptBox({
               {voiceError && (
                 <p className="px-5 pb-1 -mt-1 text-[10px] text-red-400">{voiceError}</p>
               )}
+              {/* Enhance rewrites what is typed into a full prompt for THIS model */}
+              <div className="flex justify-end px-3 pb-2 -mt-1">
+                <EnhanceButton text={prompt} onReplace={setPrompt} target="image" modelName={model.name} signedIn={userId != null} />
+              </div>
             </div>
           )}
 
@@ -26381,6 +26382,9 @@ function VideoTile({ natural, initialAspect, className, onClick, videoSrc, still
         if (unmount) clearTimeout(unmount)
         unmount = setTimeout(() => setLive(false), TILE_FADE_MS + 50)
       },
+      // A viewer opened on top: hold this frame, then carry on from it
+      pause: () => { vidRef.current?.pause() },
+      resume: () => { vidRef.current?.play()?.catch(() => handleRef.current?.failed()) },
     })
     handleRef.current = handle
     return () => {
@@ -27280,6 +27284,8 @@ function VideoPromptBar({
     || (["happy-horse-1.1", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast"].includes(model.id) && !!startFramePreview)
     // ...and the talking photo once a voice track replaces the typed script
     || (model.id === "heygen-avatar4" && !!audioSeconds)
+  // Models that take no prompt have nothing to enhance
+  const showEnhance = !PROMPTLESS_VIDEO_MODELS.has(model.id)
   const ready = !isGenerationMaintenance && ((model.id === "kling-v3-motion" || isLipsyncModel) ? canGenerate : canGenerate && (!!prompt.trim() || promptOptional))
   const promptPlaceholder = VIDEO_PROMPT_HINTS[model.id]
     ?? (model.isVideoTool && !model.toolPrompt ? "No prompt needed - just upload the clip" : null)
@@ -27431,6 +27437,7 @@ function VideoPromptBar({
                 <SlidersHorizontal size={13} className="text-slate-300" />
                 Config
               </button>
+              {showEnhance && <EnhanceButton text={prompt} onReplace={setPrompt} target="video" modelName={model.name} className="shrink-0" />}
               <span className="flex-1 text-[10px] text-center font-mono truncate">
                 {queueFull
                   ? <span className="text-red-400/80">Queue full</span>
@@ -27519,10 +27526,13 @@ function VideoPromptBar({
 
         {/* Generate button + meta */}
         <div className="ml-auto flex flex-col items-end gap-1.5 shrink-0">
-          {queueFull
-            ? <span className="text-[10px] text-red-400/80 font-mono">Queue full</span>
-            : <span className="text-[10px] text-slate-500 font-mono">{metaLine}</span>
-          }
+          <div className="flex items-center gap-2">
+            {showEnhance && <EnhanceButton text={prompt} onReplace={setPrompt} target="video" modelName={model.name} />}
+            {queueFull
+              ? <span className="text-[10px] text-red-400/80 font-mono">Queue full</span>
+              : <span className="text-[10px] text-slate-500 font-mono">{metaLine}</span>
+            }
+          </div>
           <button
             onClick={() => ready && onGenerate(prompt)}
             disabled={!ready}
@@ -28507,6 +28517,9 @@ function ShopDropdown({
 
 // --- MAIN PAGE ---
 export default function PortalV2Page() {
+  // Warm the site-logo cache at load: the viewers' brand wall draws 120 marks
+  // and, fetched on first open, they all swapped from placeholder to logo
+  useSiteLogoCached()
   const [user, setUser] = useState<UserData | null>(null)
   // CCBill compliance: account has no 18+ attestation on record → blocking modal
   const [needsAgeAttest, setNeedsAgeAttest] = useState(false)
@@ -33199,8 +33212,10 @@ function employeePending(
             <TextDropdown
               open={openDropdown === "text"}
               onToggle={() => toggle("text")}
-              hasDevAccess={hasEffectiveDevAccess}
               imageModelName={selectedModel.name}
+              videoModelName={selectedVideoModel.name}
+              mode={scannerMode}
+              isAdmin={isAdminAccount}
               onUsePrompt={handleUsePrompt}
               signedIn={user !== null}
             />

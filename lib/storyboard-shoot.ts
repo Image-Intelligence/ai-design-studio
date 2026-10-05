@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
+import { withShotsLock, patchShot } from '@/lib/storyboard-store'
 import { canonicalMediaUrl } from '@/lib/media-url'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import { submitChatVideo } from '@/lib/chat-video-submit'
@@ -45,16 +46,17 @@ export async function boardFolder(userId: number, title: string): Promise<number
  */
 async function writeVideos(boardId: number, videos: Record<string, ShotVideo>) {
   if (!Object.keys(videos).length) return
-  const fresh = await prisma.storyboard.findUnique({ where: { id: boardId }, select: { shots: true } })
-  const shots = sanitizeShots(fresh?.shots).map(s => {
-    const v = videos[s.id]
-    if (!v) return s
-    let takes = s.videos ?? []
-    if (s.video) takes = addVideoTake(takes, s.video)
-    takes = addVideoTake(takes, v)
-    return { ...s, video: v, videos: takes.length ? takes : undefined }
-  })
-  await prisma.storyboard.update({ where: { id: boardId }, data: { shots: shots as object[] } })
+  // Under the row lock (lib/storyboard-store): a still landing meanwhile is kept
+  await withShotsLock(boardId, current => ({
+    shots: current.map(s => {
+      const v = videos[s.id]
+      if (!v) return s
+      let takes = s.videos ?? []
+      if (s.video) takes = addVideoTake(takes, s.video)
+      takes = addVideoTake(takes, v)
+      return { ...s, video: v, videos: takes.length ? takes : undefined }
+    }),
+  }))
 }
 
 /** Every slot's takes, for the page (it shows them; the server owns them). */
@@ -76,8 +78,8 @@ export async function pickTake(boardId: number, shotId: string, url: string): Pr
   const k = stillKey(url)
   const take = (shot.videos ?? []).find(t => t.url && stillKey(t.url) === k)
   if (!take) return { error: 'That clip is not one of this shot\'s takes' }
-  const next = shots.map(s => (s.id === shotId ? { ...s, video: take } : s))
-  await prisma.storyboard.update({ where: { id: boardId }, data: { shots: next as object[] } })
+  // One shot's field, in one statement (lib/storyboard-store) - nothing else is rewritten
+  await patchShot(boardId, shotId, { video: take })
   return { video: take }
 }
 

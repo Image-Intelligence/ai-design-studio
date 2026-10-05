@@ -6,6 +6,7 @@ import {
   ImagePlus, ArrowRight, Clock, Clapperboard, Sparkles, Check, Film, ImageUp,
   Download, CircleDashed, CircleCheck, CircleX, MinusCircle, Ticket, SquareCheck, Square,
   Megaphone, Package, UserRound, Shirt, Music, Smartphone, MapPin, Lightbulb, ChevronDown, Search, Minus,
+  ShoppingBag, Layers, ChevronUp, Scissors, ScanFace,
   type LucideIcon,
 } from "lucide-react"
 import { videoTicketCost } from "@/lib/ticket-pricing"
@@ -13,12 +14,14 @@ import { Dropdown } from "@/components/employees/Dropdown"
 import {
   STORYBOARD_ASPECTS, STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, SHOOT_RESOLUTIONS, DURATIONS, MAX_SHOTS,
   newShot, totalSeconds, fmtRuntime, imageModelLabel, stillKey, MAX_STILL_VERSIONS, type StoryboardDoc, type StoryboardShot, type ShotVideo,
-  activeAssetRefs, stillModelSpec, stillTickets, stillSettingValue, newAsset, newAssetRef, MAX_ASSET_REFS, DEFAULT_IMAGE_MODEL, type StoryAsset, type AssetKind,
+  stillModelSpec, stillTickets, stillSettingValue, newAsset, newAssetRef, MAX_ASSET_REFS, type StoryAsset, type AssetKind,
   BOARD_MODES, boardMode, frameLabel, type BoardModeId, MAX_DRAFT_SHOTS, TARGET_LENGTHS, runtimeRange, lengthLabel,
   FINAL_CUT_PHASES, FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS, NARRATOR_VOICES, DEFAULT_FINAL_CUT_OPTIONS,
   type FinalCutState, type FinalCutOptions,
+  newScene, orderByScenes, ensureScenes, sceneShots, shotRefs, MAX_SCENES, type StoryScene,
+  FRAMINGS, isFraming, type FramingId, liveStillJob, mergeStills, pickRefs, autoShotRefs, type ShotRef,
 } from "@/lib/storyboard"
-import { AssetsPanel, AddToAssetMenu, type RefCap } from "@/components/employees/StoryboardAssets"
+import { AssetsPanel, AddToAssetMenu, ShotRefsPanel } from "@/components/employees/StoryboardAssets"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
@@ -40,7 +43,7 @@ import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
  */
 
 type BoardSummary = { id: number; title: string; shotCount: number; seconds: number; cover: string | null; mode?: string; updatedAt?: string }
-type DraftMode = "replace" | "polish" | "regenerate" | "extend"
+type DraftMode = "replace" | "polish" | "regenerate" | "extend" | "scene" | "refs"
 /** A still's library record, in the shape the portal's image viewer takes. */
 type StillRecord = { id: number; imageUrl: string; prompt: string; model: string; createdAt?: string; aspectRatio?: string; quality?: string; referenceImageUrls?: string[]; videoMetadata?: Record<string, unknown> }
 
@@ -52,8 +55,8 @@ const ASPECT_OPTIONS = STORYBOARD_ASPECTS.map(a => ({ value: a, label: a }))
 const RES_OPTIONS = SHOOT_RESOLUTIONS.map(r => ({ value: r, label: r }))
 const pad2 = (n: number) => String(n).padStart(2, "0")
 const MODE_ICONS: Record<BoardModeId, LucideIcon> = {
-  story: Clapperboard, trailer: Film, ad: Megaphone, product: Package, character: UserRound,
-  lookbook: Shirt, music: Music, social: Smartphone, location: MapPin, explainer: Lightbulb,
+  story: Clapperboard, trailer: Film, ad: Megaphone, product: Package, character: UserRound, face: ScanFace,
+  lookbook: Shirt, outfit: ShoppingBag, music: Music, social: Smartphone, location: MapPin, explainer: Lightbulb,
 }
 /** A ticket count, as it sits on a button. */
 function Tix({ n, approx, className = "" }: { n: number; approx?: boolean; className?: string }) {
@@ -112,6 +115,15 @@ export function StoryboardWorkspace({
   const [loading, setLoading] = useState(true)
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved")
   const [busy, setBusy] = useState<Record<string, boolean>>({})
+  /*
+   * Stills waiting their turn in a batch ("Make 10" runs three at a time).
+   * They show as queued at once, so a shot that is already on its way is
+   * never offered - and never charged - twice. The refs are the same sets for
+   * the guards, which must not wait for a render.
+   */
+  const [queued, setQueued] = useState<Record<string, boolean>>({})
+  const queuedRef = useRef<Set<string>>(new Set())
+  const makingRef = useRef<Set<string>>(new Set())
   const [shotError, setShotError] = useState<Record<string, string>>({})
   const [premise, setPremise] = useState("")
   const [shotCount, setShotCount] = useState("8")
@@ -140,6 +152,18 @@ export function StoryboardWorkspace({
   const [fcOptions, setFcOptions] = useState<FinalCutOptions>(DEFAULT_FINAL_CUT_OPTIONS)
   const [fcError, setFcError] = useState<string | null>(null)
   const [fcVersion, setFcVersion] = useState<number | null>(null)
+  // Scenes: how many a new board is planned in, which are folded away, and
+  // which scene the Final Cut window is cutting (null = the whole board)
+  const [sceneCount, setSceneCount] = useState("1")
+  const [collapsed, setCollapsed] = useState<string[]>([])
+  const [fcScene, setFcScene] = useState<string | null>(null)
+  const [batchScene, setBatchScene] = useState<string | null>(null)
+  const [draftScene, setDraftScene] = useState<string | null>(null)
+  // Scenes on one continuous page, or one scene at a time (its own page)
+  const [sceneView, setSceneView] = useState<"all" | "one">(() => { try { return localStorage.getItem("pv2-storyboard-view") === "one" ? "one" : "all" } catch { return "all" } })
+  const [pageScene, setPageScene] = useState<string | null>(null)
+  // Waist up / full body / mix: a draft setting, remembered per board on this device
+  const [framing, setFramingState] = useState<FramingId>("mix")
   const activeRefKeys = useMemo(() => new Set(activeRefs.map(r => stillKey(r.url))), [activeRefs])
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const boardRef = useRef<StoryboardDoc | null>(null)
@@ -157,12 +181,13 @@ export function StoryboardWorkspace({
     const r = await getJson<{ storyboard?: StoryboardDoc }>(`/api/employees/storyboards/${id}`)
     const storyboard = r.data?.storyboard
     if (!r.ok || !storyboard) return
-    setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], mode: boardMode(storyboard.mode).id })
+    setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id })
     setShotError({})
     setFinalCut({ job: null, versions: [] })
     setFcVersion(null)
     setSelected([]); setSelecting(false); setFocusId(null)
     try { localStorage.setItem("pv2-storyboard", String(id)) } catch {}
+    try { const f = localStorage.getItem(`pv2-storyboard-framing-${id}`); setFramingState(isFraming(f) ? f : "mix") } catch { setFramingState("mix") }
     const fc = await fetch(`/api/employees/storyboards/${id}/final-cut`).then(r => (r.ok ? r.json() : null)).catch(() => null)
     // Only if this board is still the one open - a slow answer for the board
     // just left would otherwise show its cuts on the next one
@@ -175,7 +200,7 @@ export function StoryboardWorkspace({
     await loadList()
     // A new board has no cuts and no errors: clear the previous board's, or its
     // Final Cuts keep showing in the screening room of the empty board
-    setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], mode: boardMode(storyboard.mode).id })
+    setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id })
     setShotError({})
     setFinalCut({ job: null, versions: [] })
     setFcVersion(null)
@@ -205,7 +230,7 @@ export function StoryboardWorkspace({
     setSaveState("saving")
     const r = await fetch(`/api/employees/storyboards/${b.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: b.title, story: b.story, look: b.look, aspect: b.aspect, shots: b.shots, assets: b.assets, mode: b.mode }),
+      body: JSON.stringify({ title: b.title, story: b.story, look: b.look, aspect: b.aspect, shots: b.shots, assets: b.assets, mode: b.mode, scenes: b.scenes }),
     }).catch(() => null)
     setSaveState(r?.ok ? "saved" : "error")
     // The saved board moves to the front, as the list is newest-edited first
@@ -217,7 +242,8 @@ export function StoryboardWorkspace({
     })
   }, [])
   const update = useCallback((fn: (b: StoryboardDoc) => StoryboardDoc) => {
-    setBoard(b => (b ? fn(b) : b))
+    // Shots always live in a scene - the first shot on an empty board makes Scene 1
+    setBoard(b => (b ? ensureScenes(fn(b)) : b))
     setSaveState("saving")
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(flush, 700)
@@ -226,19 +252,56 @@ export function StoryboardWorkspace({
   useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); flush() } }, [flush])
 
   const setShot = (id: string, patch: Partial<StoryboardShot>) => update(b => ({ ...b, shots: b.shots.map(s => s.id === id ? { ...s, ...patch } : s) }))
+  // A shot moved onto another's place takes that shot's scene - so dragging
+  // (or stepping) across a scene's edge moves it into the next scene
   const moveShot = (from: number, to: number) => update(b => {
     if (to < 0 || to >= b.shots.length || from === to) return b
     const shots = [...b.shots]
+    const into = shots[to].sceneId
     const [s] = shots.splice(from, 1)
-    shots.splice(to, 0, s)
+    shots.splice(to, 0, into ? { ...s, sceneId: into } : s)
     return { ...b, shots }
   })
-  const addShot = (at?: number) => update(b => {
+  /** A shot dropped on a scene's "Add shot" tile: to the end of that scene. */
+  const moveShotToScene = (from: number, sceneId: string) => update(b => {
+    const s = b.shots[from]
+    if (!s) return b
+    return { ...b, shots: orderByScenes([...b.shots.filter((_, i) => i !== from), { ...s, sceneId }], b.scenes) }
+  })
+  /** A new shot at the end of a scene (or of the board), carrying on the last shot's models. */
+  const addShot = (sceneId?: string) => update(b => {
     if (b.shots.length >= MAX_SHOTS) return b
-    const shots = [...b.shots]
-    const prev = shots[(at ?? shots.length) - 1]
-    shots.splice(at ?? shots.length, 0, newShot({ imageModel: prev?.imageModel, videoModel: prev?.videoModel }))
-    return { ...b, shots }
+    const scene = sceneId ?? b.scenes.at(-1)?.id
+    const prev = (scene ? sceneShots(b.shots, scene) : b.shots).at(-1) ?? b.shots.at(-1)
+    return { ...b, shots: orderByScenes([...b.shots, newShot({ imageModel: prev?.imageModel, videoModel: prev?.videoModel, sceneId: scene })], b.scenes) }
+  })
+  // ── scenes ──
+  /** A new, empty scene at the end - shown at once when scenes are paged. */
+  const addScene = () => {
+    const b = boardRef.current
+    if (!b || b.scenes.length >= MAX_SCENES) return
+    const c = newScene()
+    update(x => ({ ...x, scenes: [...x.scenes, c] }))
+    setPageScene(c.id)
+  }
+  const setScene = (id: string, patch: Partial<StoryScene>) => update(b => ({ ...b, scenes: b.scenes.map(c => (c.id === id ? { ...c, ...patch } : c)) }))
+  const moveScene = (id: string, d: -1 | 1) => update(b => {
+    const i = b.scenes.findIndex(c => c.id === id)
+    const j = i + d
+    if (i < 0 || j < 0 || j >= b.scenes.length) return b
+    const scenes = [...b.scenes]
+    ;[scenes[i], scenes[j]] = [scenes[j], scenes[i]]
+    return { ...b, scenes, shots: orderByScenes(b.shots, scenes) }
+  })
+  /** A scene removed: its shots join the scene before it (none left = a board without scenes). */
+  const removeScene = (id: string) => update(b => {
+    const i = b.scenes.findIndex(c => c.id === id)
+    if (i < 0) return b
+    const rest = b.scenes.filter(c => c.id !== id)
+    // The only scene goes only when it is empty (shots always live in a scene)
+    if (!rest.length) return b.shots.length ? b : { ...b, scenes: [] }
+    const into = rest[Math.max(0, i - 1)].id
+    return { ...b, scenes: rest, shots: orderByScenes(b.shots.map(x => (x.sceneId === id ? { ...x, sceneId: into } : x)), rest) }
   })
   const duplicateShot = (i: number) => update(b => {
     if (b.shots.length >= MAX_SHOTS) return b
@@ -254,19 +317,29 @@ export function StoryboardWorkspace({
     if (!b) return
     const prompt = (shot.imagePrompt || shot.description).trim()
     if (!prompt) { setShotError(e => ({ ...e, [shot.id]: "Write what we see or an image prompt first" })); return }
+    // Already being made: a second press must not make (and charge) it twice
+    if (makingRef.current.has(shot.id)) return
+    makingRef.current.add(shot.id)
+    // The server tracks the slot, so it must have it: pending edits go first
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
+    // Its turn has come: no longer waiting, now making
+    if (queuedRef.current.delete(shot.id)) setQueued(q => { const n = { ...q }; delete n[shot.id]; return n })
     setBusy(x => ({ ...x, [shot.id]: true }))
     setShotError(e => { const n = { ...e }; delete n[shot.id]; return n })
     try {
       const r = await fetch(`/api/employees/storyboards/${b.id}/still`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        // The switched-on asset refs, as many as this still's model takes
+        // Its scene's asset refs (else the board's switched-on ones), as many as this still's model takes
         body: JSON.stringify({
-          prompt, model: shot.imageModel, quality: shot.imageQuality || undefined,
+          prompt, model: shot.imageModel, quality: shot.imageQuality || undefined, shotId: shot.id,
           options: shot.imageOptions,
-          refs: activeAssetRefs(b.assets).slice(0, stillModelSpec(shot.imageModel).maxRefs).map(x => x.url),
+          refs: pickRefs(shotRefs(b, shot), stillModelSpec(shot.imageModel).maxRefs).map(x => x.url),
         }),
       })
       const j = await r.json().catch(() => ({}))
+      // Another tab or device is making this one: not an error - the board's
+      // own state shows it, and the still arrives with the next poll
+      if (r.status === 409 && j.busy) return
       if (!r.ok || !j.url) throw new Error(j.error || "The still failed")
       // Only if this board is still the one open. The new take is added to the
       // slot's versions (read from the CURRENT shot, not this closure's copy),
@@ -276,6 +349,7 @@ export function StoryboardWorkspace({
         shots: cur.shots.map(s => s.id !== shot.id ? s : {
           ...s,
           stillUrl: j.url,
+          stillJob: null,
           imagePrompt: s.imagePrompt || prompt,
           stills: [...(s.stills ?? []), { url: j.url, prompt, model: shot.imageModel, at: Date.now() }].slice(-MAX_STILL_VERSIONS),
         }),
@@ -283,18 +357,48 @@ export function StoryboardWorkspace({
     } catch (e: any) {
       setShotError(x => ({ ...x, [shot.id]: String(e?.message || e) }))
     } finally {
+      makingRef.current.delete(shot.id)
       setBusy(x => { const n = { ...x }; delete n[shot.id]; return n })
     }
-  // update is stable (it only closes over flush); the board is read from boardRef
-  }, [update])
-  const generateMissing = async () => {
+  // update / flush are stable; the board is read from boardRef
+  }, [update, flush])
+  /** Make every missing still - on the board, or in one scene. */
+  const generateMissing = async (sceneId?: string) => {
     const b = boardRef.current
     if (!b) return
-    const todo = b.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim())
-    setBatch(true)
+    // Not the ones already being made or waiting in another batch
+    const todo = b.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim() && (!sceneId || s.sceneId === sceneId)
+      && !makingRef.current.has(s.id) && !queuedRef.current.has(s.id) && !liveStillJob(s.stillJob))
+    await runStills(todo, sceneId)
+  }
+  /*
+   * Run stills three at a time, every one shown as queued until its turn -
+   * here AND on the server, so a refresh or another session shows the same
+   * queue (and a page that finds queued stills nobody is running picks them
+   * up: see the resume effect).
+   */
+  const runStills = async (todo: StoryboardShot[], sceneId?: string) => {
+    const b = boardRef.current
+    if (!b || !todo.length) return
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
+    // Queued on the server BEFORE any starts: a late "queue" landing after a
+    // still had finished would put that slot back in the queue (and make it again)
+    await getJson(`/api/employees/storyboards/${b.id}/still`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queue: todo.map(s => s.id) }),
+    })
+    if (sceneId) setBatchScene(sceneId); else setBatch(true)
+    // Every one of them shows as queued now, not just the three that start
+    for (const s of todo) queuedRef.current.add(s.id)
+    setQueued(q => ({ ...q, ...Object.fromEntries(todo.map(s => [s.id, true])) }))
     let i = 0
-    await Promise.all(Array.from({ length: 3 }, async () => { while (i < todo.length) await generateStill(todo[i++]) }))
-    setBatch(false)
+    try {
+      await Promise.all(Array.from({ length: 3 }, async () => { while (i < todo.length) await generateStill(todo[i++]) }))
+    } finally {
+      // Anything never started (the board was left mid-batch) stops waiting
+      for (const s of todo) queuedRef.current.delete(s.id)
+      setQueued(q => { const n = { ...q }; for (const s of todo) delete n[s.id]; return n })
+      if (sceneId) setBatchScene(null); else setBatch(false)
+    }
   }
 
   // ── shooting ──
@@ -348,6 +452,60 @@ export function StoryboardWorkspace({
     const tick = setInterval(() => setTick(t => t + 1), 1000)
     return () => { clearInterval(poll); clearInterval(tick) }
   }, [rendering, boardId, mergeVideos])
+  /*
+   * Stills in flight are the server's to report (shot.stillJob, written by the
+   * still route): while any is queued or being made - by this page, another
+   * tab or another device - the board is re-read every 5s and the server's
+   * still state merged in: the job, the takes, and a still that landed. Not
+   * an edit, so nothing is autosaved.
+   */
+  const stillsPending = !!board?.shots.some(s => { const j = liveStillJob(s.stillJob); return j?.status === "making" || j?.status === "queued" })
+  const mergeStillState = useCallback((server: StoryboardShot[]) => {
+    const byId = new Map(server.map(s => [s.id, s]))
+    setBoard(b => b && ({
+      ...b,
+      shots: b.shots.map(s => {
+        const sv = byId.get(s.id)
+        if (!sv) return s
+        const known = new Set((s.stills ?? []).map(v => stillKey(v.url)))
+        // A still the server put on the slot that this page has never seen: show it
+        const landed = !!sv.stillUrl && sv.stillUrl !== s.stillUrl && !known.has(stillKey(sv.stillUrl))
+        return { ...s, stillJob: sv.stillJob ?? null, stills: mergeStills(s.stills, sv.stills), ...(landed ? { stillUrl: sv.stillUrl, imagePrompt: s.imagePrompt || sv.imagePrompt } : {}) }
+      }),
+    }))
+  }, [])
+  useEffect(() => {
+    if (!stillsPending || !boardId) return
+    const poll = setInterval(async () => {
+      const r = await getJson<{ storyboard?: StoryboardDoc }>(`/api/employees/storyboards/${boardId}`)
+      if (r.data?.storyboard && boardRef.current?.id === boardId) mergeStillState(r.data.storyboard.shots ?? [])
+    }, 5000)
+    return () => clearInterval(poll)
+  }, [stillsPending, boardId, mergeStillState])
+  /*
+   * Queued stills nobody is running - the page that queued them was refreshed
+   * or closed - are picked up here once they have waited 30s (a page still
+   * running its batch gets to them first). The still route claims each slot,
+   * so two pages picking up the same queue never make a still twice.
+   */
+  const orphanSig = board ? board.shots.filter(s => liveStillJob(s.stillJob)?.status === "queued").map(s => s.id).join(",") : ""
+  useEffect(() => {
+    if (!orphanSig) return
+    const t = setTimeout(() => {
+      const b = boardRef.current
+      if (!b) return
+      const now = Date.now()
+      const orphans = b.shots.filter(s => {
+        const j = liveStillJob(s.stillJob)
+        return j?.status === "queued" && now - j.at > 30_000 && !makingRef.current.has(s.id) && !queuedRef.current.has(s.id)
+      })
+      if (orphans.length) runStills(orphans)
+    }, 31_000)
+    return () => clearTimeout(t)
+  // runStills reads the board from boardRef; only the queued set matters here
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orphanSig])
+
   /*
    * Play an earlier take on a shot. Shown at once, then made so on the server -
    * the autosave never touches `video`, so this is the only way it moves.
@@ -414,7 +572,7 @@ export function StoryboardWorkspace({
     if (action === "start" && saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
     const r = await fetch(`/api/employees/storyboards/${b.id}/final-cut`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, ...(action === "start" ? { options: { ...fcOptions, resolution: shootRes } } : {}) }),
+      body: JSON.stringify({ action, ...(action === "start" ? { options: { ...fcOptions, resolution: shootRes }, sceneId: fcScene } : {}) }),
     }).catch(() => null)
     const j = r ? await r.json().catch(() => ({})) : {}
     if (!r?.ok) { setFcError(j.error || "Could not start the Final Cut"); return }
@@ -425,13 +583,20 @@ export function StoryboardWorkspace({
   // ── drafting with AI ──
   // replace: a whole new board. polish / regenerate / extend act on the picked
   // shots (none picked = all of them) and leave every other slot as it is.
-  const draft = async (mode: DraftMode) => {
+  /*
+   * `scene` drafts new shots into one scene, from the scene header - its own
+   * direction and count, its own refs. Returns the error, if any, for the
+   * caller to show where the request was made.
+   */
+  const draft = async (mode: DraftMode, sc?: { sceneId: string; count: number; direction: string }): Promise<string | null> => {
     const b = boardRef.current
-    if (!b) return
-    if (mode === "replace" && b.shots.length > 0 && !confirmReplace) { setConfirmReplace(true); return }
+    if (!b) return null
+    if (mode === "replace" && b.shots.length > 0 && !confirmReplace) { setConfirmReplace(true); return null }
     setConfirmReplace(false)
     setDrafting(mode)
+    if (sc) setDraftScene(sc.sceneId)
     setDraftError(null)
+    let failed: string | null = null
     // The server merges into what is SAVED, so pending edits go first
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
     const shotIds = selected.filter(id => b.shots.some(s => s.id === id))
@@ -439,31 +604,37 @@ export function StoryboardWorkspace({
       const r = await fetch(`/api/employees/storyboards/${b.id}/draft`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mode, boardMode: b.mode, premise, shots: Number(shotCount), targetSeconds: Number(targetLen), shotIds, extendCount: Number(extendCount),
-          refs: activeAssetRefs(b.assets).slice(0, 4).map(x => x.url),
+          mode, boardMode: b.mode, framing, premise: sc ? sc.direction : premise, shots: Number(shotCount), targetSeconds: Number(targetLen), shotIds,
+          extendCount: sc ? sc.count : Number(extendCount), scenes: Number(sceneCount), sceneId: sc?.sceneId,
+          // A scene draft sees its cast; otherwise the server shows the planner every asset
+          refs: sc ? shotRefs(b, { sceneId: sc.sceneId }).slice(0, 4).map(x => x.url) : [],
         }),
       })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(j.error || "Drafting failed")
-      if (boardRef.current?.id !== b.id) return
+      if (boardRef.current?.id !== b.id) return null
       update(cur => ({
         ...cur,
         title: cur.title === "Untitled storyboard" && j.title ? j.title : cur.title,
         story: j.story || cur.story,
         look: j.look || cur.look,
         shots: Array.isArray(j.shots) && j.shots.length ? j.shots : cur.shots,
+        scenes: Array.isArray(j.scenes) ? j.scenes : cur.scenes,
       }))
       // Show what changed for a moment; extended shots become the selection
       const changed: string[] = Array.isArray(j.changed) ? j.changed : []
       setFlashIds(changed)
       setTimeout(() => setFlashIds([]), 4000)
       if (mode === "extend") setSelected(changed)
-      if (mode === "replace") { setSelected([]); setSelecting(false) }
+      if (mode === "replace") { setSelected([]); setSelecting(false); setCollapsed([]) }
     } catch (e: any) {
-      setDraftError(String(e?.message || e))
+      failed = String(e?.message || e)
+      if (!sc) setDraftError(failed)
     } finally {
       setDrafting(false)
+      setDraftScene(null)
     }
+    return failed
   }
   const toggleSelected = (id: string) => setSelected(sel => (sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]))
 
@@ -555,33 +726,32 @@ export function StoryboardWorkspace({
   const shotCountDone = board ? board.shots.filter(s => s.video?.status === "done").length : 0
   // The Final Cut's own cost on top of any shots it has to shoot: the edit plan
   // and cards (~$0.20), the score (~$0.01/s), narration (pennies)
-  const fcShootUsd = board ? board.shots.filter(s => !(s.video?.status === "done" && s.video.url) && s.video?.status !== "rendering").reduce((a, s) => a + shotTickets(s, shootRes), 0) * 0.04 : 0
-  const fcExtraUsd = 0.02 + (fcOptions.cards ? 0.2 : 0) + seconds * 0.01 + 0.05 + (fcOptions.narration ? 0.05 : 0)
+  // The Final Cut's shots: the whole board, or the scene its window was opened for
+  const fcSceneDoc = board && fcScene ? board.scenes.find(c => c.id === fcScene) ?? null : null
+  const fcShots = board ? (fcSceneDoc ? sceneShots(board.shots, fcSceneDoc.id) : board.shots) : []
+  const fcSeconds = totalSeconds(fcShots)
+  const fcShootUsd = fcShots.filter(s => !(s.video?.status === "done" && s.video.url) && s.video?.status !== "rendering").reduce((a, s) => a + shotTickets(s, shootRes), 0) * 0.04
+  const fcExtraUsd = 0.02 + (fcOptions.cards ? 0.2 : 0) + fcSeconds * 0.01 + 0.05 + (fcOptions.narration ? 0.05 : 0)
   // The same in tickets: shots at their ticket price, the rest at the $0.04 of
   // fal cost a ticket covers (lib/ticket-pricing's margin rule)
   const fcShootTickets = Math.round(fcShootUsd / 0.04)
   const fcExtraTickets = Math.ceil(fcExtraUsd / 0.04)
   const fcTickets = fcShootTickets + fcExtraTickets
-  const fcBlocked = board ? (board.shots.length === 0 ? "Add shots first"
-    : board.shots.length > FINAL_CUT_MAX_SHOTS ? `Up to ${FINAL_CUT_MAX_SHOTS} shots for now`
-    : seconds > FINAL_CUT_MAX_SECONDS ? `Up to ${FINAL_CUT_MAX_SECONDS}s for now`
-    : board.shots.some(s => !s.stillUrl) ? "Every shot needs its still first" : null) : null
+  const cutAScene = board && board.scenes.length > 1 && !fcSceneDoc ? " - cut it a scene at a time" : ""
+  const fcBlocked = board ? (fcShots.length === 0 ? (fcSceneDoc ? "This scene has no shots yet" : "Add shots first")
+    : fcShots.length > FINAL_CUT_MAX_SHOTS ? `Up to ${FINAL_CUT_MAX_SHOTS} shots for now${cutAScene}`
+    : fcSeconds > FINAL_CUT_MAX_SECONDS ? `Up to ${FINAL_CUT_MAX_SECONDS}s for now${cutAScene}`
+    : fcShots.some(s => !s.stillUrl) ? "Every shot needs its still first" : null) : null
   const shownVersion = finalCut.versions.find(v => v.n === fcVersion) ?? finalCut.versions.at(-1) ?? null
   const aspectCss = ASPECT_CSS[board?.aspect ?? "16:9"] ?? "16/9"
   const portrait = board ? ["9:16", "3:4"].includes(board.aspect) : false
   // Stills: what making the missing ones costs (each at its own model + quality)
   const missingShots = board ? board.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim()) : []
-  const refsOn = board ? activeAssetRefs(board.assets).length : 0
-  const missingTickets = board ? missingShots.reduce((t, s) => t + stillTickets(s.imageModel, s.imageQuality, board.aspect, s.imageOptions, Math.min(refsOn, stillModelSpec(s.imageModel).maxRefs)), 0) : 0
+  // What one still costs: its model, quality and frame, with the refs its scene sends
+  const stillPrice = (s: StoryboardShot) => board ? stillTickets(s.imageModel, s.imageQuality, board.aspect, s.imageOptions, Math.min(shotRefs(board, s).length, stillModelSpec(s.imageModel).maxRefs)) : 0
+  const missingTickets = missingShots.reduce((t, s) => t + stillPrice(s), 0)
   // The assets' ref limit follows the shot being worked on (else the first shot)
-  const onRefs = board ? activeAssetRefs(board.assets) : []
-  const focusIdx = board ? Math.max(0, board.shots.findIndex(s => s.id === focusId)) : 0
-  const focusShot = board?.shots[focusIdx]
-  const refCap: RefCap = {
-    max: stillModelSpec(focusShot?.imageModel ?? DEFAULT_IMAGE_MODEL).maxRefs,
-    model: imageModelLabel(focusShot?.imageModel ?? DEFAULT_IMAGE_MODEL),
-    shot: focusShot ? `Shot ${pad2(focusIdx + 1)}` : "the first shot",
-  }
+
   // Every still the board has had, for the asset picker
   const boardStills = board ? board.shots.flatMap((s, i) => {
     const urls = [...(s.stills ?? []).map(t => t.url), ...(s.stillUrl ? [s.stillUrl] : [])]
@@ -626,12 +796,16 @@ export function StoryboardWorkspace({
     : targetN > 0 && targetN < lenRange.min ? `${shotsN} shots run at least ${lengthLabel(lenRange.min)} - use fewer shots for ${lengthLabel(targetN)}`
     : null
   const setTarget = (v: string) => { setTargetLen(v); try { localStorage.setItem("pv2-storyboard-target", v) } catch {} }
+  // An outfit pack plans a scene per Wardrobe asset; `shots` is per outfit
+  const outfitMode = board?.mode === "outfit"
+  const outfitAssets = board ? board.assets.filter(a => a.kind === "wardrobe") : []
+  const scenesN = Math.max(1, Number(sceneCount) || 1)
   const newBoardRow = board && (
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-2 gap-2">
         <label className="flex flex-col gap-1">
-          <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500">Shots</span>
-          <NumberStepper value={shotsN} min={1} max={MAX_DRAFT_SHOTS} onChange={n => setShotCount(String(n))} />
+          <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500">{outfitMode ? "Shots per outfit" : "Shots"}</span>
+          <NumberStepper value={shotsN} min={1} max={outfitMode ? 12 : MAX_DRAFT_SHOTS} onChange={n => setShotCount(String(n))} />
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500">Target length</span>
@@ -643,6 +817,19 @@ export function StoryboardWorkspace({
           />
         </label>
       </div>
+      {outfitMode ? (
+        <p className={`text-[9.5px] leading-snug ${outfitAssets.length ? "text-slate-400" : "text-amber-300"}`}>
+          {outfitAssets.length
+            ? `${outfitAssets.length} outfit${outfitAssets.length === 1 ? "" : "s"} (Wardrobe assets) × ${shotsN} = ${Math.min(36, outfitAssets.length * shotsN)} shots - one scene per outfit, each made from its own photos, no people`
+            : "Add each outfit as a Wardrobe asset with its photos (below), or describe them above - each gets its own scene"}
+        </p>
+      ) : (
+        <label className="flex items-center gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 shrink-0">Scenes</span>
+          <NumberStepper value={scenesN} min={1} max={Math.min(MAX_SCENES, shotsN)} onChange={n => setSceneCount(String(n))} className="w-[104px] shrink-0" />
+          <span className="text-[9.5px] text-slate-500 leading-snug">{scenesN > 1 ? `${shotsN} shots across ${scenesN} scenes` : "one run of shots"}</span>
+        </label>
+      )}
       <p className={`text-[9.5px] leading-snug ${lenWarn ? "text-amber-300" : "text-slate-500"}`}>
         {lenWarn ?? (targetN
           ? `${shotsN} shot${shotsN === 1 ? "" : "s"} adding up to ${lengthLabel(targetN)} - about ${Math.round(targetN / shotsN)}s each`
@@ -650,7 +837,7 @@ export function StoryboardWorkspace({
       </p>
       {brandBtn({
         onClick: () => draft("replace"),
-        disabled: !!drafting || !premise.trim(),
+        disabled: !!drafting || (!premise.trim() && !(outfitMode && outfitAssets.length)),
         busy: drafting === "replace",
         primary: true,
         className: "w-full",
@@ -673,7 +860,7 @@ export function StoryboardWorkspace({
           {drafting && (
             <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold text-slate-300">
               <span className="w-2.5 h-2.5 rounded-full border-2 border-white/20 border-t-slate-200 animate-spin" />
-              {drafting === "replace" ? "Writing the board…" : drafting === "polish" ? "Polishing…" : drafting === "regenerate" ? "Rewriting…" : "Extending…"}
+              {drafting === "replace" ? "Writing the board…" : drafting === "polish" ? "Polishing…" : drafting === "regenerate" ? "Rewriting…" : drafting === "scene" ? "Drafting the scene…" : drafting === "refs" ? "Matching references…" : "Extending…"}
             </span>
           )}
         </div>
@@ -695,6 +882,24 @@ export function StoryboardWorkspace({
                 </span>
                 <ChevronDown size={13} className={`ml-auto shrink-0 text-slate-400 transition-transform ${modeOpen ? "rotate-180" : ""}`} />
               </button>
+              {/* how the characters are framed - for the kinds with people in them */}
+              {m.framing && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 shrink-0">Framing</span>
+                  <div className="flex-1 grid grid-cols-3 rounded-lg border border-white/10 bg-black/30 p-0.5">
+                    {FRAMINGS.map(f => (
+                      <button
+                        key={f.id}
+                        title={f.hint}
+                        onClick={() => { setFramingState(f.id); try { localStorage.setItem(`pv2-storyboard-framing-${board.id}`, f.id) } catch {} }}
+                        className={`px-1.5 py-1 rounded-md text-[10.5px] font-semibold transition-colors ${framing === f.id ? "bg-white/15 text-white" : "text-slate-400 hover:text-white"}`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {modeOpen && (
                 <div className="grid grid-cols-2 gap-1">
                   {BOARD_MODES.map(x => {
@@ -748,6 +953,8 @@ export function StoryboardWorkspace({
               {draftBtn("polish", "Polish", "Improve the writing - each shot keeps what it shows, its still and its clip")}
               {draftBtn("regenerate", "Rewrite", "Re-imagine these shots to fit the story (their stills stay as takes)")}
             </div>
+            {/* pick each shot's references from the assets - for shots added by hand, or assets added later */}
+            {board.assets.some(a => a.refs.length > 0) && draftBtn("refs", "Match references", "Give each shot the references of the assets its frame shows - nothing else changes")}
             <div className="flex items-center gap-1.5">
               <NumberStepper
                 value={Math.min(Number(extendCount) || 1, Math.max(1, MAX_SHOTS - board.shots.length))}
@@ -829,7 +1036,8 @@ export function StoryboardWorkspace({
                 placeholder="Untitled storyboard"
               />
               <div className="flex items-center gap-3 text-[10px] font-mono text-slate-500 mt-0.5">
-                <span className="inline-flex items-center gap-1"><Film size={10} />{n} shots</span>
+                {board.scenes.length > 0 && <span className="inline-flex items-center gap-1"><Layers size={10} />{board.scenes.length} scene{board.scenes.length === 1 ? "" : "s"}</span>}
+                <span className="inline-flex items-center gap-1"><Film size={10} />{n} shot{n === 1 ? "" : "s"}</span>
                 <span className="inline-flex items-center gap-1"><Clock size={10} />{fmtRuntime(seconds)}</span>
                 <span>{board.aspect}</span>
                 <span className="text-slate-200">{boardMode(board.mode).label}</span>
@@ -842,7 +1050,7 @@ export function StoryboardWorkspace({
 
             <div className="flex items-stretch gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden -mx-3 px-3 sm:mx-0 sm:px-0 pb-0.5">
               <Step n={1} label="Stills" value={`${stillCount}/${n}`} done={stillsDone} next={nextStep === "stills"}>
-                <BrandButton onClick={generateMissing} disabled={batch || missing === 0} busy={batch} primary={nextStep === "stills"} size="xs">
+                <BrandButton onClick={() => generateMissing()} disabled={batch || missing === 0} busy={batch} primary={nextStep === "stills"} size="xs">
                   {missing ? `Make ${missing}` : "All made"}
                   {missing > 0 && <Tix n={missingTickets} className="text-slate-300" />}
                 </BrandButton>
@@ -871,7 +1079,7 @@ export function StoryboardWorkspace({
                 done={finalCut.versions.length > 0 && !fcRunning}
                 next={nextStep === "cut"}
               >
-                <BrandButton onClick={() => setFcOpen(true)} disabled={fcRunning} busy={fcRunning} primary={nextStep === "cut"} size="xs">
+                <BrandButton onClick={() => { setFcScene(null); setFcOpen(true) }} disabled={fcRunning} busy={fcRunning} primary={nextStep === "cut"} size="xs">
                   {fcRunning ? "Cutting…" : finalCut.versions.length ? "New cut" : "Make it"}
                   {!fcRunning && n > 0 && <Tix n={fcTickets} approx className="text-slate-300" />}
                 </BrandButton>
@@ -930,7 +1138,6 @@ export function StoryboardWorkspace({
                 onChange={fn => update(b => ({ ...b, assets: fn(b.assets) }))}
                 refLibrary={refLibrary}
                 boardStills={boardStills}
-                cap={refCap}
               />
               </section>
 
@@ -955,65 +1162,221 @@ export function StoryboardWorkspace({
                 />
               )}
 
-              <div className="flex items-center gap-2.5 mb-3">
-                <BrandTitle title={`Shots · ${n}`} logo={0} size="sm" />
-                <span className="text-[10px] text-slate-600">drag a number to reorder · make and shoot from the picture</span>
-              </div>
-              {/* As many columns as fit, with card widths that grow with the
-                  screen: a tall frame gets narrower cards (a row of shots, not
-                  one giant still), and a big monitor gets bigger cards rather
-                  than a wall of thumbnails */}
-              <div className="grid gap-3 items-start" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${portrait ? "min(clamp(210px, 14vw, 360px), 46%)" : board.aspect === "1:1" ? "min(clamp(240px, 17vw, 420px), 100%)" : "min(clamp(290px, 21vw, 540px), 100%)"}, 1fr))` }}>
-                {board.shots.map((shot, i) => (
-                  <ShotCard
-                    key={shot.id}
-                    index={i}
-                    shot={shot}
-                    next={board.shots[i + 1]}
-                    aspectCss={aspectCss}
-                    busy={!!busy[shot.id]}
-                    error={shotError[shot.id]}
-                    last={i === board.shots.length - 1}
-                    dragging={dragFrom === i}
-                    onChange={patch => setShot(shot.id, patch)}
-                    onGenerate={() => generateStill(shot)}
-                    onShoot={() => shoot([shot.id])}
-                    shootTickets={shotTickets(shot, shootRes)}
-                    onMove={d => moveShot(i, i + d)}
-                    onDuplicate={() => duplicateShot(i)}
-                    onRemove={() => removeShot(shot.id)}
-                    onPlay={() => setAnimatic(i)}
-                    stillCost={stillTickets(shot.imageModel, shot.imageQuality, board.aspect, shot.imageOptions, Math.min(refsOn, stillModelSpec(shot.imageModel).maxRefs))}
-                    refsInfo={{ on: onRefs.length, max: stillModelSpec(shot.imageModel).maxRefs }}
-                    assets={board.assets}
-                    onAddToAsset={(assetId, kind) => shot.stillUrl && addStillToAsset(shot.stillUrl, assetId, kind)}
-                    selecting={selecting}
-                    picked={selected.includes(shot.id)}
-                    onPick={() => toggleSelected(shot.id)}
-                    flash={flashIds.includes(shot.id)}
-                    onFocus={() => setFocusId(shot.id)}
-                    onOpen={() => openStill(shot)}
-                    onPickVideo={take => pickVideoTake(shot.id, take)}
-                    opening={opening === shot.id}
-                    onAiEdit={(instruction, scope) => aiEditShot(shot, instruction, scope)}
-                    inRefs={!!shot.stillUrl && activeRefKeys.has(stillKey(shot.stillUrl))}
-                    onAddRef={onAddRef && shot.stillUrl ? () => onAddRef(shot.stillUrl!) : undefined}
-                    onDragStart={() => setDragFrom(i)}
-                    onDragEnd={() => setDragFrom(null)}
-                    onDrop={() => { if (dragFrom !== null) moveShot(dragFrom, i); setDragFrom(null) }}
-                  />
-                ))}
-                {board.shots.length < MAX_SHOTS && (
+              {(() => {
+                // The server's word on a slot's still (queued / making / failed), from any session
+                const jobOf = (shot: StoryboardShot) => liveStillJob(shot.stillJob)
+                // One card, wherever it sits: the flat board and every scene use it
+                const cardFor = (shot: StoryboardShot, label?: string, nextLabel?: string) => {
+                  const i = board.shots.indexOf(shot)
+                  return (
+                    <ShotCard
+                      key={shot.id}
+                      index={i}
+                      label={label}
+                      nextLabel={nextLabel}
+                      shot={shot}
+                      next={board.shots[i + 1]}
+                      aspectCss={aspectCss}
+                      busy={!!busy[shot.id] || !!queued[shot.id] || jobOf(shot)?.status === "making" || jobOf(shot)?.status === "queued"}
+                      queued={!busy[shot.id] && jobOf(shot)?.status !== "making" && (!!queued[shot.id] || jobOf(shot)?.status === "queued")}
+                      error={shotError[shot.id] || (jobOf(shot)?.status === "failed" ? `Still failed: ${jobOf(shot)?.error ?? "try again"}` : undefined)}
+                      last={i === board.shots.length - 1}
+                      dragging={dragFrom === i}
+                      onChange={patch => setShot(shot.id, patch)}
+                      onGenerate={() => generateStill(shot)}
+                      onShoot={() => shoot([shot.id])}
+                      shootTickets={shotTickets(shot, shootRes)}
+                      onMove={d => moveShot(i, i + d)}
+                      onDuplicate={() => duplicateShot(i)}
+                      onRemove={() => removeShot(shot.id)}
+                      onPlay={() => setAnimatic(i)}
+                      stillCost={stillPrice(shot)}
+                      refsInfo={{ on: shotRefs(board, shot).length, max: stillModelSpec(shot.imageModel).maxRefs }}
+                      refList={Array.isArray(shot.refs) ? shot.refs : autoShotRefs(board, shot).map(r => ({ id: r.id, url: r.url, on: true, assetId: r.assetId }))}
+                      refsAuto={!Array.isArray(shot.refs)}
+                      onRefsChange={next => setShot(shot.id, { refs: next })}
+                      refLibrary={refLibrary}
+                      boardStills={boardStills}
+                      assets={board.assets}
+                      onAddToAsset={(assetId, kind) => shot.stillUrl && addStillToAsset(shot.stillUrl, assetId, kind)}
+                      selecting={selecting}
+                      picked={selected.includes(shot.id)}
+                      onPick={() => toggleSelected(shot.id)}
+                      flash={flashIds.includes(shot.id)}
+                      onFocus={() => setFocusId(shot.id)}
+                      onOpen={() => openStill(shot)}
+                      onPickVideo={take => pickVideoTake(shot.id, take)}
+                      opening={opening === shot.id}
+                      onAiEdit={(instruction, scope) => aiEditShot(shot, instruction, scope)}
+                      inRefs={!!shot.stillUrl && activeRefKeys.has(stillKey(shot.stillUrl))}
+                      onAddRef={onAddRef && shot.stillUrl ? () => onAddRef(shot.stillUrl!) : undefined}
+                      onDragStart={() => setDragFrom(i)}
+                      onDragEnd={() => setDragFrom(null)}
+                      onDrop={() => { if (dragFrom !== null) moveShot(dragFrom, i); setDragFrom(null) }}
+                    />
+                  )
+                }
+                /* As many columns as fit, with card widths that grow with the
+                   screen: a tall frame gets narrower cards (a row of shots, not
+                   one giant still), and a big monitor gets bigger cards rather
+                   than a wall of thumbnails */
+                const gridStyle = { gridTemplateColumns: `repeat(auto-fill, minmax(${portrait ? "min(clamp(210px, 14vw, 360px), 46%)" : board.aspect === "1:1" ? "min(clamp(240px, 17vw, 420px), 100%)" : "min(clamp(290px, 21vw, 540px), 100%)"}, 1fr))` }
+                // The "Add shot" tile - also where a shot dragged from another scene lands
+                const addTile = (label: string, sceneId?: string) => board.shots.length < MAX_SHOTS && (
                   <button
-                    onClick={() => addShot()}
+                    onClick={() => addShot(sceneId)}
+                    onDragOver={e => { if (dragFrom !== null && sceneId) e.preventDefault() }}
+                    onDrop={() => { if (dragFrom !== null && sceneId) moveShotToScene(dragFrom, sceneId); setDragFrom(null) }}
                     style={{ aspectRatio: aspectCss }}
                     className="rounded-2xl border border-dashed border-white/15 hover:border-white/40 hover:bg-white/[0.03] text-slate-500 hover:text-slate-200 flex flex-col items-center justify-center gap-2 min-h-[160px] transition-colors"
                   >
                     <Plus size={20} />
-                    <span className="text-[11px] font-semibold">Add shot {pad2(board.shots.length + 1)}</span>
+                    <span className="text-[11px] font-semibold">Add shot {label}</span>
                   </button>
-                )}
-              </div>
+                )
+                const addSceneBtn = (big: boolean) => board.scenes.length < MAX_SCENES && (
+                  <button
+                    onClick={addScene}
+                    title={board.scenes.length ? "A new scene at the end of the board" : "Split the board into scenes - the shots so far become scene 1"}
+                    className={big
+                      ? "w-full mt-1 rounded-2xl border border-dashed border-white/15 hover:border-white/40 hover:bg-white/[0.03] text-slate-400 hover:text-white flex items-center justify-center gap-2 py-5 text-[12px] font-semibold transition-colors"
+                      : "ml-auto shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 text-[10.5px] font-semibold text-slate-300 hover:text-white hover:border-white/30 transition-colors"}
+                  >
+                    <Layers size={big ? 14 : 12} /> {board.scenes.length ? `Add scene ${pad2(board.scenes.length + 1)}` : "Add scenes"}
+                  </button>
+                )
+
+                // ── an empty board: the first shot (or Draft with AI) makes Scene 1 ──
+                if (!board.scenes.length) return (
+                  <>
+                    <div className="flex items-center gap-2.5 mb-3">
+                      <BrandTitle title="Scene 01" logo={0} size="sm" />
+                      <span className="hidden sm:inline text-[10px] text-slate-600">add a shot, or draft the board with AI</span>
+                    </div>
+                    <div className="grid gap-3 items-start" style={gridStyle}>
+                      {addTile("1.01")}
+                    </div>
+                  </>
+                )
+
+                // ── scene by scene: shot numbers are scene.shot ("2.03") ──
+                const labelOf = new Map<string, string>()
+                board.scenes.forEach((c, k) => sceneShots(board.shots, c.id).forEach((x, j) => labelOf.set(x.id, `${k + 1}.${pad2(j + 1)}`)))
+                // One scene at a time: the page's scene (the first, if it is gone)
+                const paged = sceneView === "one"
+                const pageIdx = Math.max(0, board.scenes.findIndex(c => c.id === pageScene))
+                const setView = (v: "all" | "one") => { setSceneView(v); try { localStorage.setItem("pv2-storyboard-view", v) } catch {} }
+                return (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2.5 mb-3">
+                      <BrandTitle title={`Scenes · ${board.scenes.length}`} logo={0} size="sm" />
+                      <span className="hidden sm:inline text-[10px] text-slate-600">{n} shot{n === 1 ? "" : "s"}{paged ? "" : " · drag a shot onto another scene to move it"}</span>
+                      {/* the view: every scene on one page, or one scene per page */}
+                      <div className="ml-auto flex items-center rounded-lg border border-white/10 bg-black/30 p-0.5">
+                        {([["all", "All scenes"], ["one", "One scene"]] as const).map(([v, label]) => (
+                          <button
+                            key={v}
+                            onClick={() => setView(v)}
+                            className={`px-2.5 py-1 rounded-md text-[10.5px] font-semibold transition-colors ${sceneView === v ? "bg-white/15 text-white" : "text-slate-400 hover:text-white"}`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {paged && (
+                      // The scene strip: every scene as a tab, with previous / next
+                      <div className="flex items-center gap-1.5 mb-3">
+                        <IconBtn title="Previous scene" onClick={() => setPageScene(board.scenes[pageIdx - 1]?.id ?? null)} disabled={pageIdx === 0}><ChevronLeft size={14} /></IconBtn>
+                        <div className="flex-1 min-w-0 flex items-stretch gap-1.5 overflow-x-auto [scrollbar-width:thin] pb-0.5">
+                          {board.scenes.map((c, k) => {
+                            const own = sceneShots(board.shots, c.id)
+                            const cover = own.find(x => x.stillUrl)?.stillUrl
+                            const on = k === pageIdx
+                            return (
+                              <button
+                                key={c.id}
+                                onClick={() => setPageScene(c.id)}
+                                onDragOver={e => { if (dragFrom !== null) e.preventDefault() }}
+                                onDrop={() => { if (dragFrom !== null) moveShotToScene(dragFrom, c.id); setDragFrom(null) }}
+                                title={c.title || `Scene ${k + 1}`}
+                                className={`shrink-0 flex items-center gap-2 pl-1 pr-2.5 py-1 rounded-xl border text-left transition-colors ${on ? "border-white/40 bg-white/10" : "border-white/10 hover:border-white/25 hover:bg-white/[0.04]"}`}
+                              >
+                                {cover
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  ? <img src={cover} alt="" className="w-12 h-8 rounded-md object-cover" />
+                                  : <span className="w-12 h-8 rounded-md bg-white/[0.06] flex items-center justify-center"><Layers size={11} className="text-slate-600" /></span>}
+                                <span className="min-w-0">
+                                  <span className="block text-[9px] font-mono font-bold tracking-[0.16em] text-slate-400">SCENE {pad2(k + 1)}</span>
+                                  <span className={`block max-w-[11rem] truncate text-[11px] font-semibold ${on ? "text-white" : "text-slate-300"}`}>{c.title || "Untitled"} <span className="text-slate-500 font-normal">· {own.length}</span></span>
+                                </span>
+                              </button>
+                            )
+                          })}
+                          {board.scenes.length < MAX_SCENES && (
+                            <button onClick={addScene} title="A new scene at the end" className="shrink-0 flex items-center gap-1 px-2.5 rounded-xl border border-dashed border-white/15 text-[10.5px] font-semibold text-slate-400 hover:text-white hover:border-white/40">
+                              <Plus size={12} /> Scene
+                            </button>
+                          )}
+                        </div>
+                        <IconBtn title="Next scene" onClick={() => setPageScene(board.scenes[pageIdx + 1]?.id ?? null)} disabled={pageIdx >= board.scenes.length - 1}><ChevronRight size={14} /></IconBtn>
+                      </div>
+                    )}
+                    {board.scenes.map((c, k) => {
+                      if (paged && k !== pageIdx) return null
+                      const own = sceneShots(board.shots, c.id)
+                      const folded = collapsed.includes(c.id)
+                      const missingHere = own.filter(x => !x.stillUrl && (x.imagePrompt || x.description).trim())
+                      const shootHere = own.filter(x => shootable(x) && x.video?.status !== "done")
+                      return (
+                        <section key={c.id} className="mb-6">
+                          <SceneHeader
+                            scene={c}
+                            n={k + 1}
+                            shots={own}
+                            assets={board.assets}
+                            refCount={shotRefs(board, { sceneId: c.id }).length}
+                            collapsed={folded}
+                            onToggle={() => setCollapsed(x => (x.includes(c.id) ? x.filter(y => y !== c.id) : [...x, c.id]))}
+                            onChange={patch => setScene(c.id, patch)}
+                            onMove={d => moveScene(c.id, d)}
+                            first={k === 0}
+                            last={k === board.scenes.length - 1}
+                            prevName={k > 0 ? `scene ${k}` : board.scenes.length > 1 ? "scene 2" : null}
+                            canRemove={board.scenes.length > 1 || own.length === 0}
+                            onRemove={() => removeScene(c.id)}
+                            missing={missingHere.length}
+                            missingTickets={missingHere.reduce((t, x) => t + stillPrice(x), 0)}
+                            making={batchScene === c.id}
+                            onMakeStills={() => generateMissing(c.id)}
+                            toShoot={shootHere.length}
+                            shootTickets={shootHere.reduce((t, x) => t + shotTickets(x, shootRes), 0)}
+                            shootRes={shootRes}
+                            onShoot={() => shoot(shootHere.map(x => x.id))}
+                            onPlay={() => own.length && setAnimatic(board.shots.indexOf(own[0]))}
+                            onCut={() => { setFcScene(c.id); setFcOpen(true) }}
+                            cutBusy={fcRunning}
+                            room={MAX_SHOTS - board.shots.length}
+                            drafting={draftScene === c.id}
+                            draftLocked={!!drafting}
+                            onDraft={(direction, count) => draft("scene", { sceneId: c.id, count, direction })}
+                          />
+                          {!folded && (
+                            <div className="grid gap-3 items-start mt-3" style={gridStyle}>
+                              {own.map(x => {
+                                const nx = board.shots[board.shots.indexOf(x) + 1]
+                                return cardFor(x, labelOf.get(x.id), nx ? labelOf.get(nx.id) : undefined)
+                              })}
+                              {addTile(`${k + 1}.${pad2(own.length + 1)}`, c.id)}
+                            </div>
+                          )}
+                        </section>
+                      )
+                    })}
+                    {!paged && addSceneBtn(true)}
+                  </>
+                )
+              })()}
             </main>
           </div>
         </>
@@ -1025,8 +1388,8 @@ export function StoryboardWorkspace({
             <SilverRimOverlay />
             <div className="relative space-y-4">
             <BrandTitle
-              title="Final Cut"
-              eyebrow="Edit · score · narrate"
+              title={fcSceneDoc ? `Final Cut · Scene ${board.scenes.indexOf(fcSceneDoc) + 1}` : "Final Cut"}
+              eyebrow={fcSceneDoc ? (fcSceneDoc.title || "This scene's shots only") : "Edit · score · narrate"}
               logo={30}
               right={<button onClick={() => setFcOpen(false)} className="text-slate-500 hover:text-white"><X size={15} /></button>}
             />
@@ -1511,15 +1874,22 @@ function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction }: 
  * storyboard, not a stack of forms.
  */
 function ShotCard({
-  index, shot, aspectCss, busy, error, last, dragging, shootTickets,
+  index, label, nextLabel, shot, aspectCss, busy, queued = false, error, last, dragging, shootTickets,
   onChange, onGenerate, onShoot, onMove, onDuplicate, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef,
   stillCost, refsInfo, assets, onAddToAsset, selecting, picked, onPick, flash, onFocus, onOpen, opening, onAiEdit, onPickVideo,
+  refList, refsAuto, onRefsChange, refLibrary, boardStills,
 }: {
   index: number
+  /** Its number on the board ("03", or "2.03" in scene 2); default = position. */
+  label?: string
+  /** The next shot's number, for "To ..." (it may be in the next scene). */
+  nextLabel?: string
   shot: StoryboardShot
   next?: StoryboardShot
   aspectCss: string
   busy: boolean
+  /** Waiting its turn in a "Make N stills" batch (busy is true too). */
+  queued?: boolean
   error?: string
   last: boolean
   dragging: boolean
@@ -1541,6 +1911,13 @@ function ShotCard({
   stillCost: number
   /** Switched-on asset refs, and how many this shot's model takes. */
   refsInfo: { on: number; max: number }
+  /** This still's references - its own list, or the automatic one - for Details. */
+  refList: ShotRef[]
+  refsAuto: boolean
+  /** The shot's own list changed (undefined = back to automatic). */
+  onRefsChange: (next: ShotRef[] | undefined) => void
+  refLibrary: { id: string; url: string }[]
+  boardStills: { url: string; label: string }[]
   assets: StoryAsset[]
   /** Put this still into an asset (null = a new one of `kind`). */
   onAddToAsset: (assetId: string | null, kind?: AssetKind) => void
@@ -1670,7 +2047,7 @@ function ShotCard({
             title="Drag to reorder"
             className="pointer-events-auto cursor-grab flex items-center gap-0.5 pl-0.5 pr-1.5 py-0.5 rounded-md bg-black/70 border border-white/10 font-mono text-[10px] font-bold text-slate-200"
           >
-            <GripVertical size={11} className="text-slate-500" />{pad2(index + 1)}
+            <GripVertical size={11} className="text-slate-500" />{label ?? pad2(index + 1)}
           </span>
           {status && (
             <span title={"title" in status ? status.title : undefined} className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/70 border text-[9.5px] font-semibold whitespace-nowrap ${status.cls}`}>
@@ -1714,8 +2091,18 @@ function ShotCard({
         )}
         {busy && (
           <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-1.5">
-            <Loader2 size={18} className="animate-spin text-slate-200" />
-            <span className="text-[10px] text-slate-300">{imageModelLabel(shot.imageModel)}…</span>
+            {queued ? (
+              <>
+                <Clock size={17} className="text-slate-300" />
+                <span className="text-[10px] font-semibold text-slate-200">Queued</span>
+                <span className="text-[9.5px] text-slate-400">{imageModelLabel(shot.imageModel)} · starts in a moment</span>
+              </>
+            ) : (
+              <>
+                <Loader2 size={18} className="animate-spin text-slate-200" />
+                <span className="text-[10px] text-slate-300">{imageModelLabel(shot.imageModel)}…</span>
+              </>
+            )}
           </div>
         )}
 
@@ -1807,7 +2194,7 @@ function ShotCard({
         {/* how it hands over to the next shot */}
         <div className="flex items-start gap-1.5 text-[10px] @[300px]/card:text-[11px] text-slate-500">
           <ArrowRight size={10} className="text-slate-300 shrink-0 mt-[3px]" />
-          <span className="shrink-0 mt-px">{last ? "Ending" : `To ${pad2(index + 2)}`}</span>
+          <span className="shrink-0 mt-px">{last ? "Ending" : `To ${nextLabel ?? pad2(index + 2)}`}</span>
           <AutoText value={shot.transition} onChange={v => onChange({ transition: v })} placeholder={last ? "How the film ends" : "Cut, match cut, dissolve…"} className="flex-1 min-w-0 bg-transparent text-[10.5px] @[300px]/card:text-[11.5px] leading-snug text-slate-300 focus:outline-none border-b border-transparent focus:border-white/40" />
         </div>
         {(error || (v?.status === "failed" && v.error)) && <p className="text-[10px] text-red-400 leading-snug">{error || `Shoot failed: ${v!.error}`}</p>}
@@ -1816,7 +2203,14 @@ function ShotCard({
           <button onClick={() => setDetails(d => !d)} className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[10px] font-semibold ${details ? "text-white bg-white/10" : "text-slate-400 hover:text-white"}`}>
             {details ? <ChevronLeft size={11} className="-rotate-90" /> : <ChevronRight size={11} className="rotate-90" />} Details
           </button>
-          <span className="text-[9.5px] text-slate-600 truncate ml-1">{shot.videoModel}</span>
+          {/* Both models at a glance - the still's and the video's - without opening Details */}
+          <span className="ml-1 min-w-0 flex items-center gap-1 text-[9.5px] text-slate-500" title={`Still: ${imageModelLabel(shot.imageModel)} · Video: ${shot.videoModel}`}>
+            <ImagePlus size={10} className="shrink-0 text-slate-600" />
+            <span className="truncate text-slate-400">{imageModelLabel(shot.imageModel)}</span>
+            <span className="shrink-0 text-slate-700">·</span>
+            <Film size={10} className="shrink-0 text-slate-600" />
+            <span className="truncate">{shot.videoModel}</span>
+          </span>
           <span className="ml-auto" />
           <IconBtn title="Move earlier" onClick={() => onMove(-1)} disabled={index === 0}><ChevronLeft size={13} /></IconBtn>
           <IconBtn title="Move later" onClick={() => onMove(1)} disabled={last}><ChevronRight size={13} /></IconBtn>
@@ -1826,6 +2220,17 @@ function ShotCard({
 
         {details && (
           <div className="space-y-2.5 pt-1">
+            {/* the references this still is made with: switch, remove, add */}
+            <ShotRefsPanel
+              refs={refList}
+              auto={refsAuto}
+              assets={assets}
+              refLibrary={refLibrary}
+              boardStills={boardStills}
+              max={refsInfo.max}
+              model={imageModelLabel(shot.imageModel)}
+              onChange={onRefsChange}
+            />
             {/* Edit this shot's plan with AI: change the model, rewrite a prompt for one, restyle the motion */}
             <div className="silver-edge rounded-xl p-2 space-y-1.5">
               <BrandTitle title="Edit with AI" logo={16} size="sm" />
@@ -1965,6 +2370,206 @@ ${t.prompt.slice(0, 200)}` : ""}`}
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * A scene's head: its number, name, slug line and summary, the assets cast in
+ * it (their refs go with its stills), and everything that can be done to the
+ * scene alone - make its stills, shoot it, play it, cut it, draft more of it.
+ */
+function SceneHeader({
+  scene, n, shots, assets, refCount, collapsed, onToggle, onChange, onMove, first, last, prevName, canRemove, onRemove,
+  missing, missingTickets, making, onMakeStills, toShoot, shootTickets, shootRes, onShoot, onPlay, onCut, cutBusy,
+  room, drafting, draftLocked, onDraft,
+}: {
+  scene: StoryScene
+  n: number
+  shots: StoryboardShot[]
+  assets: StoryAsset[]
+  /** References its stills will get, before each model's limit. */
+  refCount: number
+  collapsed: boolean
+  onToggle: () => void
+  onChange: (patch: Partial<StoryScene>) => void
+  onMove: (d: -1 | 1) => void
+  first: boolean
+  last: boolean
+  /** Where its shots go if it is deleted ("scene 1"); null = it is the only scene. */
+  prevName: string | null
+  /** False for the only scene while it holds shots - shots always live in a scene. */
+  canRemove: boolean
+  onRemove: () => void
+  missing: number
+  missingTickets: number
+  making: boolean
+  onMakeStills: () => void
+  toShoot: number
+  shootTickets: number
+  shootRes: string
+  onShoot: () => void
+  onPlay: () => void
+  onCut: () => void
+  cutBusy: boolean
+  /** Shots the board still has room for. */
+  room: number
+  drafting: boolean
+  draftLocked: boolean
+  onDraft: (direction: string, count: number) => Promise<string | null>
+}) {
+  const [confirmDel, setConfirmDel] = useState(false)
+  const [confirmShoot, setConfirmShoot] = useState(false)
+  const [draftOpen, setDraftOpen] = useState(false)
+  const [direction, setDirection] = useState("")
+  const [count, setCount] = useState(4)
+  const [err, setErr] = useState<string | null>(null)
+  const secs = totalSeconds(shots)
+  const stills = shots.filter(s => s.stillUrl).length
+  const done = shots.filter(s => s.video?.status === "done").length
+  const cast = new Set(scene.assetIds)
+  const runDraft = async () => {
+    setErr(null)
+    const e = await onDraft(direction.trim(), Math.min(count, Math.max(1, room)))
+    if (e) setErr(e)
+    else { setDirection(""); setDraftOpen(false) }
+  }
+
+  return (
+    <div className="silver-edge rounded-2xl p-3">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <button
+          onClick={onToggle}
+          title={collapsed ? "Show this scene's shots" : "Fold this scene away"}
+          className="shrink-0 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white/[0.07] border border-white/10 text-[10px] font-mono font-bold tracking-[0.18em] text-slate-100 hover:bg-white/10"
+        >
+          <Layers size={11} className="text-slate-400" /> SCENE {pad2(n)}
+          <ChevronDown size={11} className={`text-slate-400 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
+        </button>
+        <input
+          value={scene.title}
+          onChange={e => onChange({ title: e.target.value })}
+          placeholder="Name the scene"
+          className="min-w-[8rem] flex-1 bg-transparent text-[14px] font-bold text-white placeholder:text-slate-600 focus:outline-none border-b border-transparent focus:border-white/20"
+        />
+        <span className="text-[10px] font-mono text-slate-500 whitespace-nowrap">
+          {shots.length} shot{shots.length === 1 ? "" : "s"} · {fmtRuntime(secs)} · {stills}/{shots.length} stills · {done}/{shots.length} shot
+        </span>
+        <div className="flex items-center gap-0.5">
+          <IconBtn title="Move the scene earlier" onClick={() => onMove(-1)} disabled={first}><ChevronUp size={13} /></IconBtn>
+          <IconBtn title="Move the scene later" onClick={() => onMove(1)} disabled={last}><ChevronDown size={13} /></IconBtn>
+          <IconBtn
+            title={!canRemove ? "The only scene can't go while it has shots - every shot lives in a scene" : confirmDel ? "Click again to delete" : prevName ? `Delete the scene - its shots move to ${prevName}` : "Delete the scene"}
+            disabled={!canRemove}
+            onClick={() => { if (!confirmDel) { setConfirmDel(true); setTimeout(() => setConfirmDel(false), 3000); return } onRemove() }}
+          >
+            <Trash2 size={12} className={confirmDel ? "text-red-400" : undefined} />
+          </IconBtn>
+        </div>
+      </div>
+      {confirmDel && (
+        <p className="mt-1 text-[10px] text-red-300">
+          Click the bin again to delete scene {pad2(n)}{shots.length && prevName ? ` - its ${shots.length} shot${shots.length === 1 ? "" : "s"} move to ${prevName}` : ""}.
+        </p>
+      )}
+
+      {!collapsed && (
+        <div className="mt-2 flex flex-col gap-2">
+          <input
+            value={scene.setting}
+            onChange={e => onChange({ setting: e.target.value })}
+            placeholder="INT. LIGHTHOUSE - NIGHT"
+            className="w-full bg-transparent text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-300 placeholder:text-slate-600 focus:outline-none border-b border-transparent focus:border-white/20"
+          />
+          <AutoText
+            value={scene.summary}
+            onChange={v => onChange({ summary: v })}
+            placeholder="What happens in this scene - Draft shots writes from this"
+            className="w-full bg-transparent text-[11.5px] leading-relaxed text-slate-300 placeholder:text-slate-600 focus:outline-none rounded-md focus:bg-black/30 focus:ring-1 focus:ring-white/30 px-1 -mx-1"
+          />
+
+          {/* Cast: the assets in this scene - their refs go with its stills */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 mr-0.5">In this scene</span>
+            {assets.length === 0 && <span className="text-[10px] text-slate-600">Add assets (characters, places, outfits) in the panel to cast them here</span>}
+            {assets.map(a => {
+              const on = cast.has(a.id)
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => onChange({ assetIds: on ? scene.assetIds.filter(x => x !== a.id) : [...scene.assetIds, a.id] })}
+                  title={`${on ? "Take out of" : "Put in"} this scene - ${a.refs.length} ref${a.refs.length === 1 ? "" : "s"}`}
+                  className={`flex items-center gap-1 pl-0.5 pr-2 py-0.5 rounded-full border text-[10.5px] transition-colors ${on ? "border-white/40 bg-white/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/25"}`}
+                >
+                  {a.refs[0]
+                    // eslint-disable-next-line @next/next/no-img-element
+                    ? <img src={a.refs[0].url} alt="" className="w-4 h-4 rounded-full object-cover" />
+                    : <span className="w-4 h-4 rounded-full bg-white/10" />}
+                  {a.name}
+                  {on && <Check size={10} />}
+                </button>
+              )
+            })}
+          </div>
+          {assets.length > 0 && (
+            <p className="-mt-1 text-[9.5px] text-slate-500">
+              {cast.size ? `${refCount} ref${refCount === 1 ? " from its cast goes" : "s from its cast go"} with this scene's stills` : "No one cast - each shot uses its own references (see its Details)"}
+            </p>
+          )}
+
+          {/* the scene on its own */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <BrandButton onClick={onMakeStills} disabled={making || missing === 0} busy={making} size="xs" title="Make every still this scene is missing">
+              {missing ? `Make ${missing} still${missing === 1 ? "" : "s"}` : "Stills made"}
+              {missing > 0 && <Tix n={missingTickets} className="text-slate-300" />}
+            </BrandButton>
+            <BrandButton
+              onClick={() => { if (!confirmShoot) { setConfirmShoot(true); return } setConfirmShoot(false); onShoot() }}
+              onBlur={() => setConfirmShoot(false)}
+              disabled={toShoot === 0}
+              warn={confirmShoot}
+              size="xs"
+              title={toShoot ? `Shoot this scene's ${toShoot} shot${toShoot === 1 ? "" : "s"} at ${shootRes}` : "Nothing to shoot - make the stills first, or it is all shot"}
+            >
+              {confirmShoot ? `Shoot ${toShoot} for ${shootTickets} tickets?` : toShoot ? `Shoot ${toShoot}` : "Shoot"}
+              {toShoot > 0 && !confirmShoot && <Tix n={shootTickets} className="text-slate-300" />}
+            </BrandButton>
+            <button onClick={onPlay} disabled={!shots.length} className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] font-semibold text-slate-300 hover:text-white hover:border-white/30 disabled:opacity-40">
+              <Play size={11} /> Play
+            </button>
+            <button onClick={onCut} disabled={!shots.length || cutBusy} title="A Final Cut of this scene alone" className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/10 text-[10px] font-semibold text-slate-300 hover:text-white hover:border-white/30 disabled:opacity-40">
+              <Scissors size={11} /> Final Cut
+            </button>
+            <button
+              onClick={() => setDraftOpen(o => !o)}
+              disabled={room <= 0}
+              className={`ml-auto flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-semibold transition-colors disabled:opacity-40 ${draftOpen ? "border-white/40 bg-white/10 text-white" : "border-white/10 text-slate-300 hover:text-white hover:border-white/30"}`}
+            >
+              <Sparkles size={11} /> Draft shots
+            </button>
+          </div>
+
+          {draftOpen && (
+            <div className="flex flex-col gap-1.5 rounded-xl border border-white/10 bg-black/25 p-2">
+              <textarea
+                value={direction}
+                onChange={e => setDirection(e.target.value)}
+                rows={2}
+                placeholder={shots.length ? "What happens next in this scene (optional)…" : scene.summary ? "Any direction (optional) - it drafts from the summary above…" : "What happens in this scene…"}
+                className="sb-input"
+              />
+              <div className="flex items-center gap-1.5">
+                <NumberStepper value={Math.min(count, Math.max(1, room))} min={1} max={Math.max(1, Math.min(MAX_DRAFT_SHOTS, room))} prefix="+" onChange={setCount} className="w-[104px] shrink-0" />
+                <BrandButton onClick={runDraft} disabled={draftLocked || (!direction.trim() && !scene.summary && !shots.length)} busy={drafting} primary size="xs" className="flex-1">
+                  {drafting ? "Drafting…" : `Draft ${Math.min(count, Math.max(1, room))} shot${count === 1 ? "" : "s"}`}
+                </BrandButton>
+              </div>
+              <p className="text-[9.5px] text-slate-500 leading-snug">Written for this scene - its summary, its cast and the shots around it. Free (no tickets).</p>
+              {err && <p className="text-[10px] text-red-400">{err}</p>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

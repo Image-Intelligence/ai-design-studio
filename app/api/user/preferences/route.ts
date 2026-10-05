@@ -34,18 +34,20 @@ export async function PUT(req: Request) {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const body = await req.json()
+    // `_enhance` is the server's daily prompt-enhancement count
+    // (lib/prompt-enhance) - never writable from the browser
+    if (body && typeof body === 'object') delete body._enhance
 
-    const existing = await prisma.user.findUnique({
-      where: { id: user.id },
-      select: { portalPreferences: true },
-    })
-    const current = (existing?.portalPreferences as Record<string, any>) ?? {}
-    const merged = { ...current, ...body }
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { portalPreferences: merged },
-    })
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'Expected an object' }, { status: 400 })
+    }
+    // Shallow merge done IN the database (jsonb ||), not read-merge-write:
+    // a read-then-write here could overwrite a field another request changed
+    // in between - like the enhancement count above
+    await prisma.$executeRaw`
+      UPDATE "User"
+      SET "portalPreferences" = COALESCE("portalPreferences"::jsonb, '{}'::jsonb) || ${JSON.stringify(body)}::jsonb
+      WHERE id = ${user.id}`
 
     return NextResponse.json({ ok: true })
   } catch {
