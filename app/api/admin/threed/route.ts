@@ -239,23 +239,32 @@ async function settle(userId: number): Promise<void> {
         }
       }
 
-      await prisma.generatedImage.create({
-        data: {
-          userId,
-          prompt: job.prompt,
-          imageUrl: preview ?? primary,
-          model: `3d:${job.modelId}`,
-          ticketCost: 0,
-          referenceImageUrls: Array.isArray(params.referenceImageUrls) ? params.referenceImageUrls : [],
-          expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
-          falRequestId: job.falRequestId,
-          videoMetadata: { [TAG]: { endpoint, preview, files, archive, layers, usd: params.usd ?? null } },
-        },
-      })
-      await prisma.generationQueue.update({
-        where: { id: job.id },
+      // ONE saver per job: two polls that both saw COMPLETED used to both save it,
+      // so a finished model appeared twice in the library. Claim the row first;
+      // whoever loses the claim stops here. A failed save hands the claim back.
+      const claim = await prisma.generationQueue.updateMany({
+        where: { id: job.id, status: { in: ['processing', 'queued'] } },
         data: { status: 'completed', completedAt: new Date() },
       })
+      if (claim.count === 0) continue
+      try {
+        await prisma.generatedImage.create({
+          data: {
+            userId,
+            prompt: job.prompt,
+            imageUrl: preview ?? primary,
+            model: `3d:${job.modelId}`,
+            ticketCost: 0,
+            referenceImageUrls: Array.isArray(params.referenceImageUrls) ? params.referenceImageUrls : [],
+            expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
+            falRequestId: job.falRequestId,
+            videoMetadata: { [TAG]: { endpoint, preview, files, archive, layers, usd: params.usd ?? null } },
+          },
+        })
+      } catch (saveErr) {
+        await prisma.generationQueue.update({ where: { id: job.id }, data: { status: 'processing', completedAt: null } }).catch(() => {})
+        throw saveErr
+      }
     } catch (err: any) {
       // Network blips are retried; a job older than an hour is given up on by
       // the branch above, so nothing can spin indefinitely.

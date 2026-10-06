@@ -264,6 +264,10 @@ export function registerCardVideo(el: Element, hooks: CardVideoHooks): CardVideo
 export function holdCardVideos(): () => void {
   holds++
   if (holds === 1) {
+    // The feed tiles' spinning rims too (.feed-held .feed-rim in globals.css):
+    // hidden layers are not rastered, so a popup no longer stacks its own
+    // animated frames on top of a whole feed of them
+    document.documentElement.classList.add("feed-held")
     if (scheduleTimer) { clearTimeout(scheduleTimer); scheduleTimer = null }
     const now = Date.now()
     for (const e of entries.values()) {
@@ -279,6 +283,7 @@ export function holdCardVideos(): () => void {
     released = true
     holds = Math.max(0, holds - 1)
     if (holds > 0) return
+    document.documentElement.classList.remove("feed-held")
     const now = Date.now()
     for (const e of entries.values()) {
       if (!e.playing || !e.pausedAt) continue

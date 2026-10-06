@@ -78,6 +78,8 @@ model User {
   chatProviderKeys    ChatProviderKey[]
   chatMemories        ChatMemory[]
   storyboards         Storyboard[]
+  imageCanvases       ImageCanvas[]
+  imageEditDocs       ImageEditDoc[]
 
   // Desktop-app link: personal bearer API keys
   apiKeys             ApiKey[]
@@ -1318,4 +1320,45 @@ model Storyboard {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, updatedAt])
+}
+
+/// Image Studio (portal-v2 Studios, admin-only for now): one layered canvas.
+/// `doc` is the layer stack - position, blend, opacity, masks, adjustments,
+/// text and shape settings (lib/image-studio StudioDoc); raster pixels live on
+/// R2 and the doc holds their URLs. Added out-of-band 2026-10-06 (CREATE TABLE).
+model ImageCanvas {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  title       String   @default("Untitled canvas")
+  width       Int
+  height      Int
+  doc         Json     @default("{}")
+  thumbUrl    String?
+  /// The Refs library image it was opened from, if any (to update it on export)
+  sourceRefId Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+/// The layered version of an Edit Image popup edit (Dev Tier), found again by
+/// the SHA-256 of the flattened picture Apply produced - that picture is what
+/// the Refs library (or wherever it went) holds, byte for byte, whatever id or
+/// URL it ends up under. DDL applied out-of-band (scratchpad add-edit-doc-table).
+model ImageEditDoc {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  hash      String
+  width     Int
+  height    Int
+  doc       Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, hash])
 }

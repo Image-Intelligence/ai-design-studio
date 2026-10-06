@@ -313,7 +313,7 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
       >
         <div className="relative isolate rounded-l-2xl overflow-hidden p-[1.5px] pr-0 shadow-lg shadow-black/40">
           <span
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
             style={{
               background:
                 "conic-gradient(from 0deg, rgba(226,232,240,0.1), #f8fafc, #94a3b8, rgba(226,232,240,0.15), #cbd5e1, #64748b, rgba(226,232,240,0.1))",

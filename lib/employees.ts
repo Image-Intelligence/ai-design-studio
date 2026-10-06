@@ -11,9 +11,10 @@
  * its workspace calls are gated separately (the chat-hub routes for Movie
  * Studio, Face Swap and Character Design, /api/admin/threed for 3D Studio,
  * /api/admin/frames-clips for Frames, /api/employees/storyboards for
- * Storyboard) and must be opened with it.
+ * Storyboard, /api/employees/image-studio for Image Studio) and must be
+ * opened with it.
  */
-export type EmployeeId = "movie-studio" | "face-swap" | "character-design" | "3d-studio" | "frames" | "storyboard"
+export type EmployeeId = "movie-studio" | "face-swap" | "character-design" | "3d-studio" | "frames" | "storyboard" | "image-studio"
 
 export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "movie-studio": true,
@@ -22,6 +23,7 @@ export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "3d-studio": true,
   "frames": true,
   "storyboard": true,
+  "image-studio": true,
 }
 
 export const EMPLOYEE_IDS = Object.keys(EMPLOYEE_ADMIN_ONLY) as EmployeeId[]

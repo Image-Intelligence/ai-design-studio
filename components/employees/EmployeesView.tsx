@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart } from "lucide-react"
+import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, Layers, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart } from "lucide-react"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/employees"
 import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { LoopVideo } from "@/components/shop/ShopKit"
@@ -111,6 +111,17 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
     accent: "sky",
     highlights: ["Ordered stills and story", "Per-shot video prompts", "Animatic playback"],
   },
+  {
+    id: "image-studio",
+    name: "Image Studio",
+    tagline: "Photoshop in your browser",
+    blurb:
+      "Layered canvases you can start blank, from an upload or from your Refs: real layers with blend modes and masks, "
+      + "brushes, text and shapes, non-destructive adjustments, crop and resize, and AI selections that cut anything out in one click.",
+    icon: Layers,
+    accent: "rose",
+    highlights: ["Layers, masks, blend modes", "AI select and background removal", "Adjustments you can undo"],
+  },
 ]
 
 const ACCENTS: Record<string, { ring: string; icon: string; glow: string; rgb?: string }> = {
@@ -143,6 +154,12 @@ const ACCENTS: Record<string, { ring: string; icon: string; glow: string; rgb?: 
     ring: "border-amber-500/30 hover:border-amber-400/60",
     icon: "text-amber-400",
     glow: "from-amber-500/[0.10]",
+  },
+  rose: {
+    rgb: "251,113,133",
+    ring: "border-rose-500/30 hover:border-rose-400/60",
+    icon: "text-rose-400",
+    glow: "from-rose-500/[0.10]",
   },
   sky: {
     rgb: "56,189,248",
@@ -280,6 +297,8 @@ const STUDIO_MEDIA: Partial<Record<EmployeeId, { poster: string; video?: string 
   "3d-studio": { poster: `${STUDIO_MEDIA_BASE}/3d-studio-2d5c8730-4355-4b96-8024-5ac23f6aa77d.webp`, video: `${STUDIO_MEDIA_BASE}/3d-studio-loop-eaab7f08-ebef-47dd-8c40-26be58f3f544.mp4` },
   frames: { poster: `${STUDIO_MEDIA_BASE}/frames-1acc0c90-15f6-4072-8661-eb6703f62d21.webp`, video: `${STUDIO_MEDIA_BASE}/frames-loop-9e1a0281-d591-4a42-8354-99523afb40b4.mp4` },
   storyboard: { poster: `${STUDIO_MEDIA_BASE}/storyboard-e04d364e-8058-4658-9423-23059fe8a9d3.webp`, video: `${STUDIO_MEDIA_BASE}/storyboard-loop-24fc505b-c45d-47b0-a86f-ac6ab4f2c5cb.mp4` },
+  // 2026-10-06: still only for now (feed 109208); a loop can follow
+  "image-studio": { poster: `${STUDIO_MEDIA_BASE}/image-studio-364f42ef-babc-4606-bca7-5f9b4c7dafb7.webp` },
 }
 
 function prefersReducedMotion() {

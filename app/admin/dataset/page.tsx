@@ -3075,7 +3075,7 @@ const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ va
                     maskComposite: 'exclude',
                   } as React.CSSProperties}
                 >
-                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin" style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }} />
+                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin" style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }} />
                 </div>
                 <div className="flex items-center justify-between">
                   <p className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-400">Feed Settings</p>

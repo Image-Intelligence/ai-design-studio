@@ -3,7 +3,8 @@
 // current user so the canvas can restore loading placeholders after a page refresh
 // and enforce per-account concurrency limits.
 
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
+import { harvestPollingJobs } from '@/lib/harvest-polling-jobs'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
@@ -11,6 +12,9 @@ import { jsonPrivate } from '@/lib/api-json'
 
 
 export const dynamic = 'force-dynamic'
+
+/** Accounts with a harvest running in this server process (polls overlap - one at a time is plenty) */
+const harvesting = new Set<number>()
 
 export async function GET(request: Request) {
   try {
@@ -35,6 +39,18 @@ export async function GET(request: Request) {
     const user = await getUserFromSession(token)
     if (!user) {
       return jsonPrivate({ error: 'Invalid session' }, { status: 401 })
+    }
+
+    // Finish this account's generations whose page stopped collecting them - a
+    // refresh, another tab, a closed or sleeping one (lib/harvest-polling-jobs).
+    // After the response, so the poll itself stays fast; the next poll sees them.
+    if (!harvesting.has(user.id)) {
+      harvesting.add(user.id)
+      after(async () => {
+        try { await harvestPollingJobs({ userId: user.id, minAgeMs: 30_000, graceMs: 30_000, limit: 3, budgetMs: 25_000 }) }
+        catch (e) { console.error('[jobs] harvest failed:', e) }
+        finally { harvesting.delete(user.id) }
+      })
     }
 
     // Auto-fail PROVABLY-DEAD stuck jobs only. The old version force-failed

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { fal } from '@/lib/fal-client'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 
 fal.config({ credentials: process.env.FAL_KEY })
 
@@ -13,6 +14,11 @@ export const maxDuration = 60
 //  - Without      → fal-ai/birefnet/v2 (salient-subject mask via mask_only)
 // Both return a black/white mask image; we fetch it server-side and hand back a
 // data URL so the client canvas never taints.
+//
+// 1 ticket per mask (2026-10-06 - it used to be free): EVF-SAM is $0.005 a run
+// and BiRefNet a fraction of a cent, and the site's rule is fal cost / $0.04
+// rounded up. Charged before the model runs, refunded if it fails.
+const MASK_TICKETS = 1
 
 export async function POST(req: Request) {
   try {
@@ -33,6 +39,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Image too large' }, { status: 413 })
     }
 
+    const paid = await deductGenerationTickets(user.id, user.email, MASK_TICKETS)
+    if (!paid.ok) return NextResponse.json({ error: `Auto-Mask costs ${MASK_TICKETS} ticket - you have ${paid.have}` }, { status: 402 })
+    try {
     let maskUrl: string | undefined
     if (prompt) {
       const result: any = await fal.subscribe('fal-ai/evf-sam', {
@@ -57,17 +66,22 @@ export async function POST(req: Request) {
       maskUrl = result?.data?.image?.url
     }
 
-    if (!maskUrl) return NextResponse.json({ error: 'No mask returned' }, { status: 502 })
+    if (!maskUrl) throw new Error('No mask returned')
 
     // Already a data URI (sync_mode-style responses) — pass straight through
     if (maskUrl.startsWith('data:')) {
-      return NextResponse.json({ mask: maskUrl })
+      return NextResponse.json({ mask: maskUrl, balance: paid.newBalance })
     }
     const maskRes = await fetch(maskUrl)
-    if (!maskRes.ok) return NextResponse.json({ error: 'Failed to fetch mask' }, { status: 502 })
+    if (!maskRes.ok) throw new Error('Failed to fetch mask')
     const ct = maskRes.headers.get('content-type') || 'image/png'
     const buf = Buffer.from(await maskRes.arrayBuffer())
-    return NextResponse.json({ mask: `data:${ct};base64,${buf.toString('base64')}` })
+    return NextResponse.json({ mask: `data:${ct};base64,${buf.toString('base64')}`, balance: paid.newBalance })
+    } catch (e) {
+      // The model failed: the ticket goes back
+      await refundGenerationTickets(user.id, user.email, MASK_TICKETS)
+      throw e
+    }
   } catch (error: any) {
     console.error('ref-mask error:', error?.body ?? error)
     const detail = error?.body?.detail

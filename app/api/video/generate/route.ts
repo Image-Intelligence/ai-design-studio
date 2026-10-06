@@ -816,6 +816,10 @@ export async function POST(request: NextRequest) {
         if (model === 'topaz-upscale-generative') falInput.model = 'Starlight Precise 2.6';
       } else if (model === 'seedvr2-video' || model === 'flashvsr-video') {
         falInput.upscale_factor = factor;
+      } else if (model === 'kandinsky6-vsr' || model === 'kandinsky6-vsr-lite') {
+        // Only 2, 2.25 (480p -> 1080p) or 4 - the factor upscalerVideoTicketCost billed
+        const { KANDINSKY_VSR_FACTORS } = await import('@/lib/ticket-pricing')
+        falInput.upscale_factor = KANDINSKY_VSR_FACTORS.includes(factor) ? factor : 2.25;
       } else if (model === 'bytedance-video-upscale') {
         // Same ratio, tier and frame rate the price was computed on
         // (upscalerVideoTicketCost): output capped at 4K, standard tier, the

@@ -90,7 +90,7 @@ const outOfDate = (s: StoryboardShot) => !!s.video && s.video.status === "done" 
 function shotTickets(s: StoryboardShot, resolution: string): number {
   const model = STORYBOARD_VIDEO_IDS[s.videoModel]
   if (!model) return 0
-  try { return videoTicketCost({ model, duration: String(s.duration), resolution, generateAudio: true, sd20Mode: "i2v" }) } catch { return 0 }
+  try { return videoTicketCost({ model, duration: String(s.duration), resolution, generateAudio: true, sd20Mode: "i2v", hasStartImage: true }) } catch { return 0 }
 }
 
 export function StoryboardWorkspace({
@@ -899,6 +899,9 @@ export function StoryboardWorkspace({
                     ))}
                   </div>
                 </div>
+              )}
+              {m.framing && framing !== "mix" && (
+                <p className="-mt-0.5 pl-[58px] text-[9.5px] leading-snug text-slate-500">{FRAMINGS.find(f => f.id === framing)?.hint}</p>
               )}
               {modeOpen && (
                 <div className="grid grid-cols-2 gap-1">

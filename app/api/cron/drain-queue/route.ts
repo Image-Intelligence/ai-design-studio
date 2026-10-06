@@ -1,12 +1,11 @@
-import { LAYERIZE_MODELS, saveLayerizeResult, type FalLayer } from '@/lib/layerize-save'
 import { after, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
 import { syncActiveCounters } from '@/app/api/admin/queue/stats/route'
 import { processChunk, getBaseUrl } from '@/app/api/admin/auto-caption/jobs/_processor'
-import { uploadToR2 } from '@/lib/r2'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { settleAbandonedAudioRuns } from '@/lib/audio-settle'
+import { harvestPollingJobs } from '@/lib/harvest-polling-jobs'
 
 // Jobs stuck in 'processing' longer than this are CANDIDATES for being reset.
 // Was 10 minutes, which force-failed jobs fal was still happily running —
@@ -215,7 +214,8 @@ export async function GET(request: Request) {
         usePolling?: boolean
       } | null
       if (!params?.usePolling || !j.falRequestId || !params.falEndpoint) continue
-      if (j.modelType !== 'image' && j.modelType !== 'video') continue
+      // Only video here; images go through harvestPollingJobs below
+      if (j.modelType !== 'video') continue
 
       // Video settles through /api/video/status's handler, which owns the R2
       // re-host, the GeneratedImage row and releaseQueueSlot. Same trick as the
@@ -257,107 +257,20 @@ export async function GET(request: Request) {
         continue
       }
 
-      try {
-        // Idempotency: if images for this request were already saved (client
-        // came back and harvested first), just settle the row.
-        const already = await prisma.generatedImage.count({ where: { falRequestId: j.falRequestId } })
-        if (already > 0) {
-          await releaseQueueSlot(j.falRequestId, false)
-          harvested++
-          continue
-        }
-        const baseApp = params.falEndpoint.split('/').slice(0, 2).join('/')
-        const res = await fetch(`https://queue.fal.run/${baseApp}/requests/${j.falRequestId}`, {
-          headers: { Authorization: `Key ${process.env.FAL_KEY}` },
-          signal: AbortSignal.timeout(15000),
-        })
-        if (res.status === 422) {
-          // COMPLETED status but 422 result = the model finished WITHOUT usable
-          // output (content filter / validation refusal). Permanent — fail+refund.
-          await releaseQueueSlot(j.falRequestId, true, 'The model did not generate the expected output — content may have been filtered')
-          continue
-        }
-        if (res.status === 404 || res.status === 410) {
-          // Result purged by fal before we could harvest it — image is gone.
-          await releaseQueueSlot(j.falRequestId, true, 'Generation result expired before it could be saved')
-          continue
-        }
-        if (!res.ok) {
-          // 5xx: usually transient — but NanoBanana results expire at fal on
-          // the order of an hour, after which the result endpoint 500/504s
-          // permanently. A COMPLETED row whose result has been unfetchable
-          // this long is unrecoverable: settle it (fail+refund) instead of
-          // sparing it forever.
-          const ageMs = Date.now() - (j.startedAt?.getTime() ?? j.createdAt.getTime())
-          if (ageMs > 2 * 60 * 60 * 1000) {
-            await releaseQueueSlot(j.falRequestId, true, 'Generation result expired before it could be saved')
-          }
-          continue // young rows: transient, retry next minute
-        }
-        const data = await res.json() as { images?: { url: string; width?: number; height?: number }[]; layers?: FalLayer[] }
-        // SeeDream Layerize: one card holding every layer (lib/layerize-save)
-        if (LAYERIZE_MODELS.has(j.modelId) && Array.isArray(data?.layers) && data.layers.length > 0) {
-          const saved = await saveLayerizeResult({
-            userId: j.userId, prompt: j.prompt || '', modelId: j.modelId, falRequestId: j.falRequestId,
-            createdAt: j.createdAt, ticketCost: j.ticketCost,
-            referenceImageUrls: Array.isArray(params.permanentReferenceUrls) ? params.permanentReferenceUrls : [],
-            layers: data.layers,
-          }).catch(e => { console.error('[cron-drain] layerize save failed:', e); return null })
-          if (saved) {
-            await prisma.generationQueue.update({ where: { id: j.id }, data: { resultUrl: saved.url, resultImageId: saved.id } }).catch(() => {})
-            await releaseQueueSlot(j.falRequestId, false)
-            harvested++
-          }
-          continue
-        }
-        const falImages = Array.isArray(data?.images) ? data.images : []
-        if (falImages.length === 0) {
-          await releaseQueueSlot(j.falRequestId, true, 'The model did not generate the expected output — content may have been filtered')
-          continue
-        }
-        const format = params.falInput?.output_format || 'png'
-        const saved: string[] = []
-        for (let i = 0; i < falImages.length; i++) {
-          try {
-            const imgRes = await fetch(falImages[i].url, { signal: AbortSignal.timeout(30000) })
-            if (!imgRes.ok) continue
-            const buffer = Buffer.from(await imgRes.arrayBuffer())
-            const ext = format === 'jpeg' ? 'jpg' : format
-            const url = await uploadToR2(`nb2-${Date.now()}-${i}.${ext}`, buffer, `image/${format === 'jpeg' ? 'jpeg' : format}`)
-            await prisma.generatedImage.create({
-              data: {
-                userId:             j.userId,
-                prompt:             j.prompt || '',
-                imageUrl:           url,
-                model:              j.modelId,
-                ticketCost:         j.ticketCost,
-                quality:            params.falInput?.resolution || 'auto',
-                aspectRatio:        params.falInput?.aspect_ratio || 'auto',
-                referenceImageUrls: Array.isArray(params.permanentReferenceUrls) ? params.permanentReferenceUrls : [],
-                expiresAt:          new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-                falRequestId:       j.falRequestId,
-                createdAt:          j.createdAt, // queue time — the feed's ordering key
-              },
-            })
-            saved.push(url)
-          } catch (imgErr) {
-            console.error(`[cron-drain] harvest: image ${i} of ${j.falRequestId} failed:`, imgErr)
-          }
-        }
-        if (saved.length > 0) {
-          await prisma.generationQueue.update({
-            where: { id: j.id },
-            data: { resultUrl: saved[0] },
-          }).catch(() => {})
-          await releaseQueueSlot(j.falRequestId, false)
-          harvested++
-          console.log(`[cron-drain] Harvested ${saved.length} image(s) for orphaned job ${j.falRequestId}`)
-        }
-        // saved.length === 0 with images present = R2/network hiccup → leave
-        // 'processing', retried next minute
-      } catch (harvestErr) {
-        console.error(`[cron-drain] harvest error for ${j.falRequestId}:`, harvestErr)
-      }
+      // Images: harvestPollingJobs below (every minute, not after twelve)
+    }
+
+    // ── 1a-images. Finish polled image jobs whose page is gone ─────────────
+    // Any account, every minute: a job fal finished is marked on first sight
+    // and saved on the next pass unless a live page has collected it by then
+    // (lib/harvest-polling-jobs) - a refresh, a closed tab or a sleeping iPad
+    // no longer leaves a finished picture on "generating…" for twelve minutes.
+    try {
+      const h = await harvestPollingJobs({ minAgeMs: 30_000, graceMs: 40_000, limit: 8, budgetMs: 40_000 })
+      harvested += h.harvested + h.failed
+      if (h.harvested || h.failed || h.marked) console.log(`[cron-drain] polled images: saved ${h.harvested}, settled-failed ${h.failed}, marked ${h.marked}`)
+    } catch (e) {
+      console.error('[cron-drain] image harvest pass failed:', e)
     }
 
     // ── 1b. Sweep orphaned 'pending' claims ─────────────────────────────────

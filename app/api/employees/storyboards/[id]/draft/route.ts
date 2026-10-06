@@ -11,7 +11,7 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  * POST /api/employees/storyboards/[id]/draft - plan the board with AI.
  *
  * Body: { mode, boardMode?, framing?, premise?, shots?, targetSeconds?, shotIds?, extendCount?, refs?: string[], scenes?, sceneId? }
- *   framing     'waist' | 'full' | 'mix' (default) - how characters are framed, for
+ *   framing     'close' | 'waist' | 'knee' | 'full' | 'wide' | 'mix' (default) - how characters are framed, for
  *               the kinds of video with people in them (BOARD_MODES `framing`)
  *   boardMode   what kind of video (lib/storyboard BOARD_MODES: story, trailer,
  *               ad, product, character...) - its brief shapes every action;

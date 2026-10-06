@@ -631,6 +631,33 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  // Google NanoBanana 2.1 (2026-10-06, public) - text, and the
+  // edit endpoint with references; same price for both (getTicketCost)
+  {
+    id: 'nano-banana-2.1',
+    name: 'google/nano-banana-2.1',
+    displayName: 'NanoBanana 2.1',
+    description: 'Gemini NanoBanana 2.1 - text to image and edits with up to 14 references',
+    ticketCost: 3,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'ultra',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  {
+    id: 'nano-banana-2.1-edit',
+    name: 'google/nano-banana-2.1/edit',
+    displayName: 'NanoBanana 2.1 Edit',
+    description: 'NanoBanana 2.1 with reference images',
+    ticketCost: 3,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'ultra',
+    isAvailable: true,
+    provider: 'fal'
+  },
+
   // Google NanoBanana 2 Lite
   {
     id: 'nano-banana-2-lite',
@@ -991,6 +1018,12 @@ export function getTicketCost(modelId: string, quality?: '2k' | '4k' | string): 
 
   if (modelId === 'nano-banana-pro-2') {
     return quality === '4k' ? 12 : 7
+  }
+
+  // NanoBanana 2.1 (+ edit): fal $0.08 an image at 1K, x1.5 at 2K, x2 at 4K
+  // -> fal cost / $0.04 a ticket: 2 / 3 / 4
+  if (modelId === 'nano-banana-2.1' || modelId === 'nano-banana-2.1-edit') {
+    return quality === '4k' ? 4 : quality === '1k' ? 2 : 3
   }
 
   // Pro Scanner v3: 7 tickets for 2K, 15 tickets for 4K

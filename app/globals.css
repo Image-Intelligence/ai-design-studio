@@ -271,6 +271,15 @@
   background-clip: padding-box, border-box;
 }
 
+/*
+ * While a popup covers the feed (holdCardVideos adds .feed-held to <html>),
+ * the feed tiles' spinning rims are hidden: a hidden layer is not rastered,
+ * so the popup's own animated frames are not stacked on a whole feed of them.
+ * (Their size is kept down by components/RimSpinFitter - see there for the
+ * flicker this fixed.)
+ */
+.feed-held .feed-rim { visibility: hidden; animation-play-state: paused; }
+
 @media (prefers-reduced-motion: reduce) {
   .silver-shimmer-text { animation: none; background-position: 50% center; }
 }

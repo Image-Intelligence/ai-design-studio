@@ -13,6 +13,7 @@
 export const VIDEO_TOOL_MODELS = new Set([
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
+  'kandinsky6-vsr', 'kandinsky6-vsr-lite',
   'bytedance-video-upscale', 'topaz-colorize', 'topaz-deblur',
   'topaz-interpolate', 'topaz-sdr-to-hdr',
   // Luma: restyle (modify / edit) or re-shape (reframe) a source clip
@@ -125,6 +126,8 @@ export interface VideoTicketCostInput {
  * 30 fps. Billed at fal cost / $0.04 a ticket - 50% at the $0.08 ticket.
  */
 export const BYTEDANCE_UPSCALE_MAX_SHORT_EDGE = 2160
+/** Kandinsky 6.0 VSR takes exactly these factors (2.25 = 480p -> 1080p). */
+export const KANDINSKY_VSR_FACTORS = [2, 2.25, 4]
 export function bytedanceUpscaleRatio(factor: number, shortEdge: number): number {
   return Math.max(1.1, Math.min(factor, BYTEDANCE_UPSCALE_MAX_SHORT_EDGE / Math.max(1, shortEdge)))
 }
@@ -135,7 +138,14 @@ export function upscalerVideoTicketCost(model: string, o: { seconds: number; wid
   const fps = o.fps && o.fps > 0 ? o.fps : 30
   const factor = Math.max(1, Math.min(4, o.factor || 2))
   let usd: number
-  if (model === 'bytedance-video-upscale') {
+  if (model === 'kandinsky6-vsr' || model === 'kandinsky6-vsr-lite') {
+    // fal 2026-10-06: $0.00036 per OUTPUT megapixel per frame (both, at their
+    // default steps). The clip is resampled to 24fps and capped at 121 frames
+    // (~5s) - only that much is upscaled, and only that much is billed.
+    const f = KANDINSKY_VSR_FACTORS.includes(factor) ? factor : 2.25
+    const frames = Math.min(121, Math.ceil(sec * 24))
+    usd = (w * f) * (h * f) / 1e6 * frames * 0.00036
+  } else if (model === 'bytedance-video-upscale') {
     const outShort = Math.min(w, h) * bytedanceUpscaleRatio(factor, Math.min(w, h))
     const rate = outShort <= 1080 ? 0.0072 : outShort <= 1440 ? 0.0144 : 0.0288
     const outFps = Math.max(24, Math.min(60, Math.round(fps)))
@@ -328,7 +338,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
       // Veo's references and first-last-frame modes render 8s whatever is asked
       duration: model.startsWith('veo-3.1') && !model.endsWith('extend') && ((input.referenceImageCount ?? 0) > 0 || (input.hasEndImage && input.hasStartImage)) ? '8' : duration,
       resolution, generateAudio, refs: input.referenceImageCount ?? 0,
-      sourceSec: editVideoDurationSec,
+      sourceSec: editVideoDurationSec, startImage: !!input.hasStartImage,
     })
   } else if (BATCH_0928_MODELS.has(model)) {
     // Also ahead of the generic tool and input-routed placeholder branches
@@ -357,7 +367,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
       seconds: editVideoDurationSec, height: input.sourceHeight, fps: input.sourceFps,
       factor: parseFloat(videoUpscaleFactor) || 2, targetFps: Number(input.targetFps) || 60,
     })
-  } else if (model === 'seedvr2-video' || model === 'flashvsr-video' || model === 'bytedance-video-upscale') {
+  } else if (model === 'seedvr2-video' || model === 'flashvsr-video' || model === 'bytedance-video-upscale' || model === 'kandinsky6-vsr' || model === 'kandinsky6-vsr-lite') {
     ticketCost = upscalerVideoTicketCost(model, {
       seconds: editVideoDurationSec, width: input.sourceWidth, height: input.sourceHeight,
       fps: input.sourceFps, factor: parseFloat(videoUpscaleFactor) || 2,
@@ -844,7 +854,22 @@ const BATCH_0929_MODELS = new Set([
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
   'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
+  'kandinsky6-pro', 'kandinsky6-lite',
 ])
+/**
+ * Kandinsky 6.0 (fal, 2026-10-06): a 5s 480p clip at the default steps,
+ * text-to-video / from a start frame - Pro $1.35 / $1.40, Lite $0.16 / $0.17.
+ * The same job can run Kandinsky's video super-resolution: to 1080p (x2.25)
+ * Pro +$0.18 / Lite +$0.17, x4 ("1920p") Pro +$0.56 / Lite +$0.52 (fal's model
+ * pages). fal cost / $0.04 a ticket, rounded up.
+ */
+export function kandinsky6TicketCost(model: string, o: { resolution: string; startImage: boolean }): number {
+  const pro = model === 'kandinsky6-pro'
+  let usd = pro ? (o.startImage ? 1.40 : 1.35) : (o.startImage ? 0.17 : 0.16)
+  if (o.resolution === '1080p') usd += pro ? 0.18 : 0.17
+  else if (o.resolution === '1920p') usd += pro ? 0.56 : 0.52
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
+}
 /** Seconds as the route will send them: snapped to what each endpoint takes. */
 export function batch0929Seconds(model: string, duration: string): number {
   const d = duration === 'auto' ? 10 : parseInt(duration) || 5
@@ -859,10 +884,12 @@ export function batch0929Seconds(model: string, duration: string): number {
     case 'minimax-h3-max-turbo-extend': return clamp(1, 15)
     case 'seedance-2.0-mini': return clamp(4, 15)
     case 'hunyuan-video-1.5': return clamp(2, 5)
+    case 'kandinsky6-pro': case 'kandinsky6-lite': return 5
     default: return clamp(5, 15)   // MiniMax H3 family
   }
 }
-function batch0929TicketCost(model: string, o: { duration: string; resolution: string; generateAudio: boolean; refs: number; sourceSec?: number }): number {
+function batch0929TicketCost(model: string, o: { duration: string; resolution: string; generateAudio: boolean; refs: number; sourceSec?: number; startImage?: boolean }): number {
+  if (model === 'kandinsky6-pro' || model === 'kandinsky6-lite') return kandinsky6TicketCost(model, { resolution: o.resolution, startImage: !!o.startImage })
   const secs = batch0929Seconds(model, o.duration)
   const hi = o.resolution === '1080p'
   const mm = (rates: [number, number, number]) => rates[o.resolution === '480p' ? 0 : o.resolution === '1080p' ? 2 : 1]
@@ -946,6 +973,8 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'topaz-upscale-generative', label: 'Topaz Upscale Generative',  kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'seedvr2-video',            label: 'SeedVR2 Video',             kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'flashvsr-video',           label: 'FlashVSR Video',            kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
+  { id: 'kandinsky6-vsr',           label: 'Kandinsky 6 VSR',           kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true, note: '$0.00036 per output MP per frame; first 121 frames (~5s). Admin only.' },
+  { id: 'kandinsky6-vsr-lite',      label: 'Kandinsky 6 VSR Lite',      kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true, note: '$0.00036 per output MP per frame; first 121 frames (~5s). Admin only.' },
   { id: 'bytedance-video-upscale',  label: 'ByteDance Video Upscale',   kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'topaz-colorize',           label: 'Topaz Colorize',            kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
   { id: 'topaz-deblur',             label: 'Topaz Deblur',              kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', showUpscaleFactor: true },
@@ -992,6 +1021,8 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'marey',                label: 'Marey',                  kind: 'generator', durations: ['5', '10'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $1.50 (5s) / $3.00 (10s). Admin only.' },
   { id: 'seedance-2.0-mini',    label: 'SeeDance 2.0 Mini',      kind: 'generator', durations: ['auto', '5', '10', '15'], resolutions: ['480p', '720p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.0721 / $0.1547 per s. Admin only.' },
   { id: 'hunyuan-video-1.5',    label: 'Hunyuan Video 1.5',      kind: 'generator', durations: ['3', '5'], resolutions: ['480p', '720p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.075/s (720p assumed x2). Admin only.' },
+  { id: 'kandinsky6-pro',       label: 'Kandinsky 6 Pro',        kind: 'generator', durations: ['5'], resolutions: ['480p', '1080p', '1920p'], supportsAudio: true, durationSource: 'none', note: 'fal $1.35 text / $1.40 from a frame (5s 480p); +$0.18 to 1080p, +$0.56 x4. Admin only.' },
+  { id: 'kandinsky6-lite',      label: 'Kandinsky 6 Lite',       kind: 'generator', durations: ['5'], resolutions: ['480p', '1080p', '1920p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.16 text / $0.17 from a frame (5s 480p); +$0.17 to 1080p, +$0.52 x4. Admin only.' },
   { id: 'veo-3.1-extend',       label: 'Veo 3.1 Extend',         kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo rates on the 7s it adds.' },
   { id: 'veo-3.1-fast-extend',  label: 'Veo 3.1 Fast Extend',    kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo Fast rates on the 7s it adds.' },
   { id: 'minimax-h3-max-turbo-extend', label: 'MiniMax H3 Max Turbo Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'none', note: 'fal $0.025/$0.04/$0.08/$0.16 per s added.' },

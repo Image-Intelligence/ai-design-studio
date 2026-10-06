@@ -455,6 +455,10 @@ function flux3Resolution(q: string): '1k' | '2k' | '4k' {
   return q === '4k' || q === '2k' ? q : '1k'
 }
 const AR_NB2_LITE = ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'] as const
+/** NanoBanana 2.1's aspect enum (schema 2026-10-06) - the same list as 2 Lite, extremes included. */
+const AR_NB21 = AR_NB2_LITE
+/** NanoBanana 2.1: resolution from the site's quality (1K / 2K / 4K - billed x1 / x1.5 / x2). */
+const nb21Res = (q?: string) => (q === '4k' ? '4K' : q === '1k' ? '1K' : '2K')
 // Luma - declared up here because FAL_IMAGE_MODELS calls the Luma spec builders at load
 const AR_PHOTON = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21'] as const
 const AR_UNI = ['3:1', '2:1', '16:9', '3:2', '1:1', '2:3', '9:16', '1:2', '1:3'] as const
@@ -1161,6 +1165,60 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       }),
   },
 
+  // ── Google NanoBanana 2.1 (2026-10-06, public) ──────
+  // One model on the site: text-to-image, and the edit endpoint whenever
+  // references are attached. fal $0.08 an image at 1K, x1.5 at 2K, x2 at 4K
+  // (getTicketCost: 2 / 3 / 4 tickets). Web search and thinking are left off -
+  // they bill extra and the price would not cover them.
+  'nano-banana-2.1': {
+    id: 'nano-banana-2.1',
+    editVariant: 'nano-banana-2.1-edit',
+    promptMin: 3,
+    promptMax: 50000,
+    endpoint: 'google/nano-banana-2.1',
+    needsImage: false,
+    imageParam: null,
+    maxInputImages: 0,
+    promptRequired: true,
+    aspectRatios: [...AR_NB21],
+    usesImageSize: false,
+    notes: 'safety_tolerance is a STRING enum "1".."6"',
+    build: (ctx) =>
+      compact({
+        prompt: ctx.prompt,
+        aspect_ratio: pickEnum(ctx.aspectRatio, AR_NB21, 'auto'),
+        resolution: nb21Res(ctx.quality),
+        output_format: 'png',
+        num_images: 1,
+        safety_tolerance: '6',
+        limit_generations: true,
+      }),
+  },
+  'nano-banana-2.1-edit': {
+    id: 'nano-banana-2.1-edit',
+    promptMin: 3,
+    promptMax: 50000,
+    endpoint: 'google/nano-banana-2.1/edit',
+    needsImage: true,
+    imageParam: 'image_urls',
+    maxInputImages: 14,
+    promptRequired: true,
+    aspectRatios: [...AR_NB21],
+    usesImageSize: false,
+    notes: 'safety_tolerance is a STRING enum "1".."6"',
+    build: (ctx) =>
+      compact({
+        prompt: ctx.prompt,
+        image_urls: ctx.imageUrls.slice(0, 14),
+        aspect_ratio: pickEnum(ctx.aspectRatio, AR_NB21, 'auto'),
+        resolution: nb21Res(ctx.quality),
+        output_format: 'png',
+        num_images: 1,
+        safety_tolerance: '6',
+        limit_generations: true,
+      }),
+  },
+
   // ── Google NanoBanana 2 Lite ───────────────────────────────────────────────
   'nano-banana-2-lite': {
     id: 'nano-banana-2-lite',
@@ -1852,6 +1910,10 @@ export const FAL_IMAGE_MODEL_IDS = Object.keys(FAL_IMAGE_MODELS)
  * reference.
  */
 export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
+  // Public 2026-10-06 (priced from fal's rates, run in the portal, Image Studio,
+  // the Edit Image popup and the Storyboard): NanoBanana 2.1 and its edit
+  // endpoint (2 / 3 / 4 tickets at 1K / 2K / 4K)
+  'nano-banana-2.1', 'nano-banana-2.1-edit',
   // Public 2026-10-04 (priced from fal's rates, each run through the portal UI):
   // Background Removal, SAM 3.1 Select, the three Bria tools, both Layerizes
   // (Pro re-priced 8 -> 10 tickets) and Multi-Angle Reshoot

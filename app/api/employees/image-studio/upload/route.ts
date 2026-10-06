@@ -1,0 +1,28 @@
+import { NextRequest } from 'next/server'
+import { requireStudioUser } from '@/lib/studio-auth'
+import { jsonPrivate } from '@/lib/api-json'
+import { presignPutUrl, userKey } from '@/lib/r2'
+
+/**
+ * POST /api/employees/image-studio/upload - somewhere to put layer pixels.
+ *
+ * Body: { kind: 'layer' | 'mask' | 'thumb' | 'export' | 'ai', type: 'image/png' | 'image/jpeg' | 'image/webp' }
+ * Returns: { uploadUrl, url } - the page PUTs the file straight to R2 (a
+ * layer can be tens of MB; a function body is capped at ~4.5MB) and stores
+ * `url` in the canvas document.
+ *
+ * Any signed-in account - the editor also runs in the Edit Image popup.
+ * Keys live under the user's own prefix.
+ */
+const TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
+
+export async function POST(req: NextRequest) {
+  const user = await requireStudioUser()
+  if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
+  const body = await req.json().catch(() => ({})) as Record<string, unknown>
+  const type = typeof body.type === 'string' && TYPES[body.type] ? body.type : 'image/png'
+  const kind = ['layer', 'mask', 'thumb', 'export', 'ai'].includes(String(body.kind)) ? String(body.kind) : 'layer'
+  const key = userKey(user.id, `image-studio/${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${TYPES[type]}`)
+  const { uploadUrl, publicUrl } = await presignPutUrl(key, type, 900)
+  return jsonPrivate({ uploadUrl, url: publicUrl })
+}

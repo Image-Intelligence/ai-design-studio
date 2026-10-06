@@ -123,6 +123,9 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'topaz-upscale-generative':   'topaz/upscale/video/generative',
   'seedvr2-video':              'fal-ai/seedvr/upscale/video',
   'flashvsr-video':             'fal-ai/flashvsr/upscale/video',
+  // Kandinsky 6.0 video super-resolution (2026-10-06): full and lite
+  'kandinsky6-vsr':             'fal-ai/kandinsky6-vsr',
+  'kandinsky6-vsr-lite':        'fal-ai/kandinsky6-vsr/lite',
   'bytedance-video-upscale':    'fal-ai/bytedance-upscaler/upscale/video',
   'topaz-colorize':             'topaz/colorize/video',
   'topaz-deblur':               'topaz/deblur/video',
@@ -209,10 +212,12 @@ export const VIDEO_MODEL_IDS: string[] = [
   'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
   'minimax-h3-max-turbo', 'minimax-h3-max-ref',
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
+  'kandinsky6-pro', 'kandinsky6-lite',
   'lipsync-v3', 'happy-horse',
   // tools that output video
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
   'topaz-upscale-generative', 'seedvr2-video', 'flashvsr-video',
+  'kandinsky6-vsr', 'kandinsky6-vsr-lite',
   'bytedance-video-upscale', 'topaz-interpolate', 'topaz-colorize',
   'topaz-deblur', 'topaz-sdr-to-hdr',
   'luma-ray-2-modify', 'luma-ray-2-flash-modify', 'luma-ray-2-reframe',
@@ -243,6 +248,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   // ltx-2.5-fast, flux-3, grok-video-1.5; then wan-2.7, wan-3.0, wan-3.0-prime,
   // flux-video-upscale, hunyuan-video-1.5, pixelcut-looping-video
   'wan-2.2-lora',
+  // Kandinsky 6.0 Pro / Lite and its VSR (full / lite) public 2026-10-06
+  // (kandinsky6TicketCost / upscalerVideoTicketCost, each run through the UI)
   // seedvr2-video, flashvsr-video, bytedance-video-upscale public 2026-10-02
   // (upscalerVideoTicketCost, from the measured source)
   // Topaz video tools public 2026-10-01 (priced from the measured source, topazVideoTicketCost)

@@ -18,6 +18,7 @@ import { HomeView } from "@/components/home/HomeView"
 import { AudioStudio } from "@/components/audio/AudioStudio"
 import { AUDIO_GROUPS, AUDIO_STUDIO_MODELS, audioCostTier } from "@/lib/audio-studio"
 import { EmployeesView, type EmployeeId } from "@/components/employees/EmployeesView"
+import { ImageStudio } from "@/components/image-studio/ImageStudio"
 import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/employees"
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
 import { ThreeDStudioWorkspace } from "@/components/employees/ThreeDStudioWorkspace"
@@ -26,6 +27,8 @@ import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import { registerImageStudio, openInImageStudio, useImageStudioAvailable, type StudioOpenRequest } from "@/components/image-studio/bridge"
+import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
 import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
@@ -172,6 +175,8 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "ideogram-v4-instant",  apiId: "ideogram-v4-instant",      name: "Ideogram v4 Instant", aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-tiling",   apiId: "ideogram-v4-tiling",       name: "Ideogram v4 Tiling",  aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
+  // 2026-10-06, public: text, or the edit endpoint with references
+  { id: "nano-banana-2.1",      apiId: "nano-banana-2.1",          name: "NanoBanana 2.1",      aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 14, isFal: true, maxImages: 4 },
   { id: "nano-banana-2-lite",   apiId: "nano-banana-2-lite",       name: "NanoBanana 2 Lite",   aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
   // Recraft V4 Styles — the vector pair outputs true SVG
   { id: "recraft-v4-style",     apiId: "recraft-v4-style",         name: "Recraft V4 Style",    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, requiresReferenceImage: true, isFal: true, maxImages: 4 },
@@ -246,6 +251,7 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (modelId === "gpt-image-2.5")       return gptImage25TicketCost({ quality, aspectRatio, refCount: hasRefImages ? 1 : 0 })
   if (modelId === "nano-banana-pro")     return quality === "4k" ? 14 : 7
   if (modelId === "nano-banana-pro-2")   return quality === "4k" ? 12 : 7
+  if (modelId === "nano-banana-2.1")     return quality === "4k" ? 4 : quality === "1k" ? 2 : 3   // fal $0.08 1K, x1.5 2K, x2 4K
   if (modelId === "seedream-4.5")        return quality === "4k" ? 4 : 2
   if (modelId === "seedream-5-lite")     return quality === "3k" ? 4 : 2
   if (modelId === "seedream-5-pro")      return 10   // flat 10 tickets/generation
@@ -715,6 +721,8 @@ const BATCH_0928_VIDEO = new Set([
   "void-video-removal", "veed-subtitles", "minimax-h3-max-insert", "depth-anything-video",
   "heygen-translate", "heygen-translate-fast", "mirelo-sfx-video",
   "heygen-avatar4", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast", "sam-3.1-video", "elevenlabs-dubbing",
+  // 2026-10-06: Kandinsky 6.0 Pro / Lite and its VSR
+  "kandinsky6-pro", "kandinsky6-lite", "kandinsky6-vsr", "kandinsky6-vsr-lite",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -1066,6 +1074,11 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "minimax-h3-max-ref",  name: "MiniMax H3 Max References", durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], aspectRatios: ["adaptive","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: false, audioType: "none", supportsReferenceVideo: true },
   { id: "marey",               name: "Marey",               durations: ["5","10"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, audioType: "none", textToVideo: true },
   { id: "seedance-2.0-mini",   name: "SeeDance 2.0 Mini",   durations: ["4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","720p"], aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: true, audioType: "toggle", textToVideo: true, supportsReferenceVideo: true },
+  // 2026-10-06 (public): Kandinsky 6.0 - a 5s clip with
+  // sound from text or a start frame (which sets the shape); 1080p / 1920p run
+  // Kandinsky's own super-resolution in the same job (kandinsky6TicketCost)
+  { id: "kandinsky6-pro",      name: "Kandinsky 6 Pro",     durations: ["5"], resolutions: ["480p","1080p","1920p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, audioType: "toggle", textToVideo: true, startFrameLocksAspect: true },
+  { id: "kandinsky6-lite",     name: "Kandinsky 6 Lite",    durations: ["5"], resolutions: ["480p","1080p","1920p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, audioType: "toggle", textToVideo: true, startFrameLocksAspect: true },
   { id: "hunyuan-video-1.5",   name: "Hunyuan Video 1.5",   durations: ["2","3","4","5"], resolutions: ["480p","720p"], aspectRatios: ["16:9","9:16"], supportsEndFrame: false, audioType: "none", textToVideo: true },
   { id: "vidu-q3-turbo",      name: "Vidu Q3 Turbo",      durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["360p","540p","720p","1080p"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: true, audioType: "toggle", textToVideo: true },
   {
@@ -1113,6 +1126,22 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     durations: [], supportsEndFrame: false, audioType: "none",
     isVideoTool: true, upscaleFactors: ["1","2","3","4"],
     supportsReferenceVideo: true,
+  },
+  // Kandinsky 6.0 video super-resolution (2026-10-06, admin): the first ~5s
+  // (121 frames at 24fps) of a clip, x2 / x2.25 (480p -> 1080p) / x4
+  {
+    id: "kandinsky6-vsr",
+    name: "Kandinsky 6 VSR",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, upscaleFactors: ["2","2.25","4"],
+    supportsReferenceVideo: true, sourceClipMaxSec: 5,
+  },
+  {
+    id: "kandinsky6-vsr-lite",
+    name: "Kandinsky 6 VSR Lite",
+    durations: [], supportsEndFrame: false, audioType: "none",
+    isVideoTool: true, upscaleFactors: ["2","2.25","4"],
+    supportsReferenceVideo: true, sourceClipMaxSec: 5,
   },
   {
     id: "bytedance-video-upscale",
@@ -1436,6 +1465,10 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "marey":              "$$$+",
   "seedance-2.0-mini":  "$$",
   "hunyuan-video-1.5":  "$$",
+  "kandinsky6-pro":     "$$$+",
+  "kandinsky6-lite":    "$",
+  "kandinsky6-vsr":     "$",
+  "kandinsky6-vsr-lite": "$",
   "veo-3.1-extend":     "$$$+",
   "veo-3.1-fast-extend": "$$$",
   "minimax-h3-max-extend": "$$",
@@ -1543,7 +1576,7 @@ function modelDbKeysForName(name: string): string[] {
   return [...new Set([cfg.id, (cfg as { apiId?: string }).apiId].filter((x): x is string => !!x))]
 }
 const IMAGE_MODEL_GROUPS = [
-  { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2", "NanoBanana 2 Lite"] },
+  { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2", "NanoBanana 2.1", "NanoBanana 2 Lite"] },
   { label: "Kling",             type: "text to image",             accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling V3", "Kling O3"] },
   { label: "ByteDance",         type: "text to image",             accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDream 4.5", "SeeDream 5.0 Lite", "SeeDream 5.0 Pro", "SeeDream 5.0 Flash", "SeedVR2 Upscale", "SeeDream 5 Layerize", "SeeDream 5 Flash Layerize"] },
   { label: "xAI",               type: "text to image · edit",      accent: "text-slate-300",   dot: "bg-slate-300",   items: ["Grok Imagine 2.0"] },
@@ -1648,6 +1681,8 @@ const VIDEO_MODEL_GROUPS = [
   { label: "xAI", type: "text · image · refs to video · edit · extend", accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine Video 1.5", "Grok Imagine Video 1.5 Lite", "Grok Video Edit", "Grok Video Extend"] },
   // Public 2026-10-02 (fal flat rates, tested)
   { label: "Hailuo", type: "MiniMax · text & image to video", accent: "text-rose-300", dot: "bg-rose-300", items: ["Hailuo 2.3 Pro", "Hailuo 2.3", "Hailuo 2.3 Fast Pro", "Hailuo 2.3 Fast"] },
+  // Public 2026-10-06 (priced from fal's rates, tested end to end)
+  { label: "Kandinsky", type: "text & image to video · with sound · video upscale", accent: "text-red-300", dot: "bg-red-300", items: ["Kandinsky 6 Pro", "Kandinsky 6 Lite", "Kandinsky 6 VSR", "Kandinsky 6 VSR Lite"] },
 ]
 const HOME_VIDEO_TOOL_NAMES = VIDEO_MODEL_CONFIGS.filter(m => m.isVideoTool).map(m => m.name)
 const ADMIN_VIDEO_MODEL_GROUPS = [
@@ -1667,7 +1702,17 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
 const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
+/** Minutes the portal keeps polling a video before giving up (default 20) - the
+ *  cron's own limit is 60 (STALE_MINUTES_VIDEO), so stay under it. */
+const SLOW_VIDEO_POLL_MIN: Record<string, number> = {
+  "kandinsky6-pro": 55,
+}
+
 const VIDEO_PROMPT_HINTS: Record<string, string> = {
+  "kandinsky6-vsr": "No prompt needed - upscales the first ~5 seconds (121 frames) of the clip",
+  "kandinsky6-vsr-lite": "No prompt needed - upscales the first ~5 seconds (121 frames) of the clip",
+  "kandinsky6-pro": "Describe the scene, the motion and the sound",
+  "kandinsky6-lite": "Describe the scene, the motion and the sound",
   "void-video-removal": "Describe what to remove and where - e.g. the glowing lantern in the sky and its reflection in the water",
   "sam-3.1-video": "What to track - e.g. the dog, the red car",
   "minimax-h3-max-insert": "Describe the new shot to insert (optional)",
@@ -1926,7 +1971,7 @@ function RimOverlay({ rounded = "rounded-xl" }: { rounded?: string }) {
       } as React.CSSProperties}
     >
       <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin"
         style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
       />
     </div>
@@ -2175,6 +2220,7 @@ const MODEL_BLURBS: Record<string, string> = {
   "NanoBanana Pro":            "Photoreal edits, holds likeness",
   "NanoBanana Pro 2":          "Flagship all-rounder, best quality",
   "NanoBanana 2 Lite":         "Cheaper, faster NanoBanana",
+  "NanoBanana 2.1":            "The newest NanoBanana - edits with up to 14 refs",
   "Kling V3":                  "Stylised art and illustration",
   "Kling O3":                  "Higher-fidelity Kling images",
   "SeeDream 4.5":              "Fast, dependable general images",
@@ -2476,7 +2522,7 @@ function ModelMenuPanel({
     return (
       <div key={item} className="relative isolate m-1 rounded-lg overflow-hidden p-[1.5px]">
         <span
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
           style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
         />
         <div className="relative rounded-[6px] overflow-hidden bg-[#0a0f1a]">{row}</div>
@@ -2577,7 +2623,7 @@ function ModelMenuPanel({
               return SILVER_RIM_MODELS.has(item) ? (
                 <div key={item} className="relative isolate rounded-lg overflow-hidden p-[1.5px]">
                   <span
-                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
                     style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
                   />
                   <div className="relative rounded-[5px] overflow-hidden">{card}</div>
@@ -6867,6 +6913,7 @@ function RefDropdown({
   batches?: string[][]
   onBatchesChange?: (next: string[][]) => void
 }) {
+  const studioOK = useImageStudioAvailable()
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -7701,6 +7748,16 @@ function RefDropdown({
                         </div>
                       )}
 
+                      {/* Edit mode: open it in the Image Studio instead (admin) */}
+                      {editMode && studioOK && !isVideoRefUrl(img.url) && !is3D(img.url) && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openInImageStudio({ url: img.url, refId: img.id, title: "Reference edit" }) }}
+                          title="Open in the Image Studio"
+                          className="col-start-1 row-start-1 self-start justify-self-end m-0.5 w-5 h-5 rounded-md bg-black/80 border border-white/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                        >
+                          <Layers size={10} className="text-white" />
+                        </button>
+                      )}
                       {/* Delete on hover (normal mode only) */}
                       {!selectMode && !editMode && (
                         <button
@@ -8868,7 +8925,7 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
       style={thick ? { boxShadow: "0 0 16px rgba(248,250,252,0.45), 0 0 5px rgba(255,255,255,0.35)" } : undefined}
     >
       <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin feed-rim pointer-events-none -z-10"
         style={{ background: thick ? SILVER_RIM_CONIC_BRIGHT : SILVER_RIM_CONIC, animationDuration: "5s", animationDelay: rimDelay }}
       />
       <div className={`relative overflow-hidden ${thick ? "rounded-md" : "rounded-[7px]"}`}>{tile}</div>
@@ -9072,7 +9129,7 @@ function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, mode
     <div className="relative isolate w-full rounded-lg overflow-hidden p-[1.5px] flex flex-col" style={{ aspectRatio: cssAr }}>
       {/* Outer animated silver rim */}
       <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin feed-rim pointer-events-none -z-10"
         style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
       />
       <button
@@ -9258,7 +9315,7 @@ function FailedSlot({ prompt, error, aspectRatio, onClick, onDismiss, onRetry }:
     <div className="relative isolate w-full rounded-lg overflow-hidden p-[1.5px] flex flex-col" style={{ aspectRatio: arCss }}>
       {/* Animated RED rim — same motion as the silver tiles, error-coded */}
       <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin feed-rim pointer-events-none -z-10"
         style={{ background: RED_RIM_CONIC, animationDuration: "5s" }}
       />
       <div
@@ -9338,7 +9395,7 @@ function FluxSettingsGroups({ vm }: { vm: Record<string, any> }) {
         } as React.CSSProperties}
       >
         <span
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin"
           style={{
             background: 'conic-gradient(from 0deg, transparent 0%, #a78bfa 10%, #ede9fe 18%, transparent 30%, transparent 50%, #8b5cf6 60%, #ddd6fe 68%, transparent 80%, transparent 100%)',
             animationDuration: '3s',
@@ -9497,7 +9554,7 @@ function PendingDetailModal({
           <div className="relative flex flex-col items-center gap-4">
             <div className="relative isolate w-16 h-16 rounded-full overflow-hidden p-[2px]">
               <span
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin -z-10"
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin -z-10"
                 style={{
                   background: isQueued
                     ? "conic-gradient(from 0deg, rgba(251,191,36,0.08), #fbbf24, rgba(251,191,36,0.15), #f59e0b, rgba(251,191,36,0.08))"
@@ -10808,7 +10865,7 @@ function ImageDetailModal({
                 {/* Rescan — site logo in a spinning silver frame + sheen sweep */}
                 <div className="relative isolate rounded-lg overflow-hidden p-[1.5px]">
                   <span
-                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin -z-10"
+                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin -z-10"
                     style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
                   />
                   <button
@@ -11358,7 +11415,7 @@ function VideoDetailModal({
             {/* Silver-framed brand button — same treatment as the image modal's Rescan */}
             <div className="relative isolate rounded-lg overflow-hidden p-[1.5px]">
               <span
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin -z-10"
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin -z-10"
                 style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
               />
               <button
@@ -12884,3331 +12941,23 @@ const frameHandlePoints = (r: CropRect): Record<FrameHandle, [number, number]> =
 })
 const clampNum = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
-function RefImageEditorModal({ image, onApply, onClose, canUseLayers = false, layerStack = null, onLayerStackChange }: {
+/*
+ * The Edit Image popup is the Image Studio's editor now (2026-10-06,
+ * components/image-studio/EditImagePopup): tools, AI selections and
+ * generative tools for everyone; layers, groups, masks and adjustment layers -
+ * kept after Apply - with Dev Tier. Same props as before, so the seven places
+ * that open it are unchanged. (The old canvas editor that lived here is in git
+ * history, commit 1dbeee6 and earlier.)
+ */
+function RefImageEditorModal(props: {
   image: RefImage
   onApply: (newUrl: string) => void
   onClose: () => void
-  // Dev-Tier multi-layer canvas
   canUseLayers?: boolean
   layerStack?: RefLayerStack | null
   onLayerStackChange?: (stack: RefLayerStack | null) => void
 }) {
-  const canvasRef  = useRef<HTMLCanvasElement>(null)
-  const overlayRef = useRef<HTMLCanvasElement>(null)
-  const editorPaneRef = useRef<HTMLDivElement>(null)
-  const artboardRef   = useRef<HTMLDivElement>(null)
-  const historyRef  = useRef<string[]>([])
-  const isDrawingRef = useRef(false)
-  const lastPtRef    = useRef<{ x: number; y: number } | null>(null)
-  const blurPtsRef   = useRef<{ x: number; y: number }[]>([])
-  const blurSnapRef  = useRef<HTMLCanvasElement | null>(null)  // snapshot at blur stroke start
-  const startPtRef   = useRef<{ x: number; y: number } | null>(null)
-  const cropRectRef  = useRef<CropRect | null>(null)
-  const frameDragRef = useRef<{ kind: FrameHandle | 'move'; start: { x: number; y: number }; orig: CropRect } | null>(null)
-
-  const [tool,       setTool]       = useState<EditorTool>('select')
-  const [cropMode,   setCropMode]   = useState<CropMode>('frame')
-  const [brushSize,  setBrushSize]  = useState(20)
-  // Brush slider scales WITH THE CANVAS: 0.2%–30% of its long edge (≈2–1200px
-  // on a 4K canvas, ≈2–300px on a 1K one) on a SQUARED curve, so the lower
-  // half of the slider still covers small sizes finely. A fixed 4-80px range
-  // was a pinpoint on 3000-4000px canvases.
-  const brushLongEdge = () => { const c = canvasRef.current; return c && c.width ? Math.max(c.width, c.height) : Math.max(dims?.w ?? 1024, dims?.h ?? 1024) }
-  const brushMin = () => Math.max(2, Math.round(brushLongEdge() * 0.002))
-  const brushMax = () => Math.max(64, Math.round(brushLongEdge() * 0.3))
-  const sliderToBrush = (t: number) => { const lo = brushMin(), hi = brushMax(); return Math.round(lo + Math.pow(Math.min(100, Math.max(0, t)) / 100, 2) * (hi - lo)) }
-  const brushToSlider = (px: number) => { const lo = brushMin(), hi = brushMax(); return Math.round(Math.sqrt(Math.min(1, Math.max(0, (px - lo) / (hi - lo)))) * 100) }
-  const brushPct = (px: number) => `${(100 * px / brushLongEdge()).toFixed(px / brushLongEdge() < 0.01 ? 2 : 1)}%`
-  const [drawColor,  setDrawColor]  = useState('#ffffff')
-  const [blurRadius, setBlurRadius] = useState(10)
-  const [shapeKind,  setShapeKind]  = useState<ShapeKind>('rect')
-  const [shapeFill,  setShapeFill]  = useState(true)
-  const [shapeColor, setShapeColor] = useState('#ffffff')
-  const [hasCropSel, setHasCropSel] = useState(false)
-  const [loaded,     setLoaded]     = useState(false)
-  // First load: start the brush at ~2% of the canvas long edge (the 20px
-  // default is a pinpoint on a 4K canvas) — once per modal open only
-  const brushDefaultedRef = useRef(false)
-  useEffect(() => {
-    if (!loaded || brushDefaultedRef.current) return
-    brushDefaultedRef.current = true
-    setBrushSize(Math.min(brushMax(), Math.max(brushMin(), Math.round(brushLongEdge() * 0.02))))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded])
-  const [histLen,    setHistLen]    = useState(1)
-  const [fitMode,    setFitMode]    = useState<'fit' | 'native'>('fit')
-  // Mask tool: AI segmentation (auto or text-prompted) → dashed outline → approve/reject
-  const [maskPrompt, setMaskPrompt] = useState('')
-  const [maskBusy,   setMaskBusy]   = useState(false)
-  const [maskReady,  setMaskReady]  = useState(false)
-  const [maskError,  setMaskError]  = useState<string | null>(null)
-  const maskSilRef = useRef<HTMLCanvasElement | null>(null) // opaque-where-masked silhouette
-  // Cut tool: freehand lasso → close path → keep/remove
-  const cutPtsRef = useRef<{ x: number; y: number }[]>([])
-  const [cutReady, setCutReady] = useState(false)
-  // "Touch and hold to save" overlay — renders a real <img> so iPad Safari's native
-  // long-press Save Image sheet works (canvas elements never get that sheet)
-  const [saveOverlay, setSaveOverlay] = useState<{ url: string; label: string; hostedUrl?: string | null; hosting?: boolean } | null>(null)
-  // iOS long-press only reliably offers "Save Image / Add to Photos" on real
-  // https images — on data: URLs the callout is reduced or missing entirely.
-  // Show the data URL instantly, host a copy in the background, and swap the
-  // <img> to the hosted URL so the native save sheet works.
-  const openSaveOverlay = (dataUrl: string, label: string) => {
-    setSaveOverlay({ url: dataUrl, label, hostedUrl: null, hosting: true })
-    void (async () => {
-      try {
-        const res = await fetch('/api/user/ref-layer-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: dataUrl }),
-        })
-        const data = await res.json().catch(() => ({}))
-        const hosted = res.ok && typeof data.url === 'string' ? (data.url as string) : null
-        setSaveOverlay(cur => (cur && cur.url === dataUrl ? { ...cur, hostedUrl: hosted, hosting: false } : cur))
-      } catch {
-        setSaveOverlay(cur => (cur && cur.url === dataUrl ? { ...cur, hosting: false } : cur))
-      }
-    })()
-  }
-  // Current canvas resolution — shown in the header chip + Scale tool readout
-  const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
-  // REAL visible viewport height: iPad Safari's vh ignores the browser chrome
-  // (bottom of the modal slid behind the toolbar in portrait) and dvh needs
-  // iPadOS 16.4+ — visualViewport works everywhere and tracks chrome/keyboard
-  const [vvh, setVvh] = useState<number | null>(null)
-  useEffect(() => {
-    const vv = window.visualViewport
-    const measure = () => setVvh(Math.round(vv?.height ?? window.innerHeight) || null)
-    measure()
-    vv?.addEventListener('resize', measure)
-    window.addEventListener('resize', measure)
-    return () => { vv?.removeEventListener('resize', measure); window.removeEventListener('resize', measure) }
-  }, [])
-  // Fit mode: the canvas is DISPLAYED at pane-fit size regardless of its pixel
-  // resolution (a 512px downscale stays visually large, just lower quality).
-  // Plain max-width caps can only shrink — this computes the real contain-fit.
-  const [fitCss, setFitCss] = useState<{ w: number; h: number } | null>(null)
-  useEffect(() => {
-    if (fitMode !== 'fit') return
-    const compute = () => {
-      const pane = editorPaneRef.current, c = canvasRef.current
-      if (!pane || !c || !c.width || !c.height) return
-      const availW = Math.max(50, pane.clientWidth - 32)
-      const availH = Math.max(50, pane.clientHeight - 32)
-      const sc = Math.min(availW / c.width, availH / c.height)
-      setFitCss({ w: Math.max(1, Math.floor(c.width * sc)), h: Math.max(1, Math.floor(c.height * sc)) })
-    }
-    compute()
-    const ro = new ResizeObserver(compute)
-    if (editorPaneRef.current) ro.observe(editorPaneRef.current)
-    window.addEventListener('resize', compute)
-    return () => { ro.disconnect(); window.removeEventListener('resize', compute) }
-  }, [fitMode, dims, loaded])
-
-  // Synced site logo for the crop-frame handles (little brand chips)
-  const [cropHandleLogo, setCropHandleLogo] = useState<string | null>(null)
-  useEffect(() => {
-    fetch('/api/admin/config').then(r => r.ok ? r.json() : null).then(d => { if (d?.logoUrl) setCropHandleLogo(d.logoUrl) }).catch(() => {})
-  }, [])
-  // Same logo as a decoded image for the Select tool's canvas-drawn handles.
-  // Loaded through the same-origin proxy so the overlay canvas never taints
-  // (the Shape tool composites the overlay onto the exportable main canvas).
-  const handleLogoImgRef = useRef<HTMLImageElement | null>(null)
-  useEffect(() => {
-    if (!cropHandleLogo) return
-    const img = document.createElement('img')
-    img.onload = () => { handleLogoImgRef.current = img }
-    img.src = `/api/admin/image-proxy?url=${encodeURIComponent(cropHandleLogo)}`
-  }, [cropHandleLogo])
-  // ── Multi-layer canvas (Dev Tier) ────────────────────────────────────────
-  // The stack lives on the parent (persisted per reference); edits propagate up.
-  // Layers are transparent sheets over the base canvas, each holding placed
-  // images (items). Item rects are canvas fractions; selection gets crop-style
-  // transform handles on the canvas.
-  // AUTO layers (appended by finished generations under the old behavior) do
-  // NOT load into the editor — opening a reference shows the reference alone
-  // plus any layers the user placed deliberately. The gen-over-ref canvas is
-  // its own flow now (the info panel's Edit button injects the layer there).
-  const [stack, setStack] = useState<RefLayerStack | null>(() => {
-    const s = normalizeStack(layerStack)
-    if (!s) return null
-    const manual = s.layers.filter(l => !l.auto)
-    return manual.length === s.layers.length ? s : { ...s, layers: manual }
-  })
-  const [layerBusy, setLayerBusy] = useState(false)
-  const [layerError, setLayerError] = useState<string | null>(null)
-  const [selLayerId, setSelLayerId] = useState<string | null>(null)
-  const [selItemId, setSelItemId] = useState<string | null>(null)
-  // Lock aspect ratio while resizing layer images (pinch always keeps ratio)
-  const [lockAspect, setLockAspect] = useState(false)
-  // Right-side layers column (slide-in, like the popup settings panel)
-  const [showLayersPanel, setShowLayersPanel] = useState(false)
-  // Paint-tool settings dropdown (draw/erase/blur/shape)
-  const [toolMenuOpen, setToolMenuOpen] = useState(false)
-  // Stroke opacity for draw / erase / blur (percent)
-  const [paintOpacity, setPaintOpacity] = useState(100)
-  // Faint alignment guides while a snap is engaged (canvas coords, null = off)
-  const snapGuidesRef = useRef<{ gx: number | null; gy: number | null }>({ gx: null, gy: null })
-  // Workspace view: pan/zoom the whole artboard (layers-tool gestures, resets
-  // each open). Scale+translate only — view rotation would break the
-  // rect-based pointer→canvas mapping every drawing tool depends on.
-  // s = horizontal view scale, sy = vertical — normally equal (uniform zoom);
-  // they diverge only when a side handle stretches the canvas on one axis
-  const [canvasView, setCanvasView] = useState({ s: 1, sy: 1, tx: 0, ty: 0, r: 0 })
-  // Canvas selection: tap the canvas edge (or the empty workspace when nothing
-  // is selected) to select the CANVAS itself — outline + corner handles for
-  // resizing the whole view, mirroring how elements inside are selected.
-  const [canvasSelected, setCanvasSelected] = useState(false)
-  const viewPanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
-  const viewPinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
-  const layerClientPtsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const layerInputRef = useRef<HTMLInputElement>(null)
-  const layerDragRef = useRef<{ kind: FrameHandle | 'move' | 'rot'; start: { x: number; y: number }; orig: CropRect; origR: number; layerId: string; itemId: string } | null>(null)
-  // Two-finger pinch (iPad): scales AND rotates the selected item around its center
-  const layerPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const layerPinchRef = useRef<{ startDist: number; startAngle: number; orig: CropRect; origR: number; layerId: string; itemId: string } | null>(null)
-  const layerImgSizes = useRef<Record<string, { w: number; h: number }>>({})
-  // Decoded layer images, so a live erase can start SYNCHRONOUSLY on pointer
-  // down (no async load between finger-down and the first punched pixel)
-  const layerImgCache = useRef<Map<string, HTMLImageElement>>(new Map())
-  // Live layer erase: while the pointer is down the selected item renders as
-  // this canvas (punched in real time); on release it is encoded + hosted
-  const liveEraseRef = useRef<{ layerId: string; itemId: string; canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; rect: CropRect; preStack: RefLayerStack; last: { x: number; y: number } } | null>(null)
-  const [liveEraseItem, setLiveEraseItem] = useState<{ layerId: string; itemId: string } | null>(null)
-  const stackRef = useRef(stack)
-  stackRef.current = stack
-  useEffect(() => {
-    for (const l of stack?.layers ?? []) for (const it of l.items) {
-      if (layerImgCache.current.has(it.url)) continue
-      const im = new window.Image()
-      // No crossOrigin: mediaSrc returns a same-origin proxy URL, which
-      // cannot taint the canvas and needs no CORS negotiation.
-      im.src = mediaSrc(it.url)
-      layerImgCache.current.set(it.url, im)
-    }
-  }, [stack])
-  const updStack = (st: RefLayerStack | null, opts?: { localOnly?: boolean }) => {
-    // Sync the ref immediately — synchronous flows (crop-then-flatten on Apply)
-    // read stackRef before React re-renders
-    stackRef.current = st
-    setStack(st)
-    // localOnly: transient states holding data-URL images (optimistic layer
-    // erase) must never persist — a multi-MB data URL in the stack JSON would
-    // bloat the DB row; the hosted-URL swap that follows persists normally
-    if (!opts?.localOnly) onLayerStackChange?.(st)
-  }
-  // Continuous controls (the opacity slider fires per tick) get ONE undo
-  // snapshot per burst instead of dozens
-  const lastPatchUndoRef = useRef<{ t: number; sig: string }>({ t: 0, sig: '' })
-  const pushStackUndoLater = (st: RefLayerStack) => pushStackUndo(JSON.parse(JSON.stringify(st)))
-  const patchLayer = (id: string, patch: Partial<RefLayer>) => {
-    if (!stack) return
-    const sig = `${id}:${Object.keys(patch).sort().join(',')}`
-    const now = Date.now()
-    if (sig !== lastPatchUndoRef.current.sig || now - lastPatchUndoRef.current.t > 700) pushStackUndoLater(stack)
-    lastPatchUndoRef.current = { t: now, sig }
-    updStack({ ...stack, layers: stack.layers.map(l => l.id === id ? { ...l, ...patch } : l) })
-  }
-  const removeLayer = (id: string) => {
-    if (stack) { pushStackUndoLater(stack); updStack({ ...stack, layers: stack.layers.filter(l => l.id !== id) }) }
-    if (selLayerId === id) { setSelLayerId(null); setSelItemId(null); clearOverlay() }
-  }
-  const removeItem = (layerId: string, itemId: string) => {
-    if (stack) { pushStackUndoLater(stack); updStack({ ...stack, layers: stack.layers.map(l => l.id === layerId ? { ...l, items: l.items.filter(i2 => i2.id !== itemId) } : l) }) }
-    if (selItemId === itemId) { setSelItemId(null); clearOverlay() }
-  }
-  const moveLayer = (id: string, dir: 1 | -1) => {
-    if (!stack) return
-    const arr = [...stack.layers]
-    const i = arr.findIndex(l => l.id === id)
-    const j = i + dir
-    if (i < 0 || j < 0 || j >= arr.length) return
-    ;[arr[i], arr[j]] = [arr[j], arr[i]]
-    pushStackUndoLater(stack)
-    updStack({ ...stack, layers: arr })
-  }
-  const addEmptyLayer = () => {
-    if (stack) pushStackUndoLater(stack)
-    const l: RefLayer = { id: `l-${Date.now()}`, name: `Layer ${(stack?.layers.length || 0) + 1}`, visible: true, opacity: 1, items: [] }
-    updStack({ enabled: true, layers: [...(stack?.layers || []), l] })
-    setSelLayerId(l.id); setSelItemId(null)
-  }
-  const addImageToLayer = async (file: File) => {
-    if (!file.type.startsWith('image/')) return
-    setLayerBusy(true); setLayerError(null)
-    try {
-      let dataUrl = await new Promise<string>((ok, err) => {
-        const r = new FileReader()
-        r.onload = () => ok(r.result as string)
-        r.onerror = () => err(new Error('Could not read the file'))
-        r.readAsDataURL(file)
-      })
-      // Downscale big picks CLIENT-SIDE: camera photos routinely exceed the
-      // upload route's ~15MB cap (a silent 413), and the editor canvas tops
-      // out at 4096px anyway — detail above that never survives to the
-      // composite. Re-encode anything over ~2MB, shrinking until it fits;
-      // if the browser can't decode the file at all (e.g. HEIC on some
-      // platforms), fail HERE with a clear message instead of posting a
-      // body the server will reject.
-      if (dataUrl.length > 2_500_000) {
-        let img: HTMLImageElement
-        try {
-          img = await new Promise<HTMLImageElement>((ok, err) => {
-            const im = new window.Image()
-            im.onload = () => ok(im)
-            im.onerror = () => err(new Error('decode'))
-            im.src = dataUrl
-          })
-          if (!img.naturalWidth) throw new Error('decode')
-        } catch {
-          throw new Error(`This browser can't read ${file.type.replace('image/', '.') || 'that file'} — export it as JPEG or PNG and try again`)
-        }
-        const draw = (edge: number, asPng: boolean, q: number) => {
-          const scale = Math.min(1, edge / Math.max(img.naturalWidth, img.naturalHeight))
-          const c = document.createElement('canvas')
-          c.width = Math.max(1, Math.round(img.naturalWidth * scale))
-          c.height = Math.max(1, Math.round(img.naturalHeight * scale))
-          c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
-          return asPng ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', q)
-        }
-        // PNG keeps transparency; anything still over the route cap steps
-        // down through JPEG at shrinking sizes until it fits
-        let out = draw(4096, file.type.includes('png'), 0.92)
-        for (let edge = 4096; out.length > 19_000_000 && edge >= 1024; edge = Math.round(edge * 0.7)) {
-          out = draw(edge, false, 0.85)
-        }
-        if (out.length > 19_000_000) throw new Error('Image too large even after downscaling — try a smaller file')
-        dataUrl = out
-      }
-      const res = await fetch('/api/user/ref-layer-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed')
-      const item: RefLayerItem = { id: `it-${Date.now()}`, url: data.url as string }
-      const st = stackRef.current
-      if (st) pushStackUndoLater(st)
-      if (st && selLayerId && st.layers.some(l => l.id === selLayerId)) {
-        updStack({ enabled: true, layers: st.layers.map(l => l.id === selLayerId ? { ...l, items: [...l.items, item] } : l) })
-      } else {
-        const l: RefLayer = { id: `l-${Date.now()}`, name: file.name.slice(0, 40) || 'Layer', visible: true, opacity: 1, items: [item] }
-        updStack({ enabled: true, layers: [...(st?.layers || []), l] })
-        setSelLayerId(l.id)
-      }
-      setSelItemId(item.id)
-    } catch (e: any) {
-      setLayerError(e?.message || 'Failed to add layer')
-    } finally {
-      setLayerBusy(false)
-    }
-  }
-
-  // The window paste listener mounts once — route through a ref so it always
-  // calls the CURRENT addImageToLayer (which reads live selLayerId state)
-  const addImageToLayerRef = useRef(addImageToLayer)
-  addImageToLayerRef.current = addImageToLayer
-
-  // Paste a copied image into the selected layer (or a new one) — the button
-  // uses the async Clipboard API (iPad Safari shows its Paste permission
-  // bubble), and desktop Ctrl/Cmd+V lands in the paste-event listener below.
-  const pasteImageFromClipboard = async () => {
-    if (layerBusy) return
-    setLayerError(null)
-    // The async Clipboard API only exists on HTTPS/localhost — over plain HTTP
-    // (e.g. the dev server via LAN IP on iPad) fall back to a native paste
-    // target: the OS long-press → Paste callout works in any context.
-    if (!navigator.clipboard?.read) { setShowPasteTarget(true); return }
-    try {
-      const items = await navigator.clipboard.read()
-      for (const item of items) {
-        const type = item.types.find(t => t.startsWith('image/'))
-        if (!type) continue
-        const blob = await item.getType(type)
-        await addImageToLayer(new File([blob], `pasted.${type.split('/')[1] || 'png'}`, { type }))
-        return
-      }
-      setLayerError('No image on the clipboard — copy an image first')
-    } catch (e: any) {
-      if (e?.name === 'NotAllowedError') setShowPasteTarget(true)
-      else setLayerError(e?.message || 'Could not read the clipboard')
-    }
-  }
-  // Fallback paste target (non-HTTPS or permission denied): an empty
-  // contentEditable the user long-presses (or ⌘V's) into; the paste event
-  // still carries the image even where clipboard.read() is unavailable.
-  const [showPasteTarget, setShowPasteTarget] = useState(false)
-  const pasteTargetRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => { if (showPasteTarget) pasteTargetRef.current?.focus() }, [showPasteTarget])
-  useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      // Don't hijack pastes aimed at text fields (prompt box, rename inputs, …)
-      const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-      const file = [...(e.clipboardData?.items ?? [])].find(i => i.type.startsWith('image/'))?.getAsFile()
-      if (!file) return
-      e.preventDefault()
-      void addImageToLayerRef.current(file)
-    }
-    window.addEventListener('paste', onPaste)
-    return () => window.removeEventListener('paste', onPaste)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Enable: the current canvas becomes "Layer 1 (base)" — hosted as a layer item
-  // covering the full artboard — and the canvas clears to a transparent paint
-  // surface over the branded backdrop. Apply re-flattens into the reference.
-  const enableMultiLayer = async () => {
-    const canvas = canvasRef.current; if (!canvas || !loaded || layerBusy) return
-    setLayerBusy(true); setLayerError(null)
-    try {
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
-      const res = await fetch('/api/user/ref-layer-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok || !data.url) throw new Error(data.error || 'Could not host the base image')
-      const baseLayer: RefLayer = {
-        id: `l-base-${Date.now()}`, name: 'Layer 1 (base)', visible: true, opacity: 1,
-        items: [{ id: `it-base-${Date.now()}`, url: data.url as string, x: 0, y: 0, w: 1, h: 1 }],
-      }
-      // Base goes to the BOTTOM of any existing layers (draw order is bottom → top)
-      updStack({ enabled: true, baseInLayer: true, baseW: canvas.width, baseH: canvas.height, layers: [baseLayer, ...(stackRef.current?.layers || [])] })
-      canvas.getContext('2d')!.clearRect(0, 0, canvas.width, canvas.height)
-      // Restart history from the cleared state — undo/reset must never
-      // resurrect the pre-conversion base under Layer 1
-      try {
-        historyRef.current = [canvas.toDataURL('image/png')]
-        undoKindsRef.current = []
-        stackUndoRef.current = []
-        setStackUndoLen(0)
-        setHistLen(1)
-      } catch { /* keep old history if export fails */ }
-      setSelLayerId(baseLayer.id)
-      setSelItemId(baseLayer.items[0].id)
-    } catch (e: any) {
-      setLayerError(e?.message || 'Could not enable multi-layer')
-    } finally {
-      setLayerBusy(false)
-    }
-  }
-  const loadViaProxy = (u: string) => new Promise<HTMLImageElement>((ok, err) => {
-    const img = document.createElement('img')
-    img.onload = () => ok(img)
-    img.onerror = () => err(new Error('Image failed to load'))
-    img.src = u.startsWith('http') ? `/api/admin/image-proxy?url=${encodeURIComponent(u)}` : u
-  })
-  // Draw every visible item (with its layer's opacity) onto a context
-  const paintItems = async (pctx: CanvasRenderingContext2D, cw: number, ch: number, st: RefLayerStack) => {
-    for (const l of st.layers) {
-      if (!l.visible) continue
-      for (const it of l.items) {
-        try {
-          const img = await loadViaProxy(it.url)
-          pctx.globalAlpha = Math.min(1, Math.max(0, l.opacity))
-          if (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number') {
-            const x = it.x * cw, y = it.y * ch, w = it.w * cw, h = it.h * ch
-            const rot = ((it.r || 0) * Math.PI) / 180
-            if (rot) {
-              pctx.save()
-              pctx.translate(x + w / 2, y + h / 2)
-              pctx.rotate(rot)
-              pctx.drawImage(img, -w / 2, -h / 2, w, h)
-              pctx.restore()
-            } else {
-              pctx.drawImage(img, x, y, w, h)
-            }
-          } else {
-            const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height
-            const sc = Math.min(cw / iw, ch / ih)
-            pctx.drawImage(img, (cw - iw * sc) / 2, (ch - ih * sc) / 2, iw * sc, ih * sc)
-          }
-        } catch { /* skip broken items */ }
-      }
-    }
-    pctx.globalAlpha = 1
-  }
-  // Disable: flatten the composition back onto the canvas, then drop the stack
-  const disableMultiLayer = async () => {
-    const canvas = canvasRef.current; if (!canvas || layerBusy) return
-    const st = stackRef.current
-    setLayerBusy(true)
-    try {
-      if (st) {
-        const ctxD = canvas.getContext('2d')!
-        // Keep canvas paint as the top coat: items flatten UNDER the strokes
-        const snap = document.createElement('canvas')
-        snap.width = canvas.width; snap.height = canvas.height
-        snap.getContext('2d')!.drawImage(canvas, 0, 0)
-        ctxD.clearRect(0, 0, canvas.width, canvas.height)
-        await paintItems(ctxD, canvas.width, canvas.height, st)
-        ctxD.drawImage(snap, 0, 0)
-        pushHistory()
-      }
-      updStack(null)
-      setSelLayerId(null); setSelItemId(null); clearOverlay()
-    } finally {
-      setLayerBusy(false)
-    }
-  }
-
-  // Apply keeps the editor open on the re-created reference — when the image
-  // identity swaps, resync the stack + view for the fresh canvas (the canvas
-  // itself reloads via the image.url effect, which also resets history)
-  const lastImageIdRef = useRef(image.id)
-  useEffect(() => {
-    if (lastImageIdRef.current === image.id) return
-    lastImageIdRef.current = image.id
-    const st = normalizeStack(layerStack)
-    stackRef.current = st
-    setStack(st)
-    setSelLayerId(null); setSelItemId(null)
-    baseMigratedRef.current = false
-    setCanvasView({ s: 1, sy: 1, tx: 0, ty: 0, r: 0 })
-    clearOverlay()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [image.id])
-
-  // Migrate stacks enabled before the base-as-Layer-1 upgrade: the base is
-  // still painted on the canvas, so convert it into a selectable "Layer 1
-  // (base)" automatically as soon as the editor opens.
-  const baseMigratedRef = useRef(false)
-  useEffect(() => {
-    if (baseMigratedRef.current || !loaded || !canUseLayers) return
-    const st = stackRef.current
-    // Dev Tier canvases are layered by default: convert fresh refs on open, and
-    // migrate stacks from before the base-as-Layer-1 upgrade
-    if (!st || (st.enabled && !st.baseInLayer)) {
-      baseMigratedRef.current = true
-      void enableMultiLayer()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, stack?.enabled])
-
-  // ── Layer item geometry + canvas interactions ────────────────────────────
-  const itemRectPx = (it: RefLayerItem): CropRect | null => {
-    const c = canvasRef.current; if (!c) return null
-    if (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number') {
-      return { x: it.x * c.width, y: it.y * c.height, w: it.w * c.width, h: it.h * c.height }
-    }
-    const nat = layerImgSizes.current[it.url]; if (!nat || !nat.w || !nat.h) return null
-    const sc = Math.min(c.width / nat.w, c.height / nat.h)
-    const w = nat.w * sc, h = nat.h * sc
-    return { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h }
-  }
-  const drawLayerSelOverlay = () => {
-    const overlay = overlayRef.current; if (!overlay) return
-    const octx = overlay.getContext('2d')!
-    octx.clearRect(0, 0, overlay.width, overlay.height)
-    const st = stackRef.current
-    if (!st?.enabled || !selLayerId || !selItemId) return
-    const it = st.layers.find(l => l.id === selLayerId)?.items.find(i2 => i2.id === selItemId)
-    if (!it) return
-    const r = itemRectPx(it); if (!r) return
-    const sDisp = displayScale()
-    // Faint alignment guides while a snap is engaged
-    const g = snapGuidesRef.current
-    if (g.gx !== null || g.gy !== null) {
-      octx.strokeStyle = 'rgba(248,250,252,0.35)'
-      octx.lineWidth = 1 * sDisp
-      octx.setLineDash([5 * sDisp, 5 * sDisp])
-      octx.beginPath()
-      if (g.gx !== null) { octx.moveTo(g.gx, 0); octx.lineTo(g.gx, overlay.height) }
-      if (g.gy !== null) { octx.moveTo(0, g.gy); octx.lineTo(overlay.width, g.gy) }
-      octx.stroke()
-      octx.setLineDash([])
-    }
-    const rad = itemRot(it)
-    octx.save()
-    octx.translate(r.x + r.w / 2, r.y + r.h / 2)
-    octx.rotate(rad)
-    // dashed frame (drawn in the item's local space)
-    octx.strokeStyle = 'rgba(255,255,255,0.9)'
-    octx.lineWidth = 1.5 * sDisp
-    octx.setLineDash([6 * sDisp, 4 * sDisp])
-    octx.strokeRect(-r.w / 2, -r.h / 2, r.w, r.h)
-    octx.setLineDash([])
-    // rotate stem + knob above the top edge
-    const gap = ROT_HANDLE_GAP * sDisp
-    octx.beginPath()
-    octx.moveTo(0, -r.h / 2)
-    octx.lineTo(0, -r.h / 2 - gap)
-    octx.strokeStyle = 'rgba(255,255,255,0.7)'
-    octx.lineWidth = 1 * sDisp
-    octx.stroke()
-    octx.beginPath()
-    octx.arc(0, -r.h / 2 - gap, 5 * sDisp, 0, Math.PI * 2)
-    octx.fillStyle = '#ffffff'
-    octx.fill()
-    octx.strokeStyle = 'rgba(0,0,0,0.5)'
-    octx.stroke()
-    // Corner + edge handles — synced-logo chips (white squares until it loads)
-    const logoImg = handleLogoImgRef.current
-    const hs = (logoImg ? 18 : 10) * sDisp
-    const locals: [number, number][] = [
-      [-r.w / 2, -r.h / 2], [0, -r.h / 2], [r.w / 2, -r.h / 2],
-      [-r.w / 2, 0], [r.w / 2, 0],
-      [-r.w / 2, r.h / 2], [0, r.h / 2], [r.w / 2, r.h / 2],
-    ]
-    const handlePath = (hx: number, hy: number) => {
-      octx.beginPath()
-      const rr = 5 * sDisp
-      if (typeof (octx as any).roundRect === 'function') {
-        (octx as any).roundRect(hx - hs / 2, hy - hs / 2, hs, hs, rr)
-      } else {
-        octx.rect(hx - hs / 2, hy - hs / 2, hs, hs)
-      }
-    }
-    for (const [hx, hy] of locals) {
-      if (logoImg) {
-        octx.save()
-        handlePath(hx, hy)
-        octx.clip()
-        octx.fillStyle = '#0f172a'
-        octx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
-        octx.drawImage(logoImg, hx - hs / 2, hy - hs / 2, hs, hs)
-        octx.restore()
-        handlePath(hx, hy)
-        octx.strokeStyle = '#ffffff'
-        octx.lineWidth = 1.5 * sDisp
-        octx.stroke()
-      } else {
-        octx.fillStyle = '#ffffff'
-        octx.strokeStyle = 'rgba(0,0,0,0.5)'
-        octx.lineWidth = 1 * sDisp
-        octx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
-        octx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs)
-      }
-    }
-    octx.restore()
-  }
-  const setItemRectLocal = (layerId: string, itemId: string, rect: CropRect, rot?: number) => {
-    const c = canvasRef.current; if (!c) return
-    setStack(prev => !prev ? prev : ({
-      ...prev,
-      layers: prev.layers.map(l => l.id !== layerId ? l : ({
-        ...l,
-        items: l.items.map(i2 => i2.id !== itemId ? i2 : {
-          ...i2,
-          x: rect.x / c.width, y: rect.y / c.height, w: rect.w / c.width, h: rect.h / c.height,
-          ...(typeof rot === 'number' ? { r: rot } : {}),
-        }),
-      })),
-    }))
-  }
-  const itemRot = (it: RefLayerItem) => ((it.r || 0) * Math.PI) / 180
-
-  // Erase strokes made while a layer is selected erase FROM THAT LAYER'S
-  // IMAGE (true transparency), never the base canvas: the stroke overlay is
-  // mapped through the item's rect + rotation into image space, punched out
-  // with destination-out, and the result re-hosted like any layer image.
-  // Returns true when the stroke was handled (or consumed with an error).
-  const eraseFromSelectedLayer = async (stroke: HTMLCanvasElement, alpha: number): Promise<boolean> => {
-    const st = stackRef.current
-    const layer = st?.layers.find(l => l.id === selLayerId)
-    if (!st || !layer) return false
-    const item = layer.items.find(i2 => i2.id === selItemId) ?? (layer.items.length === 1 ? layer.items[0] : null)
-    if (!item) { setLayerError('Select an image on the layer first'); return true }
-    const r = itemRectPx(item)
-    const c = canvasRef.current
-    if (!r || !c || r.w < 1 || r.h < 1) { setLayerError('Layer image not ready yet'); return true }
-    setLayerBusy(true); setLayerError(null)
-    try {
-      const img = await new Promise<HTMLImageElement>((ok, err) => {
-        const im = new window.Image()
-        im.crossOrigin = 'anonymous'
-        im.onload = () => ok(im)
-        im.onerror = () => err(new Error('Could not load the layer image'))
-        im.src = mediaSrc(item.url)
-      })
-      const natW = img.naturalWidth || 1, natH = img.naturalHeight || 1
-      // Cap working resolution so the PNG re-upload fits the route limit
-      const sc = Math.min(1, 4096 / Math.max(natW, natH))
-      const off = document.createElement('canvas')
-      off.width = Math.max(1, Math.round(natW * sc))
-      off.height = Math.max(1, Math.round(natH * sc))
-      const ectx = off.getContext('2d')!
-      ectx.drawImage(img, 0, 0, off.width, off.height)
-      // Inverse of the item's placement transform: uncenter → unrotate → unscale
-      ectx.globalCompositeOperation = 'destination-out'
-      ectx.globalAlpha = alpha
-      ectx.translate(off.width / 2, off.height / 2)
-      ectx.scale(off.width / r.w, off.height / r.h)
-      ectx.rotate(-itemRot(item))
-      ectx.translate(-(r.x + r.w / 2), -(r.y + r.h / 2))
-      ectx.drawImage(stroke, 0, 0)
-      commitLayerCanvas(layer, item, off, r, st)
-      return true
-    } catch (e: any) {
-      setLayerError(e?.message || 'Erase failed')
-      setLayerBusy(false)
-      return true
-    }
-  }
-
-  // Shared commit for a punched layer canvas: freeze the rect, push undo,
-  // show the result INSTANTLY as a local data URL, host it in the background
-  // and swap in the permanent URL (stale-guarded against newer strokes/undo)
-  const commitLayerCanvas = (layer: RefLayer, item: RefLayerItem, off: HTMLCanvasElement, r: CropRect, preStack: RefLayerStack) => {
-    const c = canvasRef.current!
-    let out = off.toDataURL('image/png')
-    for (let edge = 4096; out.length > 19_000_000 && edge >= 1024; edge = Math.round(edge * 0.7)) {
-      const s2 = Math.min(1, edge / Math.max(off.width, off.height))
-      const c2 = document.createElement('canvas')
-      c2.width = Math.max(1, Math.round(off.width * s2))
-      c2.height = Math.max(1, Math.round(off.height * s2))
-      c2.getContext('2d')!.drawImage(off, 0, 0, c2.width, c2.height)
-      out = c2.toDataURL('image/png')
-    }
-    const frozen = { x: r.x / c.width, y: r.y / c.height, w: r.w / c.width, h: r.h / c.height }
-    const swapUrl = (url: string, localOnly: boolean) => {
-      const cur = stackRef.current
-      if (!cur) return
-      updStack({
-        ...cur,
-        layers: cur.layers.map(l => l.id !== layer.id ? l : ({
-          ...l,
-          items: l.items.map(i2 => i2.id !== item.id ? i2 : ({ ...i2, url, ...frozen })),
-        })),
-      }, { localOnly })
-    }
-    pushStackUndo(JSON.parse(JSON.stringify(preStack)))
-    swapUrl(out, true)
-    setLayerBusy(false)
-    requestAnimationFrame(drawLayerSelOverlay)
-    void (async () => {
-      try {
-        const res = await fetch('/api/user/ref-layer-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: out }),
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed')
-        const curItem = stackRef.current?.layers.find(l => l.id === layer.id)?.items.find(i2 => i2.id === item.id)
-        if (curItem?.url === out) swapUrl(data.url as string, false)
-      } catch (e: any) {
-        setLayerError(`Erase not saved: ${e?.message || 'upload failed'} — redo the stroke`)
-      }
-    })()
-    return out
-  }
-
-  // ── Live layer erase (real-time) ──────────────────────────────────────────
-  // Starts a stroke on the selected layer's image: the item's decoded image
-  // is copied to a canvas that REPLACES the <img> for the duration of the
-  // stroke, and every pointer move punches a segment through it with
-  // destination-out, mapped through the item's placement transform. Returns
-  // false when no layer is targeted (caller falls back to the base canvas).
-  const startLiveLayerErase = (pos: { x: number; y: number }): boolean => {
-    const st = stackRef.current
-    if (!st?.enabled || !selLayerId) return false
-    const layer = st.layers.find(l => l.id === selLayerId)
-    if (!layer) return false
-    const item = layer.items.find(i2 => i2.id === selItemId) ?? (layer.items.length === 1 ? layer.items[0] : null)
-    if (!item) { setLayerError('Select an image on the layer first'); return true }
-    const img = layerImgCache.current.get(item.url)
-    const r = itemRectPx(item)
-    if (!img || !img.complete || !img.naturalWidth || !r || r.w < 1 || r.h < 1) { setLayerError('Layer image still loading — try again'); return true }
-    const natW = img.naturalWidth, natH = img.naturalHeight
-    const sc = Math.min(1, 4096 / Math.max(natW, natH))
-    const off = document.createElement('canvas')
-    off.width = Math.max(1, Math.round(natW * sc)); off.height = Math.max(1, Math.round(natH * sc))
-    const ectx = off.getContext('2d')!
-    ectx.drawImage(img, 0, 0, off.width, off.height)
-    // Inverse placement transform: canvas-space strokes land in image space
-    ectx.globalCompositeOperation = 'destination-out'
-    ectx.globalAlpha = Math.max(0.05, paintOpacity / 100)
-    ectx.translate(off.width / 2, off.height / 2)
-    ectx.scale(off.width / r.w, off.height / r.h)
-    ectx.rotate(-itemRot(item))
-    ectx.translate(-(r.x + r.w / 2), -(r.y + r.h / 2))
-    ectx.lineCap = 'round'; ectx.lineJoin = 'round'
-    ectx.lineWidth = brushSize
-    ectx.strokeStyle = '#000'
-    // Initial dot so a tap erases too
-    ectx.beginPath(); ectx.moveTo(pos.x, pos.y); ectx.lineTo(pos.x + 0.01, pos.y); ectx.stroke()
-    liveEraseRef.current = { layerId: layer.id, itemId: item.id, canvas: off, ctx: ectx, rect: r, preStack: JSON.parse(JSON.stringify(st)), last: pos }
-    setLiveEraseItem({ layerId: layer.id, itemId: item.id })
-    return true
-  }
-  const moveLiveLayerErase = (pos: { x: number; y: number }) => {
-    const le = liveEraseRef.current; if (!le) return
-    le.ctx.beginPath(); le.ctx.moveTo(le.last.x, le.last.y); le.ctx.lineTo(pos.x, pos.y); le.ctx.stroke()
-    le.last = pos
-  }
-  const finishLiveLayerErase = async () => {
-    const le = liveEraseRef.current; if (!le) return
-    liveEraseRef.current = null
-    const st = stackRef.current
-    const layer = st?.layers.find(l => l.id === le.layerId)
-    const item = layer?.items.find(i2 => i2.id === le.itemId)
-    if (!st || !layer || !item) { setLiveEraseItem(null); return }
-    const out = commitLayerCanvas(layer, item, le.canvas, le.rect, le.preStack)
-    // Keep the live canvas on screen until the <img> has the punched PNG
-    // decoded — swapping early would flash the un-erased image
-    try { const im = new window.Image(); im.src = out; await im.decode() } catch {}
-    setLiveEraseItem(null)
-  }
-  // Rotate a point by -rad around the rect center (into the item's local space)
-  const toLocalPt = (pos: { x: number; y: number }, rect: CropRect, rad: number) => {
-    const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2
-    const dx = pos.x - cx, dy = pos.y - cy
-    const cos = Math.cos(-rad), sin = Math.sin(-rad)
-    return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }
-  }
-  const ROT_HANDLE_GAP = 26
-  // Unified undo: canvas paint frames and layer-transform snapshots interleave
-  // in one chronological list so the Undo button reverses the LAST action of
-  // either kind (double-tap fits, drags, pinches, rotations included)
-  const undoKindsRef = useRef<('canvas' | 'stack' | 'both')[]>([])
-  const stackUndoRef = useRef<RefLayerStack[]>([])
-  const [stackUndoLen, setStackUndoLen] = useState(0)
-  // Redo: every undo parks the state it removed here; any NEW action clears
-  // it (a fresh edit after an undo forks the timeline, as in every editor)
-  const redoKindsRef = useRef<('canvas' | 'stack' | 'both')[]>([])
-  const canvasRedoRef = useRef<string[]>([])
-  const stackRedoRef = useRef<RefLayerStack[]>([])
-  const [redoLen, setRedoLen] = useState(0)
-  const clearRedo = () => {
-    if (!redoKindsRef.current.length) return
-    redoKindsRef.current = []; canvasRedoRef.current = []; stackRedoRef.current = []
-    setRedoLen(0)
-  }
-  const pushStackUndo = (pre: RefLayerStack, opts?: { noKind?: boolean }) => {
-    stackUndoRef.current.push(pre)
-    if (!opts?.noKind) undoKindsRef.current.push('stack')
-    setStackUndoLen(stackUndoRef.current.length)
-    clearRedo()
-  }
-
-  // Double-tap on a selected image fits it to the canvas (contain, centered,
-  // rotation squared back to 0)
-  const lastTapRef = useRef<{ t: number; itemId: string; x: number; y: number } | null>(null)
-  const fitItemToCanvas = (layerId: string, itemId: string) => {
-    const c = canvasRef.current; if (!c) return
-    const st = stackRef.current
-    const it = st?.layers.find(l => l.id === layerId)?.items.find(i2 => i2.id === itemId)
-    if (!it) return
-    const nat = layerImgSizes.current[it.url]
-    // Prefer the image's natural aspect; fall back to the item's current shape
-    const aw = nat?.w || (typeof it.w === 'number' ? it.w * c.width : c.width)
-    const ah = nat?.h || (typeof it.h === 'number' ? it.h * c.height : c.height)
-    if (!aw || !ah) return
-    if (st) pushStackUndo(JSON.parse(JSON.stringify(st)))
-    const sc = Math.min(c.width / aw, c.height / ah)
-    const w = aw * sc, h = ah * sc
-    setItemRectLocal(layerId, itemId, { x: (c.width - w) / 2, y: (c.height - h) / 2, w, h }, 0)
-    requestAnimationFrame(() => {
-      const st2 = stackRef.current
-      if (st2) onLayerStackChange?.(st2)
-      drawLayerSelOverlay()
-    })
-  }
-
-  const commitItemRect = (layerId: string, itemId: string, r: CropRect) => {
-    const c = canvasRef.current; if (!c) return
-    const st = stackRef.current; if (!st) return
-    updStack({
-      ...st,
-      layers: st.layers.map(l => l.id !== layerId ? l : ({
-        ...l,
-        items: l.items.map(i2 => i2.id !== itemId ? i2 : { ...i2, x: r.x / c.width, y: r.y / c.height, w: r.w / c.width, h: r.h / c.height }),
-      })),
-    })
-  }
-  const handleLayerPointerDown = (pos: { x: number; y: number }): boolean => {
-    const st = stackRef.current; if (!st?.enabled) return false
-    // Handles / rotate knob / move on the already-selected item win first
-    if (selLayerId && selItemId) {
-      const it = st.layers.find(l => l.id === selLayerId)?.items.find(i2 => i2.id === selItemId)
-      const r = it ? itemRectPx(it) : null
-      if (it && r) {
-        const rad = itemRot(it)
-        const lp = toLocalPt(pos, r, rad)
-        const tol = 12 * displayScale()
-        const knob = { x: r.x + r.w / 2, y: r.y - ROT_HANDLE_GAP * displayScale() }
-        if (Math.hypot(lp.x - knob.x, lp.y - knob.y) <= tol) {
-          layerDragRef.current = { kind: 'rot', start: pos, orig: r, origR: it.r || 0, layerId: selLayerId, itemId: selItemId }
-          return true
-        }
-        const pts = frameHandlePoints(r)
-        for (const h of FRAME_HANDLES) {
-          const [hx, hy] = pts[h]
-          if (Math.abs(lp.x - hx) <= tol && Math.abs(lp.y - hy) <= tol) {
-            layerDragRef.current = { kind: h, start: pos, orig: r, origR: it.r || 0, layerId: selLayerId, itemId: selItemId }
-            return true
-          }
-        }
-        if (lp.x > r.x && lp.x < r.x + r.w && lp.y > r.y && lp.y < r.y + r.h) {
-          // Double-tap → fit the image to the canvas
-          const prev = lastTapRef.current
-          if (prev && prev.itemId === selItemId && Date.now() - prev.t < 400 && Math.hypot(pos.x - prev.x, pos.y - prev.y) < 45 * displayScale()) {
-            lastTapRef.current = null
-            fitItemToCanvas(selLayerId, selItemId)
-            return true
-          }
-          lastTapRef.current = { t: Date.now(), itemId: selItemId, x: pos.x, y: pos.y }
-          layerDragRef.current = { kind: 'move', start: pos, orig: r, origR: it.r || 0, layerId: selLayerId, itemId: selItemId }
-          return true
-        }
-      }
-    }
-    // Tap near the canvas EDGE → select the canvas itself (outline + corner
-    // handles for resizing the whole view). Checked before the item hit-test
-    // so a full-canvas base layer doesn't swallow the edge taps.
-    {
-      const c = canvasRef.current
-      if (c) {
-        const band = 16 * displayScale()
-        const inCanvas = pos.x >= 0 && pos.x <= c.width && pos.y >= 0 && pos.y <= c.height
-        const nearEdge = pos.x <= band || pos.x >= c.width - band || pos.y <= band || pos.y >= c.height - band
-        if (inCanvas && nearEdge) {
-          setCanvasSelected(true)
-          setSelItemId(null)
-          clearOverlay()
-          return false // fall through to view-pan so select+drag moves the canvas
-        }
-      }
-    }
-    // Otherwise hit-test items top-most first (rotation-aware)
-    for (let li = st.layers.length - 1; li >= 0; li--) {
-      const l = st.layers[li]
-      if (!l.visible) continue
-      for (let ii = l.items.length - 1; ii >= 0; ii--) {
-        const item = l.items[ii]
-        const r = itemRectPx(item)
-        if (!r) continue
-        const lp = toLocalPt(pos, r, itemRot(item))
-        if (lp.x > r.x && lp.x < r.x + r.w && lp.y > r.y && lp.y < r.y + r.h) {
-          setSelLayerId(l.id); setSelItemId(item.id)
-          setCanvasSelected(false)
-          // NOTE: the selecting tap deliberately does NOT arm the double-tap
-          // timer — the contract is 1 tap = select, then 2 taps = fit-to-canvas
-          layerDragRef.current = { kind: 'move', start: pos, orig: r, origR: item.r || 0, layerId: l.id, itemId: item.id }
-          // Materialize the auto-fit rect so future edits have concrete numbers
-          commitItemRect(l.id, item.id, r)
-          requestAnimationFrame(drawLayerSelOverlay)
-          return true
-        }
-      }
-    }
-    // Tap on dead space → deselect everything (item AND canvas)
-    setSelItemId(null)
-    setCanvasSelected(false)
-    clearOverlay()
-    return false
-  }
-  const handleLayerPointerMove = (pos: { x: number; y: number }) => {
-    const d = layerDragRef.current; if (!d) return
-    const c = canvasRef.current; if (!c) return
-    const cx0 = d.orig.x + d.orig.w / 2, cy0 = d.orig.y + d.orig.h / 2
-    if (d.kind === 'rot') {
-      const a0 = Math.atan2(d.start.y - cy0, d.start.x - cx0)
-      const a1 = Math.atan2(pos.y - cy0, pos.x - cx0)
-      let deg = d.origR + ((a1 - a0) * 180) / Math.PI
-      const snap = Math.round(deg / 90) * 90
-      if (Math.abs(deg - snap) < 4) deg = snap
-      deg = ((deg % 360) + 360) % 360
-      setItemRectLocal(d.layerId, d.itemId, d.orig, deg)
-      requestAnimationFrame(drawLayerSelOverlay)
-      return
-    }
-    if (d.kind === 'move') {
-      const dx = pos.x - d.start.x, dy = pos.y - d.start.y
-      let x = d.orig.x + dx, y = d.orig.y + dy
-      // Magnetic snapping: canvas edges/centerlines + every other visible
-      // image's edges/centers. The engaged snap line is drawn as a faint guide.
-      const tol = 10 * displayScale()
-      const w = d.orig.w, h = d.orig.h
-      const targX: number[] = [0, c.width, c.width / 2]
-      const targY: number[] = [0, c.height, c.height / 2]
-      const stNow = stackRef.current
-      if (stNow) {
-        for (const l of stNow.layers) {
-          if (!l.visible) continue
-          for (const it2 of l.items) {
-            if (it2.id === d.itemId) continue
-            const r2 = itemRectPx(it2)
-            if (!r2) continue
-            targX.push(r2.x, r2.x + r2.w, r2.x + r2.w / 2)
-            targY.push(r2.y, r2.y + r2.h, r2.y + r2.h / 2)
-          }
-        }
-      }
-      const x0 = x, y0 = y
-      let gx: number | null = null, gy: number | null = null
-      let bestX = tol + 1
-      for (const t of targX) {
-        for (const [edge, off] of [[x0, 0], [x0 + w, -w], [x0 + w / 2, -w / 2]] as [number, number][]) {
-          const dist = Math.abs(edge - t)
-          if (dist <= tol && dist < bestX) { bestX = dist; x = t + off; gx = t }
-        }
-      }
-      let bestY = tol + 1
-      for (const t of targY) {
-        for (const [edge, off] of [[y0, 0], [y0 + h, -h], [y0 + h / 2, -h / 2]] as [number, number][]) {
-          const dist = Math.abs(edge - t)
-          if (dist <= tol && dist < bestY) { bestY = dist; y = t + off; gy = t }
-        }
-      }
-      snapGuidesRef.current = { gx, gy }
-      setItemRectLocal(d.layerId, d.itemId, { x, y, w, h })
-      requestAnimationFrame(drawLayerSelOverlay)
-      return
-    }
-    // Resize: work in the item's local (unrotated) space
-    const rad = (d.origR * Math.PI) / 180
-    const lp = toLocalPt(pos, d.orig, rad)
-    const ls = toLocalPt(d.start, d.orig, rad)
-    const dx = lp.x - ls.x, dy = lp.y - ls.y
-    const minSz = 16 * displayScale()
-    let x1 = d.orig.x, y1 = d.orig.y, x2 = d.orig.x + d.orig.w, y2 = d.orig.y + d.orig.h
-    if (d.kind.includes('w')) x1 = Math.min(d.orig.x + dx, x2 - minSz)
-    if (d.kind.includes('e')) x2 = Math.max(d.orig.x + d.orig.w + dx, x1 + minSz)
-    if (d.kind.includes('n')) y1 = Math.min(d.orig.y + dy, y2 - minSz)
-    if (d.kind.includes('s')) y2 = Math.max(d.orig.y + d.orig.h + dy, y1 + minSz)
-    // Dragged edges snap to the canvas bounds
-    const snapTol = 10 * displayScale()
-    if (d.kind.includes('w') && Math.abs(x1) <= snapTol) x1 = 0
-    if (d.kind.includes('e') && Math.abs(x2 - c.width) <= snapTol) x2 = c.width
-    if (d.kind.includes('n') && Math.abs(y1) <= snapTol) y1 = 0
-    if (d.kind.includes('s') && Math.abs(y2 - c.height) <= snapTol) y2 = c.height
-    let w = x2 - x1, h = y2 - y1
-    if (lockAspect && d.orig.w > 0 && d.orig.h > 0) {
-      const ratio = d.orig.w / d.orig.h
-      if (d.kind.length === 2) {
-        // Corner: follow the dominant scale change, anchor the opposite corner
-        const sc = Math.max(w / d.orig.w, h / d.orig.h)
-        w = Math.max(minSz, d.orig.w * sc)
-        h = Math.max(minSz, d.orig.h * sc)
-        x1 = d.kind.includes('w') ? d.orig.x + d.orig.w - w : d.orig.x
-        y1 = d.kind.includes('n') ? d.orig.y + d.orig.h - h : d.orig.y
-      } else if (d.kind === 'e' || d.kind === 'w') {
-        // Edge: scale the other axis around its center
-        h = Math.max(minSz, w / ratio)
-        y1 = d.orig.y + (d.orig.h - h) / 2
-      } else {
-        w = Math.max(minSz, h * ratio)
-        x1 = d.orig.x + (d.orig.w - w) / 2
-      }
-    }
-    setItemRectLocal(d.layerId, d.itemId, { x: x1, y: y1, w, h })
-    requestAnimationFrame(drawLayerSelOverlay)
-  }
-  const handleLayerPointerUp = () => {
-    const d = layerDragRef.current
-    layerDragRef.current = null
-    snapGuidesRef.current = { gx: null, gy: null }
-    if (d) {
-      const st = stackRef.current
-      const c = canvasRef.current
-      if (st && c) {
-        const cur = st.layers.find(l => l.id === d.layerId)?.items.find(i2 => i2.id === d.itemId)
-        const curR = cur ? { x: (cur.x ?? 0) * c.width, y: (cur.y ?? 0) * c.height, w: (cur.w ?? 1) * c.width, h: (cur.h ?? 1) * c.height, r: cur.r || 0 } : null
-        const moved = curR && (Math.abs(curR.x - d.orig.x) > 0.5 || Math.abs(curR.y - d.orig.y) > 0.5 || Math.abs(curR.w - d.orig.w) > 0.5 || Math.abs(curR.h - d.orig.h) > 0.5 || Math.abs(curR.r - d.origR) > 0.01)
-        if (moved) {
-          pushStackUndo({
-            ...st,
-            layers: st.layers.map(l => l.id !== d.layerId ? l : ({
-              ...l,
-              items: l.items.map(i2 => i2.id !== d.itemId ? i2 : { ...i2, x: d.orig.x / c.width, y: d.orig.y / c.height, w: d.orig.w / c.width, h: d.orig.h / c.height, r: d.origR }),
-            })),
-          })
-        }
-        onLayerStackChange?.(st)
-      } else if (st) {
-        onLayerStackChange?.(st)
-      }
-      requestAnimationFrame(drawLayerSelOverlay)
-    }
-  }
-
-  // ── Workspace gestures on the pane AROUND the artboard ───────────────────
-  // When an image covers the canvas, one-finger drags grab the image — so the
-  // empty area around the artboard doubles as a pan/zoom surface (Select tool,
-  // Fit mode; Full mode keeps native touch scrolling).
-  const panePtsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const panePanRef = useRef<{ start: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
-  const panePinchRef = useRef<{ dist0: number; startAngle: number; mid0: { x: number; y: number }; orig: { s: number; sy: number; tx: number; ty: number; r: number } } | null>(null)
-  // Dashed workspace guides — the same faint line effect the elements draw on
-  // the canvas overlay, rendered over the PANE while a canvas-level snap engages
-  const [paneGuides, setPaneGuides] = useState<{ gx: number | null; gy: number | null }>({ gx: null, gy: null })
-  const clearPaneGuides = () => setPaneGuides(g => (g.gx !== null || g.gy !== null) ? { gx: null, gy: null } : g)
-  // Magnetic snapping for the artboard itself: while panning the canvas around
-  // the workspace, its (transformed) bounding box snaps to the pane's edges,
-  // corners and centerlines — same feel as images snapping to the canvas.
-  // Works on the axis-aligned bbox, so it's correct at any rotation/scale.
-  const snapViewTxTy = (tx: number, ty: number) => {
-    const pane = editorPaneRef.current, art = artboardRef.current
-    if (!pane || !art) return { tx, ty }
-    const pr = pane.getBoundingClientRect()
-    const ar = art.getBoundingClientRect()
-    // Where the artboard bbox lands at the proposed translation (bbox reflects
-    // the last-rendered canvasView, which matches the closure value)
-    const ddx = tx - canvasView.tx, ddy = ty - canvasView.ty
-    const tol = 12
-    let ax = 0, bx = tol + 1, tgx: number | null = null
-    for (const [edge, target] of [
-      [ar.left + ddx, pr.left], [ar.right + ddx, pr.right], [(ar.left + ar.right) / 2 + ddx, (pr.left + pr.right) / 2],
-    ] as [number, number][]) {
-      const d = target - edge
-      if (Math.abs(d) <= tol && Math.abs(d) < bx) { bx = Math.abs(d); ax = d; tgx = target }
-    }
-    let ay = 0, by = tol + 1, tgy: number | null = null
-    for (const [edge, target] of [
-      [ar.top + ddy, pr.top], [ar.bottom + ddy, pr.bottom], [(ar.top + ar.bottom) / 2 + ddy, (pr.top + pr.bottom) / 2],
-    ] as [number, number][]) {
-      const d = target - edge
-      if (Math.abs(d) <= tol && Math.abs(d) < by) { by = Math.abs(d); ay = d; tgy = target }
-    }
-    setPaneGuides({ gx: tgx !== null ? tgx - pr.left : null, gy: tgy !== null ? tgy - pr.top : null })
-    return { tx: tx + ax, ty: ty + ay }
-  }
-  // Resize the canvas view by dragging the logo-chip handles — all 8 (corners
-  // + edge midpoints), uniform scale anchored at the OPPOSITE corner/edge, like
-  // resizing an image. The dragged corner/edge snaps to the workspace edges and
-  // centerlines, adjusting the scale so it lands exactly flush.
-  type ViewHandle = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w'
-  const viewResizeRef = useRef<{
-    orig: { s: number; sy: number; tx: number; ty: number; r: number }
-    anchor: { x: number; y: number }
-    center: { x: number; y: number }
-    p0: { x: number; y: number }
-    axis: 'both' | 'x' | 'y'
-    pane: { left: number; right: number; top: number; bottom: number }
-    d0: number
-  } | null>(null)
-  // Side handles change the canvas's REAL dimensions (crop-expand behavior):
-  // dragging outward adds transparent space on that side, inward crops it off.
-  // A dashed preview with the new pixel size shows during the drag; the resize
-  // commits on release through the same path as the crop tool's Apply.
-  const canvasExpandRef = useRef<{
-    side: 'n' | 's' | 'e' | 'w'
-    start: { x: number; y: number }
-    cW: number; cH: number
-    pxPerCanvas: number          // client px per canvas px along the drag axis
-    canvasRect: { left: number; top: number; width: number; height: number }
-    paneRect: { left: number; top: number }
-    delta: number                // canvas px added (+) / cropped (−) on that side
-  } | null>(null)
-  const [expandPreview, setExpandPreview] = useState<{ left: number; top: number; width: number; height: number; w: number; h: number } | null>(null)
-
-  const onViewHandleDown = (h: ViewHandle) => (e: React.PointerEvent<HTMLDivElement>) => {
-    e.stopPropagation(); e.preventDefault()
-    const art = artboardRef.current, paneEl = editorPaneRef.current
-    if (!art || !paneEl) return
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-    if (h === 'n' || h === 's' || h === 'e' || h === 'w') {
-      const c = canvasRef.current; if (!c) return
-      const cr = c.getBoundingClientRect()
-      const pr = paneEl.getBoundingClientRect()
-      canvasExpandRef.current = {
-        side: h,
-        start: { x: e.clientX, y: e.clientY },
-        cW: c.width, cH: c.height,
-        pxPerCanvas: h === 'e' || h === 'w' ? (cr.width / c.width || 1) : (cr.height / c.height || 1),
-        canvasRect: { left: cr.left, top: cr.top, width: cr.width, height: cr.height },
-        paneRect: { left: pr.left, top: pr.top },
-        delta: 0,
-      }
-      return
-    }
-    const b = art.getBoundingClientRect()
-    const cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2
-    const P: Record<ViewHandle, { x: number; y: number }> = {
-      nw: { x: b.left, y: b.top }, ne: { x: b.right, y: b.top },
-      sw: { x: b.left, y: b.bottom }, se: { x: b.right, y: b.bottom },
-      n: { x: cx, y: b.top }, s: { x: cx, y: b.bottom },
-      w: { x: b.left, y: cy }, e: { x: b.right, y: cy },
-    }
-    const OPP: Record<ViewHandle, ViewHandle> = { nw: 'se', ne: 'sw', sw: 'ne', se: 'nw', n: 's', s: 'n', e: 'w', w: 'e' }
-    const anchor = P[OPP[h]]
-    const p0 = P[h]
-    const pr = paneEl.getBoundingClientRect()
-    viewResizeRef.current = {
-      orig: canvasView,
-      anchor,
-      center: { x: cx, y: cy },
-      p0,
-      axis: 'both', // side handles return above (real canvas resize) — only corners reach here
-      pane: { left: pr.left, right: pr.right, top: pr.top, bottom: pr.bottom },
-      d0: Math.hypot(p0.x - anchor.x, p0.y - anchor.y) || 1,
-    }
-  }
-  const onViewHandleMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const ex = canvasExpandRef.current
-    if (ex) {
-      e.stopPropagation()
-      // Pointer movement along the axis → canvas px (positive = outward)
-      const raw = ex.side === 'e' ? e.clientX - ex.start.x
-                : ex.side === 'w' ? ex.start.x - e.clientX
-                : ex.side === 's' ? e.clientY - ex.start.y
-                :                   ex.start.y - e.clientY
-      const dim = ex.side === 'e' || ex.side === 'w' ? ex.cW : ex.cH
-      ex.delta = Math.max(64 - dim, Math.round(raw / ex.pxPerCanvas))
-      const ext = ex.delta * ex.pxPerCanvas
-      let left = ex.canvasRect.left - ex.paneRect.left
-      let top = ex.canvasRect.top - ex.paneRect.top
-      let width = ex.canvasRect.width, height = ex.canvasRect.height
-      if (ex.side === 'e') width += ext
-      else if (ex.side === 'w') { left -= ext; width += ext }
-      else if (ex.side === 's') height += ext
-      else { top -= ext; height += ext }
-      setExpandPreview({
-        left, top, width, height,
-        w: ex.side === 'e' || ex.side === 'w' ? ex.cW + ex.delta : ex.cW,
-        h: ex.side === 'n' || ex.side === 's' ? ex.cH + ex.delta : ex.cH,
-      })
-      return
-    }
-    const d = viewResizeRef.current; if (!d) return
-    e.stopPropagation()
-    const s0x = d.orig.s || 1, s0y = d.orig.sy || 1
-    // Clamp against the axis actually being resized
-    const base = d.axis === 'y' ? s0y : s0x
-    const clampR = (r: number) => Math.min(6 / base, Math.max(0.25 / base, r))
-    let ratio: number
-    if (d.axis === 'x')      ratio = Math.abs(e.clientX - d.anchor.x) / (Math.abs(d.p0.x - d.anchor.x) || 1)
-    else if (d.axis === 'y') ratio = Math.abs(e.clientY - d.anchor.y) / (Math.abs(d.p0.y - d.anchor.y) || 1)
-    else                     ratio = (Math.hypot(e.clientX - d.anchor.x, e.clientY - d.anchor.y) || 1) / d.d0
-    ratio = clampR(ratio)
-    // Snap the dragged corner/edge to the workspace edges + centerlines by
-    // adjusting the uniform scale so it lands exactly flush
-    const tol = 12
-    const px = d.anchor.x + (d.p0.x - d.anchor.x) * ratio
-    const py = d.anchor.y + (d.p0.y - d.anchor.y) * ratio
-    let best: { dist: number; r: number; axis: 'x' | 'y'; target: number } | null = null
-    if (d.axis !== 'y' && Math.abs(d.p0.x - d.anchor.x) > 1) {
-      for (const target of [d.pane.left, d.pane.right, (d.pane.left + d.pane.right) / 2]) {
-        const dist = Math.abs(px - target)
-        const r = clampR((target - d.anchor.x) / (d.p0.x - d.anchor.x))
-        if (dist <= tol && r > 0 && (!best || dist < best.dist)) best = { dist, r, axis: 'x', target }
-      }
-    }
-    if (d.axis !== 'x' && Math.abs(d.p0.y - d.anchor.y) > 1) {
-      for (const target of [d.pane.top, d.pane.bottom, (d.pane.top + d.pane.bottom) / 2]) {
-        const dist = Math.abs(py - target)
-        const r = clampR((target - d.anchor.y) / (d.p0.y - d.anchor.y))
-        if (dist <= tol && r > 0 && (!best || dist < best.dist)) best = { dist, r, axis: 'y', target }
-      }
-    }
-    if (best) ratio = best.r
-    setPaneGuides({
-      gx: best?.axis === 'x' ? best.target - d.pane.left : null,
-      gy: best?.axis === 'y' ? best.target - d.pane.top : null,
-    })
-    // Side handles STRETCH that axis only; corners scale both uniformly.
-    // transform-origin is the artboard center, so each axis scales about it —
-    // counter-translate per axis so the anchor (opposite corner/edge) stays pinned
-    const rx = d.axis === 'y' ? 1 : ratio
-    const ry = d.axis === 'x' ? 1 : ratio
-    setCanvasView({
-      s: s0x * rx,
-      sy: s0y * ry,
-      r: d.orig.r,
-      tx: d.orig.tx + (d.anchor.x - d.center.x) * (1 - rx),
-      ty: d.orig.ty + (d.anchor.y - d.center.y) * (1 - ry),
-    })
-  }
-  const onViewHandleUp = () => {
-    const ex = canvasExpandRef.current
-    canvasExpandRef.current = null
-    setExpandPreview(null)
-    if (ex && Math.abs(ex.delta) >= 1) {
-      // Rect in canvas coords covering the resized bounds — negative x/y grows
-      // on the left/top, larger w/h grows on the right/bottom
-      commitCanvasRect(
-        ex.side === 'e' ? { x: 0, y: 0, w: ex.cW + ex.delta, h: ex.cH }
-        : ex.side === 'w' ? { x: -ex.delta, y: 0, w: ex.cW + ex.delta, h: ex.cH }
-        : ex.side === 's' ? { x: 0, y: 0, w: ex.cW, h: ex.cH + ex.delta }
-        :                   { x: 0, y: -ex.delta, w: ex.cW, h: ex.cH + ex.delta }
-      )
-    }
-    viewResizeRef.current = null
-    clearPaneGuides()
-  }
-  const paneTapRef = useRef<{ x: number; y: number; t: number; pinched: boolean } | null>(null)
-  const onPanePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (tool !== 'select' || fitMode !== 'fit') return
-    if (e.target !== e.currentTarget) return // the canvas + layers column own their events
-    e.currentTarget.setPointerCapture(e.pointerId)
-    panePtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    if (panePtsRef.current.size === 1) paneTapRef.current = { x: e.clientX, y: e.clientY, t: Date.now(), pinched: false }
-    else if (paneTapRef.current) paneTapRef.current.pinched = true
-    if (panePtsRef.current.size === 2) {
-      const pts = [...panePtsRef.current.values()]
-      panePanRef.current = null
-      panePinchRef.current = {
-        dist0: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
-        startAngle: Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x),
-        mid0: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
-        orig: canvasView,
-      }
-    } else {
-      panePanRef.current = { start: { x: e.clientX, y: e.clientY }, orig: canvasView }
-    }
-  }
-  const onPanePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!panePtsRef.current.has(e.pointerId)) return
-    panePtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    const pinch = panePinchRef.current
-    if (pinch && panePtsRef.current.size >= 2) {
-      const pts = [...panePtsRef.current.values()]
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1
-      const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
-      {
-        const ang = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x)
-        let deg = pinch.orig.r + ((ang - pinch.startAngle) * 180) / Math.PI
-        const snap = Math.round(deg / 90) * 90
-        if (Math.abs(deg - snap) < 4) deg = snap
-        setCanvasView({
-          s: Math.min(6, Math.max(0.25, pinch.orig.s * (dist / pinch.dist0))),
-          sy: Math.min(6, Math.max(0.25, (pinch.orig.sy || 1) * (dist / pinch.dist0))),
-          r: ((deg % 360) + 360) % 360,
-          tx: pinch.orig.tx + (mid.x - pinch.mid0.x),
-          ty: pinch.orig.ty + (mid.y - pinch.mid0.y),
-        })
-      }
-      return
-    }
-    if (panePanRef.current) {
-      const pan = panePanRef.current
-      const snapped = snapViewTxTy(pan.orig.tx + (e.clientX - pan.start.x), pan.orig.ty + (e.clientY - pan.start.y))
-      setCanvasView({ s: pan.orig.s, sy: pan.orig.sy || 1, r: pan.orig.r, tx: snapped.tx, ty: snapped.ty })
-    }
-  }
-  const onPanePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!panePtsRef.current.has(e.pointerId)) return
-    panePtsRef.current.delete(e.pointerId)
-    if (panePinchRef.current && panePtsRef.current.size < 2) panePinchRef.current = null
-    if (panePtsRef.current.size === 0) {
-      panePanRef.current = null
-      clearPaneGuides()
-      // A clean tap on the empty workspace (no drag, no pinch): deselect
-      // whatever is selected — or, with nothing selected, select the canvas
-      const tap = paneTapRef.current
-      paneTapRef.current = null
-      if (tap && !tap.pinched && Date.now() - tap.t < 600 && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 8) {
-        if (selItemId || canvasSelected) {
-          setSelItemId(null)
-          setCanvasSelected(false)
-          clearOverlay()
-        } else {
-          setCanvasSelected(true)
-        }
-      }
-    }
-  }
-
-  /**
-   * Why the canvas is empty, when it is.
-   *
-   * A failed load used to be silent, so it was indistinguishable from an
-   * image that genuinely loaded blank — nothing to see and nothing to
-   * report. An editor that cannot show you the picture should say so.
-   */
-  const [loadError, setLoadError] = useState<string | null>(null)
-
-  // Load image into canvas on mount.
-  // HTTPS images (Vercel Blob, R2, etc.) taint the canvas when drawn directly, which causes
-  // toDataURL() to throw a SecurityError — silently killing onload before setLoaded(true) runs.
-  // Fix: fetch HTTPS URLs as a blob first → create a same-origin blob URL → no canvas taint.
-  useEffect(() => {
-    const canvas = canvasRef.current; if (!canvas) return
-    let cancelled = false
-
-    const drawFrom = (img: HTMLImageElement) => {
-        // The load is async — if the editor closed (or swapped images) before it
-        // finished, the overlay ref is null and writing to it would crash
-        const overlay = overlayRef.current
-        if (cancelled || !overlay) return
-        // Use full native resolution (capped at 4096 to prevent OOM on huge images).
-        // CSS scales the canvas to fit the modal; getPos() corrects for the ratio.
-        const maxRes = 4096
-        const scale = Math.min(1, maxRes / img.width, maxRes / img.height)
-        const w = Math.round(img.width * scale)
-        const h = Math.round(img.height * scale)
-        canvas.width = w; canvas.height = h
-        overlay.width = w; overlay.height = h
-        canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
-        setDims({ w, h })
-        // Multi-layer refs keep the base in Layer 1 — the canvas is a transparent
-        // paint surface. Painting the flat image here would duplicate it under
-        // the layers (and Reset would resurrect it). Start cleared instead.
-        const st0 = stackRef.current
-        if (st0?.enabled && st0.baseInLayer) {
-          canvas.getContext('2d')!.clearRect(0, 0, w, h)
-          try {
-            historyRef.current = [canvas.toDataURL('image/png')]
-            undoKindsRef.current = []
-            stackUndoRef.current = []
-            setStackUndoLen(0)
-            setHistLen(1)
-          } catch { historyRef.current = []; setHistLen(0) }
-          setLoaded(true)
-          return
-        }
-        try {
-          const snap = document.createElement('canvas')
-          snap.width = w; snap.height = h
-          snap.getContext('2d')!.drawImage(img, 0, 0, w, h)
-          historyRef.current = [snap.toDataURL('image/jpeg', 0.97)]
-          undoKindsRef.current = []
-          stackUndoRef.current = []
-          setStackUndoLen(0)
-          setHistLen(1)
-        } catch {
-          historyRef.current = []
-          setHistLen(0)
-        }
-        setLoaded(true)
-    }
-
-    /** Load one src. `cors` is needed only for cross-origin sources. */
-    const loadImage = (src: string, cors: boolean) => new Promise<HTMLImageElement>((ok, bad) => {
-      const img = document.createElement('img')
-      if (cors) img.crossOrigin = 'anonymous'
-      img.onload = () => ok(img)
-      img.onerror = () => bad(new Error('load failed'))
-      img.src = src
-    })
-
-    void (async () => {
-      if (!image.url.startsWith('http')) {
-        // blob: or data: — already same-origin, no taint risk
-        try { drawFrom(await loadImage(image.url, false)) }
-        catch { if (!cancelled) { setLoadError('Could not load this image'); setLoaded(true) } }
-        return
-      }
-      try {
-        // The proxy first: a same-origin response can never taint the
-        // canvas, which is what lets Save and Apply export it.
-        drawFrom(await loadImage(`/api/admin/image-proxy?url=${encodeURIComponent(image.url)}`, false))
-      } catch {
-        if (cancelled) return
-        /*
-         * THEN THE URL ITSELF.
-         *
-         * The proxy is one more thing between the editor and the picture,
-         * and when it fails there is no reason to give up: the media Worker
-         * serves these with access-control-allow-origin, so a direct
-         * crossOrigin load is drawable and exportable too.
-         */
-        try { drawFrom(await loadImage(image.url, true)) }
-        catch {
-          if (cancelled) return
-          let where = 'its source'
-          try { where = new URL(image.url).hostname } catch {}
-          setLoadError(`Could not load this image from ${where}`)
-          setLoaded(true)
-        }
-      }
-    })()
-    return () => { cancelled = true }
-  }, [image.url])
-
-  const getPos = (e: React.PointerEvent) => {
-    const canvas = canvasRef.current!
-    const rect = canvas.getBoundingClientRect()
-    const rot = ((canvasView.r || 0) * Math.PI) / 180
-    if (!rot) {
-      return {
-        x: (e.clientX - rect.left) * canvas.width  / rect.width,
-        y: (e.clientY - rect.top)  * canvas.height / rect.height,
-      }
-    }
-    // Rotated workspace: the bounding box no longer matches the canvas face —
-    // un-rotate/un-scale around the bbox center, then map layout px → canvas px
-    // (un-rotate first, then divide per axis — scale applies before rotation)
-    const sv = canvasView.s || 1, svy = canvasView.sy || 1
-    const dx = e.clientX - (rect.left + rect.width / 2)
-    const dy = e.clientY - (rect.top + rect.height / 2)
-    const cos = Math.cos(-rot), sin = Math.sin(-rot)
-    const lx = (dx * cos - dy * sin) / sv
-    const ly = (dx * sin + dy * cos) / svy
-    const w = canvas.offsetWidth || 1, h = canvas.offsetHeight || 1
-    return {
-      x: (lx + w / 2) * canvas.width / w,
-      y: (ly + h / 2) * canvas.height / h,
-    }
-  }
-
-  const pushHistory = () => {
-    try {
-      // Layer mode keeps the canvas transparent — PNG preserves alpha (a JPEG
-      // frame would restore opaque black over the backdrop/layers on undo)
-      const url = stackRef.current?.enabled
-        ? canvasRef.current!.toDataURL('image/png')
-        : canvasRef.current!.toDataURL('image/jpeg', 0.97)
-      historyRef.current = [...historyRef.current, url]
-      undoKindsRef.current.push('canvas')
-      setHistLen(historyRef.current.length)
-      clearRedo()
-    } catch { /* tainted canvas — skip snapshot */ }
-  }
-
-  const restoreFrame = (dataUrl: string) => {
-    const canvas = canvasRef.current!
-    const ctx = canvas.getContext('2d')!
-    const img = document.createElement('img')
-    // History frames are always JPEG data URLs (same-origin) — no CORS concern
-    img.onload = () => {
-      // Frames can differ in size after a crop — resize canvases to match (resizing also clears)
-      canvas.width = img.width; canvas.height = img.height
-      const overlay = overlayRef.current
-      if (overlay) { overlay.width = img.width; overlay.height = img.height }
-      ctx.drawImage(img, 0, 0)
-      setDims({ w: img.width, h: img.height })
-      if (tool === 'crop' && cropMode === 'frame') initCropFrame()
-    }
-    img.src = dataUrl
-  }
-
-  const undo = () => {
-    const top = undoKindsRef.current[undoKindsRef.current.length - 1]
-    // 'both' = one atomic action that changed the canvas AND the layer stack
-    // (e.g. canvas resize remapping layer rects) — restore the two together
-    if (top === 'stack' || top === 'both') {
-      undoKindsRef.current.pop()
-      const snap = stackUndoRef.current.pop()
-      setStackUndoLen(stackUndoRef.current.length)
-      if (snap) {
-        // Park the state being undone for Redo
-        stackRedoRef.current.push(JSON.parse(JSON.stringify(stackRef.current ?? snap)))
-        // Sync the ref NOW — the background layer-erase upload's stale guard
-        // reads stackRef and must see the restored stack immediately
-        stackRef.current = snap
-        setStack(snap)
-        onLayerStackChange?.(snap)
-        requestAnimationFrame(drawLayerSelOverlay)
-      }
-      if (top === 'stack') {
-        redoKindsRef.current.push('stack')
-        setRedoLen(redoKindsRef.current.length)
-        return
-      }
-    } else if (top === 'canvas') {
-      undoKindsRef.current.pop()
-    }
-    if (historyRef.current.length <= 1) {
-      // 'both' with no canvas frame left — keep the redo entry honest
-      if (top === 'both') { redoKindsRef.current.push('stack'); setRedoLen(redoKindsRef.current.length) }
-      return
-    }
-    canvasRedoRef.current.push(historyRef.current[historyRef.current.length - 1])
-    historyRef.current = historyRef.current.slice(0, -1)
-    setHistLen(historyRef.current.length)
-    restoreFrame(historyRef.current[historyRef.current.length - 1])
-    redoKindsRef.current.push(top === 'both' ? 'both' : 'canvas')
-    setRedoLen(redoKindsRef.current.length)
-  }
-
-  // Reapply the most recently undone action (mirror of undo — the restored
-  // state goes back onto the undo list so the two stay symmetric)
-  const redo = () => {
-    const kind = redoKindsRef.current.pop()
-    if (!kind) return
-    if (kind === 'stack' || kind === 'both') {
-      const next = stackRedoRef.current.pop()
-      if (next) {
-        stackUndoRef.current.push(JSON.parse(JSON.stringify(stackRef.current ?? next)))
-        setStackUndoLen(stackUndoRef.current.length)
-        stackRef.current = next
-        setStack(next)
-        onLayerStackChange?.(next)
-        requestAnimationFrame(drawLayerSelOverlay)
-      }
-    }
-    if (kind === 'canvas' || kind === 'both') {
-      const frame = canvasRedoRef.current.pop()
-      if (frame) {
-        historyRef.current = [...historyRef.current, frame]
-        setHistLen(historyRef.current.length)
-        restoreFrame(frame)
-      }
-    }
-    undoKindsRef.current.push(kind)
-    setRedoLen(redoKindsRef.current.length)
-  }
-
-  const reset = () => {
-    // Layer stack back to its pristine state: the pre-state of the FIRST
-    // layer change this session (stackUndoRef[0]) — covers erases, drags,
-    // pinches, everything that pushed a stack snapshot
-    const firstStack = stackUndoRef.current[0]
-    if (firstStack) {
-      stackRef.current = firstStack
-      setStack(firstStack)
-      onLayerStackChange?.(firstStack)
-      stackUndoRef.current = []
-      setStackUndoLen(0)
-      requestAnimationFrame(drawLayerSelOverlay)
-    }
-    if (historyRef.current.length > 0) {
-      const orig = historyRef.current[0]
-      historyRef.current = [orig]
-      setHistLen(1)
-      restoreFrame(orig)
-      setHasCropSel(false)
-      overlayRef.current && (overlayRef.current.getContext('2d')!.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height))
-    }
-    undoKindsRef.current = []
-    clearRedo()
-  }
-
-  const clearOverlay = () => {
-    const o = overlayRef.current; if (!o) return
-    o.getContext('2d')!.clearRect(0, 0, o.width, o.height)
-  }
-
-  // DOM crop frame (border + logo handles) — drawn as elements ABOVE the canvas
-  // so the handles are never clipped, and the frame can extend past the canvas
-  // when the user grows the crop. Positioned in canvas-percent coords, updated
-  // imperatively so frame drags don't re-render the modal at 60Hz.
-  const cropFrameRef = useRef<HTMLDivElement>(null)
-  const syncCropFrame = () => {
-    const el = cropFrameRef.current, c = canvasRef.current
-    if (!el || !c || !c.width || !c.height) return
-    const r = cropRectRef.current
-    if (tool !== 'crop' || cropMode !== 'frame' || !r) { el.style.display = 'none'; return }
-    el.style.display = 'block'
-    el.style.left = `${(r.x / c.width) * 100}%`
-    el.style.top = `${(r.y / c.height) * 100}%`
-    el.style.width = `${(r.w / c.width) * 100}%`
-    el.style.height = `${(r.h / c.height) * 100}%`
-  }
-
-  // Silver orbit ring placement: while a crop selection is active the ring hugs
-  // the selection (percent coords track the crop rect through display scaling);
-  // otherwise it frames the whole canvas. Imperative style writes so live
-  // drag-resizing doesn't re-render the modal at 60Hz.
-  const orbitRef = useRef<HTMLDivElement>(null)
-  const syncOrbit = () => {
-    const el = orbitRef.current, c = canvasRef.current
-    if (!el || !c || !c.width || !c.height) return
-    const r = tool === 'crop' ? cropRectRef.current : null
-    if (r && r.w > 2 && r.h > 2) {
-      el.style.left = `${(r.x / c.width) * 100}%`
-      el.style.top = `${(r.y / c.height) * 100}%`
-      el.style.width = `${(r.w / c.width) * 100}%`
-      el.style.height = `${(r.h / c.height) * 100}%`
-    } else {
-      el.style.left = '0%'; el.style.top = '0%'; el.style.width = '100%'; el.style.height = '100%'
-    }
-  }
-
-  // Canvas px per CSS px — the canvas is native resolution but displayed scaled down,
-  // so handle sizes / hit tolerances must be scaled to look consistent on screen
-  const displayScale = () => {
-    const c = canvasRef.current; if (!c) return 1
-    // offsetWidth × view scale = true on-screen width of the canvas face (the
-    // bounding-box width lies once the workspace is rotated)
-    const w = (c.offsetWidth || 0) * (canvasView.s || 1)
-    return w > 0 ? c.width / w : 1
-  }
-
-  const drawFrameOverlay = () => {
-    const overlay = overlayRef.current; if (!overlay) return
-    const octx = overlay.getContext('2d')!
-    octx.clearRect(0, 0, overlay.width, overlay.height)
-    syncOrbit()
-    const r = cropRectRef.current; if (!r) return
-    const s = displayScale()
-    // Dim everything outside the crop frame
-    octx.fillStyle = 'rgba(0,0,0,0.55)'
-    octx.fillRect(0, 0, overlay.width, overlay.height)
-    octx.clearRect(r.x, r.y, r.w, r.h)
-    // Rule-of-thirds grid
-    octx.strokeStyle = 'rgba(255,255,255,0.25)'
-    octx.lineWidth = 1 * s
-    octx.beginPath()
-    for (let i = 1; i <= 2; i++) {
-      octx.moveTo(r.x + (r.w * i) / 3, r.y); octx.lineTo(r.x + (r.w * i) / 3, r.y + r.h)
-      octx.moveTo(r.x, r.y + (r.h * i) / 3); octx.lineTo(r.x + r.w, r.y + (r.h * i) / 3)
-    }
-    octx.stroke()
-    // Border + handles live in the DOM frame (never clipped, can leave the canvas)
-    syncCropFrame()
-  }
-
-  const initCropFrame = () => {
-    const canvas = canvasRef.current; if (!canvas) return
-    cropRectRef.current = { x: 0, y: 0, w: canvas.width, h: canvas.height }
-    setHasCropSel(true)
-    drawFrameOverlay()
-  }
-
-  const hitTestFrame = (pos: { x: number; y: number }): FrameHandle | 'move' | null => {
-    const r = cropRectRef.current; if (!r) return null
-    const tol = 12 * displayScale()
-    const pts = frameHandlePoints(r)
-    for (const h of FRAME_HANDLES) {
-      const [hx, hy] = pts[h]
-      if (Math.abs(pos.x - hx) <= tol && Math.abs(pos.y - hy) <= tol) return h
-    }
-    if (pos.x > r.x && pos.x < r.x + r.w && pos.y > r.y && pos.y < r.y + r.h) return 'move'
-    return null
-  }
-
-  // Initialize / tear down the crop frame when the tool or crop mode changes
-  useEffect(() => {
-    if (!loaded) return
-    if (tool === 'crop' && cropMode === 'frame') {
-      initCropFrame()
-    } else {
-      frameDragRef.current = null
-      cropRectRef.current = null
-      setHasCropSel(false)
-      clearOverlay()
-    }
-    syncOrbit()
-    syncCropFrame()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, cropMode, loaded])
-
-  // Layer selection frame tracks selection / stack / view changes
-  useEffect(() => {
-    if (tool === 'select' && loaded) {
-      const id = requestAnimationFrame(() => drawLayerSelOverlay())
-      return () => cancelAnimationFrame(id)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, selLayerId, selItemId, stack, loaded, fitMode])
-
-  // Fit/Full toggle changes the display scale — redraw handles at the new size after layout
-  useEffect(() => {
-    if (tool === 'crop' && cropMode === 'frame' && cropRectRef.current) {
-      const id = requestAnimationFrame(() => drawFrameOverlay())
-      return () => cancelAnimationFrame(id)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitMode])
-
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (toolMenuOpen) setToolMenuOpen(false)
-    if (tool === 'mask' || tool === 'resize') return // no canvas gestures — driven by toolbar buttons
-    if (tool === 'select') {
-      e.currentTarget.setPointerCapture(e.pointerId)
-      const pos = getPos(e)
-      layerPointersRef.current.set(e.pointerId, pos)
-      layerClientPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-      if (layerPointersRef.current.size === 2) {
-        viewPanRef.current = null
-        if (selLayerId && selItemId) {
-          // Second finger lands → pinch scales + twist rotates the selected image
-          const it = stackRef.current?.layers.find(l => l.id === selLayerId)?.items.find(i2 => i2.id === selItemId)
-          const r = it ? itemRectPx(it) : null
-          if (it && r) {
-            const pts = [...layerPointersRef.current.values()]
-            layerDragRef.current = null
-            layerPinchRef.current = {
-              startDist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
-              startAngle: Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x),
-              orig: r,
-              origR: it.r || 0,
-              layerId: selLayerId,
-              itemId: selItemId,
-            }
-          }
-          return
-        }
-        // No selection → two fingers pan/zoom the whole artboard
-        const cpts = [...layerClientPtsRef.current.values()]
-        layerDragRef.current = null
-        viewPinchRef.current = {
-          dist0: Math.hypot(cpts[0].x - cpts[1].x, cpts[0].y - cpts[1].y) || 1,
-          startAngle: Math.atan2(cpts[1].y - cpts[0].y, cpts[1].x - cpts[0].x),
-          mid0: { x: (cpts[0].x + cpts[1].x) / 2, y: (cpts[0].y + cpts[1].y) / 2 },
-          orig: canvasView,
-        }
-        return
-      }
-      // Single pointer: grab an item if hit, otherwise drag pans the artboard
-      if (!handleLayerPointerDown(pos)) {
-        viewPanRef.current = { start: { x: e.clientX, y: e.clientY }, orig: canvasView }
-      }
-      return
-    }
-    e.currentTarget.setPointerCapture(e.pointerId)
-    const pos = getPos(e)
-    isDrawingRef.current = true
-    lastPtRef.current = pos
-
-    const canvas = canvasRef.current!
-    const ctx = canvas.getContext('2d')!
-
-    if (tool === 'cut') {
-      // Start a fresh freehand cut path
-      cutPtsRef.current = [pos]
-      setCutReady(false)
-      clearOverlay()
-    } else if (tool === 'erase') {
-      // REAL-TIME erase: a selected layer is punched live through a stand-in
-      // canvas; otherwise the base canvas is punched directly (no preview)
-      if (!startLiveLayerErase(pos)) {
-        ctx.save()
-        ctx.globalCompositeOperation = 'destination-out'
-        ctx.globalAlpha = Math.max(0.05, paintOpacity / 100)
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = brushSize; ctx.strokeStyle = '#000'
-        ctx.beginPath(); ctx.moveTo(pos.x, pos.y); ctx.lineTo(pos.x + 0.01, pos.y); ctx.stroke()
-        ctx.restore()
-      }
-    } else if (tool === 'draw') {
-      // Strokes preview on the overlay and composite onto the canvas at the
-      // chosen opacity on release — uniform alpha, no darker joints where
-      // stroke segments overlap
-      const overlay0 = overlayRef.current!
-      const octx0 = overlay0.getContext('2d')!
-      octx0.clearRect(0, 0, overlay0.width, overlay0.height)
-      octx0.beginPath(); octx0.moveTo(pos.x, pos.y)
-      overlay0.style.opacity = String(Math.max(0.05, paintOpacity / 100))
-    } else if (tool === 'blur') {
-      blurPtsRef.current = [pos]
-      // Snapshot the canvas at stroke start — all blur is applied relative to this
-      const snap = document.createElement('canvas')
-      snap.width = canvas.width; snap.height = canvas.height
-      snap.getContext('2d')!.drawImage(canvas, 0, 0)
-      blurSnapRef.current = snap
-    } else if (tool === 'crop' && cropMode === 'frame') {
-      // Grab a handle to resize, or the frame interior to move it
-      if (!cropRectRef.current) initCropFrame()
-      const hit = hitTestFrame(pos)
-      frameDragRef.current = hit ? { kind: hit, start: pos, orig: { ...cropRectRef.current! } } : null
-    } else if (tool === 'shape' || tool === 'crop') {
-      startPtRef.current = pos
-      setHasCropSel(false)
-      cropRectRef.current = null
-    }
-  }
-
-  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (tool === 'select') {
-      if (layerPointersRef.current.has(e.pointerId)) layerPointersRef.current.set(e.pointerId, getPos(e))
-      if (layerClientPtsRef.current.has(e.pointerId)) layerClientPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-      const pinch = layerPinchRef.current
-      if (pinch && layerPointersRef.current.size >= 2) {
-        const pts = [...layerPointersRef.current.values()]
-        const sc = Math.max(0.05, (Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1) / pinch.startDist)
-        const ang = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x)
-        let deg = pinch.origR + ((ang - pinch.startAngle) * 180) / Math.PI
-        const snap = Math.round(deg / 90) * 90
-        if (Math.abs(deg - snap) < 4) deg = snap
-        deg = ((deg % 360) + 360) % 360
-        const minSz = 16 * displayScale()
-        let w = Math.max(minSz, pinch.orig.w * sc)
-        let h = Math.max(minSz, pinch.orig.h * sc)
-        const cEl = canvasRef.current
-        // SIZE snap: when a side approaches the canvas span, lock the uniform
-        // scale so it fits wall-to-wall exactly — then keep pinching through it
-        // to continue toward the other walls
-        if (cEl) {
-          const sizeTol = 14 * displayScale()
-          if (Math.abs(w - cEl.width) <= sizeTol) {
-            const scFit = cEl.width / pinch.orig.w
-            w = cEl.width
-            h = Math.max(minSz, pinch.orig.h * scFit)
-          } else if (Math.abs(h - cEl.height) <= sizeTol) {
-            const scFit = cEl.height / pinch.orig.h
-            h = cEl.height
-            w = Math.max(minSz, pinch.orig.w * scFit)
-          }
-        }
-        // POSITION snap: edges/centers stick magnetically to the canvas walls
-        // and centerlines, same feel as one-finger dragging
-        let px = pinch.orig.x + pinch.orig.w / 2 - w / 2
-        let py = pinch.orig.y + pinch.orig.h / 2 - h / 2
-        let gx: number | null = null, gy: number | null = null
-        if (cEl) {
-          const tol = 14 * displayScale()
-          let bestX = tol + 1
-          for (const t of [0, cEl.width, cEl.width / 2]) {
-            for (const [edge, off] of [[px, 0], [px + w, -w], [px + w / 2, -w / 2]] as [number, number][]) {
-              const dist = Math.abs(edge - t)
-              if (dist <= tol && dist < bestX) { bestX = dist; px = t + off; gx = t }
-            }
-          }
-          let bestY = tol + 1
-          for (const t of [0, cEl.height, cEl.height / 2]) {
-            for (const [edge, off] of [[py, 0], [py + h, -h], [py + h / 2, -h / 2]] as [number, number][]) {
-              const dist = Math.abs(edge - t)
-              if (dist <= tol && dist < bestY) { bestY = dist; py = t + off; gy = t }
-            }
-          }
-        }
-        snapGuidesRef.current = { gx, gy }
-        setItemRectLocal(pinch.layerId, pinch.itemId, { x: px, y: py, w, h }, deg)
-        requestAnimationFrame(drawLayerSelOverlay)
-        return
-      }
-      const vp = viewPinchRef.current
-      if (vp && layerClientPtsRef.current.size >= 2) {
-        const cpts = [...layerClientPtsRef.current.values()]
-        const dist = Math.hypot(cpts[0].x - cpts[1].x, cpts[0].y - cpts[1].y) || 1
-        const mid = { x: (cpts[0].x + cpts[1].x) / 2, y: (cpts[0].y + cpts[1].y) / 2 }
-        {
-          const ang = Math.atan2(cpts[1].y - cpts[0].y, cpts[1].x - cpts[0].x)
-          let deg = vp.orig.r + ((ang - vp.startAngle) * 180) / Math.PI
-          const snap = Math.round(deg / 90) * 90
-          if (Math.abs(deg - snap) < 4) deg = snap
-          setCanvasView({
-            s: Math.min(6, Math.max(0.25, vp.orig.s * (dist / vp.dist0))),
-            sy: Math.min(6, Math.max(0.25, (vp.orig.sy || 1) * (dist / vp.dist0))),
-            r: ((deg % 360) + 360) % 360,
-            tx: vp.orig.tx + (mid.x - vp.mid0.x),
-            ty: vp.orig.ty + (mid.y - vp.mid0.y),
-          })
-        }
-        return
-      }
-      if (viewPanRef.current) {
-        const pan = viewPanRef.current
-        const snapped = snapViewTxTy(pan.orig.tx + (e.clientX - pan.start.x), pan.orig.ty + (e.clientY - pan.start.y))
-        setCanvasView({ s: pan.orig.s, sy: pan.orig.sy || 1, r: pan.orig.r, tx: snapped.tx, ty: snapped.ty })
-        return
-      }
-      if (layerDragRef.current) handleLayerPointerMove(getPos(e))
-      return
-    }
-    if (!isDrawingRef.current) {
-      // Hover feedback for crop frame handles
-      if (tool === 'crop' && cropMode === 'frame' && loaded) {
-        const hit = hitTestFrame(getPos(e))
-        const c = canvasRef.current
-        if (c) c.style.cursor = hit === 'move' ? 'move' : hit ? FRAME_CURSORS[hit] : 'default'
-      }
-      return
-    }
-    const pos = getPos(e)
-    const canvas = canvasRef.current!
-    const ctx = canvas.getContext('2d')!
-    const overlay = overlayRef.current!
-    const octx = overlay.getContext('2d')!
-
-    if (tool === 'cut') {
-      // Freehand lasso: dashed live path on the overlay
-      cutPtsRef.current.push(pos)
-      const pts = cutPtsRef.current
-      const s = displayScale()
-      octx.clearRect(0, 0, overlay.width, overlay.height)
-      octx.strokeStyle = '#22d3ee'
-      octx.lineWidth = 1.5 * s
-      octx.setLineDash([6 * s, 4 * s])
-      octx.beginPath()
-      octx.moveTo(pts[0].x, pts[0].y)
-      for (let i = 1; i < pts.length; i++) octx.lineTo(pts[i].x, pts[i].y)
-      octx.stroke()
-      octx.setLineDash([])
-    } else if (tool === 'erase') {
-      if (liveEraseRef.current) {
-        moveLiveLayerErase(pos)
-      } else {
-        const lp = lastPtRef.current ?? pos
-        ctx.save()
-        ctx.globalCompositeOperation = 'destination-out'
-        ctx.globalAlpha = Math.max(0.05, paintOpacity / 100)
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = brushSize; ctx.strokeStyle = '#000'
-        ctx.beginPath(); ctx.moveTo(lp.x, lp.y); ctx.lineTo(pos.x, pos.y); ctx.stroke()
-        ctx.restore()
-      }
-      lastPtRef.current = pos
-    } else if (tool === 'draw') {
-      octx.strokeStyle = drawColor
-      octx.lineWidth = brushSize
-      octx.lineCap = 'round'; octx.lineJoin = 'round'
-      octx.globalCompositeOperation = 'source-over'
-      octx.lineTo(pos.x, pos.y); octx.stroke()
-    } else if (tool === 'blur') {
-      blurPtsRef.current.push(pos)
-      // Real-time blur: restore snapshot, then apply scale-down→up blur clipped to stroke path.
-      // Works on all browsers including old iOS Safari (no ctx.filter needed).
-      const snap = blurSnapRef.current; if (!snap) return
-      const pts = blurPtsRef.current; const br = brushSize / 2
-      // Compute bounding box of stroke + brush radius
-      const bx1 = Math.max(0, Math.min(...pts.map(p => p.x)) - br)
-      const by1 = Math.max(0, Math.min(...pts.map(p => p.y)) - br)
-      const bx2 = Math.min(canvas.width,  Math.max(...pts.map(p => p.x)) + br)
-      const by2 = Math.min(canvas.height, Math.max(...pts.map(p => p.y)) + br)
-      const bw = bx2 - bx1, bh = by2 - by1
-      if (bw < 1 || bh < 1) return
-      // Restore only the bounding-box region from the snapshot (fast)
-      ctx.drawImage(snap, bx1, by1, bw, bh, bx1, by1, bw, bh)
-      // Scale down → up: downscale factor controls blur strength
-      const factor = Math.max(3, blurRadius)
-      const sw = Math.max(1, Math.round(bw / factor))
-      const sh = Math.max(1, Math.round(bh / factor))
-      const tiny = document.createElement('canvas')
-      tiny.width = sw; tiny.height = sh
-      const tctx = tiny.getContext('2d')!
-      tctx.imageSmoothingEnabled = true
-      tctx.drawImage(snap, bx1, by1, bw, bh, 0, 0, sw, sh)
-      // Second pass: downscale again for a smoother result
-      const tiny2 = document.createElement('canvas')
-      tiny2.width = sw; tiny2.height = sh
-      const tctx2 = tiny2.getContext('2d')!
-      tctx2.imageSmoothingEnabled = true
-      tctx2.drawImage(tiny, 0, 0, sw, sh, 0, 0, sw, sh)
-      // Clip to brush path and upscale back onto the main canvas
-      ctx.save()
-      ctx.beginPath()
-      pts.forEach(p => { ctx.arc(p.x, p.y, br, 0, Math.PI * 2) })
-      ctx.clip()
-      ctx.imageSmoothingEnabled = true
-      ctx.imageSmoothingQuality = 'high'
-      ctx.globalAlpha = Math.max(0.05, paintOpacity / 100)
-      ctx.drawImage(tiny2, 0, 0, sw, sh, bx1, by1, bw, bh)
-      ctx.restore()
-    } else if (tool === 'crop' && cropMode === 'frame') {
-      const d = frameDragRef.current; if (!d) return
-      const dx = pos.x - d.start.x, dy = pos.y - d.start.y
-      const minSz = Math.min(20 * displayScale(), canvas.width / 2, canvas.height / 2)
-      let { x, y, w, h } = d.orig
-      if (d.kind === 'move') {
-        x = clampNum(d.orig.x + dx, -canvas.width / 2, Math.max(-canvas.width / 2, canvas.width * 1.5 - d.orig.w))
-        y = clampNum(d.orig.y + dy, -canvas.height / 2, Math.max(-canvas.height / 2, canvas.height * 1.5 - d.orig.h))
-      } else {
-        // Handle names encode which edges they move: 'nw' moves the north + west
-        // edges, etc. Edges may extend up to HALF A CANVAS beyond each side —
-        // applying then adds the overflow as transparent canvas space.
-        let x1 = d.orig.x, y1 = d.orig.y, x2 = d.orig.x + d.orig.w, y2 = d.orig.y + d.orig.h
-        if (d.kind.includes('w')) x1 = clampNum(d.orig.x + dx, -canvas.width / 2, x2 - minSz)
-        if (d.kind.includes('e')) x2 = clampNum(d.orig.x + d.orig.w + dx, x1 + minSz, canvas.width * 1.5)
-        if (d.kind.includes('n')) y1 = clampNum(d.orig.y + dy, -canvas.height / 2, y2 - minSz)
-        if (d.kind.includes('s')) y2 = clampNum(d.orig.y + d.orig.h + dy, y1 + minSz, canvas.height * 1.5)
-        x = x1; y = y1; w = x2 - x1; h = y2 - y1
-      }
-      cropRectRef.current = { x, y, w, h }
-      drawFrameOverlay()
-    } else if (tool === 'crop' || tool === 'shape') {
-      const sp = startPtRef.current; if (!sp) return
-      octx.clearRect(0, 0, overlay.width, overlay.height)
-      const x = Math.min(sp.x, pos.x), y = Math.min(sp.y, pos.y)
-      const w = Math.abs(pos.x - sp.x),   h = Math.abs(pos.y - sp.y)
-
-      if (tool === 'crop') {
-        octx.fillStyle = 'rgba(0,0,0,0.5)'; octx.fillRect(0, 0, overlay.width, overlay.height)
-        octx.clearRect(x, y, w, h)
-        octx.strokeStyle = 'rgba(255,255,255,0.85)'; octx.lineWidth = 1.5
-        octx.strokeRect(x, y, w, h)
-        cropRectRef.current = { x, y, w, h }
-        syncOrbit()
-      } else {
-        octx.fillStyle = shapeColor; octx.strokeStyle = shapeColor; octx.lineWidth = 2.5
-        if (shapeKind === 'rect') {
-          shapeFill ? octx.fillRect(x, y, w, h) : octx.strokeRect(x, y, w, h)
-        } else {
-          octx.beginPath(); octx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
-          shapeFill ? octx.fill() : octx.stroke()
-        }
-      }
-    }
-    lastPtRef.current = pos
-  }
-
-  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (tool === 'select') {
-      layerPointersRef.current.delete(e.pointerId)
-      layerClientPtsRef.current.delete(e.pointerId)
-      if (viewPinchRef.current && layerClientPtsRef.current.size < 2) {
-        viewPinchRef.current = null
-        return
-      }
-      if (viewPanRef.current) {
-        viewPanRef.current = null
-        clearPaneGuides()
-        return
-      }
-      if (layerPinchRef.current && layerPointersRef.current.size < 2) {
-        const pinch = layerPinchRef.current
-        layerPinchRef.current = null
-        snapGuidesRef.current = { gx: null, gy: null }
-        const st = stackRef.current
-        const c = canvasRef.current
-        if (st && c) {
-          pushStackUndo({
-            ...st,
-            layers: st.layers.map(l => l.id !== pinch.layerId ? l : ({
-              ...l,
-              items: l.items.map(i2 => i2.id !== pinch.itemId ? i2 : { ...i2, x: pinch.orig.x / c.width, y: pinch.orig.y / c.height, w: pinch.orig.w / c.width, h: pinch.orig.h / c.height, r: pinch.origR }),
-            })),
-          })
-          onLayerStackChange?.(st)
-        } else if (st) {
-          onLayerStackChange?.(st)
-        }
-        requestAnimationFrame(drawLayerSelOverlay)
-        return
-      }
-      handleLayerPointerUp()
-      return
-    }
-    if (!isDrawingRef.current) return
-    isDrawingRef.current = false
-
-    if (tool === 'cut') {
-      const pts = cutPtsRef.current
-      if (pts.length >= 3) {
-        // Close the lasso: show the region with the dashed outline + tint, await keep/remove
-        drawRegionOverlay(silhouetteFromPath(pts))
-        setCutReady(true)
-      } else {
-        cutPtsRef.current = []
-        clearOverlay()
-      }
-    } else if (tool === 'erase') {
-      // Live erase already landed every segment — just commit: layer strokes
-      // encode + host the punched canvas, base strokes take a history frame
-      if (liveEraseRef.current) void finishLiveLayerErase()
-      else pushHistory()
-    } else if (tool === 'draw') {
-      // Composite the previewed stroke onto the canvas at the chosen opacity
-      const overlay1 = overlayRef.current!
-      const canvas1 = canvasRef.current!
-      const ctx1 = canvas1.getContext('2d')!
-      ctx1.save()
-      ctx1.globalAlpha = Math.max(0.05, paintOpacity / 100)
-      ctx1.drawImage(overlay1, 0, 0)
-      ctx1.restore()
-      overlay1.style.opacity = ''
-      clearOverlay()
-      pushHistory()
-    } else if (tool === 'blur') {
-      // Blur was already applied live in onPointerMove — just commit and clean up
-      blurPtsRef.current = []
-      blurSnapRef.current = null
-      pushHistory()
-    } else if (tool === 'shape') {
-      // Commit shape overlay to main canvas
-      const canvas = canvasRef.current!
-      const ctx = canvas.getContext('2d')!
-      ctx.drawImage(overlayRef.current!, 0, 0)
-      clearOverlay(); pushHistory()
-    } else if (tool === 'crop') {
-      if (cropMode === 'frame') {
-        frameDragRef.current = null
-      } else {
-        const r = cropRectRef.current
-        setHasCropSel(!!(r && r.w > 2 && r.h > 2))
-      }
-    }
-  }
-
-  // Commit a rect (canvas coords, may extend past the bounds) as the canvas's
-  // NEW real dimensions — out-of-bounds regions become transparent space.
-  // Shared by the crop tool's Apply and the canvas-selection side handles.
-  const commitCanvasRect = (r: { x: number; y: number; w: number; h: number }) => {
-    const canvas = canvasRef.current!
-    const ctx = canvas.getContext('2d')!
-    const oldW = canvas.width, oldH = canvas.height
-    // getImageData fills anything outside the current canvas with transparent
-    // pixels — an out-of-bounds crop therefore GROWS the canvas with clear space
-    const data = ctx.getImageData(Math.round(r.x), Math.round(r.y), Math.round(r.w), Math.round(r.h))
-    canvas.width = Math.round(r.w); canvas.height = Math.round(r.h)
-    const overlay = overlayRef.current!
-    overlay.width = canvas.width; overlay.height = canvas.height
-    ctx.putImageData(data, 0, 0)
-    setDims({ w: canvas.width, h: canvas.height })
-    // Layer items live in canvas-fraction coords — remap into the new canvas
-    // space so nothing visually moves (expansion keeps everything in place)
-    const stC = stackRef.current
-    // The remap below + the pushHistory make this ONE action touching both
-    // stores — snapshot the stack kind-less and upgrade the canvas entry to
-    // 'both' so a single Undo reverses the whole resize
-    if (stC) pushStackUndo(JSON.parse(JSON.stringify(stC)), { noKind: true })
-    if (stC) {
-      updStack({
-        ...stC,
-        ...(stC.baseW ? { baseW: canvas.width } : {}),
-        ...(stC.baseH ? { baseH: canvas.height } : {}),
-        layers: stC.layers.map(l => ({
-          ...l,
-          items: l.items.map(it => (typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number')
-            ? { ...it, x: (it.x * oldW - r.x) / r.w, y: (it.y * oldH - r.y) / r.h, w: (it.w * oldW) / r.w, h: (it.h * oldH) / r.h }
-            : it),
-        })),
-      })
-    }
-    pushHistory()
-    if (stC) undoKindsRef.current[undoKindsRef.current.length - 1] = 'both'
-    syncOrbit()
-  }
-
-  const applyCrop = () => {
-    const r = cropRectRef.current; if (!r || r.w < 2 || r.h < 2) return
-    commitCanvasRect(r)
-    clearOverlay(); cropRectRef.current = null; setHasCropSel(false)
-    // Frame mode: rebuild the frame around the newly cropped image so the user can keep refining
-    if (cropMode === 'frame') initCropFrame()
-  }
-
-  // ── Mask + Cut ───────────────────────────────────────────────────────────
-  // Both tools produce a "silhouette" canvas (opaque where selected) and then apply
-  // it via applyRegion — keep (everything else → white) or remove (selection → white).
-
-  // Convert a black/white AI mask image into a silhouette sized to the canvas
-  const silhouetteFromMask = (img: HTMLImageElement, w: number, h: number) => {
-    const c = document.createElement('canvas'); c.width = w; c.height = h
-    const cctx = c.getContext('2d')!
-    cctx.drawImage(img, 0, 0, w, h)
-    const d = cctx.getImageData(0, 0, w, h)
-    let on = 0
-    for (let i = 0; i < d.data.length; i += 4) {
-      const hit = d.data[i + 3] > 10 && d.data[i] > 127 // white = masked
-      d.data[i] = 255; d.data[i + 1] = 255; d.data[i + 2] = 255
-      d.data[i + 3] = hit ? 255 : 0
-      if (hit) on++
-    }
-    if (on === 0) return null // nothing detected
-    cctx.putImageData(d, 0, 0)
-    return c
-  }
-
-  // Silhouette from the freehand cut path (filled polygon)
-  const silhouetteFromPath = (pts: { x: number; y: number }[]) => {
-    const canvas = canvasRef.current!
-    const c = document.createElement('canvas'); c.width = canvas.width; c.height = canvas.height
-    const cctx = c.getContext('2d')!
-    cctx.fillStyle = '#ffffff'
-    cctx.beginPath()
-    cctx.moveTo(pts[0].x, pts[0].y)
-    for (let i = 1; i < pts.length; i++) cctx.lineTo(pts[i].x, pts[i].y)
-    cctx.closePath()
-    cctx.fill()
-    return c
-  }
-
-  // Dashed outline + light tint around the silhouette (the "marching ants" preview)
-  const drawRegionOverlay = (sil: HTMLCanvasElement) => {
-    const overlay = overlayRef.current!; const octx = overlay.getContext('2d')!
-    octx.clearRect(0, 0, overlay.width, overlay.height)
-    const s = displayScale()
-    const r = Math.max(2, 2.5 * s)
-    // Ring: silhouette dilated in 8 directions, minus the silhouette itself
-    const ring = document.createElement('canvas'); ring.width = overlay.width; ring.height = overlay.height
-    const rctx = ring.getContext('2d')!
-    const o = r * 0.71
-    for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r], [o, o], [-o, o], [o, -o], [-o, -o]]) {
-      rctx.drawImage(sil, dx, dy)
-    }
-    rctx.globalCompositeOperation = 'destination-out'
-    rctx.drawImage(sil, 0, 0)
-    rctx.globalCompositeOperation = 'source-in'
-    rctx.fillStyle = '#22d3ee'
-    rctx.fillRect(0, 0, ring.width, ring.height)
-    // Dash the ring with a diagonal stripe pattern
-    const cell = Math.max(8, Math.round(10 * s))
-    const dash = document.createElement('canvas'); dash.width = cell; dash.height = cell
-    const dctx = dash.getContext('2d')!
-    dctx.strokeStyle = '#ffffff'; dctx.lineWidth = cell / 2
-    dctx.beginPath(); dctx.moveTo(-cell / 2, cell); dctx.lineTo(cell, -cell / 2)
-    dctx.moveTo(cell / 2, cell * 1.5); dctx.lineTo(cell * 1.5, cell / 2); dctx.stroke()
-    rctx.globalCompositeOperation = 'destination-in'
-    rctx.fillStyle = rctx.createPattern(dash, 'repeat')!
-    rctx.fillRect(0, 0, ring.width, ring.height)
-    // Tinted fill so the selected area itself reads clearly
-    const tint = document.createElement('canvas'); tint.width = overlay.width; tint.height = overlay.height
-    const tctx = tint.getContext('2d')!
-    tctx.drawImage(sil, 0, 0)
-    tctx.globalCompositeOperation = 'source-in'
-    tctx.fillStyle = '#22d3ee'
-    tctx.fillRect(0, 0, tint.width, tint.height)
-    octx.save(); octx.globalAlpha = 0.16; octx.drawImage(tint, 0, 0); octx.restore()
-    octx.drawImage(ring, 0, 0)
-  }
-
-  // Apply a silhouette: keep = everything outside → white; remove = selection → white.
-  // (White matches the editor's export, which flattens to a white-backed JPEG.)
-  const applyRegion = (sil: HTMLCanvasElement, mode: 'keep' | 'remove') => {
-    const canvas = canvasRef.current!; const ctx = canvas.getContext('2d')!
-    const snap = document.createElement('canvas'); snap.width = canvas.width; snap.height = canvas.height
-    const sctx = snap.getContext('2d')!
-    sctx.drawImage(canvas, 0, 0)
-    sctx.globalCompositeOperation = mode === 'keep' ? 'destination-in' : 'destination-out'
-    sctx.drawImage(sil, 0, 0)
-    ctx.globalCompositeOperation = 'source-over'
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(snap, 0, 0)
-    clearOverlay()
-    pushHistory()
-  }
-
-  const discardRegionSel = () => {
-    maskSilRef.current = null
-    cutPtsRef.current = []
-    setMaskReady(false)
-    setCutReady(false)
-    clearOverlay()
-  }
-
-  // ── Downscale (Scale tool) ────────────────────────────────────────────────
-  // Free, fully client-side: redraws the canvas at a smaller resolution
-  // (undo-able via history). A 4K reference often leaves edit models like
-  // NanoBanana too little room to change things — a 1K/2K copy frees them up.
-  const applyDownscale = (targetLong: number) => {
-    const canvas = canvasRef.current; if (!canvas || !loaded) return
-    const long = Math.max(canvas.width, canvas.height)
-    if (long <= targetLong) return
-    const sc = targetLong / long
-    const w = Math.max(1, Math.round(canvas.width * sc))
-    const h = Math.max(1, Math.round(canvas.height * sc))
-    const tmp = document.createElement('canvas')
-    tmp.width = w; tmp.height = h
-    const tctx = tmp.getContext('2d')!
-    tctx.imageSmoothingEnabled = true
-    tctx.imageSmoothingQuality = 'high'
-    tctx.drawImage(canvas, 0, 0, w, h)
-    canvas.width = w; canvas.height = h
-    canvas.getContext('2d')!.drawImage(tmp, 0, 0)
-    const overlay = overlayRef.current
-    if (overlay) { overlay.width = w; overlay.height = h }
-    cropRectRef.current = null
-    setHasCropSel(false)
-    discardRegionSel()
-    pushHistory()
-    setDims({ w, h })
-    syncOrbit()
-  }
-
-  // ── Save to device (iPad long-press) ─────────────────────────────────────
-  // Crop a canvas down to the silhouette's bounding box (tight cutout export)
-  const trimToSilhouette = (src: HTMLCanvasElement, sil: HTMLCanvasElement) => {
-    const w = sil.width, h = sil.height
-    const d = sil.getContext('2d')!.getImageData(0, 0, w, h).data
-    let minX = w, minY = h, maxX = -1, maxY = -1
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (d[(y * w + x) * 4 + 3] > 10) {
-          if (x < minX) minX = x
-          if (x > maxX) maxX = x
-          if (y < minY) minY = y
-          if (y > maxY) maxY = y
-        }
-      }
-    }
-    if (maxX < 0) return null
-    const bw = maxX - minX + 1, bh = maxY - minY + 1
-    const out = document.createElement('canvas'); out.width = bw; out.height = bh
-    out.getContext('2d')!.drawImage(src, minX, minY, bw, bh, 0, 0, bw, bh)
-    return out
-  }
-
-  // Full-size image (JPEG — the base canvas is opaque)
-  const openSaveFull = () => {
-    if (!loaded) return
-    const canvas = canvasRef.current!
-    // Layered canvas: export the full COMPOSITION (layers under, paint on top)
-    // at native resolution — lossless PNG so nothing degrades on the way to
-    // the Photos app
-    if (stackRef.current?.enabled) {
-      void (async () => {
-        try {
-          const exp = document.createElement('canvas')
-          exp.width = canvas.width; exp.height = canvas.height
-          const ectx = exp.getContext('2d')!
-          ectx.fillStyle = '#000000'
-          ectx.fillRect(0, 0, exp.width, exp.height)
-          await paintItems(ectx, exp.width, exp.height, stackRef.current!)
-          ectx.drawImage(canvas, 0, 0)
-          openSaveOverlay(exp.toDataURL('image/png'), `Full composition — ${exp.width}×${exp.height} PNG`)
-        } catch {
-          setLayerError('Could not export the composition — try again')
-        }
-      })()
-      return
-    }
-    try {
-      openSaveOverlay(canvas.toDataURL('image/png'), `Full-size image — ${canvas.width}×${canvas.height} PNG`)
-    } catch {}
-  }
-
-  // Just the masked/cut region as a TRANSPARENT PNG, trimmed to its bounding box —
-  // no white background, so the cutout drops cleanly into other apps
-  const openSaveCutout = (sil: HTMLCanvasElement | null) => {
-    if (!sil) return
-    const canvas = canvasRef.current!
-    const masked = document.createElement('canvas'); masked.width = canvas.width; masked.height = canvas.height
-    const mctx = masked.getContext('2d')!
-    mctx.drawImage(canvas, 0, 0)
-    mctx.globalCompositeOperation = 'destination-in'
-    mctx.drawImage(sil, 0, 0)
-    const trimmed = trimToSilhouette(masked, sil) ?? masked
-    try {
-      openSaveOverlay(trimmed.toDataURL('image/png'), 'Masked cutout — transparent PNG')
-    } catch {}
-  }
-
-  const applyMaskSel = (mode: 'keep' | 'remove') => {
-    const sil = maskSilRef.current; if (!sil) return
-    applyRegion(sil, mode)
-    discardRegionSel()
-  }
-
-  const applyCutSel = (mode: 'keep' | 'remove') => {
-    const pts = cutPtsRef.current; if (pts.length < 3) return
-    applyRegion(silhouetteFromPath(pts), mode)
-    discardRegionSel()
-  }
-
-  const runAutoMask = async () => {
-    if (maskBusy || !loaded) return
-    setMaskBusy(true); setMaskError(null); setMaskReady(false); clearOverlay()
-    try {
-      const src = canvasRef.current!.toDataURL('image/jpeg', 0.92)
-      const res = await fetch('/api/user/ref-mask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: src, prompt: maskPrompt.trim() || undefined }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok || !data.mask) throw new Error(data.error || 'Auto-mask failed')
-      const img = document.createElement('img')
-      await new Promise<void>((ok, err) => {
-        img.onload = () => ok()
-        img.onerror = () => err(new Error('Could not load the mask'))
-        img.src = data.mask
-      })
-      const canvas = canvasRef.current!
-      const sil = silhouetteFromMask(img, canvas.width, canvas.height)
-      if (!sil) throw new Error(maskPrompt.trim() ? 'Nothing matching that description was found' : 'No subject detected')
-      maskSilRef.current = sil
-      drawRegionOverlay(sil)
-      setMaskReady(true)
-    } catch (e: any) {
-      setMaskError(e?.message || 'Auto-mask failed')
-    } finally {
-      setMaskBusy(false)
-    }
-  }
-
-  const applyEdit = () => {
-    // Multi-layer: Apply flattens paint + layers into the new reference image
-    // (the parent then resets the stack to a fresh base layer holding it)
-    if (stackRef.current?.enabled) {
-      // Commit any pending crop selection first — users adjust the frame and hit
-      // Apply directly, expecting the crop to be included (applyCrop also remaps
-      // the layer fractions and syncs stackRef, so the flatten below sees them)
-      const rc = cropRectRef.current
-      if (tool === 'crop' && rc && rc.w > 2 && rc.h > 2) {
-        const c0 = canvasRef.current!
-        const isFullFrame = rc.x < 0.5 && rc.y < 0.5 && rc.w > c0.width - 0.5 && rc.h > c0.height - 0.5
-        if (!isFullFrame) applyCrop()
-      }
-      const canvas = canvasRef.current!
-      void (async () => {
-        try {
-          const exp = document.createElement('canvas')
-          exp.width = canvas.width; exp.height = canvas.height
-          const ectx = exp.getContext('2d')!
-          ectx.fillStyle = '#000000'
-          ectx.fillRect(0, 0, exp.width, exp.height)
-          await paintItems(ectx, exp.width, exp.height, stackRef.current!)
-          // Canvas paint is the TOP coat — it renders above the layers in the editor
-          ectx.drawImage(canvas, 0, 0)
-          onApply(exp.toDataURL('image/jpeg', 0.95))
-          setTool('select')
-          setSelLayerId(null); setSelItemId(null)
-          clearOverlay()
-        } catch {
-          setLayerError('Could not flatten the layers — try again')
-        }
-      })()
-      return
-    }
-    // Commit any pending crop selection first — users adjust the frame and hit Apply
-    // directly, expecting the crop to be included (without clicking "Apply Crop")
-    const r = cropRectRef.current
-    if (tool === 'crop' && r && r.w > 2 && r.h > 2) {
-      const c = canvasRef.current!
-      const isFullFrame = r.x < 0.5 && r.y < 0.5 && r.w > c.width - 0.5 && r.h > c.height - 0.5
-      if (!isFullFrame) applyCrop()
-    }
-    const canvas = canvasRef.current!
-    try {
-      const exp = document.createElement('canvas')
-      exp.width = canvas.width; exp.height = canvas.height
-      const ectx = exp.getContext('2d')!
-      ectx.fillStyle = '#ffffff'; ectx.fillRect(0, 0, exp.width, exp.height)
-      ectx.drawImage(canvas, 0, 0)
-      onApply(exp.toDataURL('image/jpeg', 0.92))
-      setTool('select')
-      clearOverlay()
-    } catch {
-      // Canvas tainted (cross-origin image loaded without CORS) — shouldn't happen
-      // because we fetch HTTPS images as blobs, but guard just in case
-      alert('Could not export this image. Try re-uploading it to the ref library.')
-    }
-  }
-
-  // Paint tools keep their settings in a dropdown (tap the active tool to
-  // toggle it) instead of a permanently visible second row
-  const CONFIG_TOOLS: EditorTool[] = ['draw', 'erase', 'blur', 'shape']
-  const toolBtn = (t: EditorTool, icon: React.ReactNode, label: string) => (
-    <button
-      key={t}
-      onClick={() => {
-        if (t === tool) {
-          if (CONFIG_TOOLS.includes(t)) setToolMenuOpen(v => !v)
-          return
-        }
-        setTool(t); clearOverlay(); setHasCropSel(false); maskSilRef.current = null; cutPtsRef.current = []; setMaskReady(false); setCutReady(false); setMaskError(null)
-        setToolMenuOpen(CONFIG_TOOLS.includes(t))
-      }}
-      title={label}
-      className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-[10px] font-medium transition-all ${
-        tool === t
-          ? 'bg-white/[0.12] text-white'
-          : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.05]'
-      }`}
-    >
-      {icon}
-      <span className="flex items-center gap-0.5">
-        {label}
-        {CONFIG_TOOLS.includes(t) && (
-          <ChevronDown size={8} className={`transition-transform ${tool === t && toolMenuOpen ? 'rotate-180' : ''}`} />
-        )}
-      </span>
-    </button>
-  )
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-2 sm:p-4"
-      // The fixed overlay can extend under iOS Safari's collapsed toolbar;
-      // pinning its height to the measured visible viewport keeps the
-      // centered modal fully on screen
-      style={vvh ? { height: vvh } : undefined}>
-      {/* Height = measured visualViewport (not vh/dvh): iPad Safari's vh
-          measures the LARGEST viewport so 95vh slid behind the browser chrome
-          in portrait, and dvh needs iPadOS 16.4+. The JS measurement is exact
-          on every browser; the dvh class is only the pre-measure fallback. */}
-      <div
-        className="relative w-full max-w-[1600px] max-h-[calc(100dvh-1rem)] bg-[#070b14]/95 border border-white/[0.08] rounded-2xl shadow-2xl flex flex-col"
-        style={{ height: vvh ? Math.max(320, vvh - 16) : '95vh' }}>
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.08] shrink-0">
-          <div className="flex items-center gap-2.5">
-            <SiteLogoBox size={26} rounded={9} />
-            <div>
-              <p className="text-sm font-bold text-white leading-none">Edit Image</p>
-              <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mt-1">Image · Editor</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* Live resolution readout */}
-            {dims && (
-              <span
-                className="px-2 py-1 rounded-lg border border-white/[0.08] bg-white/[0.03] text-[10px] font-mono text-slate-400 leading-none"
-                title="Current image resolution"
-              >
-                {dims.w}×{dims.h}
-              </span>
-            )}
-            {/* Save to device (long-press sheet) */}
-            <button
-              onClick={openSaveFull}
-              disabled={!loaded}
-              title="Save the full-size image to your device"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/[0.08] text-[10px] font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors disabled:opacity-40"
-            >
-              <Download size={11} />
-              Save
-            </button>
-            {/* Fit / Full-size toggle */}
-            <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
-              <button
-                onClick={() => setFitMode('fit')}
-                title="Fit to window"
-                className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${fitMode === 'fit' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                Fit
-              </button>
-              <button
-                onClick={() => setFitMode('native')}
-                title="Full resolution (scroll to pan)"
-                className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${fitMode === 'native' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                Full
-              </button>
-            </div>
-            <button onClick={onClose}
-              className="text-[11px] px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] transition-all">
-              Cancel
-            </button>
-            <button onClick={applyEdit}
-              className="relative overflow-hidden text-[11px] px-4 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40 transition-all font-bold">
-              <span
-                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
-                style={{ animation: "sheen-sweep 2.6s infinite" }}
-              />
-              Apply
-            </button>
-            <button onClick={onClose} title="Close" className="text-slate-500 hover:text-white transition-colors"><X size={16} /></button>
-          </div>
-        </div>
-
-        {/* Toolbar — Select first (navigate/arrange), then paint tools, then
-            transform tools; the Layers column toggle sits apart on the right */}
-        <div className="flex items-center gap-1 px-4 py-2 border-b border-white/[0.06] shrink-0 overflow-x-auto">
-          {toolBtn('select', <MousePointer2 size={15} />, 'Select')}
-          <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
-          {toolBtn('draw',  <Pencil  size={15} />, 'Draw')}
-          {toolBtn('erase', <Eraser  size={15} />, 'Erase')}
-          {toolBtn('blur',  <Droplets size={15} />, 'Blur')}
-          {toolBtn('shape', <Square  size={15} />, 'Shape')}
-          <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
-          {toolBtn('crop',  <Crop    size={15} />, 'Crop')}
-          {toolBtn('mask',  <Wand2   size={15} />, 'Mask')}
-          {toolBtn('cut',   <Scissors size={15} />, 'Cut')}
-          {toolBtn('resize', <Minimize2 size={15} />, 'Scale')}
-          <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
-          <button onClick={undo} disabled={histLen <= 1 && stackUndoLen === 0} title="Undo"
-            className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
-            <Undo2 size={13} /> Undo
-          </button>
-          <button onClick={redo} disabled={redoLen === 0} title="Redo"
-            className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
-            <Redo2 size={13} /> Redo
-          </button>
-          <button onClick={reset} disabled={histLen <= 1 && stackUndoLen === 0} title="Reset all edits (canvas + layers)"
-            className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
-            <RotateCcw size={13} /> Reset
-          </button>
-          {tool === 'select' && (
-            <>
-              <span className="w-px h-5 bg-white/[0.08] mx-1 shrink-0" />
-              <button
-                onClick={() => setLockAspect(v => !v)}
-                title={lockAspect ? 'Aspect ratio locked — resizing keeps proportions' : 'Aspect ratio unlocked — free resize'}
-                className={`flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border transition-colors shrink-0 ${
-                  lockAspect ? 'bg-white/10 border-white/25 text-white' : 'border-white/10 text-slate-500 hover:text-slate-300'
-                }`}
-              >
-                {lockAspect ? <Lock size={11} /> : <Unlock size={11} />} Ratio
-              </button>
-              {(canvasView.s !== 1 || canvasView.sy !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0) && (
-                <button
-                  onClick={() => setCanvasView({ s: 1, sy: 1, tx: 0, ty: 0, r: 0 })}
-                  title="Reset the artboard position and zoom"
-                  className="text-[10px] px-2 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors shrink-0"
-                >
-                  Reset
-                </button>
-              )}
-              {selLayerId && selItemId && (
-                <button
-                  onClick={() => removeItem(selLayerId, selItemId)}
-                  title="Remove the selected image from its layer"
-                  className="p-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-red-400 hover:border-red-400/30 transition-colors shrink-0"
-                >
-                  <Trash2 size={12} />
-                </button>
-              )}
-              {layerError && <span className="text-[11px] font-semibold text-red-400 shrink min-w-0 max-w-[50%] truncate" title={layerError}>⚠ {layerError}</span>}
-            </>
-          )}
-          <button
-            onClick={() => setShowLayersPanel(v => !v)}
-            title="Layers"
-            className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
-              showLayersPanel ? 'bg-white/10 text-white border border-white/25' : 'text-slate-400 hover:text-white border border-white/[0.08] hover:bg-white/[0.06]'
-            }`}
-          >
-            <Layers size={13} />
-            Layers
-            {stack?.enabled && <span className="px-1 py-0.5 rounded bg-white/15 text-[9px] font-mono leading-none">{stack.layers.length}</span>}
-          </button>
-        </div>
-
-        {/* Paint-tool settings dropdown (replaces the old always-on second row) */}
-        {toolMenuOpen && CONFIG_TOOLS.includes(tool) && (
-          <div className="relative z-50">
-            <div className="absolute top-1 left-4 w-72 max-w-[85vw] rounded-xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl p-3 space-y-3">
-              {/* Live brush preview — the dot is the EXACT on-screen size the
-                  stroke will paint at (brush size ÷ current canvas zoom),
-                  with the tool's color, opacity, and softness */}
-              {(tool === 'draw' || tool === 'erase' || tool === 'blur') && (() => {
-                const onscreen = Math.max(2, brushSize / (displayScale() || 1))
-                const cap = 72
-                const shown = Math.min(cap, onscreen)
-                return (
-                  <div
-                    className="relative h-20 rounded-lg border border-white/[0.06] overflow-hidden flex items-center justify-center"
-                    style={{ background: 'repeating-conic-gradient(rgba(255,255,255,0.05) 0% 25%, transparent 0% 50%) 0 0 / 14px 14px' }}
-                  >
-                    <span
-                      className="rounded-full shrink-0"
-                      style={{
-                        width: shown, height: shown,
-                        opacity: Math.max(0.05, paintOpacity / 100),
-                        background: tool === 'draw' ? drawColor : tool === 'erase' ? '#f472b6' : 'rgba(148,163,184,0.9)',
-                        ...(tool === 'blur' ? { filter: `blur(${Math.min(14, blurRadius / 2)}px)` } : {}),
-                        ...(tool === 'erase' ? { boxShadow: '0 0 0 1.5px rgba(255,255,255,0.45)' } : {}),
-                      }}
-                    />
-                    <span className="absolute bottom-1 right-2 text-[9px] font-mono text-slate-500">
-                      {brushSize}px{onscreen > cap ? ' · capped' : ''}
-                    </span>
-                  </div>
-                )
-              })()}
-              {(tool === 'draw' || tool === 'erase') && (
-                <>
-                  {tool === 'draw' && (
-                    <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                      Color
-                      <input type="color" value={drawColor} onChange={e => setDrawColor(e.target.value)}
-                        className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
-                    </label>
-                  )}
-                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                    Size <span className="text-slate-300 w-16 text-center tabular-nums" title="Brush diameter in canvas pixels / % of the canvas long edge">{brushSize}px · {brushPct(brushSize)}</span>
-                    <input type="range" min={0} max={100} value={brushToSlider(brushSize)} onChange={e => setBrushSize(sliderToBrush(+e.target.value))}
-                      className="flex-1 accent-white" />
-                  </label>
-                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                    Opacity <span className="text-slate-300 w-7 text-center">{paintOpacity}</span>
-                    <input type="range" min={5} max={100} value={paintOpacity} onChange={e => setPaintOpacity(+e.target.value)}
-                      className="flex-1 accent-white" />
-                  </label>
-                </>
-              )}
-              {tool === 'blur' && (
-                <>
-                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                    Intensity <span className="text-slate-300 w-7 text-center">{blurRadius}</span>
-                    <input type="range" min={2} max={30} value={blurRadius} onChange={e => setBlurRadius(+e.target.value)}
-                      className="flex-1 accent-white" />
-                  </label>
-                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                    Brush <span className="text-slate-300 w-16 text-center tabular-nums" title="Brush diameter in canvas pixels / % of the canvas long edge">{brushSize}px · {brushPct(brushSize)}</span>
-                    <input type="range" min={0} max={100} value={brushToSlider(brushSize)} onChange={e => setBrushSize(sliderToBrush(+e.target.value))}
-                      className="flex-1 accent-white" />
-                  </label>
-                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                    Opacity <span className="text-slate-300 w-7 text-center">{paintOpacity}</span>
-                    <input type="range" min={5} max={100} value={paintOpacity} onChange={e => setPaintOpacity(+e.target.value)}
-                      className="flex-1 accent-white" />
-                  </label>
-                </>
-              )}
-              {tool === 'shape' && (
-                <div className="flex items-center gap-3 flex-wrap">
-                  <div className="flex gap-1">
-                    {(['rect', 'circle'] as ShapeKind[]).map(k => (
-                      <button key={k} onClick={() => setShapeKind(k)}
-                        className={`p-1.5 rounded-lg transition-colors ${shapeKind === k ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                        {k === 'rect' ? <Square size={14} /> : <Circle size={14} />}
-                      </button>
-                    ))}
-                  </div>
-                  <label className="flex items-center gap-2 text-[11px] text-slate-400">
-                    Color
-                    <input type="color" value={shapeColor} onChange={e => setShapeColor(e.target.value)}
-                      className="w-7 h-7 rounded cursor-pointer border-0 bg-transparent" />
-                  </label>
-                  <button onClick={() => setShapeFill(f => !f)}
-                    className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${shapeFill ? 'border-white/25 text-white bg-white/10' : 'border-white/10 text-slate-400 hover:text-slate-200'}`}>
-                    {shapeFill ? 'Filled' : 'Outline'}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Tool options row — only the transform tools need it now (paint tools
-            use the dropdown, Select lives in the toolbar) */}
-        {(tool === 'crop' || tool === 'mask' || tool === 'cut' || tool === 'resize') && (
-        <div className="flex items-center gap-4 gap-y-1.5 flex-wrap px-5 py-2 border-b border-white/[0.06] shrink-0 min-h-[44px]">
-          {tool === 'crop' && (
-            <>
-              {/* shrink-0 keeps the toggle intact on narrow screens — without it the
-                  overflow-hidden segmented control gets squeezed and clips "Drag" */}
-              <div className="flex rounded-lg overflow-hidden border border-white/[0.08] shrink-0">
-                <button
-                  onClick={() => setCropMode('frame')}
-                  title="Crop frame with draggable corners and edges"
-                  className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${cropMode === 'frame' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                  Frame
-                </button>
-                <button
-                  onClick={() => setCropMode('drag')}
-                  title="Drag to draw a crop selection"
-                  className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${cropMode === 'drag' ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-                  Drag
-                </button>
-              </div>
-              <span className="flex-1 min-w-0 text-[11px] text-slate-500 leading-snug">
-                {cropMode === 'frame'
-                  ? 'Drag corners or edges to resize the frame — drag inside it to move'
-                  : 'Drag to select crop area'}
-              </span>
-            </>
-          )}
-          {tool === 'mask' && (
-            <>
-              <input
-                value={maskPrompt}
-                onChange={e => { setMaskPrompt(e.target.value); setMaskError(null) }}
-                onKeyDown={e => { if (e.key === 'Enter') runAutoMask() }}
-                placeholder="Describe what to mask (empty = auto-detect subject)"
-                disabled={maskBusy}
-                className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-[11px] text-white placeholder:text-slate-600 focus:outline-none focus:border-white/30 disabled:opacity-50"
-              />
-              <button
-                onClick={runAutoMask}
-                disabled={maskBusy || !loaded}
-                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50 shrink-0"
-              >
-                {maskBusy ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-                {maskBusy ? 'Masking…' : 'Auto-Mask'}
-              </button>
-              {maskError && <span className="text-[10px] text-red-400 shrink-0 max-w-[40%] truncate" title={maskError}>{maskError}</span>}
-            </>
-          )}
-          {tool === 'cut' && (
-            <span className="flex-1 min-w-0 text-[11px] text-slate-500 leading-snug">
-              Draw a line around an area — release to close the cut, then choose keep or remove
-            </span>
-          )}
-          {tool === 'resize' && (() => {
-            const long = dims ? Math.max(dims.w, dims.h) : 0
-            return (
-              <>
-                <span className="text-[11px] text-slate-400 shrink-0">
-                  Current <span className="text-white font-semibold">{dims ? `${dims.w}×${dims.h}` : '—'}</span>
-                </span>
-                <div className="flex rounded-lg overflow-hidden border border-white/[0.08] shrink-0">
-                  {([['512', 512], ['768', 768], ['1K', 1024], ['2K', 2048], ['3K', 3072]] as const).map(([label, px]) => (
-                    <button
-                      key={label}
-                      onClick={() => applyDownscale(px)}
-                      disabled={!loaded || long <= px}
-                      title={long <= px ? 'Already at or below this size' : `Downscale longest side to ${px}px`}
-                      className="px-3 py-1 text-[10px] font-medium text-slate-400 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <span className="flex-1 min-w-0 text-[11px] text-slate-500 leading-snug">
-                  Downscaling a high-res reference gives edit models more room to make changes
-                </span>
-              </>
-            )
-          })()}
-        </div>
-        )}
-
-        {/* Canvas area — canvas is always in the DOM so the load useEffect can find canvasRef */}
-        <div
-          ref={editorPaneRef}
-          onPointerDown={onPanePointerDown}
-          // Any pointer down on the canvas area OUTSIDE the layers popup
-          // dismisses it (capture phase so tool handlers can't swallow it)
-          onPointerDownCapture={e => {
-            if (showLayersPanel && !(e.target as HTMLElement).closest?.('[data-layers-panel]')) setShowLayersPanel(false)
-          }}
-          onPointerMove={onPanePointerMove}
-          onPointerUp={onPanePointerUp}
-          onPointerCancel={onPanePointerUp}
-          className={`flex-1 min-h-0 p-4 bg-black relative isolate ${fitMode === 'fit' ? 'flex items-center justify-center overflow-hidden touch-none' : 'overflow-auto'}`}
-        >
-          {/* Branded logo wall fills the workspace AROUND the artboard */}
-          <BrandBackdrop />
-          {/* Dashed workspace snap guides — same treatment as the element
-              alignment guides, shown while a canvas-level snap is engaged */}
-          {paneGuides.gx !== null && (
-            <div className="absolute top-0 bottom-0 z-30 pointer-events-none"
-              style={{ left: paneGuides.gx, width: 1, backgroundImage: 'repeating-linear-gradient(to bottom, rgba(248,250,252,0.35) 0 5px, transparent 5px 10px)' }} />
-          )}
-          {paneGuides.gy !== null && (
-            <div className="absolute left-0 right-0 z-30 pointer-events-none"
-              style={{ top: paneGuides.gy, height: 1, backgroundImage: 'repeating-linear-gradient(to right, rgba(248,250,252,0.35) 0 5px, transparent 5px 10px)' }} />
-          )}
-          {/* Canvas-resize preview: dashed outline of the new REAL canvas bounds
-              while a side handle is dragged, with the resulting pixel size */}
-          {expandPreview && (
-            <div className="absolute z-30 pointer-events-none border-[1.5px] border-dashed border-white/80 rounded-sm flex items-center justify-center"
-              style={{ left: expandPreview.left, top: expandPreview.top, width: expandPreview.width, height: expandPreview.height }}>
-              <span className="px-2 py-0.5 rounded-full bg-black/70 border border-white/15 text-[10px] font-mono text-white whitespace-nowrap">
-                {expandPreview.w} × {expandPreview.h}
-              </span>
-            </div>
-          )}
-          {!loaded && (
-            <div className="absolute inset-0 flex items-center justify-center gap-2 text-slate-600 text-sm z-10">
-              <Loader2 size={16} className="animate-spin" /> Loading…
-            </div>
-          )}
-          <div
-            ref={artboardRef}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            className={`relative isolate inline-block rounded-lg ${tool === 'crop' ? 'overflow-visible' : 'overflow-hidden'} shadow-xl transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}
-            style={{
-              touchAction: 'none',
-              ...(canvasView.s !== 1 || canvasView.sy !== 1 || canvasView.tx !== 0 || canvasView.ty !== 0 || canvasView.r !== 0
-                ? { transform: `translate(${canvasView.tx}px, ${canvasView.ty}px) rotate(${canvasView.r}deg) scale(${canvasView.s}, ${canvasView.sy})`, transformOrigin: 'center center' }
-                : {}),
-            }}
-          >
-            {/* Solid black under the transparent canvas (multi-layer mode) — the
-                branded wall lives OUTSIDE the artboard, on the workspace pane */}
-            {stack?.enabled && <div className="absolute inset-0 -z-10 bg-black rounded-lg" />}
-            {/* An empty canvas with no explanation is the worst version of this
-                failure: it looks identical to an image that legitimately
-                loaded blank. Say what happened and where it was fetched from,
-                so it can be reported without a debugger. */}
-            {loadError && (
-              <div className="absolute inset-0 z-[30] flex flex-col items-center justify-center gap-2 p-6 text-center pointer-events-none">
-                <div className="pointer-events-auto max-w-[300px] rounded-xl border border-red-500/30 bg-[#12060a]/95 px-3 py-2.5">
-                  <p className="text-[11px] font-semibold text-red-200">{loadError}</p>
-                  <p className="mt-1 text-[10px] leading-snug text-red-200/60">
-                    The picture is still safe in your library — the editor could not fetch it.
-                    Close and reopen; if it keeps happening, tell us this message.
-                  </p>
-                </div>
-              </div>
-            )}
-            <canvas ref={canvasRef}
-              style={{
-                display: 'block',
-                // Paint is the TOP coat: above the layer previews (which cover
-                // the whole canvas in layered mode), below the tool overlay
-                position: 'relative',
-                zIndex: 5,
-                touchAction: 'none',
-                cursor: tool === 'shape' || tool === 'cut' || (tool === 'crop' && cropMode === 'drag') ? 'crosshair' : tool === 'crop' || tool === 'mask' || tool === 'resize' || tool === 'select' ? 'default' : 'cell',
-                // Fit mode: shrink to fit container while preserving aspect ratio
-                ...(fitMode === 'fit'
-                  ? (fitCss
-                      ? { width: fitCss.w, height: fitCss.h }
-                      : { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)', objectFit: 'contain' })
-                  : {}),
-              }}
-              />
-            {/* Multi-layer preview: visible layers composite over the base canvas
-                (contain-fit, per-layer opacity) — matches the generation-time flatten */}
-            {stack?.enabled && stack.layers.filter(l => l.visible).map(l => l.items.map(it => {
-              const hasRect = typeof it.x === 'number' && typeof it.y === 'number' && typeof it.w === 'number' && typeof it.h === 'number'
-              if (liveEraseItem && liveEraseItem.itemId === it.id && liveEraseItem.layerId === l.id && liveEraseRef.current) {
-                // Mid-stroke: the punched stand-in canvas renders in the
-                // item's exact place so the erase is visible in real time
-                return (
-                  <div
-                    key={`${l.id}-${it.id}-live`}
-                    ref={el => {
-                      const cv = liveEraseRef.current?.canvas
-                      if (el && cv && cv.parentElement !== el) {
-                        cv.style.width = '100%'; cv.style.height = '100%'; cv.style.display = 'block'
-                        el.appendChild(cv)
-                      }
-                    }}
-                    className={`absolute pointer-events-none ${hasRect ? '' : 'inset-0 w-full h-full'}`}
-                    style={{
-                      opacity: l.opacity,
-                      ...(it.r ? { transform: `rotate(${it.r}deg)` } : {}),
-                      ...(hasRect ? {
-                        left: `${(it.x as number) * 100}%`,
-                        top: `${(it.y as number) * 100}%`,
-                        width: `${(it.w as number) * 100}%`,
-                        height: `${(it.h as number) * 100}%`,
-                      } : {}),
-                    }}
-                  />
-                )
-              }
-              return (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  key={`${l.id}-${it.id}`}
-                  src={mediaSrc(it.url)}
-                  alt=""
-                  onLoad={e => { layerImgSizes.current[it.url] = { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight } }}
-                  className={`absolute pointer-events-none ${hasRect ? '' : 'inset-0 w-full h-full object-contain'}`}
-                  style={{
-                    opacity: l.opacity,
-                    ...(it.r ? { transform: `rotate(${it.r}deg)` } : {}),
-                    ...(hasRect ? {
-                      left: `${(it.x as number) * 100}%`,
-                      top: `${(it.y as number) * 100}%`,
-                      width: `${(it.w as number) * 100}%`,
-                      height: `${(it.h as number) * 100}%`,
-                    } : {}),
-                  }}
-                />
-              )
-            }))}
-            <canvas ref={overlayRef} className="absolute inset-0 z-10 pointer-events-none block"
-              style={fitMode === 'fit'
-                ? (fitCss ? { width: fitCss.w, height: fitCss.h } : { maxWidth: '100%', maxHeight: 'calc(95vh - 260px)' })
-                : {}} />
-            {/* Silver orbit ring hugging the canvas — same treatment as the
-                generation preview popups (solid silver ring + travelling break,
-                wall-clock phased so every ring on screen moves in sync) */}
-            {/* Crop frame — border + synced-logo handles as DOM, always on top,
-                free to extend past the canvas while expanding it */}
-            <div
-              ref={cropFrameRef}
-              className="absolute z-40 pointer-events-none"
-              style={{ display: 'none', border: '1.5px solid rgba(255,255,255,0.9)', boxShadow: '0 0 12px rgba(0,0,0,0.4)' }}
-            >
-              {([['0%', '0%'], ['50%', '0%'], ['100%', '0%'], ['0%', '50%'], ['100%', '50%'], ['0%', '100%'], ['50%', '100%'], ['100%', '100%']] as const).map(([lx, ty]) => (
-                <div key={`${lx}-${ty}`} className="absolute" style={{ left: lx, top: ty, transform: 'translate(-50%, -50%)' }}>
-                  <div className="w-[20px] h-[20px] rounded-[6px] overflow-hidden border-2 border-white bg-slate-900 shadow-lg flex items-center justify-center">
-                    {cropHandleLogo ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={cropHandleLogo} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <Sparkles size={10} className="text-slate-200" />
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-            {/* Canvas selection — tap the canvas edge or the empty workspace to
-                select the canvas itself: outline + corner logo-chip handles for
-                resizing the whole view, anchored opposite — just like resizing
-                an image. Chips counter-scaled so they stay 20px at any zoom. */}
-            {loaded && tool === 'select' && fitMode === 'fit' && canvasSelected && !selItemId && (
-              <div className="absolute inset-0 z-30 pointer-events-none rounded-lg"
-                style={{ border: '1.5px solid rgba(255,255,255,0.9)', boxShadow: 'inset 0 0 12px rgba(0,0,0,0.35)' }} />
-            )}
-            {loaded && tool === 'select' && fitMode === 'fit' && canvasSelected && !selItemId && ([
-              { h: 'nw' as const, pos: { left: 3, top: 3 },                wrap: '',                 origin: 'top left',      cursor: 'nwse-resize' },
-              { h: 'ne' as const, pos: { right: 3, top: 3 },               wrap: '',                 origin: 'top right',     cursor: 'nesw-resize' },
-              { h: 'sw' as const, pos: { left: 3, bottom: 3 },             wrap: '',                 origin: 'bottom left',   cursor: 'nesw-resize' },
-              { h: 'se' as const, pos: { right: 3, bottom: 3 },            wrap: '',                 origin: 'bottom right',  cursor: 'nwse-resize' },
-              { h: 'n' as const,  pos: { left: '50%' as const, top: 3 },   wrap: 'translateX(-50%)', origin: 'top center',    cursor: 'ns-resize' },
-              { h: 's' as const,  pos: { left: '50%' as const, bottom: 3 },wrap: 'translateX(-50%)', origin: 'bottom center', cursor: 'ns-resize' },
-              { h: 'w' as const,  pos: { left: 3, top: '50%' as const },   wrap: 'translateY(-50%)', origin: 'center left',   cursor: 'ew-resize' },
-              { h: 'e' as const,  pos: { right: 3, top: '50%' as const },  wrap: 'translateY(-50%)', origin: 'center right',  cursor: 'ew-resize' },
-            ]).map(({ h, pos, wrap, origin, cursor }) => (
-              // Outer wrapper handles centering (edge midpoints); inner div
-              // counter-scales about the canvas-touching side so chips stay
-              // 20px and glued to the border at any zoom
-              <div key={`vh-${h}`} className="absolute z-40" style={{ ...pos, ...(wrap ? { transform: wrap } : {}), touchAction: 'none' }}>
-                <div
-                  onPointerDown={onViewHandleDown(h)}
-                  onPointerMove={onViewHandleMove}
-                  onPointerUp={onViewHandleUp}
-                  onPointerCancel={onViewHandleUp}
-                  style={{ transform: `scale(${1 / (canvasView.s || 1)}, ${1 / (canvasView.sy || 1)})`, transformOrigin: origin, cursor, touchAction: 'none' }}
-                >
-                  <div className="w-[20px] h-[20px] rounded-[6px] overflow-hidden border-2 border-white bg-slate-900 shadow-lg flex items-center justify-center">
-                    {cropHandleLogo ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={cropHandleLogo} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <Sparkles size={10} className="text-slate-200" />
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {loaded && tool === 'crop' && (
-              <div
-                ref={orbitRef}
-                className="absolute left-0 top-0 w-full h-full pointer-events-none rounded-lg z-20"
-                style={{
-                  // Glow lives on this unmasked outer layer — a mask would clip it.
-                  // The inset component keeps the halo visible over the image even
-                  // where the wrapper's overflow-hidden eats the outward part.
-                  boxShadow:
-                    '0 0 16px rgba(248,250,252,0.45), 0 0 5px rgba(255,255,255,0.35), inset 0 0 10px rgba(248,250,252,0.35)',
-                }}
-              >
-                <div
-                  className="absolute inset-0 rounded-lg overflow-hidden"
-                  style={{
-                    padding: '2px',
-                    WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
-                    WebkitMaskComposite: 'xor',
-                    mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
-                    maskComposite: 'exclude',
-                  } as React.CSSProperties}
-                >
-                  <span
-                    className="absolute -inset-[75%] animate-spin"
-                    style={{ background: SILVER_ORBIT_CONIC, animationDuration: '9s', animationDelay: `-${Date.now() % 9000}ms` }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-          {/* Silver orbit frame — the SAME component as the generation preview
-              popups (outer pane ring + inner ring hugging the artboard, synced
-              travelling break). Lives outside the transformed artboard so
-              Safari's compositing can't drop its animation. */}
-          <OrbitMediaFrame
-            containerRef={editorPaneRef}
-            mediaRef={artboardRef}
-            deps={[loaded, fitMode, canvasView, stack?.enabled, dims?.w, dims?.h]}
-            hidden={!loaded}
-            // The artboard-hugging ring paints above the wrapper's contents (it
-            // lives outside that stacking context) and would cover the crop
-            // handles — the crop tool brings its own glow ring, so drop this one
-            innerHidden={tool === 'crop'}
-            mediaRotateDeg={canvasView.r}
-            mediaScale={canvasView.s}
-          />
-
-          {/* Layers popup — a compact floating card sized to its content
-              (was a full-height column that sat mostly empty); any pointer
-              down on the canvas outside it dismisses it */}
-          <div
-            data-layers-panel
-            className={`absolute top-2 right-2 w-64 max-w-[85%] max-h-[calc(100%-1rem)] z-30 bg-[#070b14]/95 backdrop-blur-md border border-white/[0.08] rounded-xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 origin-top-right ${showLayersPanel ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
-            <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/[0.06] shrink-0">
-              <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-400">Layers</span>
-              <button onClick={() => setShowLayersPanel(false)} className="text-slate-500 hover:text-white transition-colors"><X size={13} /></button>
-            </div>
-            {canUseLayers ? (
-              <>
-                <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/[0.06] shrink-0">
-                  <input ref={layerInputRef} type="file" accept="image/*" className="hidden"
-                    onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ''; void addImageToLayer(f) } }} />
-                  <button
-                    onClick={addEmptyLayer}
-                    disabled={!stack?.enabled || (stack?.layers.length ?? 0) >= 20}
-                    className="flex-1 flex items-center justify-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50"
-                  >
-                    <Layers size={11} /> New Layer
-                  </button>
-                  <button
-                    onClick={() => layerInputRef.current?.click()}
-                    disabled={layerBusy || !stack?.enabled}
-                    title={selLayerId ? 'Add an image to the selected layer' : 'Add an image on a new layer'}
-                    className="flex-1 flex items-center justify-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50"
-                  >
-                    {layerBusy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
-                    {layerBusy ? 'Adding…' : 'Add image'}
-                  </button>
-                  <button
-                    onClick={() => void pasteImageFromClipboard()}
-                    disabled={layerBusy || !stack?.enabled}
-                    title={selLayerId ? 'Paste a copied image into the selected layer' : 'Paste a copied image on a new layer'}
-                    className="flex items-center justify-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors disabled:opacity-50 shrink-0"
-                  >
-                    <ClipboardPaste size={11} /> Paste
-                  </button>
-                </div>
-                {showPasteTarget && (
-                  <div className="px-3 py-2 border-b border-white/[0.06] shrink-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[9px] font-mono uppercase tracking-wider text-slate-500">Paste target</span>
-                      <button onClick={() => setShowPasteTarget(false)} className="text-slate-600 hover:text-white transition-colors"><X size={11} /></button>
-                    </div>
-                    <div className="relative">
-                      <div
-                        ref={pasteTargetRef}
-                        contentEditable
-                        suppressContentEditableWarning
-                        onPaste={e => {
-                          e.preventDefault()
-                          const file = [...(e.clipboardData?.items ?? [])].find(i => i.type.startsWith('image/'))?.getAsFile()
-                          if (file) { setShowPasteTarget(false); void addImageToLayer(file) }
-                          else setLayerError('No image on the clipboard — copy an image first')
-                        }}
-                        onInput={e => { e.currentTarget.textContent = '' }}
-                        className="w-full min-h-[52px] rounded-lg border border-dashed border-white/25 bg-white/[0.03] focus:outline-none focus:border-white/50"
-                      />
-                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center px-2 text-center text-[10px] leading-snug text-slate-500">
-                        Tap &amp; hold here, then choose Paste
-                      </span>
-                    </div>
-                  </div>
-                )}
-                <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
-                  {!stack?.enabled && (
-                    <p className="text-[10px] text-slate-600 text-center py-3 px-2 leading-relaxed">Preparing the layered canvas…</p>
-                  )}
-                  {stack?.enabled && stack.layers.length === 0 && (
-                    <p className="text-[10px] text-slate-600 text-center py-3 px-2 leading-relaxed">
-                      No layers yet — add an image, or run a generation with this reference active and the result lands here automatically.
-                    </p>
-                  )}
-                  {stack?.enabled && [...stack.layers].reverse().map((l) => (
-                    <div
-                      key={l.id}
-                      onClick={() => { setSelLayerId(l.id); setSelItemId(null) }}
-                      className={`px-2 py-1.5 rounded-lg border cursor-pointer transition-colors ${selLayerId === l.id ? 'bg-white/[0.07] border-white/30' : 'bg-white/[0.03] border-white/[0.06] hover:border-white/15'}`}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-7 h-7 rounded-md overflow-hidden bg-black shrink-0 flex items-center justify-center">
-                          {l.items.length > 0 ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={refTileThumb(l.items[0].url, 128)} alt="" className="w-full h-full object-contain" />
-                          ) : (
-                            <Layers size={10} className="text-slate-600" />
-                          )}
-                        </div>
-                        <span className="flex-1 min-w-0 truncate text-[10px] text-slate-300">
-                          {l.name}
-                          <span className="ml-1 text-[8px] text-slate-600">({l.items.length})</span>
-                          {l.auto && <span className="ml-1 px-1 py-0.5 rounded border border-white/15 text-[7px] font-mono uppercase tracking-widest text-slate-500">gen</span>}
-                        </span>
-                        <button onClick={e => { e.stopPropagation(); patchLayer(l.id, { visible: !l.visible }) }} title={l.visible ? 'Hide layer' : 'Show layer'}
-                          className={`p-1 rounded transition-colors ${l.visible ? 'text-white hover:bg-white/10' : 'text-slate-600 hover:text-slate-400'}`}>
-                          {l.visible ? <Eye size={11} /> : <EyeOff size={11} />}
-                        </button>
-                        <button onClick={e => { e.stopPropagation(); removeLayer(l.id) }} title="Remove layer" className="p-1 rounded text-slate-600 hover:text-red-400 hover:bg-white/10 transition-colors">
-                          <Trash2 size={10} />
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-1.5 mt-1 pl-1">
-                        <input
-                          type="range" min={0} max={100} value={Math.round(l.opacity * 100)}
-                          onClick={e => e.stopPropagation()}
-                          onChange={e => patchLayer(l.id, { opacity: (+e.target.value) / 100 })}
-                          className="flex-1 min-w-0 accent-white" title="Layer opacity"
-                        />
-                        <span className="w-7 text-right text-[8px] font-mono text-slate-500">{Math.round(l.opacity * 100)}%</span>
-                        <button onClick={e => { e.stopPropagation(); moveLayer(l.id, 1) }} title="Move layer up" className="px-1 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors text-[10px] leading-none">↑</button>
-                        <button onClick={e => { e.stopPropagation(); moveLayer(l.id, -1) }} title="Move layer down" className="px-1 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors text-[10px] leading-none">↓</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="px-3 py-2 border-t border-white/[0.06] shrink-0">
-                  <button
-                    onClick={() => void disableMultiLayer()}
-                    disabled={layerBusy || !stack?.enabled}
-                    title="Merge every layer down into the image"
-                    className="w-full text-[10px] px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors disabled:opacity-50"
-                  >
-                    Flatten layers
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
-                <Lock size={16} className="text-slate-600" />
-                <p className="text-[11px] text-slate-400 font-semibold">Multi-layer canvases</p>
-                <span className="px-1.5 py-0.5 rounded-md border border-white/20 text-[8px] font-mono uppercase tracking-widest text-slate-300">Dev Tier</span>
-                <p className="text-[10px] text-slate-600 leading-relaxed">
-                  Subscribe to the Dev Tier to stack images, move, resize and rotate them, and collect generations as layers.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Crop apply banner */}
-        {hasCropSel && (
-          <div className="flex items-center justify-center gap-3 px-5 py-2 bg-amber-500/10 border-t border-amber-500/20 shrink-0">
-            <span className="text-[11px] text-amber-300">{tool === 'crop' && cropMode === 'frame' ? 'Adjust the crop frame, then apply' : 'Crop selection ready'}</span>
-            <button onClick={applyCrop}
-              className="text-[11px] px-3 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 transition-colors">
-              Apply Crop
-            </button>
-          </div>
-        )}
-
-        {/* Mask approve/reject banner */}
-        {maskReady && (
-          <div className="flex items-center justify-center gap-2 flex-wrap px-5 py-2 bg-white/[0.04] border-t border-white/10 shrink-0">
-            <span className="text-[11px] text-slate-200">Mask found — what should happen to the outlined area?</span>
-            <button onClick={() => applyMaskSel('keep')}
-              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
-              Keep Only This
-            </button>
-            <button onClick={() => applyMaskSel('remove')}
-              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
-              Remove It
-            </button>
-            <button onClick={() => openSaveCutout(maskSilRef.current)}
-              className="flex items-center gap-1 text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
-              <Download size={11} /> Save Cutout
-            </button>
-            <button onClick={discardRegionSel}
-              className="text-[11px] px-3 py-1 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors">
-              Reject
-            </button>
-          </div>
-        )}
-
-        {/* Cut keep/remove banner */}
-        {cutReady && (
-          <div className="flex items-center justify-center gap-2 flex-wrap px-5 py-2 bg-white/[0.04] border-t border-white/10 shrink-0">
-            <span className="text-[11px] text-slate-200">Cut path closed — keep or remove the outlined area?</span>
-            <button onClick={() => applyCutSel('keep')}
-              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
-              Keep Inside
-            </button>
-            <button onClick={() => applyCutSel('remove')}
-              className="text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
-              Cut It Out
-            </button>
-            <button onClick={() => { if (cutPtsRef.current.length >= 3) openSaveCutout(silhouetteFromPath(cutPtsRef.current)) }}
-              className="flex items-center gap-1 text-[11px] px-3 py-1 rounded-lg bg-white/10 border border-white/25 text-white hover:bg-white/15 transition-colors">
-              <Download size={11} /> Save Cutout
-            </button>
-            <button onClick={discardRegionSel}
-              className="text-[11px] px-3 py-1 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors">
-              Discard
-            </button>
-          </div>
-        )}
-
-        {/* Touch-and-hold save overlay — a real <img> so the native iPad Save Image
-            sheet appears on long-press (checkerboard backs transparent cutouts) */}
-        {saveOverlay && (
-          <div className="absolute inset-0 z-30 rounded-2xl bg-black/95 flex flex-col items-center justify-center gap-3 p-6">
-            <button
-              onClick={() => setSaveOverlay(null)}
-              className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-slate-300 hover:text-white transition-colors"
-            >
-              <X size={15} />
-            </button>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              // The hosted https copy is what makes the iOS long-press sheet
-              // offer "Save Image / Add to Photos" — data URLs get a reduced
-              // callout. Falls back to the data URL if hosting failed.
-              src={saveOverlay.hostedUrl ?? saveOverlay.url}
-              alt="Touch and hold to save"
-              className="max-w-full max-h-[65vh] object-contain rounded-lg"
-              style={{
-                WebkitTouchCallout: 'default',
-                background:
-                  'repeating-conic-gradient(rgba(255,255,255,0.08) 0% 25%, transparent 0% 50%) 0 0 / 20px 20px',
-              }}
-            />
-            <p className="text-[12px] text-white font-medium">{saveOverlay.label}</p>
-            {saveOverlay.hosting ? (
-              <p className="flex items-center gap-1.5 text-[11px] text-slate-400 text-center leading-relaxed">
-                <Loader2 size={11} className="animate-spin" /> Preparing “Save Image”… one moment
-              </p>
-            ) : (
-              <p className="text-[11px] text-slate-400 text-center leading-relaxed">
-                Touch and hold the image, then choose <span className="text-white">“Save Image”</span> / <span className="text-white">“Add to Photos”</span>.
-                <span className="hidden sm:inline"> On desktop, right-click → Save Image As.</span>
-              </p>
-            )}
-            <a
-              href={saveOverlay.url}
-              download={`ai-design-studio-${Date.now()}.png`}
-              className="relative overflow-hidden px-5 py-2 rounded-xl border border-white/25 bg-white/10 hover:bg-white/15 hover:border-white/40 text-[12px] text-white font-bold transition-all flex items-center justify-center gap-1.5"
-            >
-              <span
-                className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent pointer-events-none"
-                style={{ animation: "sheen-sweep 2.6s infinite" }}
-              />
-              <Download size={13} /> Download
-            </a>
-          </div>
-        )}
-      </div>
-    </div>,
-    document.body
-  )
+  return <EditImagePopup {...props} image={{ id: props.image.id, url: props.image.url }} />
 }
 
 // Builds a full-size mask canvas from a crop-sized mask + its position in the original image.
@@ -19244,7 +15993,7 @@ function CustomFluxPanel({
             } as React.CSSProperties}
           >
             <span
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin"
               style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }}
             />
           </div>
@@ -22421,7 +19170,7 @@ function PromptBox({
                 onClick={() => setEditingRefImage(img)}
                 title="Click to edit">
                 <span
-                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
                   style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
                 />
                 <div className="relative w-14 h-14 rounded-[7px] overflow-hidden bg-black">
@@ -22501,7 +19250,7 @@ function PromptBox({
             } as React.CSSProperties}
           >
             <span
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin"
               style={{ background: SILVER_RIM_CONIC, animationDuration: '5s' }}
             />
           </div>
@@ -25155,7 +21904,7 @@ function SD20RefPanel({
   onRemoveRefImage: (i: number) => void
   videoRefVideoFilenames: string[]
   videoRefVideoUrls: (string | null)[]
-  onAddRefVideo: (f: File, duration: number) => void
+  onAddRefVideo: (f: File, duration: number, width?: number, height?: number) => void
   onRemoveRefVideo: (i: number, duration: number) => void
   videoRefAudioFilenames: string[]
   onAddRefAudio: (f: File) => void
@@ -25221,7 +21970,7 @@ function SD20RefPanel({
       }
       setRefError(null)
       videoDurations.current.push(dur)
-      onAddRefVideo(file, dur)
+      onAddRefVideo(file, dur, w, h)
     }
     vid.onerror = () => {
       URL.revokeObjectURL(objUrl)
@@ -25404,6 +22153,7 @@ function VideoCustomizationPanel({
   editSourceFilename = null,
   editSourceUploading = false,
   editSourceDuration = 0,
+  editSourceDims,
   onEditSourceSelect,
   onClearEditSource,
   lipsyncVideoFilename,
@@ -25451,7 +22201,7 @@ function VideoCustomizationPanel({
   onRemoveRefImage?: (i: number) => void
   videoRefVideoFilenames?: string[]
   videoRefVideoUrls?: (string | null)[]
-  onAddRefVideo?: (f: File, duration: number) => void
+  onAddRefVideo?: (f: File, duration: number, width?: number, height?: number) => void
   onRemoveRefVideo?: (i: number, duration: number) => void
   videoRefAudioFilenames?: string[]
   onAddRefAudio?: (f: File) => void
@@ -25469,6 +22219,8 @@ function VideoCustomizationPanel({
   editSourceFilename?: string | null
   editSourceUploading?: boolean
   editSourceDuration?: number
+  /** the source clip's pixel size, when known (upscalers bill output pixels) */
+  editSourceDims?: { w: number; h: number } | null
   onEditSourceSelect?: (f: File, duration: number) => void
   onClearEditSource?: () => void
   // Lipsync v3
@@ -25609,6 +22361,7 @@ function VideoCustomizationPanel({
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
     ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration, fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+        sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         audioDurationSec: audioSec, videoChoice: choiceValue,
         promptWords: (promptText ?? "").trim().split(/\s+/).filter(Boolean).length,
         ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}),
@@ -26471,7 +23224,7 @@ function VideoTile({ natural, initialAspect, className, onClick, videoSrc, still
       style={thick ? { boxShadow: "0 0 16px rgba(248,250,252,0.45), 0 0 5px rgba(255,255,255,0.35)" } : undefined}
     >
       <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin feed-rim pointer-events-none -z-10"
         style={{ background: thick ? SILVER_RIM_CONIC_BRIGHT : SILVER_RIM_CONIC, animationDuration: "5s", animationDelay: rimDelay }}
       />
       <div className={`relative overflow-hidden ${thick ? "rounded-md" : "rounded-[7px]"}`}>{tile}</div>
@@ -27136,6 +23889,7 @@ function VideoPromptBar({
   onPromptChange,
   sourceSeconds = 0,
   toolFactor = "2",
+  editSourceDims,
   toolCreativity = "0.35",
   audioSeconds,
   choiceValue,
@@ -27149,6 +23903,8 @@ function VideoPromptBar({
   /** A clip tool's source length (seconds), for tools billed by it. */
   sourceSeconds?: number
   toolFactor?: string
+  /** the source clip's pixel size, when known (upscalers bill output pixels) */
+  editSourceDims?: { w: number; h: number } | null
   toolCreativity?: string
   onPromptChange?: (text: string) => void
   generating: boolean
@@ -27245,6 +24001,7 @@ function VideoPromptBar({
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
     ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+        sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         // The same inputs the settings panel prices with, so the two quotes agree
         audioDurationSec: audioSeconds, videoChoice: choiceValue,
         promptWords: prompt.trim().split(/\s+/).filter(Boolean).length,
@@ -27416,7 +24173,7 @@ function VideoPromptBar({
             {/* Row 1: Prompt — full width, animated silver rim */}
             <div className="relative isolate rounded-xl overflow-hidden p-[1.5px]">
               <span
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
                 style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
               />
               <textarea
@@ -27510,7 +24267,7 @@ function VideoPromptBar({
         {/* Prompt textarea — animated silver rim */}
         <div className="order-first lg:order-none w-full lg:w-auto lg:flex-1 min-w-0 relative isolate rounded-lg overflow-hidden p-[1.5px]">
           <span
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
             style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
           />
           <textarea
@@ -28417,7 +25174,7 @@ function ShopDropdown({
           <div className="px-3 pb-3 space-y-2">
             <div className="relative isolate rounded-xl overflow-hidden p-[1.5px]">
               <span
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin pointer-events-none -z-10"
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
                 style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
               />
               {isDevTier ? (
@@ -29147,6 +25904,19 @@ export default function PortalV2Page() {
   const [scannerMode, setScannerMode] = useState<"image" | "video" | "chat" | "home" | "employees" | "threed" | "audio">("home")
   // Which employee workspace is open inside the Employees section
   const [activeEmployee, setActiveEmployee] = useState<EmployeeId | null>(null)
+  // "Open in Image Studio" (Edit Reference popup, Refs library): the studio is
+  // admin-only, so the buttons only exist for an admin account
+  const [studioOpenReq, setStudioOpenReq] = useState<(StudioOpenRequest & { nonce: number }) | null>(null)
+  useEffect(() => {
+    if (!isAdminAccount) { registerImageStudio(null); return }
+    registerImageStudio(r => {
+      setStudioOpenReq({ ...r, nonce: Date.now() })
+      setOpenDropdown(null)
+      setActiveEmployee("image-studio")
+      setScannerMode("employees")
+    })
+    return () => registerImageStudio(null)
+  }, [isAdminAccount])
   const VALID_MODES = ["image", "video", "chat", "home", "employees", "threed", "audio"] as const
   type ScannerMode = (typeof VALID_MODES)[number]
   // Set when a mode change came from restore/popstate — those must not push a new entry.
@@ -29271,6 +26041,8 @@ export default function PortalV2Page() {
   const [videoEditSourceFilename, setVideoEditSourceFilename] = useState<string | null>(null)
   const [videoEditSourceUrl, setVideoEditSourceUrl] = useState<string | null>(null)
   const [videoEditSourceDuration, setVideoEditSourceDuration] = useState<number>(0)
+  /** The refs panel's clip's pixel size (upscalers price by output pixels) */
+  const [videoRefVideoDims, setVideoRefVideoDims] = useState<{ w: number; h: number } | null>(null)
   // SeeDance 2.0 reference-to-video state
   const [videoRefImagePreviews, setVideoRefImagePreviews] = useState<string[]>([])
   const [videoRefImageUrls, setVideoRefImageUrls] = useState<(string | null)[]>([])
@@ -29697,7 +26469,10 @@ export default function PortalV2Page() {
     if (i !== null) setVideoRefStartIdx(s => (s === i ? null : s))
   }, [])
 
-  const handleAddRefVideo = useCallback(async (file: File, duration: number) => {
+  const handleAddRefVideo = useCallback(async (file: File, duration: number, width = 0, height = 0) => {
+    // The clip's size too: an upscaler bills by OUTPUT pixels, and without it the
+    // price shown assumed a 1080p source (a 480p clip showed 9 tickets, charged 2)
+    if (width > 0 && height > 0) setVideoRefVideoDims({ w: width, h: height })
     setVideoRefVideoFilenames(f => [...f, file.name])
     setVideoRefVideoUrls(u => [...u, null])
     setVideoRefVideoDuration(d => d + duration)
@@ -29707,6 +26482,7 @@ export default function PortalV2Page() {
   }, [uploadVideoFrame, videoRefVideoFilenames.length])
 
   const handleRemoveRefVideo = useCallback((i: number, duration: number) => {
+    setVideoRefVideoDims(null)
     setVideoRefVideoFilenames(f => f.filter((_, j) => j !== i))
     setVideoRefVideoUrls(u => u.filter((_, j) => j !== i))
     setVideoRefVideoDuration(d => Math.max(0, d - duration))
@@ -29765,7 +26541,11 @@ export default function PortalV2Page() {
 
     // If the slot is already past its poll timeout (e.g. page was refreshed after it
     // expired), fail it immediately so a failed tile appears instead of silent disappearance.
-    const POLL_TIMEOUT_MS = 80 * 15 * 1000 // 80 polls × 15s = 20 min (SeeDance 2.0 can be slow)
+    // 80 polls × 15s = 20 min (SeeDance 2.0 can be slow) - longer for models that
+    // routinely run past it: Kandinsky 6 Pro took 29 min on 2026-10-06, and giving
+    // up at 20 REFUNDED the tickets while fal still billed and delivered the clip
+    const POLL_TIMEOUT_MS = (SLOW_VIDEO_POLL_MIN[slot.model] ?? 20) * 60 * 1000
+    const MAX_POLLS = Math.round(POLL_TIMEOUT_MS / 15000)
     if (slot.startedAt && Date.now() - slot.startedAt > POLL_TIMEOUT_MS) {
       setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slot.slotId))
       const timedOutItem: VideoItem = {
@@ -29798,8 +26578,8 @@ export default function PortalV2Page() {
       if (pollInFlight) return
       pollInFlight = true
       pollCount++
-      // Auto-fail after 80 polls (80 × 15s = 20 min)
-      if (pollCount > 80) {
+      // Auto-fail after MAX_POLLS (15s each; 20 min unless the model is slow)
+      if (pollCount > MAX_POLLS) {
         clearInterval(interval)
         delete videoPollingIntervals.current[slot.slotId]
         setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slot.slotId))
@@ -33567,6 +30347,18 @@ function employeePending(
                 .map(r => ({ id: r.id, url: r.url }))}
               onRemoveRef={handleDeactivateRef}
             />
+          ) : activeEmployee === "image-studio" ? (
+            // Layered editing: the Refs library is where images come from and
+            // where exports can go (new, or replacing the one it was opened from)
+            <ImageStudio
+              signedIn={user !== null}
+              refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
+              onSaveToRefs={async file => { await addRefsToAccount([file], null) }}
+              onReplaceRef={(refId, dataUrl) => handleEditRef(refId, dataUrl)}
+              onBalanceChange={handleBalanceChange}
+              openRequest={studioOpenReq}
+              onOpenHandled={() => setStudioOpenReq(null)}
+            />
           ) : activeEmployee === "storyboard" ? (
             // The taskbar Refs library's active images keep a board's cast
             // consistent across its stills (and inform the AI draft)
@@ -33816,6 +30608,7 @@ function employeePending(
               editSourceFilename={videoEditSourceFilename}
               editSourceUploading={videoEditSourceFilename !== null && videoEditSourceUrl === null}
               editSourceDuration={videoToolSourceSec}
+              editSourceDims={videoRefVideoDims}
               onEditSourceSelect={handleEditSourceSelect}
               onClearEditSource={() => { setVideoEditSourceFilename(null); setVideoEditSourceUrl(null); setVideoEditSourceDuration(0) }}
               lipsyncVideoFilename={videoLipsyncVideoFilename}
@@ -33863,6 +30656,7 @@ function employeePending(
           {/* Video prompt bar — fixed at bottom */}
           <VideoPromptBar
             sourceSeconds={videoToolSourceSec}
+            editSourceDims={videoRefVideoDims}
             audioSeconds={videoAudioSec}
             choiceValue={videoChoice}
             toolFactor={videoToolFactor}
@@ -33998,6 +30792,7 @@ function employeePending(
                   editSourceFilename={videoEditSourceFilename}
                   editSourceUploading={videoEditSourceFilename !== null && videoEditSourceUrl === null}
                   editSourceDuration={videoToolSourceSec}
+              editSourceDims={videoRefVideoDims}
                   onEditSourceSelect={handleEditSourceSelect}
                   onClearEditSource={() => { setVideoEditSourceFilename(null); setVideoEditSourceUrl(null); setVideoEditSourceDuration(0) }}
                   lipsyncVideoFilename={videoLipsyncVideoFilename}

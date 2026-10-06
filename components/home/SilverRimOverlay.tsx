@@ -25,7 +25,7 @@ export function SilverRimOverlay({ rounded = "rounded-2xl" }: { rounded?: string
       } as React.CSSProperties}
     >
       <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin"
         style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
       />
     </div>

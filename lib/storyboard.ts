@@ -272,17 +272,24 @@ export type BoardModeId = (typeof BOARD_MODES)[number]['id']
 
 /**
  * How the characters are framed, for the kinds of video with people in them.
- * Mix is no rule at all - the kind of video and the shot decide.
+ * Mix is no rule at all - the kind of video and the shot decide. The rest go
+ * tightest to widest (the picker shows them in this order, three a row).
  */
 export const FRAMINGS = [
   { id: 'mix', label: 'Mix', hint: 'No rule - each shot frames itself' },
+  { id: 'close', label: 'Close-up', hint: 'Faces: head and shoulders - expression and likeness first' },
   { id: 'waist', label: 'Waist up', hint: 'Medium shots and closer - no full-body shots' },
+  { id: 'knee', label: 'Knee up', hint: 'Cut at the knees - more of the outfit and pose than waist up, still close enough for the face' },
   { id: 'full', label: 'Full body', hint: 'Head to toe in frame, feet visible' },
+  { id: 'wide', label: 'Wide', hint: 'The place first - characters full-body and small in a big setting' },
 ] as const
 export type FramingId = (typeof FRAMINGS)[number]['id']
 export const isFraming = (v: unknown): v is FramingId => FRAMINGS.some(f => f.id === v)
 /** The planner's rule for a framing (empty for mix). It overrides any framing the kind of video suggests. */
 export function framingRule(f: FramingId): string {
+  if (f === 'close') return 'FRAMING - CLOSE-UP: frame the characters\' faces in (nearly) every shot - close-ups and medium close-ups showing the head and shoulders, cut at or above the chest, so expression and likeness carry the story; now and then an extreme close-up of the eyes, the hands or a telling detail. Do NOT plan waist-up, full-body or wide shots of the characters; an establishing shot of a place may be wide only if the characters are absent or tiny in it. Say the framing in every imagePrompt (e.g. "close-up, head and shoulders"). This overrides any other framing the brief above suggests.'
+  if (f === 'knee') return 'FRAMING - KNEE UP: frame the characters from the knees up in (nearly) every shot - medium-long ("American" / cowboy) shots cut at or just above the knees, showing the head, the whole torso, the hands and most of the legs, so the outfit and the pose read as well as the face. Do NOT plan full-body shots that show the feet, and do not go tighter than waist-up except for an occasional close-up insert; an establishing shot of a place may be wide only if the characters are absent or tiny in it. Say the framing in every imagePrompt (e.g. "knee-up medium-long shot, cut at the knees"). This overrides any other framing the brief above suggests.'
+  if (f === 'wide') return 'FRAMING - WIDE: frame the characters within their setting in (nearly) every shot - wide and extreme-wide shots where the place matters as much as the people: the characters full-body and small to mid-size in the frame, with plenty of environment around them (architecture, landscape, sky, crowd). At most an occasional full shot or close-up insert; no run of tight shots. Say the framing in every imagePrompt (e.g. "wide shot, characters small in the frame"). This overrides any other framing the brief above suggests.'
   if (f === 'waist') return 'FRAMING - WAIST UP: frame the characters from the waist up in (nearly) every shot - medium shots, medium close-ups, close-ups and over-the-shoulder shots that show the head, shoulders, torso and hands, cut off at or above the waist. Do NOT plan full-body or wide shots that show a character\'s legs or feet; an establishing shot of a place may be wide only if the characters are absent or tiny in it. Say the framing in every imagePrompt (e.g. "waist-up medium shot"). This overrides any other framing the brief above suggests.'
   if (f === 'full') return 'FRAMING - FULL BODY: frame the characters head to toe in (nearly) every shot - full shots and wide shots with the feet in frame and a little room above the head and below the feet; at most an occasional close-up insert of a detail. Say the framing in every imagePrompt (e.g. "full-body shot, head to toe"). This overrides any other framing the brief above suggests.'
   return ''
@@ -537,6 +544,7 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
     RES(['1k', '2k'], '2k'),
     { key: 'qwenPromptExpansion', label: 'Prompt expansion', options: o(['true', 'On'], ['false', 'Off']), def: 'true', as: 'bool' },
   ],
+  'nano-banana-2.1': [RES(['1k', '2k', '4k'], '2k')],
   'grok-imagine-2': [
     RES(['1k', '2k'], '2k'),
     { key: 'grokQuality', label: 'Detail', options: o(['low', 'Low'], ['medium', 'Medium']), def: 'medium' },
@@ -715,6 +723,8 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'seedream-5-flash', label: 'SeeDream 5.0 Flash', refs: true },
   { id: 'grok-imagine-2', label: 'Grok Imagine 2', refs: true },
   { id: 'nano-banana-2-lite', label: 'NanoBanana 2 Lite', refs: false },
+  // 2026-10-06 (public): text, or the edit endpoint with references
+  { id: 'nano-banana-2.1', label: 'NanoBanana 2.1', refs: true },
   { id: 'mai-image-2.5-pro', label: 'MAI Image 2.5 Pro', refs: true },
   { id: 'hunyuan-image-3', label: 'Hunyuan Image 3', refs: false },
   { id: 'hunyuan-image-3-instruct', label: 'Hunyuan Image 3 Instruct', refs: true },
@@ -741,6 +751,8 @@ export const STORYBOARD_VIDEO_MODELS = [
   'SeeDance 2.0 Fast', 'SeeDance 2.0 Mini', 'SeeDance 1.5', 'PixVerse C1', 'Vidu Q3', 'Vidu Q3 Turbo',
   'Pika 2.2', 'Hailuo 2.3', 'Hailuo 2.3 Fast Pro', 'Hailuo 2.3 Fast', 'MiniMax H3 Max', 'MiniMax H3 Max Turbo',
   'Wan 3.0', 'Wan 3.0 Prime', 'Luma Ray 2', 'Luma Ray 2 Flash', 'Hunyuan Video 1.5', 'Grok Imagine 1.5 Lite',
+  // 2026-10-06 (public): 5s with sound, 480p or upscaled in the same job
+  'Kandinsky 6 Pro', 'Kandinsky 6 Lite',
 ] as const
 export const DEFAULT_VIDEO_MODEL = 'SeeDance 2.5'
 /**
@@ -761,6 +773,7 @@ export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
   'MiniMax H3 Max': 'minimax-h3-max', 'MiniMax H3 Max Turbo': 'minimax-h3-max-turbo',
   'Wan 3.0': 'wan-3.0', 'Wan 3.0 Prime': 'wan-3.0-prime', 'Luma Ray 2': 'luma-ray-2', 'Luma Ray 2 Flash': 'luma-ray-2-flash',
   'Hunyuan Video 1.5': 'hunyuan-video-1.5', 'Grok Imagine 1.5 Lite': 'grok-video-1.5-lite',
+  'Kandinsky 6 Pro': 'kandinsky6-pro', 'Kandinsky 6 Lite': 'kandinsky6-lite',
 }
 
 /**
@@ -784,7 +797,7 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'ideogram-4.5': 'TITLE CARDS, signage, posters - the most reliable lettering; precise edits from refs',
   'ideogram-v4': 'text inside images, speed tiers', 'qwen-image-3': 'strong text rendering; edits with refs',
   'meta-muse': 'cheap, clean general images; edits with up to 10 refs', 'grok-imagine-2': 'expressive, bold style',
-  'nano-banana-2-lite': 'cheap NanoBanana for simple frames', 'mai-image-2.5-pro': 'photoreal people and products',
+  'nano-banana-2-lite': 'cheap NanoBanana for simple frames', 'nano-banana-2.1': 'the newest NanoBanana - strong likeness from many refs', 'mai-image-2.5-pro': 'photoreal people and products',
   'hunyuan-image-3': 'rich detailed illustration', 'hunyuan-image-3-instruct': 'follows complex instructions; edits up to 3 images',
   'krea-2-large': 'aesthetic, art-directed looks; copies a style from refs', 'krea-2-medium': 'art-directed looks, cheaper',
   'krea-2-medium-turbo': 'fastest Krea look', 'bria-fibo': 'licensed-data, commercially safe imagery',
@@ -809,6 +822,8 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'Gemini Omni Flash': 'versatile, follows complex direction', 'Omni Flash 1.1': 'Omni with 4K',
   'Flux 3': 'keyframe-precise motion with audio', 'Grok Imagine 1.5': 'bold expressive motion', 'Grok Imagine 1.5 Lite': 'cheapest Grok motion',
   'Hunyuan Video 1.5': 'open model, permissive, simple motion',
+  'Kandinsky 6 Pro': 'rich 5s shots with generated sound; slow and dear - hero moments',
+  'Kandinsky 6 Lite': 'cheap 5s shots with sound; quick drafts and filler',
 }
 
 /** The planner's menu: one line per model, image ids and video labels. */
@@ -830,9 +845,14 @@ export const imageModelLabel = (id: string) => STORYBOARD_IMAGE_MODELS.find(m =>
 
 export function newShot(partial: Partial<StoryboardShot> = {}): StoryboardShot {
   return {
-    title: '', description: '', imagePrompt: '', imageModel: DEFAULT_IMAGE_MODEL, stillUrl: null,
-    videoPrompt: '', videoModel: DEFAULT_VIDEO_MODEL, duration: 5, transition: 'Cut',
+    title: '', description: '', imagePrompt: '', stillUrl: null,
+    videoPrompt: '', duration: 5, transition: 'Cut',
     ...partial,
+    // Same for the models: the first shot of an empty board is made with the
+    // previous shot's models, which are `undefined` there - it showed blank
+    // pickers and "undefined takes no references"
+    imageModel: partial.imageModel || DEFAULT_IMAGE_MODEL,
+    videoModel: partial.videoModel || DEFAULT_VIDEO_MODEL,
     // After the spread: a partial carrying `id: undefined` (a drafted shot, a
     // duplicate) must still get its own id - shared ids made every slot
     // react to one slot's edits and spinner

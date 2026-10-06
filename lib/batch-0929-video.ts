@@ -5,6 +5,11 @@
  * Mini, Hunyuan Video 1.5 - and their clip tools (Veo extend, H3 Max extend,
  * Marey motion / pose transfer).
  *
+ * 2026-10-06 (public): Kandinsky 6.0 Pro and Lite - text
+ * or a start frame to a 5s clip with sound, 480p, optionally run through
+ * Kandinsky's own video super-resolution in the same job (1080p / 4x). They
+ * are plain t2v/i2v pairs, so they ride this batch's routing and pricing.
+ *
  * One place that decides which fal endpoint runs and builds its exact input.
  * app/api/video/generate calls these, and so do the test scripts, so what is
  * tested is what the site sends. Every field was checked against the live
@@ -18,6 +23,7 @@ export const BATCH_0929_GENERATORS = new Set([
   'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite',
   'minimax-h3-max-turbo', 'minimax-h3-max-ref',
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
+  'kandinsky6-pro', 'kandinsky6-lite',
 ])
 export const BATCH_0929_TOOLS = new Set([
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
@@ -33,6 +39,7 @@ export const BATCH_0929_TEXT_CAPABLE = [
   'pika-2.2', 'pika-2-turbo', 'hailuo-2.3-pro', 'hailuo-2.3',
   'veo-3.1', 'veo-3.1-fast', 'veo-3.1-lite', 'minimax-h3-max-turbo',
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
+  'kandinsky6-pro', 'kandinsky6-lite',
 ]
 
 /** fal endpoints, keyed `${model}-${mode}` (generators) or by model (tools). */
@@ -70,6 +77,10 @@ export const BATCH_0929_ENDPOINTS: Record<string, string> = {
   'seedance-2.0-mini-r2v': 'bytedance/seedance-2.0/mini/reference-to-video',
   'hunyuan-video-1.5-t2v': 'fal-ai/hunyuan-video-v1.5/text-to-video',
   'hunyuan-video-1.5-i2v': 'fal-ai/hunyuan-video-v1.5/image-to-video',
+  'kandinsky6-pro-t2v': 'fal-ai/kandinsky6-pro/text-to-video',
+  'kandinsky6-pro-i2v': 'fal-ai/kandinsky6-pro/image-to-video',
+  'kandinsky6-lite-t2v': 'fal-ai/kandinsky6-lite/text-to-video',
+  'kandinsky6-lite-i2v': 'fal-ai/kandinsky6-lite/image-to-video',
   // tools
   'veo-3.1-extend': 'fal-ai/veo3.1/extend-video',
   'veo-3.1-fast-extend': 'fal-ai/veo3.1/fast/extend-video',
@@ -234,6 +245,20 @@ export function batch0929Input(model: string, p: Batch0929Params): Record<string
     }
     if (mode === 'r2v') input.image_urls = refs.slice(0, 9)
     else if (mode === 'i2v') { input.image_url = start; if (p.endImageUrl) input.end_image_url = p.endImageUrl }
+    return input
+  }
+  if (model === 'kandinsky6-pro' || model === 'kandinsky6-lite') {
+    // A fixed 5s at 480p; "1080p" and "1920p" run Kandinsky's own video
+    // super-resolution in the same job (upscale_factor 2.25 / 4 - billed as
+    // kandinsky6TicketCost prices it). Steps stay at fal's defaults (Pro 50,
+    // Lite 10), which is what the price is for. A start frame sets the shape.
+    const upscale = p.resolution === '1080p' ? 2.25 : p.resolution === '1920p' ? 4 : undefined
+    const input: Record<string, any> = {
+      prompt, generate_audio: !!p.generateAudio,
+      ...(upscale ? { upscale_factor: upscale } : {}),
+    }
+    if (mode === 'i2v') { input.image_url = start; input.aspect_ratio = 'auto' }
+    else input.aspect_ratio = pick(['16:9', '9:16', '1:1', '4:3', '3:4'], p.aspectRatio, '16:9')
     return input
   }
   // hunyuan-video-1.5: length is a frame count at 24fps (+1)

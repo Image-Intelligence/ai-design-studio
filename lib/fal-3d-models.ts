@@ -301,6 +301,28 @@ export const THREED_MODELS: ThreeDModel[] = [
     bestFor: 'Keeping a mesh you like and changing what it is made of. Far cheaper than regenerating for a material change.',
   },
   {
+    // 2026-10-06: fal's only Meshy 6 Lite endpoint, and a 3D-to-3D one. $0.30 a
+    // run, PBR maps included. A text style is required unless a style image is
+    // given - the bench asks for it as a required control.
+    id: 'meshy-6-lite-retexture',
+    label: 'Meshy 6 Lite Retexture',
+    family: 'Meshy',
+    endpoint: 'meshy/v6-lite/retexture',
+    stage: 'refine',
+    input: 'mesh',
+    meshField: 'model_url',
+    output: 'New textures on existing geometry (GLB + PBR maps)',
+    usd: 0.30,
+    bestFor: 'A new look for a mesh you already like - describe the material ("weathered bronze", "glazed ceramic") and keep the shape.',
+    caveat: 'Needs a style prompt (up to 600 characters). Keeps the original UVs by default.',
+    controls: [
+      // The bench shows its prompt box only for text-to-3D, so the style is a control
+      { key: 'text_style_prompt', label: 'Style', kind: 'text', required: true, placeholder: 'weathered bronze, glazed ceramic, painted wood…', help: 'Describe the new material and colours (up to 600 characters)' },
+      { key: 'enable_pbr', label: 'PBR maps', kind: 'toggle', preset: true, help: 'Metallic, roughness and normal maps as well as colour - no extra cost' },
+      { key: 'enable_original_uv', label: 'Keep original UVs', kind: 'toggle', preset: true },
+    ],
+  },
+  {
     id: 'hi3d-texture',
     label: 'Hi3D Texture',
     family: 'Hi3D',
