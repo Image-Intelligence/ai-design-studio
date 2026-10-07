@@ -1,14 +1,16 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useCallback, useContext, useEffect, useRef, useState } from "react"
 import {
   Plus, X, Check, Loader2, Upload, Images, Trash2, ChevronDown, ChevronRight,
   UserRound, PawPrint, Car, Box, Shirt, MapPin, Landmark, Mountain, Palette, Shapes, Film,
+  BookmarkPlus, BookmarkCheck, Library,
   type LucideIcon,
 } from "lucide-react"
 import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import { useThumb, AddStillThumbs, stillKeyOf } from "@/components/employees/still-thumbs"
 import {
   ASSET_KINDS, MAX_ASSETS, MAX_ASSET_REFS, newAsset, newAssetRef, stillKey, pickRefs, MAX_SHOT_REFS,
   type AssetKind, type StoryAsset, type ShotRef,
@@ -37,13 +39,30 @@ const KIND_OPTIONS = ASSET_KINDS.map(k => ({ value: k.id, label: k.label }))
 const kindLabel = (k: AssetKind) => ASSET_KINDS.find(x => x.id === k)?.label ?? k
 
 /** Upload one image through the same route the Refs library uses; returns its URL. */
-async function uploadImage(file: File): Promise<string> {
+export async function uploadImage(file: File): Promise<string> {
   const fd = new FormData()
   fd.append("file", file)
   const r = await fetch("/api/upload-reference", { method: "POST", body: fd })
   const j = await r.json().catch(() => ({}))
   if (!r.ok || !j?.url) throw new Error(j?.error || `Upload failed (${r.status})`)
   return j.url as string
+}
+
+/** An asset saved to the account (My Generations' Assets) - GET /api/user/assets. */
+export type LibraryAsset = { id: number; kind: AssetKind; name: string; notes: string; refs: { id: string; url: string; thumb?: string | null }[] }
+
+/** The account's saved assets, loaded once per panel and refreshed after a save. */
+function useLibrary() {
+  const [assets, setAssets] = useState<LibraryAsset[] | null>(null)
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch("/api/user/assets", { cache: "no-store" })
+      const j = await r.json().catch(() => ({}))
+      setAssets(r.ok && Array.isArray(j.assets) ? j.assets : [])
+    } catch { setAssets([]) }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  return { assets, load }
 }
 
 export type RefCap = {
@@ -74,6 +93,14 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
   const [uploading, setUploading] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadFor = useRef<string | null>(null)
+  const thumb = useThumb()
+  const addThumbs = useContext(AddStillThumbs)
+  /** Pictures from My Assets carry their thumbnails - draw those, not the 2-20MB originals */
+  const learnThumbs = (refs: { url: string; thumb?: string | null }[]) =>
+    addThumbs(refs.filter(r => r.thumb).map(r => [stillKeyOf(r.url), r.thumb!] as [string, string]))
+  const library = useLibrary()
+  const [libOpen, setLibOpen] = useState(false)
+  const [saving, setSaving] = useState<string | null>(null) // board asset id
 
   const refCount = assets.reduce((n, a) => n + a.refs.length, 0)
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(n => (n === msg ? null : n)), 3500) }
@@ -88,6 +115,53 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
     setAdding(false)
   }
   const patch = (id: string, fn: (a: StoryAsset) => StoryAsset) => onChange(list => list.map(a => (a.id === id ? fn(a) : a)))
+
+  /**
+   * Into the account's saved assets: a new one, or - for a copy that came from
+   * (or was saved to) the library - the same one updated. The server keeps only
+   * pictures this account owns, so a count that comes back short is said so.
+   */
+  const saveToLibrary = async (a: StoryAsset) => {
+    setSaving(a.id)
+    try {
+      const urls = a.refs.map(r => r.url)
+      const fresh = () => fetch("/api/user/assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: a.kind, name: a.name, notes: a.notes, urls }) })
+      let r = a.libraryId
+        ? await fetch("/api/user/assets", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.libraryId, kind: a.kind, name: a.name, notes: a.notes, refs: urls.map(url => ({ url })) }) })
+        : await fresh()
+      // Deleted from My Generations since: save it as a new one
+      if (r.status === 404 && a.libraryId) r = await fresh()
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !j?.asset) throw new Error(j?.error || `Save failed (${r.status})`)
+      patch(a.id, x => ({ ...x, libraryId: j.asset.id }))
+      learnThumbs(j.asset.refs ?? [])
+      const kept = j.asset.refs?.length ?? 0
+      flash(kept < urls.length
+        ? `Saved "${a.name}" to My Assets - ${kept} of ${urls.length} pictures (only your own images can be saved)`
+        : `Saved "${a.name}" to My Assets`)
+      void library.load()
+    } catch (e: any) {
+      flash(String(e?.message || e))
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  /** Saved assets onto this board, as copies that remember where they came from. */
+  const addFromLibrary = (picked: LibraryAsset[]) => {
+    const room = Math.max(0, MAX_ASSETS - assets.length)
+    const fresh: StoryAsset[] = picked.slice(0, room).map(l => ({
+      ...newAsset(l.kind, l.name),
+      notes: l.notes,
+      libraryId: l.id,
+      refs: l.refs.slice(0, MAX_ASSET_REFS).map(r => newAssetRef(r.url, false)),
+    }))
+    if (!fresh.length) return
+    learnThumbs(picked.flatMap(l => l.refs))
+    onChange(list => [...list, ...fresh])
+    setOpen(o => ({ ...o, ...Object.fromEntries(fresh.map(f => [f.id, true])) }))
+    if (picked.length > fresh.length) flash(`A board holds up to ${MAX_ASSETS} assets - ${picked.length - fresh.length} not added`)
+  }
   const addRefs = (id: string, urls: string[]) => patch(id, a => {
     const have = new Set(a.refs.map(r => stillKey(r.url)))
     const fresh = urls.filter(u => !have.has(stillKey(u))).map(u => newAssetRef(u, false))
@@ -141,6 +215,14 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
               />
               <span className="text-[9px] uppercase tracking-wider text-slate-600 shrink-0">{kindLabel(a.kind)}</span>
               <span className="text-[9.5px] font-mono text-slate-500 shrink-0">{a.refs.length}</span>
+              <button
+                onClick={() => saveToLibrary(a)}
+                disabled={saving === a.id || a.refs.length === 0}
+                title={a.libraryId ? "Update this asset in My Assets (My Generations)" : "Save to My Assets - reuse it on any board"}
+                className={`shrink-0 disabled:opacity-30 ${a.libraryId ? "text-sky-300/80 hover:text-sky-200" : "text-slate-500 hover:text-white"}`}
+              >
+                {saving === a.id ? <Loader2 size={11} className="animate-spin" /> : a.libraryId ? <BookmarkCheck size={11} /> : <BookmarkPlus size={11} />}
+              </button>
               <button onClick={() => onChange(list => list.filter(x => x.id !== a.id))} title="Delete this asset (the images stay in your library)" className="text-slate-600 hover:text-red-400 shrink-0"><Trash2 size={11} /></button>
             </div>
             {isOpen && (
@@ -156,7 +238,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
                         className="relative block w-full aspect-square rounded-md overflow-hidden border border-white/10 hover:border-white/40 transition-colors"
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={r.url} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                        <img src={thumb(r.url)} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
                         <span className="absolute bottom-0 left-0 px-1 bg-black/70 text-[8.5px] font-mono text-slate-200">{k + 1}</span>
                       </a>
                       <button
@@ -209,16 +291,35 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
           </div>
         </div>
       ) : (
-        <button
-          onClick={() => setAdding(true)}
-          disabled={assets.length >= MAX_ASSETS}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-white/15 hover:border-white/40 text-[11px] font-semibold text-slate-400 hover:text-white disabled:opacity-40"
-        >
-          <Plus size={12} /> New asset
-        </button>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            onClick={() => setAdding(true)}
+            disabled={assets.length >= MAX_ASSETS}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-white/15 hover:border-white/40 text-[11px] font-semibold text-slate-400 hover:text-white disabled:opacity-40"
+          >
+            <Plus size={12} /> New asset
+          </button>
+          <button
+            onClick={() => { setLibOpen(true); void library.load() }}
+            disabled={assets.length >= MAX_ASSETS}
+            title="Add assets you saved on My Generations"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-white/15 bg-white/[0.03] hover:border-white/40 text-[11px] font-semibold text-slate-300 hover:text-white disabled:opacity-40"
+          >
+            <Library size={12} /> My assets{library.assets?.length ? ` (${library.assets.length})` : ""}
+          </button>
+        </div>
       )}
 
       <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
+
+      {libOpen && (
+        <LibraryPicker
+          library={library.assets}
+          onBoard={new Set(assets.map(a => a.libraryId).filter((x): x is number => !!x))}
+          onAdd={picked => { addFromLibrary(picked); setLibOpen(false) }}
+          onClose={() => setLibOpen(false)}
+        />
+      )}
 
       {picker && (
         <RefPicker
@@ -231,6 +332,76 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
           onClose={() => setPicker(null)}
         />
       )}
+    </div>
+  )
+}
+
+/** Pick saved assets (My Generations' Assets) to copy onto this board. */
+function LibraryPicker({ library, onBoard, onAdd, onClose }: {
+  library: LibraryAsset[] | null
+  onBoard: Set<number>
+  onAdd: (picked: LibraryAsset[]) => void
+  onClose: () => void
+}) {
+  const [picked, setPicked] = useState<number[]>([])
+  const flip = (id: number) => setPicked(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]))
+  return (
+    <div className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="relative isolate overflow-hidden w-full max-w-3xl max-h-[85dvh] flex flex-col rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14]" onClick={e => e.stopPropagation()}>
+        <SilverRimOverlay />
+        <div className="relative px-4 pt-4 pb-3">
+          <BrandTitle title="My Assets" eyebrow="Saved on My Generations - added as copies" logo={26} right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={15} /></button>} />
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-4">
+          {library === null ? (
+            <p className="py-10 flex items-center justify-center gap-2 text-[11.5px] text-slate-500"><Loader2 size={13} className="animate-spin" /> Loading your assets</p>
+          ) : library.length === 0 ? (
+            <div className="py-10 text-center space-y-2">
+              <p className="text-[11.5px] text-slate-400">No saved assets yet.</p>
+              <p className="text-[10.5px] text-slate-600">Make them on <a href="/my-generations" target="_blank" rel="noopener" className="text-slate-300 underline">My Generations</a> from your own images, or save one from this board with the bookmark on its card.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pb-3">
+              {library.map(l => {
+                const Icon = ASSET_ICONS[l.kind]
+                const already = onBoard.has(l.id)
+                const on = picked.includes(l.id)
+                return (
+                  <button
+                    key={l.id}
+                    disabled={already}
+                    onClick={() => flip(l.id)}
+                    className={`text-left rounded-xl overflow-hidden border transition-colors ${on ? "border-slate-100 ring-2 ring-white/40" : "border-white/10 hover:border-white/30"} ${already ? "opacity-40" : ""}`}
+                  >
+                    <span className="grid grid-cols-2 aspect-[4/3] bg-black/40">
+                      {[0, 1, 2, 3].map(k => {
+                        const r = l.refs[k]
+                        return r
+                          // eslint-disable-next-line @next/next/no-img-element
+                          ? <img key={k} src={r.thumb || r.url} alt="" loading="lazy" className="w-full h-full object-cover" />
+                          : <span key={k} className="bg-white/[0.02]" />
+                      })}
+                    </span>
+                    <span className="flex items-center gap-1.5 px-2 py-1.5">
+                      <Icon size={12} className="text-slate-300 shrink-0" />
+                      <span className="flex-1 min-w-0 truncate text-[11.5px] font-semibold text-slate-100">{l.name}</span>
+                      <span className="text-[9.5px] font-mono text-slate-500 shrink-0">{l.refs.length}</span>
+                      {on && <Check size={11} className="text-white shrink-0" />}
+                    </span>
+                    {already && <span className="block px-2 pb-1.5 -mt-1 text-[9px] uppercase tracking-wider text-slate-500">On this board</span>}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2 px-4 py-3 border-t border-white/10">
+          <span className="text-[11px] text-slate-500">{picked.length} picked</span>
+          <BrandButton onClick={() => onAdd((library ?? []).filter(l => picked.includes(l.id)))} disabled={!picked.length} primary size="sm" className="ml-auto">
+            Add {picked.length || ""} to board
+          </BrandButton>
+        </div>
+      </div>
     </div>
   )
 }

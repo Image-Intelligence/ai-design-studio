@@ -1,8 +1,8 @@
 import { enforcePublicModeration } from '@/lib/public-moderation'
+import { enforceContentFilter } from '@/lib/content-filter'
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
 import { requireStudioUser } from '@/lib/studio-auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { jsonPrivate } from '@/lib/api-json'
@@ -77,7 +77,8 @@ const LABEL: Record<StudioGenOp, string> = {
 export async function POST(req: NextRequest, ctx: Ctx) {
   const raw = (await ctx.params).id
   const popup = raw === 'edit'
-  const user = popup ? await requireStudioUser() : await requireChatHubAdmin()
+  // Any signed-in account - the popup since 2026-10-06, the Studio's canvases since 2026-10-07
+  const user = await requireStudioUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   const id = parseInt(raw)
   const canvas = popup
@@ -172,6 +173,14 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return jsonPrivate({ error: failText(e).slice(0, 240) }, { status: 400 })
   }
 
+  // Every tool's run at the moderation a non-admin gets (FLUX Fill's tolerance included)
+  enforcePublicModeration(model, input, await checkIsAdmin(user.email))
+  // The CCBill prompt filter, as every generation route runs it - before any
+  // charge (the popup is open to everyone and never ran it)
+  if (prompt) {
+    const cf = await enforceContentFilter(prompt, user.email)
+    if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
+  }
   const paid = await deductGenerationTickets(user.id, user.email, cost)
   if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
 

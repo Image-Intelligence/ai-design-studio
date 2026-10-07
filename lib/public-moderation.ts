@@ -25,4 +25,7 @@ export function enforcePublicModeration(model: string, input: Record<string, unk
   if (model === 'nano-banana-2-lite' || model === 'nano-banana-2.1' || model === 'nano-banana-2.1-edit') {
     input.safety_tolerance = '4'
   }
+  // Image Studio's Generative Fill (FLUX Pro Fill): fal's default 2, not the
+  // most permissive 6 (2026-10-07 - the Studio and its popup are public)
+  if (model === 'flux-pro-fill') input.safety_tolerance = '2'
 }

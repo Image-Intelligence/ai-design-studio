@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser } from '@/lib/storyboard-gate'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalMediaUrl } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
@@ -12,7 +13,7 @@ import {
   sanitizeShots, sanitizeScenes, orderByScenes, totalSeconds, DEFAULT_FINAL_CUT_OPTIONS, NARRATOR_VOICES, SHOOT_RESOLUTIONS,
   FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS,
   boardMode,
-  type FinalCutOptions, type FinalCutPhase, type FinalCutState, type StoryboardShot,
+  type FinalCutOptions, type FinalCutPhase, type FinalCutState, type StoryboardShot, finalCutExtraTickets,
 } from '@/lib/storyboard'
 
 /**
@@ -47,7 +48,11 @@ import {
  * finalCut), so a closed tab, a refresh or a failure resumes where it was. A
  * lock stops two overlapping advances from doing the same step twice.
  *
- * ADMIN ONLY. Shots are charged as shots; the rest costs well under $1.
+ * Any signed-in account. Shots are charged as shots (by /api/video/generate);
+ * the cut's own work - plan, cards, score, mix, narration - is charged at the
+ * start (lib/storyboard finalCutExtraTickets, the number the page shows) and
+ * refunded if the job is cancelled or started over. Admins are not charged.
+ * A non-admin's title cards run with the safety checker on.
  */
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -86,7 +91,7 @@ const now = () => Date.now()
 const ORDER: FinalCutPhase[] = ['shoot', 'plan', 'cards', 'cut', 'voice', 'score', 'mix', 'save']
 
 async function load(ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return { error: jsonPrivate({ error: 'Unauthorized' }, { status: 401 }) }
   const id = parseInt((await ctx.params).id)
   const board = Number.isFinite(id) ? await prisma.storyboard.findFirst({ where: { id, userId: user.id } }) : null
@@ -224,7 +229,7 @@ function frameSize(aspect: string, resolution: string) {
   return aw >= ah ? { width: Math.round((short * aw) / ah / 2) * 2, height: short } : { width: short, height: Math.round((short * ah) / aw / 2) * 2 }
 }
 
-async function makeCard(kind: 'title' | 'end', text: { text: string; subtitle: string }, look: string, aspect: string, resolution: string, seconds: number): Promise<string> {
+async function makeCard(kind: 'title' | 'end', text: { text: string; subtitle: string }, look: string, aspect: string, resolution: string, seconds: number, safe: boolean): Promise<string> {
   const prompt = kind === 'title'
     ? `Cinematic film title card. A dark, atmospheric, mostly empty background in this film's style: ${look || 'moody, cinematic'}. Large elegant title lettering in the centre: "${text.text}".${text.subtitle ? ` Smaller text beneath it: "${text.subtitle}".` : ''} Perfectly legible lettering, no other text.`
     : `Cinematic film end card. A near-black background with a subtle texture in this film's style: ${look || 'moody, cinematic'}. Elegant centred lettering: "${text.text}".${text.subtitle ? ` Smaller text beneath it: "${text.subtitle}".` : ''} Perfectly legible lettering, no other text.`
@@ -233,11 +238,11 @@ async function makeCard(kind: 'title' | 'end', text: { text: string; subtitle: s
   // refused), so it cannot be the only lettering model behind a button.
   let img: string | undefined
   try {
-    const out: any = await fal.subscribe('fal-ai/recraft/v4.1/text-to-image', { input: { prompt, image_size: RECRAFT_SIZE[aspect] ?? 'landscape_16_9', enable_safety_checker: false } })
+    const out: any = await fal.subscribe('fal-ai/recraft/v4.1/text-to-image', { input: { prompt, image_size: RECRAFT_SIZE[aspect] ?? 'landscape_16_9', enable_safety_checker: safe } })
     img = out?.data?.images?.[0]?.url
   } catch { /* fall through to Ideogram */ }
   if (!img) {
-    const out: any = await fal.subscribe('ideogram/v4', { input: { prompt, image_size: IDEOGRAM_SIZE[aspect] ?? IDEOGRAM_SIZE['16:9'], num_images: 1, output_format: 'png', enable_safety_checker: false, expansion_model: 'None', rendering_speed: 'QUALITY' } })
+    const out: any = await fal.subscribe('ideogram/v4', { input: { prompt, image_size: IDEOGRAM_SIZE[aspect] ?? IDEOGRAM_SIZE['16:9'], num_images: 1, output_format: 'png', enable_safety_checker: safe, expansion_model: 'None', rendering_speed: 'QUALITY' } })
     img = out?.data?.images?.[0]?.url
   }
   if (!img) throw new Error(`The ${kind} card failed`)
@@ -275,6 +280,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const cutBoard = scene ? { ...board, title: `${board.title} - ${sceneLabel}`, story: [scene.setting, scene.summary || board.story].filter(Boolean).join('. ') } : board
 
   if (body.action === 'cancel') {
+    // The cut's own charge comes back - nothing of it is delivered
+    if (st.job && st.job.status !== 'done' && st.job.charged) {
+      await refundGenerationTickets(user.id, user.email, st.job.charged)
+      st.job = { ...st.job, charged: 0 }
+    }
     if (st.job?.status === 'running') st.job = { ...st.job, status: 'cancelled', message: 'Cancelled', error: null }
     st.work = {}
     await save(board.id, st)
@@ -296,7 +306,13 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       resolution: (SHOOT_RESOLUTIONS as readonly string[]).includes(String(o.resolution)) ? String(o.resolution) : '720p',
     }
     const skip: FinalCutPhase[] = [...(options.cards ? [] : ['cards' as const]), ...(options.narration ? [] : ['voice' as const])]
-    st.job = { status: 'running', phase: 'shoot', message: scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null }
+    // Starting over a failed cut: its charge comes back first
+    if (st.job && st.job.status !== 'done' && st.job.charged) await refundGenerationTickets(user.id, user.email, st.job.charged)
+    // The cut's own work, paid up front (the shots are charged as they are shot)
+    const charged = finalCutExtraTickets(options, totalSeconds(shots))
+    const paid = await deductGenerationTickets(user.id, user.email, charged)
+    if (!paid.ok) return jsonPrivate({ error: `The Final Cut needs ${paid.need} tickets for the edit, cards and music (plus any shots it shoots) - you have ${paid.have}`, needTickets: true }, { status: 402 })
+    st.job = { status: 'running', phase: 'shoot', message: scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null, charged: user.isAdmin ? 0 : charged }
     st.work = {}
     await save(board.id, st)
     return jsonPrivate({ finalCut: publicState(st) })
@@ -359,8 +375,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         // A card that cannot be made is not worth losing the film over: the
         // cut goes ahead without it, and the result says so
         const [t, e] = await Promise.all([
-          makeCard('title', p.title, board.look, board.aspect, job.options.resolution, 3.5).catch(() => undefined),
-          makeCard('end', p.end, board.look, board.aspect, job.options.resolution, 3).catch(() => undefined),
+          makeCard('title', p.title, board.look, board.aspect, job.options.resolution, 3.5, !user.isAdmin).catch(() => undefined),
+          makeCard('end', p.end, board.look, board.aspect, job.options.resolution, 3, !user.isAdmin).catch(() => undefined),
         ])
         work.titleCard = t; work.endCard = e
         if (!t || !e) work.musicNote = [work.musicNote, `the ${!t && !e ? 'title and end cards' : !t ? 'title card' : 'end card'} could not be made`].filter(Boolean).join('; ')

@@ -466,12 +466,15 @@ const nb21Res = (q?: string) => (q === '4k' ? '4K' : q === '1k' ? '1K' : '2K')
  * non-admin's run is put on fal's standard '4' by lib/public-moderation
  * whatever was sent.
  */
-function nb21Knobs(options: Record<string, any>): Record<string, string> {
+function nb21Knobs(options: Record<string, any>): Record<string, string | boolean> {
   const t = options.nb21Thinking
   const st = String(options.nb21SafetyTolerance ?? '')
   return {
     safety_tolerance: /^[1-6]$/.test(st) ? st : '6',
     ...(t === 'minimal' || t === 'high' ? { thinking_level: t } : {}),
+    // Google Search grounding - current facts (a skyline, a product, a news
+    // event) in the picture. Priced with a small buffer (nb21TicketCost).
+    ...(options.nb21WebSearch === true ? { enable_web_search: true } : {}),
   }
 }
 // Luma - declared up here because FAL_IMAGE_MODELS calls the Luma spec builders at load

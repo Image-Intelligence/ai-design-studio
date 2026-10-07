@@ -1,7 +1,9 @@
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser, ownRefs } from '@/lib/storyboard-gate'
+import { openShotModels } from '@/lib/storyboard-access'
+import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
@@ -44,7 +46,8 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  * One direct Gemini call in JSON mode, the same small-and-cheap approach as
  * the Movie Studio's brief autofill.
  *
- * ADMIN ONLY.
+ * Any signed-in account (free - one Gemini call); the direction goes through
+ * the CCBill prompt filter first, as every generation's prompt does.
  */
 export const runtime = 'nodejs'
 // Gemini slows badly under load (2026-10-01: 55-70s for a four-line prompt),
@@ -67,8 +70,10 @@ async function inlineRef(url: string) {
 type Ctx = { params: Promise<{ id: string }> }
 type Mode = 'replace' | 'polish' | 'regenerate' | 'extend' | 'scene' | 'refs'
 
-const shotLine = (s: StoryboardShot, n: number) =>
-  `${n}. ${s.title} | ${s.description} | still (${s.imageModel}): ${s.imagePrompt} | video: ${s.videoPrompt} | ${s.videoModel} | ${s.duration}s | -> ${s.transition}`
+const shotLine = (s: StoryboardShot, n: number, all: StoryboardShot[] = []) => {
+  const src = s.editOf ? all.findIndex(x => x.id === s.editOf) : -1
+  return `${n}. ${s.title} | ${s.description} | still (${s.imageModel})${src >= 0 ? ` [edits shot ${src + 1}]` : ''}: ${s.imagePrompt} | video: ${s.videoPrompt} | ${s.videoModel} | ${s.duration}s | -> ${s.transition}`
+}
 /** The board, numbered from 1 - with a heading wherever a scene starts. */
 const listShots = (shots: StoryboardShot[], scenes: StoryScene[] = []) => {
   const out: string[] = []
@@ -79,7 +84,7 @@ const listShots = (shots: StoryboardShot[], scenes: StoryScene[] = []) => {
       const k = scenes.findIndex(c => c.id === at)
       if (k >= 0) out.push(sceneHeading(scenes[k], k))
     }
-    out.push(shotLine(s, i + 1))
+    out.push(shotLine(s, i + 1, shots))
   })
   return out.join('\n')
 }
@@ -89,7 +94,7 @@ const sceneHeading = (c: StoryScene, k: number) =>
 const sceneAssetNames = (c: StoryScene, assets: StoryAsset[]) => c.assetIds.map(id => assets.find(a => a.id === id)?.name).filter(Boolean) as string[]
 
 const SHOT_RULES = [
-  '- Each shot\'s "imagePrompt" describes ONE frozen frame in full (subject, action pose just before the motion, setting, camera angle and shot size, lighting) - self-contained, no references to other shots, no on-screen text (except a title/text card, which spells out the exact words in quotes).',
+  '- Each shot\'s "imagePrompt" describes ONE frozen frame in full (subject, action pose just before the motion, setting, camera angle and shot size, lighting) - self-contained, no references to other shots (except an edit - see "editOf"), no on-screen text (except a title/text card, which spells out the exact words in quotes).',
   '- Each shot\'s "videoPrompt" describes only the MOTION from that still: what moves, how the camera moves, and the sound (ambience, effects, any spoken line in quotes).',
   '- "description" is one plain sentence a person reads on the board ("What we see").',
   '- "transition" is how this shot hands over to the next one (e.g. "Hard cut on the slam", "Match cut on the circular shape", "Dissolve - time passes"); the last shot\'s is how the film ends.',
@@ -104,7 +109,20 @@ const SHOT_RULES = [
   storyboardModelMenu().videos,
   '  SeeDance 2.5 suits most shots; close-ups of realistic faces need Kling 3.0 or Veo 3.1 (SeeDance refuses them); a title card needs only a gentle move (LTX 2.5 Fast or Kling V3 Turbo).',
 ]
-const SHOT_SHAPE = '{"title": string, "description": string, "imagePrompt": string, "imageModel": string, "assets": [string], "videoPrompt": string, "videoModel": string, "duration": number, "transition": string}'
+const SHOT_SHAPE = '{"title": string, "description": string, "imagePrompt": string, "imageModel": string, "assets": [string], "editOf": number, "videoPrompt": string, "videoModel": string, "duration": number, "transition": string}'
+/**
+ * Chained edits: a shot that is an earlier shot's picture with a change names
+ * that shot and is written as an edit of it - its still is then made from that
+ * still (lib/storyboard stillRefUrls), so the faces, clothes and set carry over
+ * exactly. `counting` says which numbers it may use in this action.
+ */
+const editRule = (counting: string) =>
+  `- "editOf": when this frame is an EARLIER shot's picture with only some things changed - a new outfit, pose, expression, camera angle or framing, background or setting, time of day, weather or lighting, one character swapped for another, an object added or removed, a restyle - give the NUMBER of that earlier shot (${counting}) and write its "imagePrompt" as an EDIT INSTRUCTION for that picture, not a fresh description: "Edit this photo: change ONLY <what changes>. Keep <the faces, clothes, pose, setting and light that stay> exactly the same." That earlier still is sent with it, so continuity comes for free; chain edits shot after shot for a run of changes. Prefer an edit whenever the same character in the same outfit, or the same set, comes back with a change. 0 for a frame made fresh (a new place, new people, a title card).`
+/** A planner's editOf number -> the id of the shot it edits (an EARLIER one only), or undefined. */
+const editTarget = (raw: any, own: number, idAt: (n: number) => string | undefined): string | undefined => {
+  const n = Math.round(Number(raw?.editOf) || 0)
+  return n > 0 && n - 1 < own ? idAt(n) : undefined
+}
 /** A scene as the planner writes one: `assets` names the board assets in it. */
 const SCENE_SHAPE = `{"title": string, "setting": string, "summary": string, "assets": [string], "shots": [${SHOT_SHAPE}]}`
 const SCENE_RULES = [
@@ -120,15 +138,21 @@ const plannedImageModel = (raw: any): string | null =>
   STORYBOARD_IMAGE_MODELS.find(m => m.id === raw?.imageModel || m.label === raw?.imageModel)?.id ?? null
 
 export async function POST(req: NextRequest, ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   if (!GEMINI_API_KEY) return jsonPrivate({ error: 'GEMINI_API_KEY is not configured' }, { status: 500 })
   const id = parseInt((await ctx.params).id)
   const board = Number.isFinite(id) ? await prisma.storyboard.findFirst({ where: { id, userId: user.id } }) : null
   if (!board) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
+  // A non-admin's plan never names a model they cannot use (lib/storyboard-access)
+  const reply = (o: { shots: StoryboardShot[] } & Record<string, unknown>) => jsonPrivate({ ...o, shots: o.shots.map(x => openShotModels(x, user.isAdmin)) })
   const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
   const premise = typeof body.premise === 'string' ? body.premise.trim().slice(0, 4000) : ''
+  {
+    const cf = await enforceContentFilter(premise, user.email)
+    if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
+  }
   const mode: Mode = body.mode === 'rewrite' ? 'polish'
     : (['replace', 'polish', 'regenerate', 'extend', 'scene', 'refs'] as const).includes(body.mode as Mode) ? body.mode as Mode : 'replace'
   const boardScenes = sanitizeScenes(board.scenes)
@@ -186,7 +210,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       if (got) parts.push({ text: `ASSET "${a.name}" (${ASSET_KINDS.find(k => k.id === a.kind)?.label ?? a.kind}):` }, got)
     }
   } else {
-    const refs = Array.isArray(body.refs) ? (body.refs as unknown[]).filter((u): u is string => typeof u === 'string').slice(0, 4) : []
+    const refs = await ownRefs(user, Array.isArray(body.refs) ? (body.refs as unknown[]).filter((u): u is string => typeof u === 'string').slice(0, 4) : [])
     parts.push(...(await Promise.all(refs.map(inlineRef))).filter(Boolean) as { inlineData: { mimeType: string; data: string } }[])
   }
   const imageCount = parts.filter(p => 'inlineData' in p).length
@@ -238,7 +262,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       '- "story": 2-4 sentences on what the pack covers.',
       '- "look": one line of shared product-photography notes (backdrop, light, lens) that every still will use.',
       '- Each scene\'s "title" is the outfit\'s name, "setting" the backdrop, "summary" the outfit described garment by garment, and "assets" the outfit\'s name (or an empty list).',
-      ...SHOT_RULES, '',
+      ...SHOT_RULES, editRule('counting the shots from 1 across all the scenes, in the order you return them'), '',
       `Reply with JSON only: {"title": string, "story": string, "look": string, "scenes": [${SCENE_SHAPE}]}`,
     ] : [
       `THE VIDEO: ${premise}`, '',
@@ -249,7 +273,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       'Rules:',
       '- "story": 3-6 sentences - what the piece shows from start to finish, scene by scene.',
       '- "look": one line of shared style notes (lens, grade, lighting, era) that every still will use.',
-      ...SCENE_RULES, ...SHOT_RULES, '',
+      ...SCENE_RULES, ...SHOT_RULES, editRule('counting the shots from 1 across all the scenes, in the order you return them'), '',
       `Reply with JSON only: {"title": string, "story": string, "look": string, "scenes": [${SCENE_SHAPE}]}`,
     ]
   } else if (mode === 'replace') {
@@ -263,7 +287,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       'Rules:',
       '- "story": 3-6 sentences - what the piece shows from start to finish and how the shots connect (for a story: what happens; for an ad: the hook, the product and the payoff; for a character board: who they are and how the poses build).',
       '- "look": one line of shared style notes (lens, grade, lighting, era) that every still will use.',
-      ...SHOT_RULES, '',
+      ...SHOT_RULES, editRule('counting from 1 in the order you return them'), '',
       `Reply with JSON only: {"title": string, "story": string, "look": string, "shots": [${SHOT_SHAPE}]}`,
     ]
   } else {
@@ -292,7 +316,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         names.length ? `In this scene: ${names.join(', ')} - keep each looking the same as everywhere else.` : '',
         'They must cut together with the shots around them (continuity of characters, place, light and time).',
         blank ? 'The scene has no name or summary yet: also return "scene": {"title": string, "setting": string, "summary": string} for it.' : '',
-        'Rules:', ...SHOT_RULES, '',
+        'Rules:', ...SHOT_RULES, editRule('a shot number from THE BOARD AROUND IT above - an existing shot'), '',
         `Reply with JSON only: {${blank ? '"scene": {"title": string, "setting": string, "summary": string}, ' : ''}"shots": [${SHOT_SHAPE}]}`,
       ]
     } else if (mode === 'refs') {
@@ -306,7 +330,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         board_, direction, '',
         `Write ${extendCount} NEW shots that go right after shot ${anchor + 1}${anchor + 1 < current.length ? ` and before shot ${anchor + 2}` : ' at the end of the film'}, continuing the story${premise ? ' as directed' : ''}. They must cut together with the shots around them (continuity of characters, place, light and time).`,
         'Also rewrite "story" so it covers the film with the new shots in it.',
-        'Rules:', ...SHOT_RULES, '',
+        'Rules:', ...SHOT_RULES, editRule('a shot number from THE BOARD above - an existing shot'), '',
         `Reply with JSON only: {"story": string, "shots": [${SHOT_SHAPE}]}`,
       ]
     } else {
@@ -318,7 +342,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           : `RE-IMAGINE shots ${nums.join(', ')}: write them fresh${premise ? ' following the direction' : ''}, so each one still fits between the shots before and after it and the film reads as one.`,
         'Leave every other shot exactly as it is - do not return them.',
         polish && picked.length === current.length ? 'Also return an improved "story" and "look".' : '',
-        'Rules:', ...SHOT_RULES, '',
+        'Rules:', ...SHOT_RULES, editRule('a shot number from THE BOARD above, lower than the shot\'s own'), '',
         `Reply with JSON only: {${polish && picked.length === current.length ? '"story": string, "look": string, ' : ''}"shots": [{"n": shot number, ...${SHOT_SHAPE.slice(1)}]}`,
       ]
     }
@@ -374,7 +398,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       })
       shots = fitDurations(shots.slice(0, Math.min(MAX_SHOTS, outfitPack ? MAX_OUTFIT_TOTAL : count)), targetSeconds)
       if (!shots.length) return jsonPrivate({ error: 'The model returned no shots - try again' }, { status: 502 })
-      return jsonPrivate({ title: typeof plan?.title === 'string' ? plan.title.slice(0, 120) : board.title, story, look, shots, scenes, changed: shots.map(s => s.id) })
+      // Chained edits, numbered across the scenes in order
+      const rawAll = raw.flatMap((rc: any) => (Array.isArray(rc?.shots) ? rc.shots.slice(0, outfitPack ? perOutfit : count) : []))
+      shots = shots.map((x, k) => ({ ...x, editOf: editTarget(rawAll[k], k, n => shots[n - 1]?.id) }))
+      return reply({ title: typeof plan?.title === 'string' ? plan.title.slice(0, 120) : board.title, story, look, shots, scenes, changed: shots.map(s => s.id) })
     }
 
     if (mode === 'scene' && target) {
@@ -383,7 +410,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       const rawNew = Array.isArray(plan?.shots) ? plan.shots.slice(0, extendCount) : []
       const fresh = sanitizeShots(rawNew).map((s, k) => {
         const pickedModel = plannedImageModel(rawNew[k])
-        return withRefs(newShot({ ...s, id: undefined, sceneId: target.id, imageModel: pickedModel ?? base?.imageModel ?? s.imageModel, stillUrl: null, video: null, stills: [] }), rawNew[k])
+        return withRefs(newShot({ ...s, id: undefined, sceneId: target.id, imageModel: pickedModel ?? base?.imageModel ?? s.imageModel, stillUrl: null, video: null, stills: [], editOf: editTarget(rawNew[k], current.length, n => current[n - 1]?.id) }), rawNew[k])
       })
       if (!fresh.length) return jsonPrivate({ error: 'The model returned no new shots - try again' }, { status: 502 })
       // A scene that had no name yet takes the one the planner gave it
@@ -394,17 +421,18 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         summary: String(plan.scene.summary ?? '').slice(0, 2000),
       } : target
       const scenes = boardScenes.map(c => (c.id === target.id ? sc : c))
-      return jsonPrivate({ title: board.title, story: board.story, look: board.look, shots: orderByScenes([...current, ...fresh], scenes), scenes, changed: fresh.map(s => s.id) })
+      return reply({ title: board.title, story: board.story, look: board.look, shots: orderByScenes([...current, ...fresh], scenes), scenes, changed: fresh.map(s => s.id) })
     }
 
     if (mode === 'replace') {
       // Exactly the count asked for, and lengths that add up to the target
       const rawShots = Array.isArray(plan?.shots) ? plan.shots.slice(0, count) : []
-      const shots = fitDurations(sanitizeShots(rawShots).map((s, k) => withRefs(s, rawShots[k])), targetSeconds)
+      const made = fitDurations(sanitizeShots(rawShots).map((s, k) => withRefs(s, rawShots[k])), targetSeconds)
+      const shots = made.map((x, k) => ({ ...x, editOf: editTarget(rawShots[k], k, n => made[n - 1]?.id) }))
       if (!shots.length) return jsonPrivate({ error: 'The model returned no shots - try again' }, { status: 502 })
       // A new board planned as one run: its shots are Scene 1 (the old scenes go with the old shots)
       const doc = ensureScenes({ shots, scenes: [] })
-      return jsonPrivate({ title: typeof plan?.title === 'string' ? plan.title.slice(0, 120) : board.title, story, look, shots: doc.shots, scenes: doc.scenes, changed: doc.shots.map(s => s.id) })
+      return reply({ title: typeof plan?.title === 'string' ? plan.title.slice(0, 120) : board.title, story, look, shots: doc.shots, scenes: doc.scenes, changed: doc.shots.map(s => s.id) })
     }
 
     if (mode === 'extend') {
@@ -415,11 +443,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         // The planner's still model where it named one; else carry on the anchor's
         const picked = plannedImageModel(rawNew[k])
         // New shots join the anchor's scene
-        return withRefs(newShot({ ...s, id: undefined, sceneId: base.sceneId, imageModel: picked ?? base.imageModel, imageQuality: picked && picked !== base.imageModel ? '' : base.imageQuality, imageOptions: picked && picked !== base.imageModel ? undefined : base.imageOptions, stillUrl: null, video: null, stills: [] }), rawNew[k])
+        return withRefs(newShot({ ...s, id: undefined, sceneId: base.sceneId, imageModel: picked ?? base.imageModel, imageQuality: picked && picked !== base.imageModel ? '' : base.imageQuality, imageOptions: picked && picked !== base.imageModel ? undefined : base.imageOptions, stillUrl: null, video: null, stills: [], editOf: editTarget(rawNew[k], anchor + 1, n => current[n - 1]?.id) }), rawNew[k])
       })
       if (!fresh.length) return jsonPrivate({ error: 'The model returned no new shots - try again' }, { status: 502 })
       const shots = [...current.slice(0, anchor + 1), ...fresh, ...current.slice(anchor + 1)]
-      return jsonPrivate({ title: board.title, story, look: board.look, shots, scenes: boardScenes, changed: fresh.map(s => s.id) })
+      return reply({ title: board.title, story, look: board.look, shots, scenes: boardScenes, changed: fresh.map(s => s.id) })
     }
 
     // Match references: only each picked shot's list changes
@@ -437,7 +465,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         return withRefs(s, raw)
       })
       if (!changed.length) return jsonPrivate({ error: 'The model returned nothing usable - try again' }, { status: 502 })
-      return jsonPrivate({ title: board.title, story: board.story, look: board.look, shots, scenes: boardScenes, changed })
+      return reply({ title: board.title, story: board.story, look: board.look, shots, scenes: boardScenes, changed })
     }
 
     // polish / regenerate: merge the returned slots back by number
@@ -460,6 +488,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         imagePrompt: w.imagePrompt || s.imagePrompt, videoPrompt: w.videoPrompt || s.videoPrompt,
         videoModel: w.videoModel || s.videoModel, duration: w.duration || s.duration, transition: w.transition || s.transition,
         imageModel: plannedImageModel(raw) ?? s.imageModel,
+        // An edit of an earlier shot (or no longer one) - only when the planner said
+        ...((raw as any)?.editOf !== undefined ? { editOf: editTarget(raw, i, n => current[n - 1]?.id) } : {}),
         // A re-imagined shot takes the planner's references; a polished one
         // keeps its own (it shows the same thing), unless it had none yet
         ...((mode === 'regenerate' || !s.refs) && assetIdsFor(raw) !== null ? { refs: refsFromAssets(assets, assetIdsFor(raw)!) } : {}),
@@ -469,7 +499,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       }
     })
     if (!changed.length) return jsonPrivate({ error: 'The model returned nothing usable - try again' }, { status: 502 })
-    return jsonPrivate({ title: board.title, story: mode === 'polish' && picked.length === current.length ? story : board.story, look: mode === 'polish' && picked.length === current.length ? look : board.look, shots, scenes: boardScenes, changed })
+    return reply({ title: board.title, story: mode === 'polish' && picked.length === current.length ? story : board.story, look: mode === 'polish' && picked.length === current.length ? look : board.look, shots, scenes: boardScenes, changed })
   } catch (err: any) {
     const msg = String(err?.message || err)
     return jsonPrivate({ error: msg.includes('timeout') || msg.includes('aborted') ? 'Drafting timed out - try fewer shots' : `Drafting failed: ${msg.slice(0, 200)}` }, { status: 502 })

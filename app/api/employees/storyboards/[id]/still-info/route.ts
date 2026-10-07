@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalMediaUrl } from '@/lib/media-url'
 
@@ -14,12 +14,12 @@ import { canonicalMediaUrl } from '@/lib/media-url'
  * the shape the viewer takes. Every still the studio makes is saved as a
  * GeneratedImage (the still route), so in practice all of them are found.
  *
- * ADMIN ONLY, scoped to the signed-in account's own images.
+ * Any signed-in account, scoped to its own images.
  */
 type Ctx = { params: Promise<{ id: string }> }
 
 export async function POST(req: NextRequest, ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   const id = parseInt((await ctx.params).id)
   const board = Number.isFinite(id) ? await prisma.storyboard.findFirst({ where: { id, userId: user.id }, select: { id: true } }) : null

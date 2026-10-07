@@ -1,6 +1,6 @@
 import { NextRequest, after } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser, scrubBoardMedia } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { STORYBOARD_ASPECTS, sanitizeShots, mergeStills, sanitizeAssets, sanitizeScenes, ensureScenes, isBoardMode, stillKey, migrateActiveRefs } from '@/lib/storyboard'
@@ -51,7 +51,7 @@ async function stillThumbs(userId: number, shots: unknown): Promise<[string, str
 }
 
 async function own(ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return { error: jsonPrivate({ error: 'Unauthorized' }, { status: 401 }) }
   const id = parseInt((await ctx.params).id)
   if (!Number.isFinite(id)) return { error: jsonPrivate({ error: 'Invalid id' }, { status: 400 }) }
@@ -86,14 +86,17 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     assets = moved.assets
     shots = moved.shots
   }
-  const thumbs = await stillThumbs(r.user.id, shots).catch(() => [])
+  // Asset pictures too: the Assets panel shows them as small squares
+  const thumbs = await stillThumbs(r.user.id, { shots, assets }).catch(() => [])
   return jsonPrivate({ storyboard: { ...r.row, shots, assets, scenes: doc.scenes }, thumbs })
 }
 
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   const r = await own(ctx)
   if ('error' in r) return r.error
-  const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
+  const sent = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
+  // A non-admin's links are kept to their own pictures (and what the board held already)
+  const body: Record<string, unknown> = { ...sent, ...(await scrubBoardMedia(r.user, { ...('shots' in sent ? { shots: sent.shots } : {}), ...('assets' in sent ? { assets: sent.assets } : {}) }, { shots: r.row.shots, assets: r.row.assets })) }
   const data: Record<string, unknown> = {}
   if (typeof body.title === 'string') data.title = body.title.trim().slice(0, 120) || 'Untitled storyboard'
   if (typeof body.story === 'string') data.story = body.story.slice(0, 8000)

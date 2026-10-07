@@ -16,7 +16,8 @@ import path from 'path'
 import crypto from 'crypto'
 import { fetchMedia } from '@/lib/media-fetch'
 
-// POST /api/admin/frames-clips — ADMIN ONLY
+// POST /api/admin/frames-clips — any signed-in account for the Frame Extractor
+// (public since 2026-10-07); stored-object slicing stays admin-only
 // Frame Extractor "clips" mode: slices an uploaded video into short MP4 clips
 // (or GIFs) server-side with ffmpeg. Vercel caps request/response bodies at
 // ~4.5MB, so the flow is R2-mediated end to end:
@@ -35,17 +36,22 @@ const exec = promisify(execFile)
 // admin Slicing Studio feeds stored dataset videos with no such budget —
 // 15 min is the function-time ceiling for slicing in one request
 const MAX_SOURCE_SEC = 900
+// Everyone else: the popup's own 2-minute total budget, plus a little slack
+const USER_MAX_SOURCE_SEC = 150
 const MAX_CLIPS = 40
 
-async function authed(req: Request): Promise<boolean> {
-  if (checkAuth(req as unknown as import('next/server').NextRequest)) return true
+/** Who is asking: null = nobody signed in; admin = the dataset tooling's wider rights. */
+async function caller(req: Request): Promise<{ admin: boolean } | null> {
+  if (checkAuth(req as unknown as import('next/server').NextRequest)) return { admin: true }
   const token = (await cookies()).get('session')?.value
   const user = token ? await getUserFromSession(token) : null
-  return !!user && (await checkIsAdmin(user.email))
+  if (!user) return null
+  return { admin: await checkIsAdmin(user.email) }
 }
 
 export async function POST(req: Request) {
-  if (!(await authed(req))) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+  const who = await caller(req)
+  if (!who) return NextResponse.json({ error: 'Sign in to use the Frame Extractor' }, { status: 401 })
 
   const body = await req.json().catch(() => ({})) as {
     presign?: { mimeType?: string }
@@ -74,6 +80,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'sourceUrl must be an object in the site R2 bucket' }, { status: 400 })
   }
   const isTmpSource = sourceUrl.startsWith(`${publicBase}/frames-tmp/`)
+  // Slicing a stored object in place is the admin Slicing Studio's - for
+  // everyone else only the clip they just uploaded (the bucket is private)
+  if (!who.admin && !isTmpSource) {
+    return NextResponse.json({ error: 'Upload the video through the Frame Extractor first' }, { status: 403 })
+  }
+  const maxSec = who.admin ? MAX_SOURCE_SEC : USER_MAX_SOURCE_SEC
   const clipLen = Math.min(10, Math.max(1, Number(body.clipLen) || 3))
   const every = Math.max(clipLen, Number(body.every) || clipLen)
   const format = body.format === 'gif' ? 'gif' : 'mp4'
@@ -90,7 +102,10 @@ export async function POST(req: Request) {
 
     const dur = await probeDuration(inFile)
     if (!dur || dur <= 0.2) return NextResponse.json({ error: 'Could not read the video duration' }, { status: 400 })
-    if (dur > MAX_SOURCE_SEC + 2) return NextResponse.json({ error: `Video too long (${Math.round(dur)}s — max ${MAX_SOURCE_SEC}s)` }, { status: 400 })
+    if (dur > maxSec + 2) {
+      if (isTmpSource) await deleteFromR2(sourceUrl).catch(() => {})
+      return NextResponse.json({ error: `Video too long (${Math.round(dur)}s — max ${maxSec}s)` }, { status: 400 })
+    }
 
     // Plan the cut points; a final partial clip shorter than 1s is dropped
     const starts: number[] = []
@@ -149,7 +164,7 @@ export async function POST(req: Request) {
 
 // DELETE ?url=<zipUrl> — client cleanup after unpacking (best-effort)
 export async function DELETE(req: Request) {
-  if (!(await authed(req))) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+  if (!(await caller(req))) return NextResponse.json({ error: 'Sign in first' }, { status: 401 })
   const url = new URL(req.url).searchParams.get('url') ?? ''
   const publicBase = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
   if (!publicBase || !url.startsWith(`${publicBase}/frames-tmp/`)) {

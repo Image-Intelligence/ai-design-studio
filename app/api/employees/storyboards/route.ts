@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser, scrubBoardMedia } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { STORYBOARD_ASPECTS, sanitizeShots } from '@/lib/storyboard'
@@ -12,11 +12,11 @@ import { STORYBOARD_ASPECTS, sanitizeShots } from '@/lib/storyboard'
  *   POST  create: { title?, aspect?, story?, look?, shots? } - an empty board,
  *         or a pre-filled one (a script or another studio can hand one over)
  *
- * ADMIN ONLY, like the rest of the Studios section. Rows are scoped to the
+ * Any signed-in account (public 2026-10-07; lib/storyboard-gate). Rows are scoped to the
  * signed-in admin's own user id.
  */
 export async function GET() {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   /*
    * Summarised in the database. Reading every board's whole shots array (each
@@ -60,9 +60,11 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
-  const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
+  const sent = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
+  // A non-admin's links are kept to their own pictures
+  const body: Record<string, unknown> = { ...sent, ...(await scrubBoardMedia(user, { shots: sent.shots })) }
   const aspect = (STORYBOARD_ASPECTS as readonly string[]).includes(String(body.aspect)) ? String(body.aspect) : '16:9'
   const row = await prisma.storyboard.create({
     data: {

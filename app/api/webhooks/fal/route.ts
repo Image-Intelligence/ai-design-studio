@@ -7,7 +7,7 @@ import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
 import { releaseReservedTickets } from '@/lib/ticket-gate'
 import { getTrainerFamily } from '@/lib/trainer-families'
 import { falDetailMessage } from '@/lib/fal-error'
-import { ensureThumbnail } from '@/lib/thumbnail'
+import { ensureThumbnail, prepareImageVariants, attachImageVariants } from '@/lib/thumbnail'
 
 // FAL.ai calls this endpoint when an async job completes or fails.
 // We must return 200 quickly — FAL.ai will retry on non-200 responses.
@@ -286,6 +286,8 @@ export async function POST(request: Request) {
           // millisecond got the SAME key, and the second upload overwrote the
           // first image (seen 2026-10-02: two feed rows, one picture)
           const filename = `universe-scan-${queueItem.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.${ext}`
+          // Thumbnail + display copy from these bytes, while the original uploads
+          const variants = looksSvg ? Promise.resolve(null) : prepareImageVariants(imgBuffer)
           const url = await uploadToR2(filename, imgBuffer, mime)
           console.log(`Uploaded image ${i + 1} to blob: ${url}`)
 
@@ -332,6 +334,13 @@ export async function POST(request: Request) {
                       gptQuality: params?.falQuality ?? undefined,
                       gptImageSize: params?.falImageSize ?? undefined,
                     }
+                : queueItem.modelId === 'nano-banana-2.1'
+                  ? {
+                      // The settings panel's thinking / web search / safety chips
+                      nb21Thinking: params?.nb21Thinking ?? undefined,
+                      nb21WebSearch: typeof params?.nb21WebSearch === 'boolean' ? params.nb21WebSearch : undefined,
+                      nb21Safety: params?.nb21Safety ?? undefined,
+                    }
                 : queueItem.modelId === 'clarity-upscaler'
                   ? {
                       upscaleFactor: params?.upscaleFactor,
@@ -364,9 +373,10 @@ export async function POST(request: Request) {
           })
 
           uploadedImages.push({ url, id: savedImage.id })
-          // Thumbnail and real dimensions, off the request path. The first
-          // view of this tile is then a cached webp, not a full-size decode.
-          after(() => { void ensureThumbnail(savedImage.id) })
+          // Thumbnail, display copy and real dimensions on the row BEFORE the
+          // job is marked done (lib/thumbnail), so the feed's first look at
+          // it has something small to draw; the background pass is the fallback.
+          if (!(await attachImageVariants(savedImage.id, await variants))) after(() => { void ensureThumbnail(savedImage.id) })
           console.log(`Saved GeneratedImage #${savedImage.id}`)
         } catch (imgError) {
           console.error(`Error processing image ${i + 1}:`, imgError)

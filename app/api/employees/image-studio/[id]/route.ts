@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStudioUser } from '@/lib/studio-auth'
+import { checkIsAdmin } from '@/lib/admin-check'
+import { mediaKeeper, collectUrls } from '@/lib/media-ownership'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { sanitizeDoc } from '@/lib/image-studio'
@@ -16,7 +18,7 @@ import { sanitizeDoc } from '@/lib/image-studio'
 type Ctx = { params: Promise<{ id: string }> }
 
 async function own(ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStudioUser()
   if (!user) return { error: jsonPrivate({ error: 'Unauthorized' }, { status: 401 }) }
   const id = parseInt((await ctx.params).id)
   if (!Number.isFinite(id)) return { error: jsonPrivate({ error: 'Invalid id' }, { status: 400 }) }
@@ -40,11 +42,19 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (typeof body.title === 'string') data.title = body.title.trim().slice(0, 120) || 'Untitled canvas'
   if ('doc' in body) {
     const doc = sanitizeDoc(body.doc, r.row)
+    // Only the account's own pictures (and what the canvas held already): a GET
+    // hands every layer back as a SIGNED link (lib/media-ownership)
+    if (!(await checkIsAdmin(r.user.email))) {
+      const urls = collectUrls(doc)
+      const keep = await mediaKeeper(r.user.id, urls, collectUrls(r.row.doc))
+      if (!urls.every(u => keep(u))) return jsonPrivate({ error: 'A canvas can only hold your own pictures' }, { status: 400 })
+    }
     data.doc = doc as object
     data.width = doc.width
     data.height = doc.height
   }
-  if (typeof body.thumbUrl === 'string' && /^https:\/\//.test(body.thumbUrl)) data.thumbUrl = body.thumbUrl.slice(0, 2000)
+  // The thumbnail is one of the account's own studio uploads
+  if (typeof body.thumbUrl === 'string' && /^https:\/\//.test(body.thumbUrl) && body.thumbUrl.includes(`/u/${r.user.id}/`)) data.thumbUrl = body.thumbUrl.slice(0, 2000)
   const row = await prisma.imageCanvas.update({ where: { id: r.row.id }, data })
   return jsonPrivate({ ok: true, updatedAt: row.updatedAt })
 }

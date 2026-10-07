@@ -73,6 +73,8 @@ export function HomeMediaCard({
   tall = false,
   placeholder,
   sampleUrl,
+  nameInArt = false,
+  contain = false,
 }: {
   cardKey: string
   title: string
@@ -89,6 +91,20 @@ export function HomeMediaCard({
   frameAspect?: number
   /** Top-left, always visible (the admin controls take top-right on hover). */
   badge?: React.ReactNode
+  /**
+   * The card's still already shows the name (the model cards' title art), so
+   * the printed name stays tucked away over the still: it rises while the
+   * card's video plays, sinks back with the still, and shows on hover. The
+   * company line and the price tag always show. A card with no picture yet
+   * shows its name as usual.
+   */
+  nameInArt?: boolean
+  /**
+   * Show the whole picture inside the card's frame (over a blurred, enlarged
+   * copy of itself) instead of cropping it to fill - a portrait card's art in
+   * a landscape slot, as in the Featured shortcuts.
+   */
+  contain?: boolean
   /**
    * The card's alternative (stored under "<cardKey>::alt"): the still of an
    * animated card, or the animation of a still one. A card with both shows the
@@ -122,6 +138,7 @@ export function HomeMediaCard({
   // (the admin swap only decides which one Replace/Remove act on).
   const isVideo = media?.mediaType === "video"
   const video = isVideo ? media : altMedia?.mediaType === "video" ? altMedia : null
+  const fit = contain ? "object-contain" : "object-cover"
   const still = media?.mediaType === "image" && media.mediaUrl ? media : altMedia?.mediaType === "image" && altMedia.mediaUrl ? altMedia : null
 
   // Its turn in the page-wide cycle (card-video-scheduler): `live` mounts the
@@ -291,6 +308,11 @@ export function HomeMediaCard({
     >
       {/* Media */}
       <div className="absolute inset-0">
+      {contain && (still?.mediaUrl || (media?.mediaType === "image" && media.mediaUrl)) && (
+        // The fill behind a contained picture: the same still, enlarged and blurred
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={(still?.mediaUrl ?? media?.mediaUrl)!} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover scale-125 blur-2xl opacity-60" />
+      )}
       {video ? (
         <>
           {/* The video exists only during the card's turn. */}
@@ -305,7 +327,7 @@ export function HomeMediaCard({
               onWaiting={() => handleRef.current?.stalled()}
               onEnded={onVideoEnded}
               onError={() => handleRef.current?.failed()}
-              className="absolute inset-0 w-full h-full object-cover"
+              className={`absolute inset-0 w-full h-full ${fit}`}
             />
           )}
           {/* The still covers it whenever it is not playing. */}
@@ -315,17 +337,17 @@ export function HomeMediaCard({
           >
             {still ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={still.mediaUrl} alt={title} className="absolute inset-0 w-full h-full object-cover" />
+              <img src={still.mediaUrl} alt={title} className={`absolute inset-0 w-full h-full ${fit}`} />
             ) : (
               // No still uploaded: the video's first frame stands in (#t=0.001
               // renders it without playing).
-              <video src={`${video.mediaUrl}#t=0.001`} muted playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover" />
+              <video src={`${video.mediaUrl}#t=0.001`} muted playsInline preload="metadata" className={`absolute inset-0 w-full h-full ${fit}`} />
             )}
           </div>
         </>
       ) : media?.mediaUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={media.mediaUrl} alt={title} className="absolute inset-0 w-full h-full object-cover" />
+        <img src={media.mediaUrl} alt={title} className={`absolute inset-0 w-full h-full ${fit}`} />
       ) : placeholder ? (
         placeholder
       ) : (
@@ -360,7 +382,18 @@ export function HomeMediaCard({
       {/* Foreground label */}
       <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-bold tracking-tight truncate drop-shadow text-white">{title}</p>
+          {nameInArt && (media?.mediaUrl || altMedia?.mediaUrl) ? (
+            // Collapsed to no height over the still (the art names the model);
+            // open while the video plays or on hover. A grid row animates
+            // height without measuring it.
+            <div
+              className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out group-hover:grid-rows-[1fr] group-hover:opacity-100 ${shown ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+            >
+              <p className="overflow-hidden text-sm font-bold tracking-tight truncate drop-shadow text-white">{title}</p>
+            </div>
+          ) : (
+            <p className="text-sm font-bold tracking-tight truncate drop-shadow text-white">{title}</p>
+          )}
           {subtitle && <p className="text-[11px] text-white/60 truncate">{subtitle}</p>}
         </div>
         {cost && (

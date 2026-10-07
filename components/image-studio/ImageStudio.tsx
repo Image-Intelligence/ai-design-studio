@@ -27,8 +27,12 @@ const ago = (iso: string) => {
   return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`
 }
 
-export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, onBalanceChange, openRequest, onOpenHandled }: {
+export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, onBalanceChange, openRequest, onOpenHandled, isAdmin = false, canUseLayers = false }: {
   signedIn: boolean
+  /** The site's admin-only image models in the AI tools. */
+  isAdmin?: boolean
+  /** Dev Tier (or admin): layer management - as in the Edit Image popup. */
+  canUseLayers?: boolean
   /** a picture to open as a new canvas (nonce: each request runs once) */
   openRequest?: (StudioOpenRequest & { nonce: number }) | null
   onOpenHandled?: () => void
@@ -114,6 +118,8 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
       onSaveToRefs={onSaveToRefs}
       onReplaceRef={onReplaceRef}
       onBalanceChange={onBalanceChange}
+      admin={isAdmin}
+      canUseLayers={canUseLayers}
     />
   )
 

@@ -84,7 +84,7 @@ export type EditorProps = {
   onApply?: (flat: HTMLCanvasElement, serialize: () => Promise<StudioDoc>) => Promise<void>
   /** Inline: more buttons on the top bar (e.g. Open in Image Studio) */
   extraActions?: React.ReactNode
-  /** An admin account (the site's admin-only image models are offered); the studio is admin-only */
+  /** An admin account (the site's admin-only image models are offered) */
   admin?: boolean
   /** pixels for layers that have no src yet (a fresh upload), by layer id */
   seed?: Map<string, HTMLCanvasElement>

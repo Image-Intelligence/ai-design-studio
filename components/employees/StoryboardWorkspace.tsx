@@ -1,14 +1,15 @@
 "use client"
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Plus, X, Loader2, Play, Pause, ChevronLeft, ChevronRight, Copy, Trash2, GripVertical,
   ImagePlus, ArrowRight, Clock, Clapperboard, Sparkles, Check, Film, ImageUp,
   Download, CircleDashed, CircleCheck, CircleX, MinusCircle, Ticket, SquareCheck, Square,
   Megaphone, Package, UserRound, Shirt, Music, Smartphone, MapPin, Lightbulb, ChevronDown, Search, Minus,
-  ShoppingBag, Layers, ChevronUp, Scissors, ScanFace,
+  ShoppingBag, Layers, ChevronUp, Scissors, ScanFace, Wand2, GalleryHorizontalEnd, Upload,
   type LucideIcon,
 } from "lucide-react"
+import { StillThumbs, AddStillThumbs, thumbFrom, useThumb, mergeThumbs } from "@/components/employees/still-thumbs"
 import { videoTicketCost } from "@/lib/ticket-pricing"
 import { Dropdown } from "@/components/employees/Dropdown"
 import {
@@ -20,8 +21,12 @@ import {
   type FinalCutState, type FinalCutOptions,
   newScene, orderByScenes, ensureScenes, sceneShots, shotRefs, MAX_SCENES, type StoryScene,
   FRAMINGS, isFraming, type FramingId, liveStillJob, mergeStills, pickRefs, autoShotRefs, type ShotRef,
+  stillRefUrls, editSource, SHOT_ASPECTS, finalCutExtraTickets,
 } from "@/lib/storyboard"
-import { AssetsPanel, AddToAssetMenu, ShotRefsPanel } from "@/components/employees/StoryboardAssets"
+import { AssetsPanel, AddToAssetMenu, ShotRefsPanel, uploadImage } from "@/components/employees/StoryboardAssets"
+import { StillsCutPanel } from "@/components/employees/StillsCutPanel"
+import { imageModelOpen, videoModelOpen } from "@/lib/storyboard-access"
+import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
@@ -48,8 +53,19 @@ type DraftMode = "replace" | "polish" | "regenerate" | "extend" | "scene" | "ref
 type StillRecord = { id: number; imageUrl: string; prompt: string; model: string; createdAt?: string; aspectRatio?: string; quality?: string; referenceImageUrls?: string[]; videoMetadata?: Record<string, unknown> }
 
 const ASPECT_CSS: Record<string, string> = { "16:9": "16/9", "9:16": "9/16", "1:1": "1/1", "4:3": "4/3", "3:4": "3/4", "21:9": "21/9" }
-const IMAGE_OPTIONS = STORYBOARD_IMAGE_MODELS.map(m => ({ value: m.id, label: m.label }))
-const VIDEO_OPTIONS = STORYBOARD_VIDEO_MODELS.map(m => ({ value: m, label: m }))
+/*
+ * The models an account can pick (public 2026-10-07): admin-only ones stay
+ * off a non-admin's menus - the routes refuse them anyway (lib/storyboard-access).
+ * A shot already on one (an old board) keeps it listed, so the menu shows it.
+ */
+const imageOptions = (isAdmin: boolean, current?: string) => {
+  const list = STORYBOARD_IMAGE_MODELS.filter(m => imageModelOpen(m.id, isAdmin)).map(m => ({ value: m.id, label: m.label }))
+  return current && !list.some(o => o.value === current) ? [...list, { value: current, label: `${imageModelLabel(current)} (admin)` }] : list
+}
+const videoOptions = (isAdmin: boolean, current?: string) => {
+  const list = STORYBOARD_VIDEO_MODELS.filter(m => videoModelOpen(m, isAdmin)).map(m => ({ value: m as string, label: m as string }))
+  return current && !list.some(o => o.value === current) ? [...list, { value: current, label: current }] : list
+}
 const DURATION_OPTIONS = DURATIONS.map(d => ({ value: String(d), label: `${d}s` }))
 const ASPECT_OPTIONS = STORYBOARD_ASPECTS.map(a => ({ value: a, label: a }))
 const RES_OPTIONS = SHOOT_RESOLUTIONS.map(r => ({ value: r, label: r }))
@@ -59,33 +75,6 @@ const MODE_ICONS: Record<BoardModeId, LucideIcon> = {
   lookbook: Shirt, outfit: ShoppingBag, music: Music, social: Smartphone, location: MapPin, explainer: Lightbulb,
 }
 /** A ticket count, as it sits on a button. */
-/**
- * Board stills -> their ~40KB library thumbnails (object key -> URL), sent with
- * the board. Cards, posters and strips show the thumbnail; the full-size
- * still (2-20MB) only loads where it is shown big (the animatic, Open full size).
- */
-const StillThumbs = createContext<Map<string, string>>(new Map())
-const stillKeyOf = (u: string) => { try { return decodeURIComponent(new URL(u).pathname.slice(1)) } catch { return u } }
-const thumbFrom = (m: Map<string, string>, u: string | null | undefined) => (u ? m.get(stillKeyOf(u)) ?? u : undefined)
-function useThumb() {
-  const m = useContext(StillThumbs)
-  return useCallback((u: string | null | undefined) => thumbFrom(m, u), [m])
-}
-/** New pairs from a board GET merged in - the same Map back when nothing changed, so no re-render. */
-function mergeThumbs(prev: Map<string, string>, pairs: unknown): Map<string, string> {
-  if (!Array.isArray(pairs)) return prev
-  let next: Map<string, string> | null = null
-  for (const p of pairs) {
-    if (!Array.isArray(p) || typeof p[0] !== "string" || typeof p[1] !== "string") continue
-    // A re-signed thumbnail is the same file - compare by key, not by URL
-    const had = prev.get(p[0])
-    if (had && stillKeyOf(had) === stillKeyOf(p[1])) continue
-    next ??= new Map(prev)
-    next.set(p[0], p[1])
-  }
-  return next ?? prev
-}
-
 function Tix({ n, approx, className = "" }: { n: number; approx?: boolean; className?: string }) {
   return <span className={`inline-flex items-center gap-0.5 font-mono ${className}`}><Ticket size={9} />{approx ? "~" : ""}{n}</span>
 }
@@ -126,8 +115,11 @@ export function StoryboardWorkspace({
   refLibrary,
   onAddRef,
   onOpenStill,
+  isAdmin = false,
 }: {
   signedIn: boolean
+  /** An admin account: every model, and the admin-only actions (a cut onto a home card). */
+  isAdmin?: boolean
   /** The taskbar Refs library's active references - only to show a still is "In refs". */
   activeRefs: { id: string; url: string }[]
   /** The whole Refs library, to fill the board's assets from. */
@@ -140,6 +132,7 @@ export function StoryboardWorkspace({
   const [boards, setBoards] = useState<BoardSummary[]>([])
   const [board, setBoard] = useState<StoryboardDoc | null>(null)
   const [thumbs, setThumbs] = useState<Map<string, string>>(() => new Map())
+  const addThumbs = useCallback((pairs: [string, string][]) => setThumbs(prev => mergeThumbs(prev, pairs)), [])
   const [loading, setLoading] = useState(true)
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved")
   const [busy, setBusy] = useState<Record<string, boolean>>({})
@@ -177,6 +170,10 @@ export function StoryboardWorkspace({
   const [, setTick] = useState(0) // re-renders the "shooting 0:42" timers
   const [finalCut, setFinalCut] = useState<FinalCutState>({ job: null, versions: [] })
   const [fcOpen, setFcOpen] = useState(false)
+  // The Stills cut panel (null = closed; "" = the whole board, else a scene id)
+  const [stillsCut, setStillsCut] = useState<string | null>(null)
+  // The shot whose still is open in the Image Studio popup
+  const [studioShot, setStudioShot] = useState<string | null>(null)
   const [fcOptions, setFcOptions] = useState<FinalCutOptions>(DEFAULT_FINAL_CUT_OPTIONS)
   const [fcError, setFcError] = useState<string | null>(null)
   const [fcVersion, setFcVersion] = useState<number | null>(null)
@@ -358,11 +355,12 @@ export function StoryboardWorkspace({
     try {
       const r = await fetch(`/api/employees/storyboards/${b.id}/still`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        // Its scene's asset refs (else the board's switched-on ones), as many as this still's model takes
+        // Its "before" picture and the still it edits first, then its own refs
+        // (a turn from each asset) - as many as this still's model takes
         body: JSON.stringify({
           prompt, model: shot.imageModel, quality: shot.imageQuality || undefined, shotId: shot.id,
           options: shot.imageOptions,
-          refs: pickRefs(shotRefs(b, shot), stillModelSpec(shot.imageModel).maxRefs).map(x => x.url),
+          refs: stillRefUrls(b, shot, stillModelSpec(shot.imageModel).maxRefs),
         }),
       })
       const j = await r.json().catch(() => ({}))
@@ -390,6 +388,47 @@ export function StoryboardWorkspace({
       setBusy(x => { const n = { ...x }; delete n[shot.id]; return n })
     }
   // update / flush are stable; the board is read from boardRef
+  }, [update, flush])
+  /*
+   * An edit from the Image Studio popup becomes the shot's still: a new take
+   * (the one it replaces stays), saved in the board's folder by the still
+   * route. The popup hands over a flattened JPEG data URL; a big one is
+   * scaled to fit a request (Vercel takes ~4.5 MB).
+   */
+  const adoptStudioEdit = useCallback(async (shotId: string, dataUrl: string) => {
+    const b = boardRef.current
+    if (!b) return
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
+    setBusy(x => ({ ...x, [shotId]: true }))
+    setShotError(e => { const n = { ...e }; delete n[shotId]; return n })
+    try {
+      let data = dataUrl
+      if (data.length > 3_200_000) {
+        const img = new Image()
+        await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error("Could not read the edit")); img.src = data })
+        const k = Math.min(1, 3072 / Math.max(img.width, img.height))
+        const c = document.createElement("canvas")
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k)
+        c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height)
+        data = c.toDataURL("image/jpeg", 0.88)
+      }
+      const r = await fetch(`/api/employees/storyboards/${b.id}/still`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ adopt: data, shotId }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !j.url) throw new Error(j.error || "Could not keep the edit")
+      if (boardRef.current?.id === b.id) update(cur => ({
+        ...cur,
+        shots: cur.shots.map(s => s.id !== shotId ? s : {
+          ...s, stillUrl: j.url, stillJob: null,
+          stills: [...(s.stills ?? []), { url: j.url, prompt: "Edited in the Image Studio", model: "image-studio-edit", at: Date.now() }].slice(-MAX_STILL_VERSIONS),
+        }),
+      }))
+    } catch (e: any) {
+      setShotError(x => ({ ...x, [shotId]: String(e?.message || e) }))
+    } finally {
+      setBusy(x => { const n = { ...x }; delete n[shotId]; return n })
+    }
   }, [update, flush])
   /** Make every missing still - on the board, or in one scene. */
   const generateMissing = async (sceneId?: string) => {
@@ -761,11 +800,12 @@ export function StoryboardWorkspace({
   const fcShots = board ? (fcSceneDoc ? sceneShots(board.shots, fcSceneDoc.id) : board.shots) : []
   const fcSeconds = totalSeconds(fcShots)
   const fcShootUsd = fcShots.filter(s => !(s.video?.status === "done" && s.video.url) && s.video?.status !== "rendering").reduce((a, s) => a + shotTickets(s, shootRes), 0) * 0.04
-  const fcExtraUsd = 0.02 + (fcOptions.cards ? 0.2 : 0) + fcSeconds * 0.01 + 0.05 + (fcOptions.narration ? 0.05 : 0)
+
   // The same in tickets: shots at their ticket price, the rest at the $0.04 of
   // fal cost a ticket covers (lib/ticket-pricing's margin rule)
   const fcShootTickets = Math.round(fcShootUsd / 0.04)
-  const fcExtraTickets = Math.ceil(fcExtraUsd / 0.04)
+  // The route charges exactly this at the start (lib/storyboard finalCutExtraTickets)
+  const fcExtraTickets = finalCutExtraTickets(fcOptions, fcSeconds)
   const fcTickets = fcShootTickets + fcExtraTickets
   const cutAScene = board && board.scenes.length > 1 && !fcSceneDoc ? " - cut it a scene at a time" : ""
   const fcBlocked = board ? (fcShots.length === 0 ? (fcSceneDoc ? "This scene has no shots yet" : "Add shots first")
@@ -778,7 +818,7 @@ export function StoryboardWorkspace({
   // Stills: what making the missing ones costs (each at its own model + quality)
   const missingShots = board ? board.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim()) : []
   // What one still costs: its model, quality and frame, with the refs its scene sends
-  const stillPrice = (s: StoryboardShot) => board ? stillTickets(s.imageModel, s.imageQuality, board.aspect, s.imageOptions, Math.min(shotRefs(board, s).length, stillModelSpec(s.imageModel).maxRefs)) : 0
+  const stillPrice = (s: StoryboardShot) => board ? stillTickets(s.imageModel, s.imageQuality, s.aspect || board.aspect, s.imageOptions, stillRefUrls(board, s, stillModelSpec(s.imageModel).maxRefs).length) : 0
   const missingTickets = missingShots.reduce((t, s) => t + stillPrice(s), 0)
   // The assets' ref limit follows the shot being worked on (else the first shot)
 
@@ -1029,6 +1069,7 @@ export function StoryboardWorkspace({
 
   return (
     <StillThumbs.Provider value={thumbs}>
+    <AddStillThumbs.Provider value={addThumbs}>
     <div className="h-full flex flex-col min-h-0">
       {/* ── boards: the open one, the latest few, New - the rest a search away ── */}
       <BoardBar
@@ -1126,6 +1167,15 @@ export function StoryboardWorkspace({
               >
                 <Play size={14} />
                 <span className="text-[9.5px] font-semibold">Animatic</span>
+              </button>
+              <button
+                onClick={() => setStillsCut("")}
+                disabled={stillCount === 0}
+                title="The board as a film of its stills - push-ins, edit wipes, before/after, AI-placed captions; for a home card, social or YouTube"
+                className="silver-edge shrink-0 flex flex-col items-center justify-center gap-0.5 px-3 rounded-xl text-slate-200 hover:text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <GalleryHorizontalEnd size={14} />
+                <span className="text-[9.5px] font-semibold whitespace-nowrap">Stills cut</span>
               </button>
             </div>
           </div>
@@ -1225,7 +1275,12 @@ export function StoryboardWorkspace({
                       onRemove={() => removeShot(shot.id)}
                       onPlay={() => setAnimatic(i)}
                       stillCost={stillPrice(shot)}
-                      refsInfo={{ on: shotRefs(board, shot).length, max: stillModelSpec(shot.imageModel).maxRefs }}
+                      refsInfo={{ on: stillRefUrls(board, shot, 99).length, max: stillModelSpec(shot.imageModel).maxRefs }}
+                      editChoices={[{ value: "", label: "A fresh image" }, ...board.shots.slice(0, i).map((x, k) => ({ value: x.id, label: `${pad2(k + 1)} · ${x.title || x.description.slice(0, 40) || "Untitled"}${x.stillUrl ? "" : " (no still yet)"}` })).reverse()]}
+                      editFrom={editSource(board.shots, shot)}
+                      boardAspect={board.aspect}
+                      onEditInStudio={() => setStudioShot(shot.id)}
+                      isAdmin={isAdmin}
                       refList={Array.isArray(shot.refs) ? shot.refs : autoShotRefs(board, shot).map(r => ({ id: r.id, url: r.url, on: true, assetId: r.assetId }))}
                       refsAuto={!Array.isArray(shot.refs)}
                       onRefsChange={next => setShot(shot.id, { refs: next })}
@@ -1416,6 +1471,27 @@ export function StoryboardWorkspace({
         </>
       )}
 
+      {board && stillsCut !== null && (
+        <StillsCutPanel
+          boardId={board.id}
+          sceneId={stillsCut || null}
+          sceneName={stillsCut ? board.scenes.find(c => c.id === stillsCut)?.title : undefined}
+          hasClips={board.shots.some(x => x.video?.status === "done" && !!x.video.url)}
+          isAdmin={isAdmin}
+          onClose={() => setStillsCut(null)}
+        />
+      )}
+      {board && studioShot && (() => {
+        const sh = board.shots.find(x => x.id === studioShot)
+        if (!sh?.stillUrl) return null
+        return (
+          <EditImagePopup
+            image={{ id: `storyboard-${board.id}-${sh.id}`, url: sh.stillUrl }}
+            onApply={dataUrl => { setStudioShot(null); adoptStudioEdit(sh.id, dataUrl) }}
+            onClose={() => setStudioShot(null)}
+          />
+        )
+      })()}
       {board && fcOpen && (
         <div className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-4" onClick={() => setFcOpen(false)}>
           <div className="relative isolate overflow-hidden w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] p-5" onClick={e => e.stopPropagation()}>
@@ -1471,6 +1547,7 @@ export function StoryboardWorkspace({
         .sb-input::placeholder { color: #475569; }
       `}</style>
     </div>
+    </AddStillThumbs.Provider>
     </StillThumbs.Provider>
   )
 }
@@ -1912,8 +1989,10 @@ function ShotCard({
   index, label, nextLabel, shot, aspectCss, busy, queued = false, error, last, dragging, shootTickets,
   onChange, onGenerate, onShoot, onMove, onDuplicate, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef,
   stillCost, refsInfo, assets, onAddToAsset, selecting, picked, onPick, flash, onFocus, onOpen, opening, onAiEdit, onPickVideo,
-  refList, refsAuto, onRefsChange, refLibrary, boardStills,
+  refList, refsAuto, onRefsChange, refLibrary, boardStills, editChoices, editFrom, boardAspect, onEditInStudio, isAdmin,
 }: {
+  /** Admin-only models in the menus. */
+  isAdmin: boolean
   index: number
   /** Its number on the board ("03", or "2.03" in scene 2); default = position. */
   label?: string
@@ -1953,6 +2032,13 @@ function ShotCard({
   onRefsChange: (next: ShotRef[] | undefined) => void
   refLibrary: { id: string; url: string }[]
   boardStills: { url: string; label: string }[]
+  /** The shots this one can edit (the earlier ones), for "Edit from". */
+  editChoices: { value: string; label: string }[]
+  /** The shot it edits, when that shot has a still. */
+  editFrom: { id: string; stillUrl: string | null; title: string } | null
+  boardAspect: string
+  /** Open this still in the Image Studio popup; the edit comes back as a new take. */
+  onEditInStudio: () => void
   assets: StoryAsset[]
   /** Put this still into an asset (null = a new one of `kind`). */
   onAddToAsset: (assetId: string | null, kind?: AssetKind) => void
@@ -1976,6 +2062,7 @@ function ShotCard({
   const thumb = useThumb()
   const [details, setDetails] = useState(false)
   const [refMenu, setRefMenu] = useState(false)
+  const [beforeBusy, setBeforeBusy] = useState(false)
   // Edit with AI
   const [aiText, setAiText] = useState("")
   const [aiScope, setAiScope] = useState<"image" | "video" | "both">("both")
@@ -2065,7 +2152,8 @@ function ShotCard({
             alt={shot.description}
             onClick={onOpen}
             title="Open full size"
-            className="absolute inset-0 w-full h-full object-cover cursor-zoom-in"
+            // A still in its own frame (a panorama, a poster) is shown whole
+            className={`absolute inset-0 w-full h-full cursor-zoom-in ${shot.aspect && shot.aspect !== boardAspect ? "object-contain bg-black" : "object-cover"}`}
           />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-slate-600">
@@ -2094,6 +2182,12 @@ function ShotCard({
             <span title={clipIdx >= 0 ? `Clip ${clipIdx + 1} of ${clips.length}` : `${clips.length} clips`} className="px-1.5 py-0.5 rounded-md bg-black/70 border border-fuchsia-300/40 text-[9.5px] font-mono font-semibold text-fuchsia-50">
               {clipIdx >= 0 ? clipIdx + 1 : "–"}/{clips.length}
             </span>
+          )}
+          {shot.aspect && shot.aspect !== boardAspect && !showVideo && (
+            <span title="This still has its own frame" className="px-1.5 py-0.5 rounded-md bg-black/70 border border-sky-300/40 text-[9.5px] font-mono font-semibold text-sky-100">{shot.aspect}</span>
+          )}
+          {editFrom && !showVideo && (
+            <span title={`Edits the still of "${editFrom.title || "an earlier shot"}"`} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-black/70 border border-amber-300/40 text-[9.5px] font-semibold text-amber-100"><Wand2 size={9} />Edit</span>
           )}
           {takes.length > 1 && !showVideo && (
             <span title={takeIdx >= 0 ? `Take ${takeIdx + 1} of ${takes.length}` : `${takes.length} earlier takes`} className="px-1.5 py-0.5 rounded-md bg-black/70 border border-white/40 text-[9.5px] font-mono font-semibold text-white">
@@ -2267,6 +2361,58 @@ function ShotCard({
               model={imageModelLabel(shot.imageModel)}
               onChange={onRefsChange}
             />
+            {/* Edit from an earlier still, the still's own frame, a before picture, the Stills cut caption */}
+            <div className="silver-edge rounded-xl p-2 space-y-2">
+              <BrandTitle title="Edit & frame" logo={16} size="sm" />
+              <div>
+                <p className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-0.5">Edit from</p>
+                <Dropdown value={shot.editOf ?? ""} options={editChoices.some(o => o.value === (shot.editOf ?? "")) ? editChoices : [...editChoices, { value: shot.editOf!, label: "A later shot" }]} onChange={v => onChange({ editOf: v || undefined })} className="w-full" />
+                <p className="text-[9px] text-slate-500 mt-0.5 leading-snug">
+                  {shot.editOf
+                    ? editFrom ? "That still goes first among the references. Write the prompt as an edit: \"change ONLY the outfit, keep everything else the same\"." : "That shot has no still yet - make it first."
+                    : "A fresh image - or pick an earlier shot to edit its still (new outfit, pose, angle, background, character…)."}
+                </p>
+              </div>
+              <div>
+                <p className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-0.5">Frame</p>
+                <Dropdown value={shot.aspect ?? ""} options={[{ value: "", label: `The board's (${boardAspect})` }, ...SHOT_ASPECTS.filter(a => a !== boardAspect).map(a => ({ value: a, label: a }))]} onChange={v => onChange({ aspect: v || undefined })} className="w-full" />
+                {shot.aspect && <p className="text-[9px] text-slate-500 mt-0.5 leading-snug">This still only - its video and the Final Cut keep the board&apos;s {boardAspect}; the Stills cut pans across it or fits it.</p>}
+              </div>
+              <div>
+                <p className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-0.5">Before / after</p>
+                {shot.beforeUrl ? (
+                  <div className="flex items-center gap-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={thumb(shot.beforeUrl)} alt="Before" className="w-14 shrink-0 rounded-md border border-white/15 object-cover" style={{ aspectRatio: aspectCss }} />
+                    <span className="flex-1 text-[9.5px] text-slate-400 leading-snug">The still is made as an edit of this picture; the Stills cut wipes from it to the result.</span>
+                    <IconBtn title="Remove the before picture" onClick={() => onChange({ beforeUrl: undefined })}><X size={12} /></IconBtn>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <label className={`shrink-0 flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 text-[10px] font-semibold text-slate-200 cursor-pointer hover:bg-white/10 ${beforeBusy ? "opacity-50 pointer-events-none" : ""}`}>
+                      {beforeBusy ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />}Upload
+                      <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                        const f = e.target.files?.[0]
+                        e.target.value = ""
+                        if (!f) return
+                        setBeforeBusy(true)
+                        try { onChange({ beforeUrl: await uploadImage(f) }) } catch { /* the field stays empty */ } finally { setBeforeBusy(false) }
+                      }} />
+                    </label>
+                    <Dropdown value="" options={[{ value: "", label: boardStills.length ? "or a board still…" : "No board stills yet" }, ...boardStills.map(b => ({ value: b.url, label: `Still ${b.label}` }))]} onChange={v => v && onChange({ beforeUrl: v })} className="flex-1" />
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <input value={shot.caption ?? ""} onChange={e => onChange({ caption: e.target.value || undefined })} maxLength={60} placeholder="Caption (Stills cut)" className="sb-input" />
+                <input value={shot.captionSub ?? ""} onChange={e => onChange({ captionSub: e.target.value || undefined })} maxLength={90} placeholder="Second line" className="sb-input" />
+              </div>
+              {shot.stillUrl && (
+                <BrandButton onClick={onEditInStudio} size="xs" className="w-full">
+                  <Wand2 size={11} />Edit in Image Studio
+                </BrandButton>
+              )}
+            </div>
             {/* Edit this shot's plan with AI: change the model, rewrite a prompt for one, restyle the motion */}
             <div className="silver-edge rounded-xl p-2 space-y-1.5">
               <BrandTitle title="Edit with AI" logo={16} size="sm" />
@@ -2338,7 +2484,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
               </Field>
             )}
             <Field label="Still" hint={`${stillCost} tickets`}>
-              <Dropdown value={shot.imageModel} options={IMAGE_OPTIONS} onChange={v => { onChange({ imageModel: v, imageQuality: "", imageOptions: {} }); setAdapt(a => ({ ...a, image: true })) }} className="w-full" />
+              <Dropdown value={shot.imageModel} options={imageOptions(isAdmin, shot.imageModel)} onChange={v => { onChange({ imageModel: v, imageQuality: "", imageOptions: {} }); setAdapt(a => ({ ...a, image: true })) }} className="w-full" />
               {adapt.image && (
                 <button onClick={() => runAi(`Rewrite the image prompt so it suits ${imageModelLabel(shot.imageModel)}, keeping what the shot shows.`, "image")} disabled={aiBusy} className="mt-1 flex items-center gap-1 text-[10px] text-slate-200 hover:text-white disabled:opacity-40">
                   {aiBusy ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} Rewrite the prompt for {imageModelLabel(shot.imageModel)}
@@ -2387,7 +2533,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
               <AutoText value={shot.imagePrompt} onChange={v => onChange({ imagePrompt: v })} minRows={3} placeholder="The full prompt for the still (leave empty to use What we see)" className="sb-input mt-1.5" />
             </Field>
             <Field label="Video">
-              <Dropdown value={shot.videoModel} options={VIDEO_OPTIONS.some(o => o.value === shot.videoModel) ? VIDEO_OPTIONS : [...VIDEO_OPTIONS, { value: shot.videoModel, label: shot.videoModel }]} onChange={v => { onChange({ videoModel: v }); setAdapt(a => ({ ...a, video: true })) }} className="w-full" />
+              <Dropdown value={shot.videoModel} options={videoOptions(isAdmin, shot.videoModel)} onChange={v => { onChange({ videoModel: v }); setAdapt(a => ({ ...a, video: true })) }} className="w-full" />
               {adapt.video && (
                 <button onClick={() => runAi(`Rewrite the video prompt so it suits ${shot.videoModel}, keeping the same motion and sound.`, "video")} disabled={aiBusy} className="mt-1 flex items-center gap-1 text-[10px] text-slate-200 hover:text-white disabled:opacity-40">
                   {aiBusy ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} Rewrite the prompt for {shot.videoModel}

@@ -1,5 +1,5 @@
 import { NextResponse, after } from 'next/server'
-import { ensureThumbnail } from '@/lib/thumbnail'
+import { ensureThumbnail, prepareImageVariants, attachImageVariants, type ImageVariants } from '@/lib/thumbnail'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
       const format = outputFormat || 'png'
       // In parallel: a multi-image result was paying for each download and
       // upload end to end, and the poll is already the slow part of the loop.
-      type Hosted = { url: string; width?: number; height?: number }
+      type Hosted = { url: string; width?: number; height?: number; variants?: ImageVariants | null }
       const hosted: (Hosted | null)[] = await Promise.all(falImages.map(async (falImg, i): Promise<Hosted | null> => {
         try {
           const res = await fetch(falImg.url)
@@ -78,8 +78,11 @@ export async function POST(req: Request) {
           const buffer = Buffer.from(await res.arrayBuffer())
           const ext = format === 'jpeg' ? 'jpg' : format
           const filename = `nb2-${Date.now()}-${i}.${ext}`
-          const url = await uploadToR2(filename, buffer, `image/${format === 'jpeg' ? 'jpeg' : format}`)
-          return { url, width: falImg.width, height: falImg.height }
+          const [url, variants] = await Promise.all([
+            uploadToR2(filename, buffer, `image/${format === 'jpeg' ? 'jpeg' : format}`),
+            prepareImageVariants(buffer),
+          ])
+          return { url, width: falImg.width, height: falImg.height, variants }
         } catch (e) {
           console.error(`nb2-status: failed to re-host image ${i}:`, e)
           return null
@@ -161,8 +164,12 @@ export async function POST(req: Request) {
             ))
           })
           created.forEach(r => savedIds.push(r.id))
-          // Thumbnail and real dimensions for each, off the request path.
-          for (const id of savedIds) after(() => { void ensureThumbnail(id) })
+          // Thumbnail, display copy and dimensions BEFORE "completed" goes back
+          // (lib/thumbnail); the background pass only as the fallback. A row
+          // another poller already saved keeps whatever it has.
+          await Promise.all(savedIds.map(async (id, k) => {
+            if (!(await attachImageVariants(id, hostedImages[k]?.variants ?? null))) after(() => { void ensureThumbnail(id) })
+          }))
         }
       } catch (dbErr) {
         console.error('nb2-status: DB save failed (non-fatal):', dbErr)
@@ -172,7 +179,7 @@ export async function POST(req: Request) {
       console.log(`✓ NanoBanana 2 completed [${requestId}] ${hostedImages.length} image(s)`)
       return jsonPrivate({
         status: 'completed',
-        images: hostedImages.map((img, i) => ({ ...img, dbId: savedIds[i] ?? null })),
+        images: hostedImages.map((img, i) => ({ url: img.url, width: img.width, height: img.height, dbId: savedIds[i] ?? null })),
       })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {

@@ -1,37 +1,37 @@
 "use client"
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { Layers, EyeOff, ChevronDown } from "lucide-react"
+import { LayoutGrid, EyeOff, ChevronDown } from "lucide-react"
+import { SiteLogoBox } from "@/components/SitePageHeader"
 
 // Feed settings dropdown for the my-generations page. Copied from the portal-v2
-// FeedDropdown with the admin feed-filter section removed.
+// FeedDropdown with the admin feed-filter section removed, and in the site's
+// silver brand (2026-10-07): the synced logo in its header, silver selections
+// instead of the old cyan.
 // Exposes: Columns, Page Size, View Hidden (optional), Full Size, Layout, Packing, Quality.
 // On /my-generations it is admin-only and edits the layout for every account
 // (see lib/mygen-feed-settings.ts); `scope` and `status` say so in its header.
 
+const ON = "bg-white/[0.14] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]"
+const OFF = "text-slate-500 hover:text-white hover:bg-white/5"
+
 // Segmented pill control.
 function FeedSeg<T extends string>({ value, options, onChange }: {
   value: T
-  options: { value: T; label: string; accent?: "cyan" | "amber" }[]
+  options: { value: T; label: string }[]
   onChange: (v: T) => void
 }) {
   return (
-    <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
-      {options.map((opt, i) => {
-        const active = value === opt.value
-        const activeCls = (opt.accent ?? "cyan") === "amber"
-          ? "bg-amber-500/20 text-amber-300"
-          : "bg-cyan-500/20 text-cyan-300"
-        return (
-          <button
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${i > 0 ? "border-l border-white/10" : ""} ${active ? activeCls : "text-slate-500 hover:text-white hover:bg-white/5"}`}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
+    <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/30">
+      {options.map((opt, i) => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${i > 0 ? "border-l border-white/10" : ""} ${value === opt.value ? ON : OFF}`}
+        >
+          {opt.label}
+        </button>
+      ))}
     </div>
   )
 }
@@ -47,25 +47,29 @@ function FeedOptionRow({ label, children }: { label: string; children: ReactNode
 }
 
 // ON/OFF toggle row.
-function FeedToggleRow({ label, icon, on, onChange, accent = "cyan" }: {
+function FeedToggleRow({ label, icon, on, onChange }: {
   label: string
   icon?: ReactNode
   on: boolean
   onChange: (v: boolean) => void
-  accent?: "cyan" | "amber"
 }) {
-  const activeCls = accent === "amber"
-    ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
-    : "bg-cyan-500/15 border-cyan-500/30 text-cyan-300"
-  const pillCls = accent === "amber" ? "bg-amber-500/25 text-amber-300" : "bg-cyan-500/25 text-cyan-300"
   return (
     <button
       onClick={() => onChange(!on)}
-      className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${on ? activeCls : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"}`}
+      className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${on ? "bg-white/[0.10] border-white/25 text-white" : "bg-white/[0.03] border-white/10 text-slate-400 hover:bg-white/[0.07] hover:text-white"}`}
     >
       <span className="flex items-center gap-1.5">{icon}{label}</span>
-      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${on ? pillCls : "bg-white/10 text-slate-500"}`}>{on ? "ON" : "OFF"}</span>
+      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${on ? "bg-white/90 text-black" : "bg-white/10 text-slate-500"}`}>{on ? "ON" : "OFF"}</span>
     </button>
+  )
+}
+
+function SectionLabel({ children, value }: { children: ReactNode; value?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[9.5px] font-mono uppercase tracking-[0.2em] text-slate-500">{children}</span>
+      {value !== undefined && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border border-white/15 text-slate-200">{value}</span>}
+    </div>
   )
 }
 
@@ -130,76 +134,76 @@ export function FeedDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const panelW = Math.min(540, window.innerWidth - 16)
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) })
+      // Right-aligned to the button where it fits: it sits at the right of the toolbar
+      const left = Math.min(rect.right - panelW, window.innerWidth - panelW - 8)
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, left) })
     }
   }, [open])
 
   return (
-    <div className="relative flex-none min-w-[90px] sm:flex-1" ref={ref}>
+    <div className="relative" ref={ref}>
       <button
         ref={buttonRef}
         onClick={onToggle}
-        className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium transition-all ${
-          open ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+        title="Feed layout - admins only, applies to every account"
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-all ${
+          open ? "border-white/30 bg-white/[0.12] text-white" : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/25 hover:text-white"
         }`}
       >
-        <Layers size={15} />
-        Feed
+        <LayoutGrid size={12} />
+        <span className="hidden sm:inline">Feed</span>
         {cols !== null && (
-          <span className="text-[10px] font-mono bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded-full leading-none">{cols}</span>
+          <span className="text-[10px] font-mono bg-white/15 text-white px-1.5 py-0.5 rounded-full leading-none">{cols}</span>
         )}
         {showHidden && (
-          <EyeOff size={11} className="text-amber-400 shrink-0" aria-label="Viewing hidden generations" />
+          <EyeOff size={11} className="text-slate-300 shrink-0" aria-label="Viewing hidden generations" />
         )}
-        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
-        <div className="fixed w-[min(540px,calc(100vw-16px))] rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
+        <div className="fixed w-[min(540px,calc(100vw-16px))] rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322]/[0.97] to-[#080b14]/[0.97] backdrop-blur-md shadow-2xl z-[9999] overflow-hidden" style={{ top: menuPos.top, left: menuPos.left }}>
           {/* Header */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-white/5">
-            <Layers size={13} className="text-cyan-400" />
-            <span className="text-[12px] font-semibold text-white">Feed Settings</span>
-            {scope && <span className="px-1.5 py-0.5 rounded-md bg-red-500/15 border border-red-500/30 text-[9px] font-bold uppercase tracking-wider text-red-300">{scope}</span>}
+          <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-white/[0.06]">
+            <SiteLogoBox size={24} rounded={6} />
+            <div className="min-w-0">
+              <div className="text-[13px] font-black tracking-tight leading-tight silver-shimmer-text">Feed Settings</div>
+              <div className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500">Layout · columns · quality</div>
+            </div>
+            {scope && <span className="px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/20 text-[9px] font-bold uppercase tracking-wider text-slate-200">{scope}</span>}
             {status && <span className="ml-auto text-[10px] text-slate-400">{status}</span>}
           </div>
 
-          <div className="p-3 space-y-3 max-h-[calc(100vh-140px)] overflow-y-auto">
+          <div className="p-3.5 space-y-3 max-h-[calc(100vh-140px)] overflow-y-auto">
             {/* Two-column layout: Columns + View | Display */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
               <div className="space-y-3">
                 {/* COLUMNS */}
                 <section className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Columns</span>
-                    <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border ${cols === null ? "border-white/10 text-slate-500" : "border-cyan-500/30 text-cyan-300"}`}>{cols ?? "Auto"}</span>
-                  </div>
-                  <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
-                    <button onClick={() => onColsChange(null)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${cols === null ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>Auto</button>
+                  <SectionLabel value={cols ?? "Auto"}>Columns</SectionLabel>
+                  <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/30">
+                    <button onClick={() => onColsChange(null)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${cols === null ? ON : OFF}`}>Auto</button>
                     {[1, 2, 3, 4, 5, 6, 7, 8].map(n => (
-                      <button key={n} onClick={() => onColsChange(n)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}>{n}</button>
+                      <button key={n} onClick={() => onColsChange(n)} className={`flex-1 px-2 py-1.5 text-[11px] font-medium border-l border-white/10 transition-colors ${cols === n ? ON : OFF}`}>{n}</button>
                     ))}
                   </div>
                   <div className="flex items-center gap-2.5 px-0.5">
                     <span className="text-[10px] font-mono text-slate-600">1</span>
-                    <input type="range" min={1} max={8} step={1} value={cols ?? 4} onChange={e => onColsChange(+e.target.value)} className="flex-1 accent-cyan-400 cursor-pointer" />
+                    <input type="range" min={1} max={8} step={1} value={cols ?? 4} onChange={e => onColsChange(+e.target.value)} className="flex-1 accent-slate-200 cursor-pointer" />
                     <span className="text-[10px] font-mono text-slate-600">8</span>
                   </div>
-                  <p className="text-[9.5px] text-slate-600 leading-relaxed"><span className="text-slate-400">Auto</span> adapts to your screen size.</p>
+                  <p className="text-[9.5px] text-slate-600 leading-relaxed"><span className="text-slate-300">Auto</span> adapts to the screen size.</p>
                 </section>
 
                 {/* PAGE SIZE */}
-                <section className="border-t border-white/5 pt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Page Size</span>
-                    <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono leading-none border border-cyan-500/30 text-cyan-300">{pageSize}</span>
-                  </div>
-                  <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/20">
+                <section className="border-t border-white/[0.06] pt-3 space-y-2">
+                  <SectionLabel value={pageSize}>Page Size</SectionLabel>
+                  <div className="flex items-center rounded-lg border border-white/10 overflow-hidden bg-black/30">
                     {[8, 12, 24, 48, 96].map((n, i) => (
                       <button
                         key={n}
                         onClick={() => onPageSizeChange(n)}
-                        className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${i > 0 ? "border-l border-white/10" : ""} ${pageSize === n ? "bg-cyan-500/20 text-cyan-300" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+                        className={`flex-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${i > 0 ? "border-l border-white/10" : ""} ${pageSize === n ? ON : OFF}`}
                       >
                         {n}
                       </button>
@@ -210,20 +214,20 @@ export function FeedDropdown({
 
                 {/* VIEW */}
                 {onShowHiddenChange && (
-                  <section className="border-t border-white/5 pt-3 space-y-1.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">View</span>
-                    <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={!!showHidden} onChange={onShowHiddenChange} accent="amber" />
-                    {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
+                  <section className="border-t border-white/[0.06] pt-3 space-y-1.5">
+                    <SectionLabel>View</SectionLabel>
+                    <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={!!showHidden} onChange={onShowHiddenChange} />
+                    {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations - select them to unhide.</p>}
                   </section>
                 )}
               </div>
 
               {/* DISPLAY */}
-              <section className="space-y-2 border-t border-white/5 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:border-white/5 sm:pl-4">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Display</span>
+              <section className="space-y-2 border-t border-white/[0.06] pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:border-white/[0.06] sm:pl-4">
+                <SectionLabel>Display</SectionLabel>
                 <FeedToggleRow label="Full Size" on={fullSize} onChange={onFullSizeChange} />
                 {fullSize && (
-                  <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-2">
+                  <div className="rounded-lg bg-black/30 border border-white/10 p-2.5 space-y-2">
                     <FeedOptionRow label="Layout">
                       <FeedSeg value={fullSizeLayout} onChange={onFullSizeLayoutChange} options={[{ value: "grid", label: "Grid" }, { value: "masonry", label: "Masonry" }]} />
                     </FeedOptionRow>
@@ -233,14 +237,14 @@ export function FeedDropdown({
                       </FeedOptionRow>
                     )}
                     <FeedOptionRow label="Quality">
-                      <FeedSeg value={tileRes} onChange={onTileResChange} options={[{ value: "thumb", label: "Thumbnail" }, { value: "full", label: "Full size", accent: "amber" }]} />
+                      <FeedSeg value={tileRes} onChange={onTileResChange} options={[{ value: "thumb", label: "Thumbnail" }, { value: "full", label: "Full size" }]} />
                     </FeedOptionRow>
                     <p className="text-[9.5px] text-slate-600 leading-relaxed pt-0.5">
                       {tileRes === "full"
-                        ? <><span className="text-amber-400">Full size</span> loads originals — sharper, but long scrolls may reload the page.</>
+                        ? <><span className="text-slate-200">Full size</span> loads large 2048px previews - sharp at any tile size; tap any for the original.</>
                         : fullSizeLayout === "masonry"
                           ? <><span className="text-white">Rows</span> stays put as images load; <span className="text-white">Flow</span> fills each column top-to-bottom.</>
-                          : <>Whole images at their natural shape — nothing cropped. Tap any for full resolution.</>}
+                          : <>Whole images at their natural shape - nothing cropped. Tap any for full resolution.</>}
                     </p>
                   </div>
                 )}

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStudioUser } from '@/lib/studio-auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalMediaUrl } from '@/lib/media-url'
 import { ensureThumbnail } from '@/lib/thumbnail'
@@ -15,7 +15,7 @@ import { ensureThumbnail } from '@/lib/thumbnail'
 type Ctx = { params: Promise<{ id: string }> }
 
 export async function POST(req: NextRequest, ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStudioUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   const id = parseInt((await ctx.params).id)
   const canvas = Number.isFinite(id) ? await prisma.imageCanvas.findFirst({ where: { id, userId: user.id } }) : null

@@ -1259,6 +1259,10 @@ export function pixelcutVideoTicketCost(model: string, o: { duration: string; so
  *   balance delta 2026-10-07:  1K minimal $0.0396, 1K high $0.0506, 4K high $0.1454
  *                              -> high thinking about +$0.012, minimal = medium
  *                              1K edit: 1 ref $0.0415, 12 refs $0.0633 -> +$0.002 a ref
+ *   web search: two 1K minimal runs that clearly searched (a 2026 skyline
+ *   poster) cost $0.0396 each - the same as without. Search results are billed
+ *   as input tokens, so a heavy search costs a little; a $0.006 buffer covers
+ *   ~3,400 tokens of them and only moves the price where the ceiling tips.
  * Priced to keep a 70% margin at the cheapest ticket ($0.08 on subscriptions):
  * every $0.024 of fal cost is one ticket. Medium, no refs: 1K 2, 2K 3, 4K 6;
  * high thinking and references add as they cost.
@@ -1266,18 +1270,19 @@ export function pixelcutVideoTicketCost(model: string, o: { duration: string; so
 const NB21_BASE_USD: Record<string, number> = { '1k': 0.040, '2k': 0.059, '4k': 0.134 }
 const NB21_HIGH_THINKING_USD = 0.012
 const NB21_REF_USD = 0.002
+const NB21_WEB_SEARCH_USD = 0.006
 const NB21_USD_PER_TICKET = 0.08 * (1 - 0.70)
 export type Nb21Thinking = 'minimal' | 'medium' | 'high'
 export const NB21_THINKING: Nb21Thinking[] = ['minimal', 'medium', 'high']
 
-export function nb21RunCostUsd(o: { quality?: string; thinking?: string; refCount?: number }): number {
+export function nb21RunCostUsd(o: { quality?: string; thinking?: string; refCount?: number; webSearch?: boolean }): number {
   const base = NB21_BASE_USD[(o.quality ?? '2k').toLowerCase()] ?? NB21_BASE_USD['2k']
   const think = o.thinking === 'high' ? NB21_HIGH_THINKING_USD : 0
   const refs = Math.min(14, Math.max(0, o.refCount ?? 0)) * NB21_REF_USD
-  return base + think + refs
+  return base + think + refs + (o.webSearch ? NB21_WEB_SEARCH_USD : 0)
 }
 
 /** Tickets for one NanoBanana 2.1 image - the portal, Image Studio and the server all price with this. */
-export function nb21TicketCost(o: { quality?: string; thinking?: string; refCount?: number }): number {
+export function nb21TicketCost(o: { quality?: string; thinking?: string; refCount?: number; webSearch?: boolean }): number {
   return Math.max(1, Math.ceil(nb21RunCostUsd(o) / NB21_USD_PER_TICKET - 1e-9))
 }

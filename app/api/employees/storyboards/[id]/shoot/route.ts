@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { submitShots, settleShots, boardTakes, pickTake } from '@/lib/storyboard-shoot'
 
@@ -20,7 +20,8 @@ import { submitShots, settleShots, boardTakes, pickTake } from '@/lib/storyboard
  *
  * The work lives in lib/storyboard-shoot, shared with the Final Cut.
  *
- * ADMIN ONLY.
+ * Any signed-in account: shooting goes through /api/video/generate, which
+ * charges the tickets and keeps admin-only video models admin-only.
  */
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -28,7 +29,7 @@ export const maxDuration = 120
 type Ctx = { params: Promise<{ id: string }> }
 
 async function load(ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return { error: jsonPrivate({ error: 'Unauthorized' }, { status: 401 }) }
   const id = parseInt((await ctx.params).id)
   const board = Number.isFinite(id) ? await prisma.storyboard.findFirst({ where: { id, userId: user.id } }) : null

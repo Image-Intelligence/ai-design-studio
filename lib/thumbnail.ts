@@ -71,3 +71,61 @@ export async function ensureThumbnail(imageId: number): Promise<'made' | 'had' |
     return 'failed'
   }
 }
+
+/*
+ * ── Variants from the bytes in hand, before the job is reported done ────────
+ *
+ * ensureThumbnail runs after the save (after()), downloading the original a
+ * second time. The feed hears "done" first, so for a few seconds - minutes,
+ * when several finish at once or the background step is cut short - a tile
+ * has nothing small to show: measured 2026-10-07 on ten 4K NanoBanana 2.1
+ * images, thumbnails 4-147s after the save, display copies 5-69s or never.
+ * A save path calls prepareImageVariants(buffer) alongside its upload and
+ * attachImageVariants(id, v) before it marks the job complete, so the first
+ * time the feed sees the row its thumbnail and display copy already exist.
+ */
+export type ImageVariants = { thumb: Buffer; display: Buffer; width: number; height: number }
+
+/** The thumbnail (600px wide) and display copy (2048px long side) of an image, in memory. Null for an SVG or anything sharp cannot read. */
+export async function prepareImageVariants(buffer: Buffer): Promise<ImageVariants | null> {
+  try {
+    if (buffer.slice(0, 400).toString('utf8').trimStart().startsWith('<svg')) return null
+    const sharp = (await import('sharp')).default
+    const meta = await sharp(buffer).metadata()
+    if (!meta.width || !meta.height) return null
+    const [thumb, display] = await Promise.all([
+      // The proxy's recipe (app/api/images/[id]), so every path makes the same tile
+      sharp(buffer).resize({ width: 600, withoutEnlargement: true }).webp({ quality: 75 }).toBuffer(),
+      sharp(buffer).resize({ width: DISPLAY_LONG_SIDE, height: DISPLAY_LONG_SIDE, fit: 'inside', withoutEnlargement: true }).webp({ quality: 82 }).toBuffer(),
+    ])
+    return { thumb, display, width: meta.width, height: meta.height }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Store the variants and record them on the row (thumbnailUrl, and width /
+ * height / displayUrl merged into videoMetadata). True when done; false means
+ * the caller should fall back to ensureThumbnail in the background.
+ */
+export async function attachImageVariants(imageId: number, v: ImageVariants | null): Promise<boolean> {
+  if (!v) return false
+  try {
+    const stamp = Date.now()
+    const [thumbnailUrl, displayUrl] = await Promise.all([
+      uploadToR2(`thumb/${imageId}-${stamp}.webp`, v.thumb, 'image/webp'),
+      uploadToR2(`display/${imageId}-${stamp}.webp`, v.display, 'image/webp'),
+    ])
+    // Merged in the database, so metadata the save wrote (LoRA, settings) stays
+    await prisma.$executeRaw`
+      UPDATE "GeneratedImage"
+      SET "thumbnailUrl" = ${thumbnailUrl},
+          "videoMetadata" = COALESCE("videoMetadata", '{}'::jsonb)
+            || jsonb_build_object('width', ${v.width}::int, 'height', ${v.height}::int, 'displayUrl', ${displayUrl}::text)
+      WHERE id = ${imageId}`
+    return true
+  } catch {
+    return false
+  }
+}

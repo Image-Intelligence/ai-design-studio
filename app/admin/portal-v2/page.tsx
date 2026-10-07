@@ -1,7 +1,7 @@
 "use client"
 
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
-import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
 import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, nb21TicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
@@ -11,7 +11,7 @@ import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import ChatHub, { ChatProviderSettings, ChatLayoutSettings, ChatAgentSettings, ChatAgentCapabilities, ChatApiKeysSettings } from "@/components/chat-hub"
-import { Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff } from "lucide-react"
+import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
@@ -113,6 +113,7 @@ interface ImageItem {
 // Reve, Grok and Meta Muse accept ratios the earlier models never offered
 type AspectRatio = "auto" | "1:1" | "2:3" | "3:2" | "4:5" | "5:4" | "3:4" | "4:3" | "9:16" | "16:9" | "21:9"
   | "2:1" | "1:2" | "9:21"
+  | "4:1" | "1:4" | "8:1" | "1:8"   // NanoBanana 2.1's extreme ratios (banners, tall strips)
   | "1024x768" | "1024x1024" | "1024x1536" | "1920x1080" | "2560x1440" | "3840x2160"
 type Quality = "1k" | "2k" | "3k" | "4k" | "low" | "medium" | "high"
 
@@ -176,7 +177,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-tiling",   apiId: "ideogram-v4-tiling",       name: "Ideogram v4 Tiling",  aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   // 2026-10-06, public: text, or the edit endpoint with references
-  { id: "nano-banana-2.1",      apiId: "nano-banana-2.1",          name: "NanoBanana 2.1",      aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 14, isFal: true, maxImages: 4 },
+  { id: "nano-banana-2.1",      apiId: "nano-banana-2.1",          name: "NanoBanana 2.1",      aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "4:1", "1:4", "8:1", "1:8"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 14, isFal: true, maxImages: 4 },
   { id: "nano-banana-2-lite",   apiId: "nano-banana-2-lite",       name: "NanoBanana 2 Lite",   aspectRatios: ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
   // Recraft V4 Styles — the vector pair outputs true SVG
   { id: "recraft-v4-style",     apiId: "recraft-v4-style",         name: "Recraft V4 Style",    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 10, requiresReferenceImage: true, isFal: true, maxImages: 4 },
@@ -2146,7 +2147,12 @@ function TaskbarDropdown({
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
 
-  const activeCost = activeItem && itemCosts ? itemCosts[activeItem] : undefined
+  // The active model is restored from this device's storage, which the server
+  // cannot see: its first render priced the default model ("$$") while the
+  // browser drew the restored one ("$") - a hydration mismatch. The badge waits
+  // until the page is running in the browser.
+  const hydrated = useHydrated()
+  const activeCost = hydrated && activeItem && itemCosts ? itemCosts[activeItem] : undefined
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -2792,6 +2798,12 @@ function ModelMenuPanel({
 }
 
 // --- GROUPED TASKBAR DROPDOWN (Image model picker — 2-column company cards) ---
+/** False during the server render and hydration, true once running in the browser - for UI that depends on this device's stored state. */
+const noopSubscribe = () => () => {}
+function useHydrated(): boolean {
+  return useSyncExternalStore(noopSubscribe, () => true, () => false)
+}
+
 function GroupedTaskbarDropdown({
   label,
   icon: Icon,
@@ -2839,7 +2851,12 @@ function GroupedTaskbarDropdown({
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 428, z: 1 })
 
-  const activeCost = activeItem && itemCosts ? itemCosts[activeItem] : undefined
+  // The active model is restored from this device's storage, which the server
+  // cannot see: its first render priced the default model ("$$") while the
+  // browser drew the restored one ("$") - a hydration mismatch. The badge waits
+  // until the page is running in the browser.
+  const hydrated = useHydrated()
+  const activeCost = hydrated && activeItem && itemCosts ? itemCosts[activeItem] : undefined
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -10289,6 +10306,11 @@ function ImageDetailModal({
     typeof a === "string" && a ? a : typeof b === "string" && b ? b : null
   const panelRenderSpeed = str(image.renderSpeed, vm.renderSpeed)
   const panelPromptExpansion = str(image.promptExpansion, vm.promptExpansion)
+  // NanoBanana 2.1's run settings (recorded from 2026-10-07)
+  const panelNb21Thinking = typeof vm.nb21Thinking === "string" ? vm.nb21Thinking : null
+  const panelNb21Web = typeof vm.nb21WebSearch === "boolean" ? vm.nb21WebSearch : null
+  const panelNb21Safety = typeof vm.nb21Safety === "string" ? vm.nb21Safety : null
+  const hasNb21Settings = panelNb21Thinking !== null || panelNb21Web !== null || panelNb21Safety !== null
   const panelExtraLoras = (Array.isArray(image.extraLoras) ? image.extraLoras
     : Array.isArray(vm.extraLoras) ? vm.extraLoras : []) as { url: string; name?: string | null; scale: number }[]
   const modelConfig = IMAGE_MODEL_CONFIGS.find(m => m.apiId === image.model)
@@ -10297,7 +10319,7 @@ function ImageDetailModal({
    * ...and for anything carrying a reference strength, which would otherwise
    * be recorded, derived, and then hidden behind a row that never rendered.
    */
-  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality || panelRefStrength !== null || panelRenderSpeed || panelPromptExpansion)
+  const showSettings = !!(isUpscalerImage || modelConfig?.isCustomFlux || image.aspectRatio || image.quality || modelConfig?.supportsQuality || panelRefStrength !== null || panelRenderSpeed || panelPromptExpansion || hasNb21Settings)
   const formattedDate = image.createdAt
     ? new Date(image.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : null
@@ -10752,7 +10774,24 @@ function ImageDetailModal({
                           <span className="text-slate-500">prompt</span>{panelPromptExpansion === "None" ? "verbatim" : panelPromptExpansion.toLowerCase()}
                         </span>
                       )}
-                      {!image.aspectRatio && !image.quality && panelRefStrength === null && !panelRenderSpeed && !panelPromptExpansion && (
+                      {/* NanoBanana 2.1: thinking, web search and safety as they ran */}
+                      {panelNb21Thinking && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
+                          <span className="text-slate-500">thinking</span>{panelNb21Thinking}
+                        </span>
+                      )}
+                      {panelNb21Web !== null && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[11px] font-mono ${panelNb21Web ? "bg-sky-500/10 border-sky-400/25 text-sky-200" : "bg-white/[0.04] border-white/10 text-slate-300"}`}>
+                          <Globe size={10} className={panelNb21Web ? "text-sky-300/70" : "text-slate-500"} />
+                          <span className={panelNb21Web ? "text-sky-300/60" : "text-slate-500"}>web search</span>{panelNb21Web ? "on" : "off"}
+                        </span>
+                      )}
+                      {panelNb21Safety && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono" title="1 strictest - 6 most permissive">
+                          <span className="text-slate-500">safety</span>{panelNb21Safety}
+                        </span>
+                      )}
+                      {!image.aspectRatio && !image.quality && panelRefStrength === null && !panelRenderSpeed && !panelPromptExpansion && !hasNb21Settings && (
                         <span className="text-[11px] text-slate-600 font-mono">Not recorded</span>
                       )}
                     </>
@@ -12601,7 +12640,9 @@ function AspectRatioPicker({
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-40 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden z-50">
+        // Capped and scrolling: NanoBanana 2.1 has 15 ratios, taller than a
+        // short screen above the composer
+        <div className="absolute bottom-full left-0 mb-2 w-40 max-h-[min(60vh,480px)] overflow-y-auto overscroll-contain [scrollbar-width:thin] rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl z-50">
           {ratios.map((ar) => (
             <button
               key={ar}
@@ -17000,6 +17041,7 @@ function PromptBox({
   // everyone else on fal's standard 4, lib/public-moderation)
   const [nb21Thinking, setNb21Thinking] = useState<Nb21Thinking>("medium")
   const [nb21Safety, setNb21Safety] = useState<"1" | "2" | "3" | "4" | "5" | "6">("6")
+  const [nb21WebSearch, setNb21WebSearch] = useState(false)
   /*
    * Edit, or strip the text out. "remove-text" leaves the v4 family for
    * ideogram/v3/layerize-text, which wants the image and nothing else - so
@@ -17711,7 +17753,7 @@ function PromptBox({
       })
     : model.id === "nano-banana-2.1"
     // The same function the server charges with: size, thinking, each reference
-    ? nb21TicketCost({ quality, thinking: nb21Thinking, refCount: activeRefImages.length })
+    ? nb21TicketCost({ quality, thinking: nb21Thinking, refCount: activeRefImages.length, webSearch: nb21WebSearch })
     : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
   const needsRefImage = !!model.requiresReferenceImage && activeRefImages.length === 0
@@ -18646,7 +18688,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -18668,7 +18710,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -20817,8 +20859,9 @@ function PromptBox({
                 as +N) and the safety level (admins; everyone else runs at
                 fal's standard 4, set on the server) */}
             {model.id === "nano-banana-2.1" && (() => {
-              const extra = (t: Nb21Thinking) => nb21TicketCost({ quality, thinking: t, refCount: activeRefImages.length })
-                - nb21TicketCost({ quality, thinking: "medium", refCount: activeRefImages.length })
+              const price = (t: Nb21Thinking, web: boolean) => nb21TicketCost({ quality, thinking: t, refCount: activeRefImages.length, webSearch: web })
+              const extra = (t: Nb21Thinking) => price(t, nb21WebSearch) - price("medium", nb21WebSearch)
+              const webExtra = price(nb21Thinking, true) - price(nb21Thinking, false)
               return (
                 <>
                   <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
@@ -20834,6 +20877,19 @@ function PromptBox({
                         : t === "minimal" ? "Fastest - simple prompts" : "fal's default",
                     }))}
                   />
+                  <button
+                    onClick={() => setNb21WebSearch(v => !v)}
+                    title="Web search: the model looks things up first - current buildings, products, events. Usually free; a heavy search can add a ticket."
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono transition-all shrink-0 ${
+                      nb21WebSearch
+                        ? "border-sky-400/40 bg-sky-500/15 text-sky-200"
+                        : "border-white/10 bg-white/5 text-slate-500 hover:border-white/20 hover:text-slate-300"
+                    }`}
+                  >
+                    <Globe size={11} />
+                    web {nb21WebSearch ? "on" : "off"}
+                    {webExtra > 0 && <span className="text-amber-400/90">+{webExtra}</span>}
+                  </button>
                   {isAdminAccount && (
                     <BarSelect<"1" | "2" | "3" | "4" | "5" | "6">
                       label="safety"
@@ -30220,23 +30276,22 @@ function employeePending(
               }
               onClearErrors={handleClearAllErrors}
             />
-            {/* ADMIN-ONLY TASKBAR ENTRIES ARE RED, not silver. The bar's own
-                rim is silver, so red text + icon is what separates "everyone
-                gets this" from "this is not shipped yet" at a glance.
-                Frames and 3D Studio live inside Studios now. */}
-            {(isAdminAccount || ANY_PUBLIC_EMPLOYEE) && (
+            {/* Studios: for everyone since 2026-10-07 (Storyboard Studio and the
+                Frame Extractor are public; the page lists what each account can
+                open - lib/employees). White like the other public entries;
+                admin-only taskbar entries are the red ones. Frames and 3D
+                Studio live inside Studios. */}
             <div className="relative flex-none min-w-[110px] sm:flex-1">
               <button
                 onClick={() => { setScannerMode("employees"); setOpenDropdown(null) }}
-                title="Studios — workspaces built for one job each (admin only)"
-                className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-red-300 hover:text-red-200 transition-all ${
-                  scannerMode === "employees" ? "bg-red-500/15" : "hover:bg-red-500/10"}`}
+                title="Studios — workspaces built for one job each"
+                className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+                  scannerMode === "employees" ? "bg-white/10" : "hover:bg-white/5"}`}
               >
-                <Wand2 size={15} className="text-red-400" />
+                <Wand2 size={15} className="text-slate-300" />
                 Studios
               </button>
             </div>
-            )}
             {/* AI Chat Hub moved to the logo dropdown's admin-only section */}
             </TaskbarScroller>
           </div>
@@ -30478,6 +30533,8 @@ function employeePending(
             // where exports can go (new, or replacing the one it was opened from)
             <ImageStudio
               signedIn={user !== null}
+              isAdmin={isAdminAccount}
+              canUseLayers={hasEffectiveDevAccess}
               refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
               onSaveToRefs={async file => { await addRefsToAccount([file], null) }}
               onReplaceRef={(refId, dataUrl) => handleEditRef(refId, dataUrl)}
@@ -30490,6 +30547,7 @@ function employeePending(
             // consistent across its stills (and inform the AI draft)
             <StoryboardWorkspace
               signedIn={user !== null}
+              isAdmin={isAdminAccount}
               activeRefs={refLibrary
                 .filter(img => activeRefIds.includes(img.id))
                 .map(r => ({ id: r.id, url: r.url }))}
@@ -30527,6 +30585,7 @@ function employeePending(
           onGoThreeD={() => { setActiveEmployee("3d-studio"); setScannerMode("employees") }}
           onOpenFrames={() => setFramesOpen(true)}
           onCardMediaChange={handleCardMediaChange}
+          onGoFeed={(kind) => setScannerMode(kind)}
         />
       ) : scannerMode === "chat" && isAdminAccount ? (
         <ChatHub

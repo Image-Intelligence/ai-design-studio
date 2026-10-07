@@ -2,15 +2,23 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
-  Download, ExternalLink, Copy, Sparkles, AlertTriangle, Trash2, X, Square,
-  Image as ImageIcon, LayoutDashboard, Folder, FolderPlus, MoreVertical,
-  ChevronRight, ChevronLeft, FolderInput, EyeOff, Eye, Check, Loader2, Home, Layers,
+  Download, ExternalLink, Copy, Sparkles, AlertTriangle, Trash2, X, Square, CheckSquare,
+  Images, LayoutDashboard, Folder, FolderOpen, FolderPlus, MoreVertical,
+  ChevronRight, ChevronLeft, FolderInput, EyeOff, Eye, Check, Loader2, Home, Layers, Boxes, ImagePlus,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { FeedDropdown } from "@/components/feed/FeedDropdown"
 import { MyGenFeed, type MyGenImage } from "@/components/feed/MyGenFeed"
 import { MYGEN_FEED_DEFAULTS, sanitizeMyGenFeed, type MyGenFeedSettings } from "@/lib/mygen-feed-settings"
+import { SiteLogoBox } from "@/components/SitePageHeader"
+import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
+import { ShopBackdrop } from "@/components/shop/ShopKit"
+import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
+import {
+  useUserAssets, AssetsGrid, AssetEditor, NewAssetModal, AddToAssetModal, type UserAsset,
+} from "@/components/my-generations/Assets"
+import type { AssetKind } from "@/lib/storyboard"
 
 interface GeneratedImage extends MyGenImage {
   prompt: string
@@ -22,6 +30,7 @@ interface GeneratedImage extends MyGenImage {
 }
 
 type GenFolder = { id: number; name: string; parentId: number | null }
+type View = "generations" | "assets"
 
 /*
  * The feed layout is site-wide: admins set it in the Feed dropdown for every
@@ -36,15 +45,24 @@ const readFeedCache = (): MyGenFeedSettings | null => {
 const writeFeedCache = (v: MyGenFeedSettings) => {
   try { localStorage.setItem(FEED_CACHE_KEY, JSON.stringify(v)) } catch {}
 }
+const VIEW_KEY = "mg-view"
 
 /*
- * /my-generations — the user's whole library, in folders.
+ * /my-generations — the user's whole library, in folders, and the assets
+ * (characters, vehicles, props, places...) they build from it.
  *
  * LAYOUT. Full width to a 2560px cap, with a gutter that grows with the
- * screen. It used to be a 1152px column, which left most of a 16:9 monitor
- * empty. Wide screens (lg+) get a folder tree in a sticky sidebar and more
+ * screen. Wide screens (lg+) get a folder tree in a sticky sidebar and more
  * feed columns (Auto runs from 2 on a phone to 8 on an ultrawide); narrower
  * ones keep the folders as chips above the feed. The toolbar stays pinned.
+ *
+ * BRAND (2026-10-07). The site's silver: the synced logo in its spinning
+ * ring, silver-shimmer titles, static .silver-edge panels and BrandButtons -
+ * the Studios' treatment, replacing the old cyan / amber / fuchsia accents.
+ *
+ * ASSETS (2026-10-07). Saved to the account (/api/user/assets) and used in
+ * Storyboard Studio. Pictures come from the feed: Select → Add to asset, or
+ * an asset's "Add pictures", which drops into Select mode aimed at it.
  *
  * SPEED. The feed starts loading immediately instead of waiting for the
  * session check to come back first (a 401 from the feed sends the user to
@@ -59,10 +77,22 @@ export default function MyGenerationsPage() {
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false)
   const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all")
   const [total, setTotal] = useState<number | null>(null)
+  const [view, setViewState] = useState<View>("generations")
+  const setView = (v: View) => { setViewState(v); try { localStorage.setItem(VIEW_KEY, v) } catch {} }
+  useEffect(() => { try { if (localStorage.getItem(VIEW_KEY) === "assets") setViewState("assets") } catch {} }, [])
 
   // Force the feed to fully reload (after move / delete / hide).
   const [refreshKey, setRefreshKey] = useState(0)
   const bumpFeed = useCallback(() => setRefreshKey(k => k + 1), [])
+
+  // A short note at the foot of the screen ("Added 4 pictures to Captain Mara")
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flash = (msg: string) => {
+    setToast(msg)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 3800)
+  }
 
   // --- Feed layout (site-wide; admins edit it) ---
   const [feedOpen, setFeedOpen] = useState(false)
@@ -126,6 +156,8 @@ export default function MyGenerationsPage() {
   const [menuFolderId, setMenuFolderId] = useState<number | null>(null)
   const [renamingFolderId, setRenamingFolderId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState("")
+  // In-page confirm (the old window.confirm froze the page and looked foreign)
+  const [folderToDelete, setFolderToDelete] = useState<GenFolder | null>(null)
 
   // --- Select / move / delete ---
   const [isSelectMode, setIsSelectMode] = useState(false)
@@ -137,9 +169,19 @@ export default function MyGenerationsPage() {
   const [isMoving, setIsMoving] = useState(false)
   const [isHiding, setIsHiding] = useState(false)
 
+  // --- Assets ---
+  const assetsApi = useUserAssets(signedIn)
+  const [openAssetId, setOpenAssetId] = useState<number | null>(null)
+  const openAsset = assetsApi.assets?.find(a => a.id === openAssetId) ?? null
+  const [newAssetOpen, setNewAssetOpen] = useState(false)
+  const [addToAssetOpen, setAddToAssetOpen] = useState(false)
+  /** "Add pictures" from an asset: Select mode, aimed at it. */
+  const [pickingFor, setPickingFor] = useState<UserAsset | null>(null)
+  const [isAdding, setIsAdding] = useState(false)
+
   // --- Preview modal ---
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null)
-  // The current page's items, for the preview's previous / next.
+  // The current page's items, for the preview's previous / next (and Select page).
   const [navList, setNavList] = useState<MyGenImage[]>([])
   const [fullLoaded, setFullLoaded] = useState(false)
   const [fullFailed, setFullFailed] = useState(false)
@@ -218,8 +260,7 @@ export default function MyGenerationsPage() {
   }
 
   const deleteFolder = async (id: number) => {
-    setMenuFolderId(null)
-    if (!window.confirm("Delete this folder? Its images and any subfolders move up to the parent — nothing is lost.")) return
+    setFolderToDelete(null)
     try {
       const res = await fetch(`/api/user/generation-folders?id=${id}`, { method: "DELETE" })
       if (res.ok) {
@@ -235,7 +276,7 @@ export default function MyGenerationsPage() {
   }
 
   // --- Select handlers ---
-  const exitSelectMode = () => { setIsSelectMode(false); setSelectedIds(new Set()) }
+  const exitSelectMode = () => { setIsSelectMode(false); setSelectedIds(new Set()); setPickingFor(null) }
   const toggleSelect = (id: number) => {
     setSelectedIds(prev => {
       const next = new Set(prev)
@@ -243,6 +284,14 @@ export default function MyGenerationsPage() {
       return next
     })
   }
+  const pageIds = navList.map(i => i.id)
+  const allPageSelected = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id))
+  const selectPage = () => setSelectedIds(prev => {
+    const next = new Set(prev)
+    if (allPageSelected) pageIds.forEach(id => next.delete(id))
+    else pageIds.forEach(id => next.add(id))
+    return next
+  })
 
   const moveSelectedTo = async (targetFolderId: number | null) => {
     if (selectedIds.size === 0) return
@@ -291,6 +340,41 @@ export default function MyGenerationsPage() {
       setIsDeleting(false)
       setShowDeleteConfirm(false)
     }
+  }
+
+  // --- Asset handlers ---
+  /** These pictures into an asset; says how many went in (videos and duplicates do not). */
+  const addIdsToAsset = async (a: UserAsset, ids: number[]) => {
+    const { asset, added } = await assetsApi.update({ id: a.id, addImageIds: ids })
+    const skipped = ids.length - added
+    flash(added === 0
+      ? `Nothing added to ${asset.name} - already there, videos, or the asset is full`
+      : `Added ${added} picture${added === 1 ? "" : "s"} to ${asset.name}${skipped > 0 ? ` (${skipped} skipped)` : ""}`)
+    return asset
+  }
+  const startPickingFor = (a: UserAsset) => {
+    setOpenAssetId(null)
+    setView("generations")
+    setFeedShowHidden(false)
+    setSelectedIds(new Set())
+    setIsSelectMode(true)
+    setPickingFor(a)
+  }
+  const finishPicking = async () => {
+    if (!pickingFor || selectedIds.size === 0) return
+    setIsAdding(true)
+    try {
+      const a = await addIdsToAsset(pickingFor, Array.from(selectedIds))
+      exitSelectMode()
+      setView("assets")
+      setOpenAssetId(a.id)
+    } catch (e: any) { flash(String(e?.message || e)) }
+    finally { setIsAdding(false) }
+  }
+  const createAsset = async (kind: AssetKind, name: string) => {
+    const a = await assetsApi.create({ kind, name })
+    setNewAssetOpen(false)
+    startPickingFor(a)
   }
 
   // --- Formatting helpers ---
@@ -345,6 +429,7 @@ export default function MyGenerationsPage() {
         document.body.removeChild(ta)
       } catch {}
     }
+    flash("Prompt copied")
   }
 
   // --- Preview navigation ---
@@ -405,20 +490,21 @@ export default function MyGenerationsPage() {
     }
     return out
   }
+  const openFolder = (path: GenFolder[]) => { setFolderPath(path); setView("generations") }
 
   const folderMenu = (f: GenFolder) => menuFolderId === f.id && renamingFolderId !== f.id && (
     <>
       <div className="fixed inset-0 z-40" onClick={() => setMenuFolderId(null)} />
-      <div className="absolute right-0 top-full mt-1 z-50 w-32 rounded-lg border border-white/10 bg-slate-900 shadow-xl overflow-hidden">
+      <div className="absolute right-0 top-full mt-1 z-50 w-36 rounded-xl border border-white/10 bg-[#0b111d]/95 backdrop-blur-md shadow-2xl overflow-hidden">
         <button
           onClick={() => { setRenamingFolderId(f.id); setRenameValue(f.name) }}
-          className="w-full px-3 py-2 text-left text-xs text-slate-300 hover:bg-white/5 transition-colors"
+          className="w-full px-3 py-2 text-left text-xs text-slate-200 hover:bg-white/[0.06] transition-colors"
         >
           Rename
         </button>
         <button
-          onClick={() => deleteFolder(f.id)}
-          className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+          onClick={() => { setMenuFolderId(null); setFolderToDelete(f) }}
+          className="w-full px-3 py-2 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
         >
           Delete
         </button>
@@ -445,14 +531,14 @@ export default function MyGenerationsPage() {
       onBlur={createFolder}
       onKeyDown={e => { if (e.key === "Enter") createFolder(); if (e.key === "Escape") { setNewFolderOpen(false); setNewFolderName("") } }}
       placeholder="Folder name"
-      className={`px-3 py-2 rounded-lg bg-slate-950 border border-cyan-500/40 text-sm text-white placeholder:text-slate-600 focus:outline-none ${cls}`}
+      className={`px-3 py-2 rounded-lg bg-black/40 border border-white/30 text-sm text-white placeholder:text-slate-600 focus:outline-none ${cls}`}
     />
   ) : (
     <button
       onClick={() => setNewFolderOpen(true)}
-      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-white/15 bg-white/[0.02] hover:border-cyan-500/40 hover:bg-cyan-500/5 text-slate-400 hover:text-cyan-300 text-sm transition-all ${cls}`}
+      className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-white/15 bg-white/[0.02] hover:border-white/40 hover:bg-white/[0.05] text-slate-400 hover:text-white text-[12px] font-semibold transition-all ${cls}`}
     >
-      <FolderPlus size={14} /> New folder{currentFolderId !== null ? " here" : ""}
+      <FolderPlus size={13} /> New folder{currentFolderId !== null ? " here" : ""}
     </button>
   )
 
@@ -462,16 +548,16 @@ export default function MyGenerationsPage() {
     const kids = folders.filter(f => (f.parentId ?? null) === parentId)
     if (kids.length === 0) return null
     return kids.map(f => {
-      const active = f.id === currentFolderId
+      const active = view === "generations" && f.id === currentFolderId
       const hasKids = folders.some(c => c.parentId === f.id)
       const expanded = onPath.has(f.id) || expandedIds.has(f.id)
       return (
         <div key={f.id}>
-          <div className="relative group/row" style={{ paddingLeft: depth * 14 }}>
+          <div className="relative group/row" style={{ paddingLeft: depth * 12 }}>
             {renamingFolderId === f.id ? (
-              renameInput(f, "w-full px-2.5 py-1.5 rounded-md bg-slate-950 border border-cyan-500/40 text-[13px] text-white focus:outline-none")
+              renameInput(f, "w-full px-2.5 py-1.5 rounded-lg bg-black/40 border border-white/30 text-[13px] text-white focus:outline-none")
             ) : (
-              <div className={`flex items-center gap-0.5 rounded-md pr-1 transition-colors ${active ? "bg-amber-500/10 text-amber-100" : "text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}>
+              <div className={`flex items-center gap-0.5 rounded-lg pr-1 border transition-colors ${active ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}>
                 <button
                   onClick={() => setExpandedIds(prev => { const n = new Set(prev); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n })}
                   className={`w-5 h-7 flex items-center justify-center shrink-0 ${hasKids ? "text-slate-500 hover:text-white" : "invisible"}`}
@@ -479,8 +565,10 @@ export default function MyGenerationsPage() {
                 >
                   <ChevronRight size={12} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
                 </button>
-                <button onClick={() => setFolderPath(pathTo(f.id))} className="flex-1 min-w-0 flex items-center gap-2 py-1.5 text-[13px] text-left">
-                  <Folder size={14} className={active ? "text-amber-300 shrink-0" : "text-amber-400/70 shrink-0"} />
+                <button onClick={() => openFolder(pathTo(f.id))} className="flex-1 min-w-0 flex items-center gap-2 py-1.5 text-[13px] text-left">
+                  {active
+                    ? <FolderOpen size={14} className="text-slate-100 shrink-0" />
+                    : <Folder size={14} className="text-slate-500 shrink-0" />}
                   <span className="truncate">{f.name}</span>
                 </button>
                 <button
@@ -501,100 +589,110 @@ export default function MyGenerationsPage() {
   }
 
   const gutter = "px-3 sm:px-6 lg:px-8 2xl:px-12"
+  const chip = "flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-all"
+  const chipOff = "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/25 hover:text-white"
+  const chipOn = "border-white/30 bg-white/[0.12] text-white"
+  const segBtn = (on: boolean) => `px-2.5 sm:px-3 py-1 rounded-md text-xs font-semibold transition-all ${on ? "bg-white/[0.14] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]" : "text-slate-500 hover:text-slate-200"}`
 
   return (
-    <div className="min-h-screen bg-[#050810] text-white">
-      {/* Subtle grid */}
-      <div className="fixed inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
-      {/* Ambient glows */}
-      <div className="fixed top-0 left-1/4 w-[500px] h-[300px] bg-fuchsia-500/5 rounded-full blur-3xl pointer-events-none" />
-      <div className="fixed bottom-0 right-1/4 w-[400px] h-[300px] bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+    <div className="min-h-screen bg-[#05080f] text-white">
+      <ShopBackdrop />
 
       {/* Toolbar - pinned, so filters and Select stay in reach down a long page. */}
-      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#050810]/85 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#05080f]/85 backdrop-blur-xl">
         <div className={`w-full max-w-[2560px] mx-auto ${gutter} py-2.5 flex flex-wrap items-center gap-2 sm:gap-3`}>
-          <div className="min-w-0 mr-auto flex items-baseline gap-2.5">
-            <h1 className="text-lg sm:text-xl font-black text-white tracking-tight whitespace-nowrap">My Generations</h1>
-            {total !== null && (
-              <span className="text-[11px] font-mono text-slate-500 whitespace-nowrap">{total.toLocaleString()} {total === 1 ? "item" : "items"}</span>
-            )}
-          </div>
-
-          {/* Type filter */}
-          <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/6 bg-black/30">
-            {(["all", "image", "video"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTypeFilter(t)}
-                className={`px-2.5 sm:px-3 py-1 rounded-md text-xs font-semibold transition-all ${
-                  typeFilter === t ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
-                }`}
-              >
-                {t === "all" ? "All" : t === "image" ? "Images" : "Videos"}
-              </button>
-            ))}
-          </div>
-
-          {/* Your hidden generations (personal). */}
-          <button
-            onClick={() => setFeedShowHidden(v => !v)}
-            title={feedShowHidden ? "Back to your generations" : "View the generations you have hidden"}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs transition-all ${feedShowHidden ? "border-amber-500/40 bg-amber-500/15 text-amber-300" : "border-white/6 bg-white/2 text-slate-400 hover:bg-white/5 hover:text-white"}`}
-          >
-            <EyeOff size={12} /> <span className="hidden sm:inline">Hidden</span>
-          </button>
-
-          {/* Feed layout - admins only, and it changes the page for every account. */}
-          {canEditFeed && (
-            <div className="w-[104px]">
-              <FeedDropdown
-                open={feedOpen}
-                onToggle={() => setFeedOpen(o => !o)}
-                cols={feed.cols}
-                onColsChange={cols => updateFeed({ cols })}
-                fullSize={feed.fullSize}
-                onFullSizeChange={fullSize => updateFeed({ fullSize })}
-                fullSizeLayout={feed.fullSizeLayout}
-                onFullSizeLayoutChange={fullSizeLayout => updateFeed({ fullSizeLayout })}
-                masonryMode={feed.masonryMode}
-                onMasonryModeChange={masonryMode => updateFeed({ masonryMode })}
-                tileRes={feed.tileRes}
-                onTileResChange={tileRes => updateFeed({ tileRes })}
-                pageSize={feed.pageSize}
-                onPageSizeChange={pageSize => updateFeed({ pageSize })}
-                scope="All users"
-                status={feedSave === "saving" ? "Saving…" : feedSave === "saved" ? "Saved for everyone" : feedSave === "error" ? <span className="text-red-400">Not saved</span> : null}
-              />
+          {/* Brand: the synced logo and the page's title */}
+          <div className="min-w-0 mr-auto flex items-center gap-2.5">
+            <button onClick={() => goStudio("home")} title="Home" className="shrink-0"><SiteLogoBox size={34} rounded={9} /></button>
+            <div className="min-w-0">
+              <h1 className="text-[15px] sm:text-lg font-black tracking-tight leading-tight silver-shimmer-text whitespace-nowrap">My Generations</h1>
+              <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 whitespace-nowrap">
+                {view === "assets"
+                  ? `${assetsApi.assets?.length ?? 0} asset${assetsApi.assets?.length === 1 ? "" : "s"}`
+                  : total !== null ? `${total.toLocaleString()} ${total === 1 ? "item" : "items"}${feedShowHidden ? " hidden" : ""}` : "Your library"}
+              </p>
             </div>
+          </div>
+
+          {/* Generations / Assets */}
+          <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/10 bg-black/40">
+            <button onClick={() => setView("generations")} className={`${segBtn(view === "generations")} flex items-center gap-1.5`}>
+              <Images size={12} /> <span>Generations</span>
+            </button>
+            <button onClick={() => { setView("assets"); if (isSelectMode && !pickingFor) exitSelectMode() }} className={`${segBtn(view === "assets")} flex items-center gap-1.5`}>
+              <Boxes size={12} /> <span>Assets</span>
+              {!!assetsApi.assets?.length && <span className="text-[9.5px] font-mono text-slate-400">{assetsApi.assets.length}</span>}
+            </button>
+          </div>
+
+          {view === "generations" && (
+            <>
+              {/* Type filter */}
+              <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/10 bg-black/40">
+                {(["all", "image", "video"] as const).map((t) => (
+                  <button key={t} onClick={() => setTypeFilter(t)} className={segBtn(typeFilter === t)}>
+                    {t === "all" ? "All" : t === "image" ? "Images" : "Videos"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Your hidden generations (personal). */}
+              <button
+                onClick={() => setFeedShowHidden(v => !v)}
+                title={feedShowHidden ? "Back to your generations" : "View the generations you have hidden"}
+                className={`${chip} ${feedShowHidden ? chipOn : chipOff}`}
+              >
+                {feedShowHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+                <span className="hidden sm:inline">{feedShowHidden ? "Viewing hidden" : "Hidden"}</span>
+                {feedShowHidden && <span className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)]" />}
+              </button>
+
+              {/* Feed layout - admins only, and it changes the page for every account. */}
+              {canEditFeed && (
+                <FeedDropdown
+                  open={feedOpen}
+                  onToggle={() => setFeedOpen(o => !o)}
+                  cols={feed.cols}
+                  onColsChange={cols => updateFeed({ cols })}
+                  fullSize={feed.fullSize}
+                  onFullSizeChange={fullSize => updateFeed({ fullSize })}
+                  fullSizeLayout={feed.fullSizeLayout}
+                  onFullSizeLayoutChange={fullSizeLayout => updateFeed({ fullSizeLayout })}
+                  masonryMode={feed.masonryMode}
+                  onMasonryModeChange={masonryMode => updateFeed({ masonryMode })}
+                  tileRes={feed.tileRes}
+                  onTileResChange={tileRes => updateFeed({ tileRes })}
+                  pageSize={feed.pageSize}
+                  onPageSizeChange={pageSize => updateFeed({ pageSize })}
+                  scope="All users"
+                  status={feedSave === "saving" ? "Saving…" : feedSave === "saved" ? "Saved for everyone" : feedSave === "error" ? <span className="text-red-400">Not saved</span> : null}
+                />
+              )}
+
+              {/* Select toggle */}
+              <button
+                onClick={() => (isSelectMode ? exitSelectMode() : setIsSelectMode(true))}
+                className={`${chip} ${isSelectMode ? chipOn : chipOff}`}
+              >
+                {isSelectMode ? <><X size={12} /> Done</> : <><CheckSquare size={12} /> Select</>}
+              </button>
+            </>
           )}
 
-          {/* Select toggle */}
-          {isSelectMode ? (
-            <button
-              onClick={exitSelectMode}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/6 bg-white/2 hover:bg-white/5 text-slate-400 text-xs transition-all"
-            >
-              <X size={12} /> Cancel
-            </button>
-          ) : (
-            <button
-              onClick={() => setIsSelectMode(true)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/6 bg-white/2 hover:bg-white/5 text-slate-400 hover:text-white text-xs transition-all"
-            >
-              <Square size={12} /> Select
-            </button>
+          {view === "assets" && (
+            <BrandButton onClick={() => setNewAssetOpen(true)} primary size="md" icon={<ImagePlus size={13} />}>New asset</BrandButton>
           )}
 
           {/* Way out: Home, the feed, or the dashboard. Icons only on a phone. */}
-          <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/6 bg-black/30">
+          <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/10 bg-black/40">
             <button onClick={() => goStudio("home")} title="Home" className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/5 transition-all">
-              <Home size={12} /> <span className="hidden sm:inline">Home</span>
+              <Home size={12} /> <span className="hidden xl:inline">Home</span>
             </button>
-            <button onClick={() => goStudio("image")} title="Feed" className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/5 transition-all">
-              <Layers size={12} /> <span className="hidden sm:inline">Feed</span>
+            <button onClick={() => goStudio("image")} title="Studio feed" className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/5 transition-all">
+              <Layers size={12} /> <span className="hidden xl:inline">Studio</span>
             </button>
             <Link href="/dashboard" title="Dashboard" className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/5 transition-all">
-              <LayoutDashboard size={12} /> <span className="hidden sm:inline">Dashboard</span>
+              <LayoutDashboard size={12} /> <span className="hidden xl:inline">Dashboard</span>
             </Link>
           </div>
         </div>
@@ -604,146 +702,223 @@ export default function MyGenerationsPage() {
 
         {/* Folder sidebar (wide screens) */}
         <aside className="hidden lg:block w-56 xl:w-64 shrink-0">
-          <div className="sticky top-[76px] max-h-[calc(100vh-96px)] overflow-y-auto pr-1 space-y-0.5 [scrollbar-width:thin]">
-            <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600">Folders</p>
+          <div className="sticky top-[76px] max-h-[calc(100vh-96px)] overflow-y-auto [scrollbar-width:thin] silver-edge rounded-2xl p-3 space-y-0.5">
+            <div className="px-1 pb-2.5">
+              <BrandTitle title="Folders" eyebrow={`${folders.length} folder${folders.length === 1 ? "" : "s"}`} logo={22} size="sm" />
+            </div>
             <button
-              onClick={() => setFolderPath([])}
-              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] text-left transition-colors ${currentFolderId === null ? "bg-cyan-500/10 text-cyan-200" : "text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}
+              onClick={() => openFolder([])}
+              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[13px] text-left transition-colors ${view === "generations" && currentFolderId === null ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}
             >
-              <ImageIcon size={14} className="shrink-0" /> Unfiled
+              <Images size={14} className="shrink-0" /> Unfiled
             </button>
             {renderTree(null, 0)}
             <div className="pt-2">{newFolderControl("w-full")}</div>
+            <div className="mt-3 pt-3 border-t border-white/[0.06]">
+              <button
+                onClick={() => setView("assets")}
+                className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[13px] text-left transition-colors ${view === "assets" ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}
+              >
+                <Boxes size={14} className="shrink-0" /> Assets
+                <span className="ml-auto text-[10px] font-mono text-slate-500">{assetsApi.assets?.length ?? ""}</span>
+              </button>
+            </div>
           </div>
         </aside>
 
         <main className="flex-1 min-w-0">
-          {/* Breadcrumb */}
-          <div className="flex items-center gap-1 flex-wrap mb-3 text-sm">
-            <button
-              onClick={() => setFolderPath([])}
-              className={`px-2 py-1 rounded-md transition-colors ${currentFolderId === null ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
-            >
-              My Generations
-            </button>
-            {folderPath.map((f, i) => (
-              <span key={f.id} className="flex items-center gap-1">
-                <ChevronRight size={13} className="text-slate-700" />
+          {view === "assets" ? (
+            <AssetsGrid assets={assetsApi.assets} onOpen={a => setOpenAssetId(a.id)} onNew={() => setNewAssetOpen(true)} />
+          ) : (
+            <>
+              {/* Breadcrumb */}
+              <div className="flex items-center gap-1 flex-wrap mb-3 text-sm">
                 <button
-                  onClick={() => setFolderPath(folderPath.slice(0, i + 1))}
-                  className={`px-2 py-1 rounded-md transition-colors ${i === folderPath.length - 1 ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
+                  onClick={() => setFolderPath([])}
+                  className={`px-2 py-1 rounded-md transition-colors ${currentFolderId === null ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
                 >
-                  {f.name}
+                  My Generations
                 </button>
-              </span>
-            ))}
-          </div>
+                {folderPath.map((f, i) => (
+                  <span key={f.id} className="flex items-center gap-1">
+                    <ChevronRight size={13} className="text-slate-700" />
+                    <button
+                      onClick={() => setFolderPath(folderPath.slice(0, i + 1))}
+                      className={`px-2 py-1 rounded-md transition-colors ${i === folderPath.length - 1 ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
+                    >
+                      {f.name}
+                    </button>
+                  </span>
+                ))}
+              </div>
 
-          {/* Select-mode action bar - pinned under the toolbar while selecting. */}
-          {isSelectMode && (
-            <div className="lg:sticky lg:top-[64px] z-20 flex items-center gap-2 flex-wrap mb-4 p-2.5 rounded-xl border border-cyan-500/20 bg-[#07121a]/95 backdrop-blur-md">
-              <span className="text-xs text-slate-400 px-1">{selectedIds.size} selected</span>
-              <div className="flex-1" />
-              <button
-                onClick={() => { setMovePickerPath([]); setShowMovePicker(true) }}
-                disabled={selectedIds.size === 0}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-xs font-semibold transition-all disabled:opacity-30"
-              >
-                <FolderInput size={12} /> Move
-              </button>
-              {feedShowHidden ? (
-                <button
-                  onClick={() => setSelectedHidden(false)}
-                  disabled={selectedIds.size === 0 || isHiding}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-all disabled:opacity-30"
-                >
-                  <Eye size={12} /> Unhide
-                </button>
-              ) : (
-                <button
-                  onClick={() => setSelectedHidden(true)}
-                  disabled={selectedIds.size === 0 || isHiding}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-all disabled:opacity-30"
-                >
-                  <EyeOff size={12} /> Hide
-                </button>
+              {/* Viewing hidden: say so, and the way back */}
+              {feedShowHidden && !isSelectMode && (
+                <div className="mb-4 flex flex-wrap items-center gap-2 px-3.5 py-2.5 rounded-xl silver-edge">
+                  <EyeOff size={13} className="text-slate-300" />
+                  <span className="text-[12px] text-slate-300">Showing your <span className="text-white font-semibold">hidden</span> generations - Select them to unhide.</span>
+                  <button onClick={() => setFeedShowHidden(false)} className="ml-auto text-[11.5px] font-semibold text-slate-400 hover:text-white">Back to all</button>
+                </div>
               )}
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                disabled={selectedIds.size === 0}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-semibold transition-all disabled:opacity-30"
-              >
-                <Trash2 size={12} /> Delete
-              </button>
-            </div>
+
+              {/* Select-mode action bar - pinned under the toolbar while selecting. */}
+              {isSelectMode && (
+                <div className="sticky top-[60px] z-20 mb-4 rounded-2xl silver-edge bg-[#070b14]/95 backdrop-blur-md">
+                  {pickingFor && (
+                    <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5 text-[12px] text-slate-300">
+                      <ImagePlus size={13} className="text-slate-200" />
+                      Pick pictures for <span className="font-bold text-white">{pickingFor.name}</span>
+                      <span className="text-slate-500">- any folder; videos are skipped</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 flex-wrap p-2.5">
+                    <span className="px-2.5 py-1 rounded-full bg-white/[0.10] border border-white/15 text-[11.5px] font-mono text-white">{selectedIds.size} selected</span>
+                    <button onClick={selectPage} disabled={pageIds.length === 0} className="flex items-center gap-1 px-2 py-1 text-[11.5px] font-semibold text-slate-400 hover:text-white disabled:opacity-30">
+                      {allPageSelected ? <Square size={12} /> : <CheckSquare size={12} />} {allPageSelected ? "Unselect page" : "Select page"}
+                    </button>
+                    {selectedIds.size > 0 && (
+                      <button onClick={() => setSelectedIds(new Set())} className="px-2 py-1 text-[11.5px] font-semibold text-slate-500 hover:text-white">Clear</button>
+                    )}
+                    <div className="flex-1" />
+                    {pickingFor ? (
+                      <>
+                        <button onClick={exitSelectMode} className="px-3 py-1.5 rounded-lg text-[11.5px] font-semibold text-slate-400 hover:text-white">Cancel</button>
+                        <BrandButton onClick={finishPicking} busy={isAdding} disabled={selectedIds.size === 0} primary size="md">
+                          Add {selectedIds.size || ""} to {pickingFor.name}
+                        </BrandButton>
+                      </>
+                    ) : (
+                      <>
+                        <BrandButton onClick={() => setAddToAssetOpen(true)} disabled={selectedIds.size === 0 || feedShowHidden} primary size="sm" icon={<Boxes size={13} />}>
+                          Add to asset
+                        </BrandButton>
+                        <button
+                          onClick={() => { setMovePickerPath([]); setShowMovePicker(true) }}
+                          disabled={selectedIds.size === 0}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.05] hover:bg-white/10 hover:border-white/30 text-slate-100 text-xs font-semibold transition-all disabled:opacity-30"
+                        >
+                          <FolderInput size={12} /> Move
+                        </button>
+                        <button
+                          onClick={() => setSelectedHidden(!feedShowHidden)}
+                          disabled={selectedIds.size === 0 || isHiding}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.05] hover:bg-white/10 hover:border-white/30 text-slate-100 text-xs font-semibold transition-all disabled:opacity-30"
+                        >
+                          {isHiding ? <Loader2 size={12} className="animate-spin" /> : feedShowHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+                          {feedShowHidden ? "Unhide" : "Hide"}
+                        </button>
+                        <button
+                          onClick={() => setShowDeleteConfirm(true)}
+                          disabled={selectedIds.size === 0}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-xs font-semibold transition-all disabled:opacity-30"
+                        >
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Folder chips (narrower screens; wide ones have the sidebar) */}
+              <div className="lg:hidden flex items-center flex-wrap gap-2 mb-5">
+                {visibleFolders.map(f => (
+                  <div key={f.id} className="relative">
+                    {renamingFolderId === f.id ? (
+                      renameInput(f, "w-40 px-3 py-2 rounded-lg bg-black/40 border border-white/30 text-sm text-white focus:outline-none")
+                    ) : (
+                      <div className="flex items-center gap-1.5 pl-3 pr-1 py-2 rounded-lg silver-edge hover:border-white/30 transition-colors">
+                        <button
+                          onClick={() => setFolderPath(p => [...p, f])}
+                          className="flex items-center gap-2 text-sm text-slate-200 hover:text-white transition-colors max-w-[180px] truncate"
+                        >
+                          <Folder size={14} className="text-slate-400 shrink-0" />
+                          <span className="truncate">{f.name}</span>
+                        </button>
+                        <button
+                          onClick={() => setMenuFolderId(menuFolderId === f.id ? null : f.id)}
+                          className="p-1 rounded-md text-slate-500 hover:text-white hover:bg-white/10 transition-colors"
+                        >
+                          <MoreVertical size={13} />
+                        </button>
+                      </div>
+                    )}
+                    {folderMenu(f)}
+                  </div>
+                ))}
+                {newFolderControl("w-40")}
+              </div>
+            </>
           )}
 
-          {/* Folder chips (narrower screens; wide ones have the sidebar) */}
-          <div className="lg:hidden flex items-center flex-wrap gap-2 mb-5">
-            {visibleFolders.map(f => (
-              <div key={f.id} className="relative">
-                {renamingFolderId === f.id ? (
-                  renameInput(f, "w-40 px-3 py-2 rounded-lg bg-slate-950 border border-cyan-500/40 text-sm text-white focus:outline-none")
-                ) : (
-                  <div className="flex items-center gap-1.5 pl-3 pr-1 py-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] hover:border-amber-500/40 transition-colors">
-                    <button
-                      onClick={() => setFolderPath(p => [...p, f])}
-                      className="flex items-center gap-2 text-sm text-amber-200/90 hover:text-amber-100 transition-colors max-w-[180px] truncate"
-                    >
-                      <Folder size={14} className="text-amber-400 shrink-0" />
-                      <span className="truncate">{f.name}</span>
-                    </button>
-                    <button
-                      onClick={() => setMenuFolderId(menuFolderId === f.id ? null : f.id)}
-                      className="p-1 rounded-md text-slate-500 hover:text-white hover:bg-white/10 transition-colors"
-                    >
-                      <MoreVertical size={13} />
-                    </button>
-                  </div>
-                )}
-                {folderMenu(f)}
-              </div>
-            ))}
-            {newFolderControl("w-40")}
+          {/* Feed - starts loading at once, alongside the session check. Kept
+              mounted (just hidden) on the Assets view, so going back is instant. */}
+          <div className={view === "assets" ? "hidden" : ""}>
+            <MyGenFeed
+              signedIn={signedIn && feedReady}
+              cols={feed.cols}
+              fullSize={feed.fullSize}
+              fullSizeLayout={feed.fullSizeLayout}
+              masonryMode={feed.masonryMode}
+              tileRes={feed.tileRes}
+              showHidden={feedShowHidden}
+              typeFilter={pickingFor ? "image" : typeFilter}
+              folderId={currentFolderId}
+              pageSize={feed.pageSize}
+              selectMode={isSelectMode}
+              selectedIds={selectedIds}
+              onSelectToggle={toggleSelect}
+              onImageClick={(img) => setSelectedImage(img as GeneratedImage)}
+              onNavListChange={setNavList}
+              onTotalChange={setTotal}
+              refreshKey={refreshKey}
+            />
           </div>
-
-          {/* Feed - starts loading at once, alongside the session check. */}
-          <MyGenFeed
-            signedIn={signedIn && feedReady}
-            cols={feed.cols}
-            fullSize={feed.fullSize}
-            fullSizeLayout={feed.fullSizeLayout}
-            masonryMode={feed.masonryMode}
-            tileRes={feed.tileRes}
-            showHidden={feedShowHidden}
-            typeFilter={typeFilter}
-            folderId={currentFolderId}
-            pageSize={feed.pageSize}
-            selectMode={isSelectMode}
-            selectedIds={selectedIds}
-            onSelectToggle={toggleSelect}
-            onImageClick={(img) => setSelectedImage(img as GeneratedImage)}
-            onNavListChange={setNavList}
-            onTotalChange={setTotal}
-            refreshKey={refreshKey}
-          />
         </main>
       </div>
 
+      {/* ── Assets: new / edit / add-to ───────────────────────────────────── */}
+      {newAssetOpen && <NewAssetModal onCreate={createAsset} onClose={() => setNewAssetOpen(false)} />}
+      {openAsset && (
+        <AssetEditor
+          asset={openAsset}
+          onClose={() => setOpenAssetId(null)}
+          onUpdate={async o => { await assetsApi.update({ id: openAsset.id, ...o }) }}
+          onDelete={async () => { await assetsApi.remove(openAsset.id); setOpenAssetId(null); flash(`Deleted ${openAsset.name}`) }}
+          onAddPictures={() => startPickingFor(openAsset)}
+        />
+      )}
+      {addToAssetOpen && (
+        <AddToAssetModal
+          count={selectedIds.size}
+          assets={assetsApi.assets}
+          onAdd={async a => { await addIdsToAsset(a, Array.from(selectedIds)); setAddToAssetOpen(false); exitSelectMode() }}
+          onCreate={async (kind, name) => {
+            const a = await assetsApi.create({ kind, name, imageIds: Array.from(selectedIds) })
+            setAddToAssetOpen(false)
+            exitSelectMode()
+            flash(`Made ${a.name} with ${a.refs.length} picture${a.refs.length === 1 ? "" : "s"}`)
+          }}
+          onClose={() => setAddToAssetOpen(false)}
+        />
+      )}
+
       {/* ── Move picker ──────────────────────────────────────────────────────── */}
       {showMovePicker && (
-        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setShowMovePicker(false)}>
-          <div className="rounded-2xl border border-white/8 bg-[#0a0f1a] p-5 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-white font-bold text-base flex items-center gap-2">
-                <FolderInput size={16} className="text-cyan-400" />
-                Move {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}
-              </h2>
-              <button onClick={() => setShowMovePicker(false)} className="p-1 text-slate-500 hover:text-white"><X size={16} /></button>
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm" onClick={() => setShowMovePicker(false)}>
+          <div className="relative isolate overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] p-5 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+            <SilverRimOverlay />
+            <div className="relative mb-3">
+              <BrandTitle
+                title={`Move ${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""}`}
+                eyebrow="Pick a folder"
+                logo={26}
+                right={<button onClick={() => setShowMovePicker(false)} className="p-1 text-slate-500 hover:text-white"><X size={16} /></button>}
+              />
             </div>
 
             {/* Picker breadcrumb */}
-            <div className="flex items-center gap-1 flex-wrap mb-2 text-xs">
+            <div className="relative flex items-center gap-1 flex-wrap mb-2 text-xs">
               <button
                 onClick={() => setMovePickerPath([])}
                 className={`px-2 py-1 rounded-md ${movePickerCurrentId === null ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
@@ -764,7 +939,7 @@ export default function MyGenerationsPage() {
             </div>
 
             {/* Picker folder list */}
-            <div className="rounded-lg border border-white/[0.07] bg-black/20 p-2 mb-4 max-h-56 overflow-y-auto">
+            <div className="relative rounded-xl border border-white/[0.07] bg-black/30 p-2 mb-4 max-h-56 overflow-y-auto">
               {movePickerVisible.length === 0 ? (
                 <p className="text-[11px] text-slate-600 text-center py-6">No subfolders here</p>
               ) : (
@@ -773,9 +948,9 @@ export default function MyGenerationsPage() {
                     <button
                       key={f.id}
                       onClick={() => setMovePickerPath(p => [...p, f])}
-                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-md border border-amber-500/15 bg-amber-500/[0.04] hover:border-amber-500/40 text-amber-200/90 text-xs transition-colors"
+                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border border-white/10 bg-white/[0.03] hover:border-white/30 hover:bg-white/[0.06] text-slate-200 text-xs transition-colors"
                     >
-                      <span className="flex items-center gap-2 truncate"><Folder size={13} className="text-amber-400 shrink-0" /> {f.name}</span>
+                      <span className="flex items-center gap-2 truncate"><Folder size={13} className="text-slate-400 shrink-0" /> {f.name}</span>
                       <ChevronRight size={13} className="text-slate-600 shrink-0" />
                     </button>
                   ))}
@@ -783,14 +958,9 @@ export default function MyGenerationsPage() {
               )}
             </div>
 
-            <button
-              onClick={() => moveSelectedTo(movePickerCurrentId)}
-              disabled={isMoving}
-              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/30 text-sm font-semibold transition-all disabled:opacity-40"
-            >
-              {isMoving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-              Move here — {movePickerCurrentId === null ? "Unfiled (My Generations)" : movePickerPath[movePickerPath.length - 1].name}
-            </button>
+            <BrandButton onClick={() => moveSelectedTo(movePickerCurrentId)} busy={isMoving} primary size="lg" className="relative w-full" icon={<Check size={14} />}>
+              Move here - {movePickerCurrentId === null ? "Unfiled" : movePickerPath[movePickerPath.length - 1].name}
+            </BrandButton>
           </div>
         </div>
       )}
@@ -801,12 +971,12 @@ export default function MyGenerationsPage() {
           <div className="absolute top-3 inset-x-3 z-20 flex items-center justify-between pointer-events-none">
             <button
               onClick={(e) => { e.stopPropagation(); setSelectedImage(null) }}
-              className="pointer-events-auto flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 bg-black/60 backdrop-blur-sm text-slate-300 hover:text-white text-xs font-medium transition-all"
+              className="pointer-events-auto flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/15 bg-black/60 backdrop-blur-sm text-slate-200 hover:text-white text-xs font-medium transition-all"
             >
               <X size={13} /> Close
             </button>
             {navIndex >= 0 && navList.length > 1 && (
-              <span className="px-2.5 py-1 rounded-md bg-black/60 text-[11px] font-mono text-slate-400">{navIndex + 1} / {navList.length}</span>
+              <span className="px-2.5 py-1 rounded-md bg-black/60 border border-white/10 text-[11px] font-mono text-slate-300">{navIndex + 1} / {navList.length}</span>
             )}
           </div>
 
@@ -846,7 +1016,7 @@ export default function MyGenerationsPage() {
               <button
                 onClick={() => stepPreview(-1)}
                 aria-label="Previous"
-                className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/60 border border-white/10 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
+                className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/60 border border-white/15 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
               >
                 <ChevronLeft size={20} />
               </button>
@@ -855,21 +1025,21 @@ export default function MyGenerationsPage() {
               <button
                 onClick={() => stepPreview(1)}
                 aria-label="Next"
-                className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/60 border border-white/10 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
+                className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/60 border border-white/15 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
               >
                 <ChevronRight size={20} />
               </button>
             )}
           </div>
 
-          <div className="border-t border-white/6 bg-black/80 backdrop-blur-sm px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4" onClick={(e) => e.stopPropagation()}>
+          <div className="border-t border-white/[0.08] bg-[#05080f]/90 backdrop-blur-md px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4" onClick={(e) => e.stopPropagation()}>
             <div className="max-w-4xl mx-auto">
-              <div className="flex items-start gap-2 mb-3">
-                <Sparkles className="text-cyan-400 flex-shrink-0 mt-0.5" size={13} />
+              <div className="flex items-start gap-2.5 mb-3">
+                <SiteLogoBox size={20} rounded={5} />
                 <div className="flex-1 min-w-0">
                   <p className="text-white text-xs sm:text-sm line-clamp-2">{selectedImage.prompt}</p>
                   <div className="flex items-center gap-2 mt-1">
-                    <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/20 text-cyan-400 text-[10px] font-mono">
+                    <span className="px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/15 text-slate-200 text-[10px] font-mono">
                       {getModelDisplayName(selectedImage.model)}
                     </span>
                     <span className="text-[10px] text-slate-500">{formatDate(selectedImage.createdAt)}</span>
@@ -877,20 +1047,10 @@ export default function MyGenerationsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <button
-                  onClick={() => downloadImage(selectedImage)}
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs font-semibold hover:bg-cyan-500/30 transition-all"
-                >
-                  <Download size={13} /> Download
-                </button>
-                <button
-                  onClick={() => copyPrompt(selectedImage.prompt)}
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 text-xs font-semibold hover:bg-purple-500/30 transition-all"
-                >
-                  <Copy size={13} /> Copy Prompt
-                </button>
-                <button
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <BrandButton onClick={() => downloadImage(selectedImage)} primary size="md" icon={<Download size={13} />}>Download</BrandButton>
+                <BrandButton onClick={() => copyPrompt(selectedImage.prompt)} size="md" icon={<Copy size={13} />}>Copy Prompt</BrandButton>
+                <BrandButton
                   onClick={() => {
                     localStorage.setItem("rescan_prompt", selectedImage.prompt)
                     if (selectedImage.referenceImageUrls && selectedImage.referenceImageUrls.length > 0) {
@@ -900,15 +1060,25 @@ export default function MyGenerationsPage() {
                     }
                     router.push("/")
                   }}
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-fuchsia-500/20 border border-fuchsia-500/30 text-fuchsia-300 text-xs font-semibold hover:bg-fuchsia-500/30 transition-all"
+                  size="md"
+                  icon={<Sparkles size={13} />}
                 >
-                  <Sparkles size={13} /> Rescan
-                </button>
+                  Rescan
+                </BrandButton>
+                {!selectedImage.videoMetadata?.isVideo && (
+                  <BrandButton
+                    onClick={() => { setSelectedIds(new Set([selectedImage.id])); setSelectedImage(null); setAddToAssetOpen(true) }}
+                    size="md"
+                    icon={<Boxes size={13} />}
+                  >
+                    Add to asset
+                  </BrandButton>
+                )}
                 <a
                   href={selectedImage.videoMetadata?.isVideo ? selectedImage.imageUrl : `/api/images/${selectedImage.id}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white/5 border border-white/10 text-slate-300 text-xs font-semibold hover:bg-white/10 transition-all"
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-white/[0.05] border border-white/15 text-slate-100 text-[11.5px] font-bold hover:bg-white/10 hover:border-white/30 transition-all"
                 >
                   <ExternalLink size={13} /> Open
                 </a>
@@ -920,8 +1090,8 @@ export default function MyGenerationsPage() {
 
       {/* ── Delete Confirmation ──────────────────────────────────────────────── */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="rounded-2xl border border-white/8 bg-[#0a0f1a] p-6 max-w-sm w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] p-6 max-w-sm w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center flex-shrink-0">
                 <Trash2 className="text-red-400" size={18} />
@@ -940,7 +1110,7 @@ export default function MyGenerationsPage() {
               <button
                 onClick={() => setShowDeleteConfirm(false)}
                 disabled={isDeleting}
-                className="flex-1 py-2.5 rounded-xl border border-white/8 bg-white/3 hover:bg-white/6 text-slate-300 font-semibold text-xs transition-all disabled:opacity-50"
+                className="flex-1 py-2.5 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-slate-200 font-semibold text-xs transition-all disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -953,6 +1123,27 @@ export default function MyGenerationsPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Delete folder (in-page, not window.confirm) ──────────────────────── */}
+      {folderToDelete && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm" onClick={() => setFolderToDelete(null)}>
+          <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] p-6 max-w-sm w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <BrandTitle title={`Delete "${folderToDelete.name}"?`} eyebrow="Nothing inside is lost" logo={26} />
+            <p className="text-slate-400 text-sm my-4 leading-relaxed">Its pictures and any subfolders move up to the folder above it.</p>
+            <div className="flex gap-2">
+              <button onClick={() => setFolderToDelete(null)} className="flex-1 py-2.5 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-slate-200 font-semibold text-xs transition-all">Keep</button>
+              <button onClick={() => deleteFolder(folderToDelete.id)} className="flex-1 py-2.5 rounded-xl bg-red-600/80 hover:bg-red-600 border border-red-500/30 text-white font-bold text-xs transition-all">Delete folder</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2.5 rounded-xl silver-edge bg-[#0b111d]/95 backdrop-blur-md text-[12px] text-slate-100 shadow-2xl max-w-[calc(100vw-32px)]">
+          {toast}
         </div>
       )}
     </div>

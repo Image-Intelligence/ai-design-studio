@@ -1,7 +1,7 @@
 import prisma from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
-import { ensureThumbnail } from '@/lib/thumbnail'
+import { ensureThumbnail, prepareImageVariants, attachImageVariants, type ImageVariants } from '@/lib/thumbnail'
 import { LAYERIZE_MODELS, saveLayerizeResult, type FalLayer } from '@/lib/layerize-save'
 
 /**
@@ -152,12 +152,17 @@ export async function harvestPollingJobs(opts: {
       const format = params.falInput?.output_format || 'png'
       const ext = format === 'jpeg' ? 'jpg' : format
       const hosted: string[] = []
+      const variants: (ImageVariants | null)[] = []
       for (let i = 0; i < falImages.length; i++) {
         try {
           const imgRes = await fetch(falImages[i].url, { signal: AbortSignal.timeout(45000) })
           if (!imgRes.ok) continue
           const buffer = Buffer.from(await imgRes.arrayBuffer())
-          hosted.push(await uploadToR2(`nb2-${Date.now()}-${i}.${ext}`, buffer, `image/${format === 'jpeg' ? 'jpeg' : format}`))
+          const [url, v] = await Promise.all([
+            uploadToR2(`nb2-${Date.now()}-${i}.${ext}`, buffer, `image/${format === 'jpeg' ? 'jpeg' : format}`),
+            prepareImageVariants(buffer),
+          ])
+          hosted.push(url); variants.push(v)
         } catch (e) {
           console.error(`[harvest] image ${i} of ${rid} failed:`, e)
         }
@@ -187,9 +192,12 @@ export async function harvestPollingJobs(opts: {
         })))
         return { ids: made.map(r => r.id), fresh: true }
       })
+      // Thumbnail + display copy on the rows before the job reads as done (lib/thumbnail)
+      if (rowsSaved.fresh) await Promise.all(rowsSaved.ids.map(async (id, k) => {
+        if (!(await attachImageVariants(id, variants[k] ?? null))) await ensureThumbnail(id).catch(() => {})
+      }))
       await prisma.generationQueue.update({ where: { id: j.id }, data: { resultUrl: hosted[0], resultImageId: rowsSaved.ids[0] } }).catch(() => {})
       await releaseQueueSlot(rid, false)
-      if (rowsSaved.fresh) for (const id of rowsSaved.ids) void ensureThumbnail(id).catch(() => {})
       out.harvested++
       console.log(`[harvest] saved ${hosted.length} image(s) for ${j.modelId} job #${j.id} (no page was collecting it)`)
     } catch (e) {

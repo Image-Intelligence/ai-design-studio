@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
+import { requireStoryboardUser } from '@/lib/storyboard-gate'
+import { openShotModels } from '@/lib/storyboard-access'
 import { jsonPrivate } from '@/lib/api-json'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import {
@@ -24,7 +25,7 @@ import {
  * good at, and the site's own prompting guide for the models in play - so a
  * prompt moved to a new model is rewritten the way THAT model wants it.
  *
- * ADMIN ONLY.
+ * Any signed-in account (free - one small Gemini call).
  */
 export const runtime = 'nodejs'
 // Gemini slows badly under load (see the draft route)
@@ -40,7 +41,7 @@ const clip = (s: string | undefined, n: number) => (s ?? '').replace(/\s+/g, ' '
 const videoSpec = (label: string) => getCreateModel(STORYBOARD_VIDEO_IDS[label] ?? '')
 
 export async function POST(req: NextRequest, ctx: Ctx) {
-  const user = await requireChatHubAdmin()
+  const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   if (!GEMINI_API_KEY) return jsonPrivate({ error: 'GEMINI_API_KEY is not configured' }, { status: 500 })
   const id = parseInt((await ctx.params).id)
@@ -150,7 +151,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       if ((DURATIONS as readonly number[]).includes(d) && d !== shot.duration) patch.duration = d
     }
     if (!Object.keys(patch).length) return jsonPrivate({ error: 'Nothing changed - try saying it differently' }, { status: 422 })
-    return jsonPrivate({ patch, note: typeof out?.note === 'string' ? out.note.slice(0, 300) : '' })
+    // A non-admin is never switched to a model they cannot use
+    return jsonPrivate({ patch: openShotModels(patch as { imageModel?: string; videoModel?: string }, user.isAdmin), note: typeof out?.note === 'string' ? out.note.slice(0, 300) : '' })
   } catch (err: any) {
     const msg = String(err?.message || err)
     return jsonPrivate({ error: msg.includes('timeout') || msg.includes('aborted') ? 'The edit timed out - Gemini is slow right now, try again' : `The edit failed: ${msg.slice(0, 200)}` }, { status: 502 })

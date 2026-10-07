@@ -80,6 +80,7 @@ model User {
   storyboards         Storyboard[]
   imageCanvases       ImageCanvas[]
   imageEditDocs       ImageEditDoc[]
+  userAssets          UserAsset[]
 
   // Desktop-app link: personal bearer API keys
   apiKeys             ApiKey[]
@@ -1361,4 +1362,24 @@ model ImageEditDoc {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, hash])
+}
+
+/// A saved asset (a character, vehicle, prop, place, outfit...) built from the
+/// account's own pictures on My Generations, reusable in any Storyboard Studio
+/// board. `refs` is [{ id, url }] - canonical R2 URLs the server checked belong
+/// to this account (lib/user-assets). Kinds are lib/storyboard ASSET_KINDS.
+/// DDL applied out-of-band 2026-10-07 (scratchpad add-user-asset-table).
+model UserAsset {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  kind      String   @default("character")
+  name      String
+  notes     String   @default("")
+  refs      Json     @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
 }

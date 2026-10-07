@@ -21,9 +21,11 @@ export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "face-swap": true,
   "character-design": true,
   "3d-studio": true,
-  "frames": true,
-  "storyboard": true,
-  "image-studio": true,
+  "frames": false, // public 2026-10-07 - the Frame Extractor
+  // Public 2026-10-07: stills, cuts and shots are charged; public moderation
+  "storyboard": false,
+  // Public 2026-10-07: AI tools charged + public moderation; layer management is Dev Tier
+  "image-studio": false,
 }
 
 export const EMPLOYEE_IDS = Object.keys(EMPLOYEE_ADMIN_ONLY) as EmployeeId[]

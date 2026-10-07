@@ -9,7 +9,8 @@ import { tmpdir } from 'os'
 import path from 'path'
 import { fetchMedia } from '@/lib/media-fetch'
 
-// POST /api/admin/frames-gif — ADMIN ONLY
+// POST /api/admin/frames-gif — any signed-in account (the Frame Extractor is
+// public since 2026-10-07; it was admin-only)
 // Frame Extractor GIF support: browsers cannot seek GIFs in a <video>
 // element (and iPad Safari has no ImageDecoder), so the popup posts the raw
 // GIF bytes here, ffmpeg converts to a transient MP4, and the client runs
@@ -22,15 +23,13 @@ export const maxDuration = 120
 const MAX_GIF_BYTES = 80 * 1024 * 1024
 
 export async function POST(req: Request) {
-  // Dual auth (same pattern as /api/admin/transcribe): admin session cookie
-  // (the portal) OR the x-admin-password header (admin tooling/scripts)
-  let authed = checkAuth(req as unknown as import('next/server').NextRequest)
-  if (!authed) {
-    const token = (await cookies()).get('session')?.value
-    const user = token ? await getUserFromSession(token) : null
-    authed = !!user && (await checkIsAdmin(user.email))
-  }
-  if (!authed) return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+  // Any signed-in account (the Frame Extractor is public), or the
+  // x-admin-password header (admin tooling/scripts)
+  const tooling = checkAuth(req as unknown as import('next/server').NextRequest)
+  const token = tooling ? null : (await cookies()).get('session')?.value
+  const user = token ? await getUserFromSession(token) : null
+  if (!tooling && !user) return NextResponse.json({ error: 'Sign in to use the Frame Extractor' }, { status: 401 })
+  const admin = tooling || (!!user && (await checkIsAdmin(user.email)))
 
   let dir: string | null = null
   try {
@@ -44,6 +43,11 @@ export async function POST(req: Request) {
       const publicBase = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
       if (typeof url !== 'string' || !publicBase || !url.startsWith(`${publicBase}/`)) {
         return NextResponse.json({ error: 'url must point at our own storage' }, { status: 400 })
+      }
+      // An account's own files only (its uploads, or the extractor's scratch
+      // space) - the bucket is private, and this would read any object in it
+      if (!admin && !(user && url.startsWith(`${publicBase}/u/${user.id}/`)) && !url.startsWith(`${publicBase}/frames-tmp/`)) {
+        return NextResponse.json({ error: 'url must be one of your own uploads' }, { status: 403 })
       }
       const src = await fetchMedia(url)
       if (!src.ok) return NextResponse.json({ error: `Source fetch failed (${src.status})` }, { status: 502 })

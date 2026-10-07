@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { after } from 'next/server'
-import { ensureThumbnail } from '@/lib/thumbnail'
+import { ensureThumbnail, prepareImageVariants, attachImageVariants } from '@/lib/thumbnail'
 import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
@@ -315,7 +315,7 @@ export async function POST(request: Request) {
               ? gptPrice(gptRefCount > 0 && aspectRatio === 'auto' ? { width: 16, height: 9 } : null)
               // Token-billed: size, thinking level and each reference cost
               : model === 'nano-banana-2.1'
-                ? nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: gptRefCount })
+                ? nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: gptRefCount, webSearch: body.nb21WebSearch === true })
                 : getTicketCost(model, quality)
     console.log('Selected model:', selectedModel.displayName, '- Quality:', quality, '- Cost:', ticketCost, 'ticket(s)')
 
@@ -1092,7 +1092,7 @@ export async function POST(request: Request) {
             if (model === 'grok-imagine-2' && falImageUrls.length > 0) ticketCost = getTicketCost('grok-imagine-2-edit', quality)
             if (model === 'mai-image-2.5-pro' && falImageUrls.length > 0) ticketCost = getTicketCost('mai-image-2.5-pro-edit', quality)
             // NanoBanana 2.1: priced on the references that really go (max 14)
-            if (model === 'nano-banana-2.1') ticketCost = nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: Math.min(14, falImageUrls.length) })
+            if (model === 'nano-banana-2.1') ticketCost = nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: Math.min(14, falImageUrls.length), webSearch: body.nb21WebSearch === true })
             // Qwen Image 3 (measured 2026-10-02): $0.04 at 1K -> 1 ticket, $0.075
             // at 2K (the old "4k" renders 2K) -> 2; the edit adds ~$0.006 for its
             // references ($0.081 at 2K) -> one ticket more
@@ -1383,13 +1383,14 @@ export async function POST(request: Request) {
           const falRes = await fetch(falImageUrl)
           const imageBuffer = Buffer.from(await falRes.arrayBuffer())
           const filename = `universe-scan-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
+          const syncVariants = prepareImageVariants(imageBuffer)
           const syncUrl = await uploadToR2(filename, imageBuffer, 'image/png')
           console.log(`Sync image uploaded to R2: ${syncUrl}`)
 
           // Save to database
           const expiresAt = new Date()
           expiresAt.setFullYear(expiresAt.getFullYear() + 100)
-          await prisma.generatedImage.create({
+          const syncRow = await prisma.generatedImage.create({
             data: {
               userId: user.id,
               prompt: jobPrompt,
@@ -1402,6 +1403,8 @@ export async function POST(request: Request) {
               expiresAt,
             },
           })
+          // Thumbnail + display copy before the result goes back (lib/thumbnail)
+          if (!(await attachImageVariants(syncRow.id, await syncVariants))) after(() => { void ensureThumbnail(syncRow.id) })
 
           // Deduct tickets atomically — prevents negative balances from concurrent sync requests
           let newBalance = ticketRecord?.balance || 0
@@ -1483,6 +1486,13 @@ export async function POST(request: Request) {
                   // setting sends none, and the panel must say what ran.
                   renderSpeed: typeof newFalInput?.rendering_speed === 'string' ? newFalInput.rendering_speed : null,
                   promptExpansion: typeof newFalInput?.expansion_model === 'string' ? newFalInput.expansion_model : null,
+                  // NanoBanana 2.1's dials as they RAN - read after moderation, so a
+                  // user's safety level shows the 4 the server set (viewer settings)
+                  ...(model === 'nano-banana-2.1' ? {
+                    nb21Thinking: typeof (inputParams as any)?.thinking_level === 'string' ? (inputParams as any).thinking_level : 'medium',
+                    nb21WebSearch: (inputParams as any)?.enable_web_search === true,
+                    nb21Safety: (inputParams as any)?.safety_tolerance != null ? String((inputParams as any).safety_tolerance) : null,
+                  } : {}),
                   extraLoras: recordedExtraLorasOrNull,
                   // Stored so promoteNextQueuedJob can replay this job later
                   falEndpoint: modelEndpoint,
@@ -1546,6 +1556,13 @@ export async function POST(request: Request) {
                   // setting sends none, and the panel must say what ran.
                   renderSpeed: typeof newFalInput?.rendering_speed === 'string' ? newFalInput.rendering_speed : null,
                   promptExpansion: typeof newFalInput?.expansion_model === 'string' ? newFalInput.expansion_model : null,
+                  // NanoBanana 2.1's dials as they RAN - read after moderation, so a
+                  // user's safety level shows the 4 the server set (viewer settings)
+                  ...(model === 'nano-banana-2.1' ? {
+                    nb21Thinking: typeof (inputParams as any)?.thinking_level === 'string' ? (inputParams as any).thinking_level : 'medium',
+                    nb21WebSearch: (inputParams as any)?.enable_web_search === true,
+                    nb21Safety: (inputParams as any)?.safety_tolerance != null ? String((inputParams as any).safety_tolerance) : null,
+                  } : {}),
                   extraLoras: recordedExtraLorasOrNull,
                 // What was ACTUALLY sent, so the info panel reports the run
                 // rather than the request. For families served by sibling
@@ -1862,6 +1879,7 @@ export async function POST(request: Request) {
     for (let i = 0; i < buffersToUpload.length; i++) {
       const filename = `universe-scan-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.png`
 
+      const variants = prepareImageVariants(buffersToUpload[i])
       const blobUrl = await uploadToR2(filename, buffersToUpload[i], 'image/png')
 
       console.log(`Image ${i + 1} uploaded: ${blobUrl}`)
@@ -1885,8 +1903,8 @@ export async function POST(request: Request) {
       })
 
       uploadedImages.push({ url: blobUrl, id: String(savedImage.id) })
-      // Thumbnail and real dimensions, off the request path.
-      after(() => { void ensureThumbnail(savedImage.id) })
+      // Thumbnail, display copy and real dimensions before responding (lib/thumbnail)
+      if (!(await attachImageVariants(savedImage.id, await variants))) after(() => { void ensureThumbnail(savedImage.id) })
       console.log(`Image ${i + 1} saved to database: ${savedImage.id}`)
     }
 

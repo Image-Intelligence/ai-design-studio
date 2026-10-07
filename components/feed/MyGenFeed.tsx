@@ -64,7 +64,7 @@ function PageNav({ pagination, page, loading, setPage, className = "" }: {
         {pages.map(p => (
           <button key={p} onClick={() => setPage(p)}
             className={`w-8 h-8 rounded-lg text-xs font-medium transition-all
-              ${p === page ? "bg-cyan-500/20 border border-cyan-500/30 text-cyan-300" : "bg-white/[0.04] border border-white/[0.07] text-slate-500 hover:text-white"}`}>
+              ${p === page ? "bg-white/[0.14] border border-white/30 text-white" : "bg-white/[0.04] border border-white/[0.07] text-slate-500 hover:text-white"}`}>
             {p}
           </button>
         ))}
@@ -90,7 +90,7 @@ function PageNav({ pagination, page, loading, setPage, className = "" }: {
           min={1}
           max={total}
           placeholder={String(page)}
-          className="w-14 h-8 rounded-lg bg-white/[0.04] border border-white/[0.07] text-xs text-white text-center outline-none focus:border-cyan-500/40 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          className="w-14 h-8 rounded-lg bg-white/[0.04] border border-white/[0.07] text-xs text-white text-center outline-none focus:border-white/40 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
         />
       </form>
     </div>

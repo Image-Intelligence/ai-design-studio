@@ -283,3 +283,48 @@
 @media (prefers-reduced-motion: reduce) {
   .silver-shimmer-text { animation: none; background-position: 50% center; }
 }
+
+/*
+ * Home page Featured Models grid (HomeView + components/home/featured.ts).
+ * A grid of half-card units, 4 across on a phone, 6 at sm, 8 at md and 12 at
+ * lg+. Each cell's spot at each width arrives as CSS variables (--cN/--rN, and
+ * --dN: none for a tile not needed there), packed in code so no width shows a
+ * hole. Row height follows the column width so a 2x2 card stays 4:3: with unit
+ * width u and gap g, a card is 2u+g wide, so a row is (3/4)(2u+g)/2 - g/2 =
+ * 0.75u - g/8 high (3x3 and 4x4 cards come out within a pixel or two of 4:3).
+ * 100cqw is the outer box's width - a grid can't size its rows from its own
+ * container query, hence the two boxes.
+ */
+
+.feat-grid {
+  container-type: inline-size;
+}
+.feat-inner {
+  --n: 4;
+  --g: 0.75rem;
+  display: grid;
+  grid-auto-flow: row dense;
+  gap: var(--g);
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  grid-auto-rows: calc((100cqw - (var(--n) - 1) * var(--g)) / var(--n) * 0.75 - var(--g) / 8);
+}
+.feat-cell {
+  display: var(--d4, block);
+  grid-column: var(--c4);
+  grid-row: var(--r4);
+}
+@media (width >= 40rem) {
+  .feat-inner { --n: 6; }
+  .feat-cell { display: var(--d6, block); grid-column: var(--c6); grid-row: var(--r6); }
+}
+@media (width >= 48rem) {
+  .feat-inner { --n: 8; }
+  .feat-cell { display: var(--d8, block); grid-column: var(--c8); grid-row: var(--r8); }
+}
+@media (width >= 64rem) {
+  .feat-inner { --n: 12; }
+  .feat-cell { display: var(--d12, block); grid-column: var(--c12); grid-row: var(--r12); }
+}
+@media (width >= 96rem) {
+  .feat-inner { --g: 1rem; }
+}

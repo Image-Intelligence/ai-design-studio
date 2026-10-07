@@ -81,7 +81,35 @@ export type StoryboardShot = {
    * still lands (the route puts it on the slot itself). Never the page's to set.
    */
   stillJob?: StillJob | null
+  /**
+   * The shot whose still this one EDITS (its id): that still goes first among
+   * the references, so a chain of edits - new outfit, new pose, new background
+   * - keeps everything the prompt does not change. Absent = a fresh image.
+   */
+  editOf?: string
+  /**
+   * This still's own frame shape when it differs from the board's (a 4:1
+   * panorama on a 4:3 board, a 9:16 poster...). The still is made in it; a
+   * model that cannot render it is cropped or fitted to it. Videos and the
+   * Final Cut stay in the board's frame; the Stills cut pans or fits it.
+   */
+  aspect?: string
+  /**
+   * A "before" picture (an upload, an old photo, another still): the still is
+   * made as an edit of it, and the Stills cut plays before -> after with a wipe.
+   */
+  beforeUrl?: string | null
+  /** The Stills cut's caption for this shot (empty = the AI writes one from the title). */
+  caption?: string
+  /** A smaller line under the caption. */
+  captionSub?: string
 }
+
+/** Frame shapes a single still may take (SHOT_ASPECTS) - wider and taller than a board's. */
+export const SHOT_ASPECTS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '3:2', '2:3', '4:5', '5:4', '4:1', '1:4', '8:1', '1:8'] as const
+/** The frame a still is made in: its own, else the board's. */
+export const shotAspect = (shot: Pick<StoryboardShot, 'aspect'>, boardAspect: string) =>
+  shot.aspect && (SHOT_ASPECTS as readonly string[]).includes(shot.aspect) ? shot.aspect : boardAspect
 
 /** One of a shot's own references; `assetId` = the asset it came from, if any. */
 export type ShotRef = { id: string; url: string; on: boolean; assetId?: string }
@@ -319,7 +347,12 @@ export const ASSET_KINDS = [
 ] as const
 export type AssetKind = (typeof ASSET_KINDS)[number]['id']
 export type AssetRef = { id: string; url: string; active: boolean }
-export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[] }
+/**
+ * `libraryId`: the account's saved asset (UserAsset, lib/user-assets) this
+ * board copy came from or was saved to - "Save to My Assets" updates that one
+ * rather than making another. The board keeps its own copy either way.
+ */
+export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[]; libraryId?: number }
 export const MAX_ASSETS = 40
 export const MAX_ASSET_REFS = 24
 
@@ -335,6 +368,7 @@ export function sanitizeAssets(raw: unknown): StoryAsset[] {
     kind: (kinds.includes(a?.kind) ? a.kind : 'other') as AssetKind,
     name: str(a?.name, 80) || 'Untitled',
     notes: str(a?.notes, 1000),
+    ...(Number.isInteger(a?.libraryId) && a.libraryId > 0 ? { libraryId: a.libraryId as number } : {}),
     refs: (Array.isArray(a?.refs) ? a.refs : [])
       .filter((r: any) => /^https:\/\//.test(str(r?.url, 2000)))
       .slice(0, MAX_ASSET_REFS)
@@ -471,6 +505,25 @@ export function refsFromAssets(assets: StoryAsset[], ids: string[]): ShotRef[] {
   }).slice(0, MAX_SHOT_REFS)
 }
 
+/** The shot this one edits, when it still exists and has a still. */
+export function editSource(shots: Pick<StoryboardShot, 'id' | 'stillUrl' | 'title'>[], shot: Pick<StoryboardShot, 'editOf' | 'id'>) {
+  if (!shot.editOf || shot.editOf === shot.id) return null
+  const src = shots.find(s => s.id === shot.editOf)
+  return src?.stillUrl ? src : null
+}
+
+/**
+ * Every reference a still is made with, in the order the model sees them: the
+ * "before" picture, then the still it edits, then its own refs (a turn from
+ * each asset) - as many as the model takes. URLs, deduplicated.
+ */
+export function stillRefUrls(board: Pick<StoryboardDoc, 'assets' | 'scenes' | 'shots'>, shot: StoryboardShot, max: number): string[] {
+  const lead = [shot.beforeUrl, editSource(board.shots, shot)?.stillUrl].filter((u): u is string => !!u)
+  const seen = new Set(lead.map(stillKey))
+  const own = shotRefs(board, shot).filter(r => !seen.has(stillKey(r.url)))
+  return [...lead, ...pickRefs(own, Math.max(0, max - lead.length)).map(r => r.url)].slice(0, Math.max(0, max))
+}
+
 /**
  * The refs that fit the model: when there are more than it takes, they are
  * taken in turns from each asset (one of each, then a second of each...), so
@@ -544,7 +597,13 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
     RES(['1k', '2k'], '2k'),
     { key: 'qwenPromptExpansion', label: 'Prompt expansion', options: o(['true', 'On'], ['false', 'Off']), def: 'true', as: 'bool' },
   ],
-  'nano-banana-2.1': [RES(['1k', '2k', '4k'], '2k')],
+  // Thinking and web search as in the portal (lib/fal-image-models nb21Knobs);
+  // both priced by nb21TicketCost
+  'nano-banana-2.1': [
+    RES(['1k', '2k', '4k'], '2k'),
+    { key: 'nb21Thinking', label: 'Thinking', options: o(['minimal', 'Minimal'], ['medium', 'Medium'], ['high', 'High']), def: 'medium', hint: 'High plans complex scenes, text and many references more carefully' },
+    { key: 'nb21WebSearch', label: 'Web search', options: o(['false', 'Off'], ['true', 'On']), def: 'false', as: 'bool', hint: 'Looks up real, current facts (an infographic, a landmark, today\'s news) before drawing' },
+  ],
   'grok-imagine-2': [
     RES(['1k', '2k'], '2k'),
     { key: 'grokQuality', label: 'Detail', options: o(['low', 'Low'], ['medium', 'Medium']), def: 'medium' },
@@ -629,8 +688,7 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
     if (REGISTRY_STILL_SETTINGS[id] || !m.fields) {
       switch (id) {
         case 'gpt-image-2.5': return gptImage25TicketCost({ quality: q ?? '2k', aspectRatio: aspect, refCount: refs })
-        // Default (medium) thinking - the studios do not offer the setting
-        case 'nano-banana-2.1': return nb21TicketCost({ quality: q ?? '2k', refCount: refs })
+        case 'nano-banana-2.1': return nb21TicketCost({ quality: q ?? '2k', refCount: refs, thinking: opt('nb21Thinking'), webSearch: opt('nb21WebSearch') === 'true' })
         case 'flux-3-image': return flux3ImageTicketCost({ quality: q, aspectRatio: aspect, refs })
         case 'qwen-image-3': return (q === '1k' ? 1 : 2) + (refs > 0 ? 1 : 0)
         case 'ideogram-v4': return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })
@@ -740,7 +798,8 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'luma-uni-1-max', label: 'Luma Uni-1 Max', refs: true },
   { id: 'recraft-v4.1-flash', label: 'Recraft V4.1 Flash', refs: false },
 ]
-export const DEFAULT_IMAGE_MODEL = 'nano-banana-pro-2'
+// NanoBanana 2.1 since the Studio went public (2026-10-07): Pro 2 is admin-only
+export const DEFAULT_IMAGE_MODEL = 'nano-banana-2.1'
 
 /** The video models a shot can be planned for (a plan label - nothing is shot here yet). */
 export const STORYBOARD_VIDEO_MODELS = [
@@ -1003,6 +1062,11 @@ export function sanitizeShots(raw: unknown): StoryboardShot[] {
       keepWhole: r?.keepWhole === true ? true : undefined,
       sceneId: str(r?.sceneId, 64) || undefined,
       refs: sanitizeShotRefs(r?.refs),
+      editOf: str(r?.editOf, 64) || undefined,
+      aspect: (SHOT_ASPECTS as readonly string[]).includes(r?.aspect) ? r.aspect : undefined,
+      beforeUrl: /^https:\/\//.test(str(r?.beforeUrl, 2000)) ? str(r?.beforeUrl, 2000) : undefined,
+      caption: str(r?.caption, 60) || undefined,
+      captionSub: str(r?.captionSub, 90) || undefined,
       stillJob: sanitizeStillJob(r?.stillJob),
       video: sanitizeVideo(r?.video),
       videos: sanitizeVideoTakes(r?.videos),
@@ -1015,6 +1079,19 @@ export const totalSeconds = (shots: StoryboardShot[]) => shots.reduce((a, s) => 
 export const fmtRuntime = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.round(secs % 60)).padStart(2, '0')}`
 
 // ── Final Cut ────────────────────────────────────────────────────────────────
+
+/** The Stills cut's flat price: the render and one AI look at every frame for the captions. */
+export const STILLS_CUT_TICKETS = 2
+/**
+ * A Final Cut's own cost on top of the shots it shoots: the edit plan (~$0.02),
+ * title and end cards (~$0.20), the score (~$0.01 a second), the mix (~$0.05),
+ * narration (~$0.05) - in tickets at the $0.04 of fal cost a ticket covers
+ * (lib/ticket-pricing's margin rule). The page shows it; the route charges it.
+ */
+export function finalCutExtraTickets(o: { cards: boolean; narration: boolean }, seconds: number): number {
+  const usd = 0.02 + (o.cards ? 0.2 : 0) + seconds * 0.01 + 0.05 + (o.narration ? 0.05 : 0)
+  return Math.ceil(usd / 0.04)
+}
 
 /** What the Final Cut button is asked for. */
 export type FinalCutOptions = {
@@ -1063,6 +1140,8 @@ export type FinalCutState = {
     skip: FinalCutPhase[]
     /** Cutting one scene (its id) instead of the whole board. */
     sceneId?: string | null
+    /** Tickets charged for the cut's own work (finalCutExtraTickets) - refunded if it is cancelled or started over. */
+    charged?: number
   } | null
   versions: FinalCutVersion[]
 }

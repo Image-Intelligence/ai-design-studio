@@ -64,7 +64,7 @@ export function GridImage({
   const poster = isVideo ? (posterUrl || thumbUrl || null) : null
   return (
     <div
-      className={`${fullWidth ? "" : "aspect-square"} bg-slate-800/70 overflow-hidden relative ${fullWidth && !loaded && !arCss ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+      className={`${fullWidth ? "" : "aspect-square"} bg-slate-800/70 overflow-hidden relative ${fullWidth && !loaded && !arCss ? "min-h-40" : ""} ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-white/90 ring-inset" : ""}`}
       style={arCss ? { aspectRatio: arCss } : undefined}
       onClick={handleClick}
     >
@@ -98,7 +98,7 @@ export function GridImage({
         </div>
       )}
       {selectMode && (
-        <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"}`}>
+        <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-white border-white" : "border-white/60 bg-black/40"}`}>
           {selected && <Check size={11} className="text-black" />}
         </div>
       )}
@@ -129,7 +129,7 @@ function AudioTile({ src, audio, imageId, selectMode, selected, onSelect, fullWi
   return (
     <div
       onClick={toggle}
-      className={`${fullWidth ? "aspect-[4/3]" : "aspect-square"} relative overflow-hidden cursor-pointer group ${selected ? "ring-2 ring-cyan-400 ring-inset" : ""}`}
+      className={`${fullWidth ? "aspect-[4/3]" : "aspect-square"} relative overflow-hidden cursor-pointer group ${selected ? "ring-2 ring-white/90 ring-inset" : ""}`}
     >
       <AudioCardArt seed={`${audio.title}${imageId ?? ""}`} tint="text-sky-300" />
       <audio ref={ref} data-feed src={src} preload="none" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
@@ -141,7 +141,7 @@ function AudioTile({ src, audio, imageId, selectMode, selected, onSelect, fullWi
         {audio.label && <p className="text-[9px] uppercase tracking-wider text-sky-300/80">{audio.label}</p>}
       </div>
       {selectMode && (
-        <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"}`}>
+        <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-white border-white" : "border-white/60 bg-black/40"}`}>
           {selected && <Check size={11} className="text-black" />}
         </div>
       )}
