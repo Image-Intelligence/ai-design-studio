@@ -34,6 +34,7 @@ import { loadToCanvas, newCanvas, ctx2d, toBlob } from "./engine"
 import { holdCardVideos } from "@/components/home/card-video-scheduler"
 import { openInImageStudio, useImageStudioAvailable } from "./bridge"
 import { SiteLogoBox } from "@/components/SitePageHeader"
+import { sha256Hex } from "@/lib/sha256"
 
 type OldItem = { id: string; url: string; x?: number; y?: number; w?: number; h?: number; r?: number }
 type OldLayer = { id: string; name: string; visible: boolean; opacity: number; auto?: boolean; items: OldItem[] }
@@ -49,7 +50,8 @@ export type EditImagePopupProps = {
 }
 
 const uid = (p: string) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`
-const sha256 = async (buf: ArrayBuffer) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))].map(b => b.toString(16).padStart(2, "0")).join("")
+// crypto.subtle is missing over plain http on the LAN (an iPad on the dev server) - lib/sha256 falls back to JS
+const sha256 = sha256Hex
 const frames = (n: number) => new Promise<void>(res => { const step = (k: number) => (k <= 0 ? setTimeout(res, 30) : requestAnimationFrame(() => step(k - 1))); step(n) })
 
 function rasterLayer(name: string, pix: HTMLCanvasElement, box: { x: number; y: number; w: number; h: number }, extra: Partial<StudioLayer> = {}): StudioLayer {

@@ -40,12 +40,21 @@ export async function GET() {
     FROM "Storyboard" b
     WHERE b."userId" = ${user.id}
     ORDER BY b."updatedAt" DESC`
+  // A cover is a 20px chip - send the still's ~40KB library thumbnail, not the
+  // still itself (2-20MB each, one per board, all loading with the bar)
+  const coverUrls = [...new Set(rows.map(r => r.cover).filter((c): c is string => !!c))]
+  const thumbOf = new Map(coverUrls.length
+    ? (await prisma.generatedImage.findMany({
+        where: { userId: user.id, imageUrl: { in: coverUrls }, thumbnailUrl: { not: null } },
+        select: { imageUrl: true, thumbnailUrl: true },
+      })).map(t => [t.imageUrl, t.thumbnailUrl!] as const)
+    : [])
   return jsonPrivate({
     storyboards: rows.map(r => ({
       id: r.id, title: r.title, aspect: r.aspect, mode: r.mode, updatedAt: r.updatedAt,
       shotCount: Number(r.shotCount) || 0,
       seconds: Number(r.seconds) || 0,
-      cover: r.cover,
+      cover: r.cover ? thumbOf.get(r.cover) ?? r.cover : null,
     })),
   })
 }

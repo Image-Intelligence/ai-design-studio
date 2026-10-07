@@ -5,7 +5,7 @@ import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
-import { gptImage25TicketCost, ideogramTicketCost } from '@/lib/ticket-pricing'
+import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
@@ -313,7 +313,10 @@ export async function POST(request: Request) {
               })
             : model === 'gpt-image-2.5'
               ? gptPrice(gptRefCount > 0 && aspectRatio === 'auto' ? { width: 16, height: 9 } : null)
-              : getTicketCost(model, quality)
+              // Token-billed: size, thinking level and each reference cost
+              : model === 'nano-banana-2.1'
+                ? nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: gptRefCount })
+                : getTicketCost(model, quality)
     console.log('Selected model:', selectedModel.displayName, '- Quality:', quality, '- Cost:', ticketCost, 'ticket(s)')
 
     // Per-user concurrency cap — this route creates GenerationQueue rows but never
@@ -1088,6 +1091,8 @@ export async function POST(request: Request) {
             // which fal bills per input image on top - charge the edit's price
             if (model === 'grok-imagine-2' && falImageUrls.length > 0) ticketCost = getTicketCost('grok-imagine-2-edit', quality)
             if (model === 'mai-image-2.5-pro' && falImageUrls.length > 0) ticketCost = getTicketCost('mai-image-2.5-pro-edit', quality)
+            // NanoBanana 2.1: priced on the references that really go (max 14)
+            if (model === 'nano-banana-2.1') ticketCost = nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: Math.min(14, falImageUrls.length) })
             // Qwen Image 3 (measured 2026-10-02): $0.04 at 1K -> 1 ticket, $0.075
             // at 2K (the old "4k" renders 2K) -> 2; the edit adds ~$0.006 for its
             // references ($0.081 at 2K) -> one ticket more
@@ -1128,25 +1133,14 @@ export async function POST(request: Request) {
         if (model === 'seedream-4.5') {
           inputParams.enable_safety_checker = seedreamSafetyChecker === true
         }
-        // SeeDream 5.0 Flash is public (2026-10-01): fal's checker is forced ON
-        // for everyone but admins - the same server-side guarantee as SeeDream
-        // 5.0 Pro and Recraft (CCBill), whatever the client sent
-        if (model === 'seedream-5-flash' || model === 'qwen-image-3' || model.startsWith('recraft-v4-') || model === 'recraft-v4.1-flash') {
-          // Qwen Image 3 + Recraft V4 / V4.1 Flash public 2026-10-02: same rule
-          // (their specs send false)
+        // Public models' moderation for non-admins (SeeDream 5.0 Flash, Qwen
+        // Image 3, Recraft V4, FLUX 3, NanoBanana 2 Lite / 2.1), whatever the
+        // client sent - one copy of the rules, shared with the Image Studio /
+        // Edit Image popup route (lib/public-moderation)
+        {
           const { checkIsAdmin } = await import('@/lib/admin-check')
-          inputParams.enable_safety_checker = !(await checkIsAdmin(user.email))
-        }
-        // NanoBanana 2 Lite is public too: non-admins get fal's standard
-        // moderation level (4), not the most permissive (6) the client may send
-        // FLUX 3 Image: safety_tolerance 0 (strictest) - 4; non-admins get fal's default 2
-        if (model === 'flux-3-image') {
-          const { checkIsAdmin } = await import('@/lib/admin-check')
-          if (!(await checkIsAdmin(user.email))) inputParams.safety_tolerance = 2
-        }
-        if (model === 'nano-banana-2-lite') {
-          const { checkIsAdmin } = await import('@/lib/admin-check')
-          if (!(await checkIsAdmin(user.email))) inputParams.safety_tolerance = '4'
+          const { enforcePublicModeration } = await import('@/lib/public-moderation')
+          enforcePublicModeration(model, inputParams, await checkIsAdmin(user.email))
         }
 
         // Check if regular NanoBanana is trying to use reference images (not supported)

@@ -457,8 +457,23 @@ function flux3Resolution(q: string): '1k' | '2k' | '4k' {
 const AR_NB2_LITE = ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'] as const
 /** NanoBanana 2.1's aspect enum (schema 2026-10-06) - the same list as 2 Lite, extremes included. */
 const AR_NB21 = AR_NB2_LITE
-/** NanoBanana 2.1: resolution from the site's quality (1K / 2K / 4K - billed x1 / x1.5 / x2). */
+/** NanoBanana 2.1: resolution from the site's quality (1K / 2K / 4K). */
 const nb21Res = (q?: string) => (q === '4k' ? '4K' : q === '1k' ? '1K' : '2K')
+/**
+ * NanoBanana 2.1's two dials. Thinking (minimal / medium / high - fal's
+ * default is medium) is offered to everyone and priced by nb21TicketCost.
+ * Safety tolerance ('1' strictest .. '6') is the admins' to set; a
+ * non-admin's run is put on fal's standard '4' by lib/public-moderation
+ * whatever was sent.
+ */
+function nb21Knobs(options: Record<string, any>): Record<string, string> {
+  const t = options.nb21Thinking
+  const st = String(options.nb21SafetyTolerance ?? '')
+  return {
+    safety_tolerance: /^[1-6]$/.test(st) ? st : '6',
+    ...(t === 'minimal' || t === 'high' ? { thinking_level: t } : {}),
+  }
+}
 // Luma - declared up here because FAL_IMAGE_MODELS calls the Luma spec builders at load
 const AR_PHOTON = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21'] as const
 const AR_UNI = ['3:1', '2:1', '16:9', '3:2', '1:1', '2:3', '9:16', '1:2', '1:3'] as const
@@ -1190,7 +1205,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         resolution: nb21Res(ctx.quality),
         output_format: 'png',
         num_images: 1,
-        safety_tolerance: '6',
+        ...nb21Knobs(ctx.options),
         limit_generations: true,
       }),
   },
@@ -1214,7 +1229,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
         resolution: nb21Res(ctx.quality),
         output_format: 'png',
         num_images: 1,
-        safety_tolerance: '6',
+        ...nb21Knobs(ctx.options),
         limit_generations: true,
       }),
   },

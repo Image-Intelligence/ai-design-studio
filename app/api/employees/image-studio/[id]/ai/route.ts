@@ -1,3 +1,4 @@
+import { enforcePublicModeration } from '@/lib/public-moderation'
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
@@ -163,6 +164,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       if ('error' in call) return bad(call.error)
       cost = genTickets(spec.id, quality, aspect, refs.length); model = spec.id
       endpoint = call.endpoint; input = call.input
+      // The popup is open to everyone: a public model runs at the moderation
+      // /api/generate gives non-admins (lib/public-moderation)
+      enforcePublicModeration(spec.id, input, await checkIsAdmin(user.email))
     }
   } catch (e) {
     return jsonPrivate({ error: failText(e).slice(0, 240) }, { status: 400 })

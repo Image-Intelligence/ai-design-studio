@@ -43,9 +43,12 @@ export function GridImage({
 }) {
   const [loaded, setLoaded] = useState(false)
   if (audio) return <AudioTile src={src} audio={audio} imageId={imageId} selectMode={selectMode} selected={selected} onSelect={onSelect} fullWidth={fullWidth} />
+  // A saved row always shows its (pre-made, ~40KB) thumbnail, never the full
+  // original - a 4K PNG is ~20MB (same rule as the portal's GridImage)
   const thumbSrc = thumbUrl
     ? thumbUrl
-    : directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
+    : imageId && imageId > 0 ? `/api/images/${imageId}?thumb=1`
+    : directUrl || src
   const fullSrc = directUrl || src
   // Full Size mode: reserve the tile's height from the known shape so images don't
   // shove the layout when they pop in. Null → natural height.
@@ -79,7 +82,9 @@ export function GridImage({
         />
       ) : (
         <img
-          src={poster ?? (fullWidth && fullRes ? fullSrc : thumbSrc)}
+          // Full Size quality = the 2048px display copy, not the (up to ~20MB)
+          // original - same rule as the portal's GridImage
+          src={poster ?? (fullWidth && fullRes ? (imageId && imageId > 0 && !isVideo ? `/api/images/${imageId}?display=tile` : fullSrc) : thumbSrc)}
           alt={alt}
           decoding="async"
           loading="lazy"

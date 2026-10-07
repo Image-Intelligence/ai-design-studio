@@ -1,4 +1,4 @@
-import { gptImage25TicketCost } from '@/lib/ticket-pricing'
+import { gptImage25TicketCost, nb21TicketCost } from '@/lib/ticket-pricing'
 // AI Model Configuration - FAL.ai models (NanoBanana + SeeDream)
 // Imagen models require different setup (commented out for now)
 
@@ -1020,10 +1020,11 @@ export function getTicketCost(modelId: string, quality?: '2k' | '4k' | string): 
     return quality === '4k' ? 12 : 7
   }
 
-  // NanoBanana 2.1 (+ edit): fal $0.08 an image at 1K, x1.5 at 2K, x2 at 4K
-  // -> fal cost / $0.04 a ticket: 2 / 3 / 4
+  // NanoBanana 2.1 (+ edit): token-billed - medium thinking, no references
+  // here (lib/ticket-pricing nb21TicketCost; callers that know the thinking
+  // level and reference count call it directly): 1K 2, 2K 3, 4K 6
   if (modelId === 'nano-banana-2.1' || modelId === 'nano-banana-2.1-edit') {
-    return quality === '4k' ? 4 : quality === '1k' ? 2 : 3
+    return nb21TicketCost({ quality: quality ?? '2k' })
   }
 
   // Pro Scanner v3: 7 tickets for 2K, 15 tickets for 4K

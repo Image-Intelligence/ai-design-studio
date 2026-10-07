@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import {
   Plus, X, Loader2, Play, Pause, ChevronLeft, ChevronRight, Copy, Trash2, GripVertical,
   ImagePlus, ArrowRight, Clock, Clapperboard, Sparkles, Check, Film, ImageUp,
@@ -59,6 +59,33 @@ const MODE_ICONS: Record<BoardModeId, LucideIcon> = {
   lookbook: Shirt, outfit: ShoppingBag, music: Music, social: Smartphone, location: MapPin, explainer: Lightbulb,
 }
 /** A ticket count, as it sits on a button. */
+/**
+ * Board stills -> their ~40KB library thumbnails (object key -> URL), sent with
+ * the board. Cards, posters and strips show the thumbnail; the full-size
+ * still (2-20MB) only loads where it is shown big (the animatic, Open full size).
+ */
+const StillThumbs = createContext<Map<string, string>>(new Map())
+const stillKeyOf = (u: string) => { try { return decodeURIComponent(new URL(u).pathname.slice(1)) } catch { return u } }
+const thumbFrom = (m: Map<string, string>, u: string | null | undefined) => (u ? m.get(stillKeyOf(u)) ?? u : undefined)
+function useThumb() {
+  const m = useContext(StillThumbs)
+  return useCallback((u: string | null | undefined) => thumbFrom(m, u), [m])
+}
+/** New pairs from a board GET merged in - the same Map back when nothing changed, so no re-render. */
+function mergeThumbs(prev: Map<string, string>, pairs: unknown): Map<string, string> {
+  if (!Array.isArray(pairs)) return prev
+  let next: Map<string, string> | null = null
+  for (const p of pairs) {
+    if (!Array.isArray(p) || typeof p[0] !== "string" || typeof p[1] !== "string") continue
+    // A re-signed thumbnail is the same file - compare by key, not by URL
+    const had = prev.get(p[0])
+    if (had && stillKeyOf(had) === stillKeyOf(p[1])) continue
+    next ??= new Map(prev)
+    next.set(p[0], p[1])
+  }
+  return next ?? prev
+}
+
 function Tix({ n, approx, className = "" }: { n: number; approx?: boolean; className?: string }) {
   return <span className={`inline-flex items-center gap-0.5 font-mono ${className}`}><Ticket size={9} />{approx ? "~" : ""}{n}</span>
 }
@@ -112,6 +139,7 @@ export function StoryboardWorkspace({
 }) {
   const [boards, setBoards] = useState<BoardSummary[]>([])
   const [board, setBoard] = useState<StoryboardDoc | null>(null)
+  const [thumbs, setThumbs] = useState<Map<string, string>>(() => new Map())
   const [loading, setLoading] = useState(true)
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved")
   const [busy, setBusy] = useState<Record<string, boolean>>({})
@@ -178,9 +206,10 @@ export function StoryboardWorkspace({
     return r.data.storyboards ?? []
   }, [])
   const open = useCallback(async (id: number) => {
-    const r = await getJson<{ storyboard?: StoryboardDoc }>(`/api/employees/storyboards/${id}`)
+    const r = await getJson<{ storyboard?: StoryboardDoc; thumbs?: [string, string][] }>(`/api/employees/storyboards/${id}`)
     const storyboard = r.data?.storyboard
     if (!r.ok || !storyboard) return
+    setThumbs(prev => mergeThumbs(prev, r.data?.thumbs))
     setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id })
     setShotError({})
     setFinalCut({ job: null, versions: [] })
@@ -477,8 +506,9 @@ export function StoryboardWorkspace({
   useEffect(() => {
     if (!stillsPending || !boardId) return
     const poll = setInterval(async () => {
-      const r = await getJson<{ storyboard?: StoryboardDoc }>(`/api/employees/storyboards/${boardId}`)
+      const r = await getJson<{ storyboard?: StoryboardDoc; thumbs?: [string, string][] }>(`/api/employees/storyboards/${boardId}`)
       if (r.data?.storyboard && boardRef.current?.id === boardId) mergeStillState(r.data.storyboard.shots ?? [])
+      if (r.data?.thumbs) setThumbs(prev => mergeThumbs(prev, r.data?.thumbs))
     }, 5000)
     return () => clearInterval(poll)
   }, [stillsPending, boardId, mergeStillState])
@@ -998,6 +1028,7 @@ export function StoryboardWorkspace({
   const setRes = (v: string) => { setShootRes(v); try { localStorage.setItem("pv2-storyboard-res", v) } catch {} }
 
   return (
+    <StillThumbs.Provider value={thumbs}>
     <div className="h-full flex flex-col min-h-0">
       {/* ── boards: the open one, the latest few, New - the rest a search away ── */}
       <BoardBar
@@ -1294,7 +1325,7 @@ export function StoryboardWorkspace({
                         <div className="flex-1 min-w-0 flex items-stretch gap-1.5 overflow-x-auto [scrollbar-width:thin] pb-0.5">
                           {board.scenes.map((c, k) => {
                             const own = sceneShots(board.shots, c.id)
-                            const cover = own.find(x => x.stillUrl)?.stillUrl
+                            const cover = thumbFrom(thumbs, own.find(x => x.stillUrl)?.stillUrl)
                             const on = k === pageIdx
                             return (
                               <button
@@ -1440,6 +1471,7 @@ export function StoryboardWorkspace({
         .sb-input::placeholder { color: #475569; }
       `}</style>
     </div>
+    </StillThumbs.Provider>
   )
 }
 
@@ -1941,6 +1973,7 @@ function ShotCard({
   /** Rewrite this shot's image and/or video plan with AI ("use LTX 2.5 Fast instead"...). */
   onAiEdit: (instruction: string, scope: "image" | "video" | "both") => Promise<{ patch?: Partial<StoryboardShot>; note?: string; error?: string }>
 }) {
+  const thumb = useThumb()
   const [details, setDetails] = useState(false)
   const [refMenu, setRefMenu] = useState(false)
   // Edit with AI
@@ -2024,11 +2057,11 @@ function ShotCard({
       <div className="@container relative bg-black/60 group" style={{ aspectRatio: aspectCss }}>
         {showVideo ? (
           // The original plays whole (letterboxed) - nothing is cut while viewing it
-          <video key={playUrl!} src={playUrl!} poster={frame === "raw" ? undefined : shot.stillUrl ?? undefined} className={`absolute inset-0 w-full h-full ${frame === "raw" ? "object-contain bg-black" : "object-cover"}`} controls playsInline loop preload={frame === "raw" ? "metadata" : "none"} />
+          <video key={playUrl!} src={playUrl!} poster={frame === "raw" ? undefined : thumb(shot.stillUrl)} className={`absolute inset-0 w-full h-full ${frame === "raw" ? "object-contain bg-black" : "object-cover"}`} controls playsInline loop preload={frame === "raw" ? "metadata" : "none"} />
         ) : shot.stillUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={shot.stillUrl}
+            src={thumb(shot.stillUrl)}
             alt={shot.description}
             onClick={onOpen}
             title="Open full size"
@@ -2274,7 +2307,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
                       style={{ aspectRatio: aspectCss }}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={t.url} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                      <img src={thumb(t.url)} alt="" className="absolute inset-0 w-full h-full object-cover" />
                       <span className="absolute bottom-0 inset-x-0 bg-black/70 text-[8.5px] font-mono text-center text-slate-200">{k + 1}</span>
                     </button>
                   ))}
@@ -2295,7 +2328,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
                     >
                       {t.fromStill ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={t.fromStill} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                        <img src={thumb(t.fromStill)} alt="" className="absolute inset-0 w-full h-full object-cover" />
                       ) : <span className="absolute inset-0 bg-white/5" />}
                       <span className="absolute top-0.5 left-0.5 rounded bg-black/70 px-0.5 text-[8px] text-white"><Play size={7} className="inline -mt-px" /></span>
                       <span className="absolute bottom-0 inset-x-0 bg-black/75 text-[7.5px] font-mono text-center text-slate-200 truncate px-0.5">{k + 1} · {t.model.replace(/-/g, " ")}</span>
@@ -2592,6 +2625,7 @@ function IconBtn({ title, onClick, disabled, children }: { title: string; onClic
  */
 function Animatic({ board, start, aspectCss, onClose }: { board: StoryboardDoc; start: number; aspectCss: string; onClose: () => void }) {
   const shots = board.shots
+  const thumb = useThumb()
   const starts = useMemo(() => { let t = 0; return shots.map(s => { const a = t; t += s.duration || 0; return a }) }, [shots])
   const total = totalSeconds(shots)
   const [t, setT] = useState(starts[start] ?? 0)
@@ -2681,7 +2715,7 @@ function Animatic({ board, start, aspectCss, onClose }: { board: StoryboardDoc; 
         <div className="flex h-10 gap-0.5 rounded-md overflow-hidden">
           {shots.map((s, k) => (
             <button key={s.id} onClick={() => goTo(k)} style={{ flexGrow: s.duration || 1 }} className={`relative basis-0 overflow-hidden ${k === i ? "ring-2 ring-slate-100 ring-inset" : "opacity-60 hover:opacity-100"}`}>
-              {s.stillUrl ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={s.stillUrl} alt="" className="absolute inset-0 w-full h-full object-cover" /> : <span className="absolute inset-0 bg-white/5" />}
+              {s.stillUrl ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={thumb(s.stillUrl)} alt="" className="absolute inset-0 w-full h-full object-cover" /> : <span className="absolute inset-0 bg-white/5" />}
               {k === i && <span className="absolute left-0 bottom-0 h-1 bg-slate-100" style={{ width: `${Math.min(100, (into / (s.duration || 1)) * 100)}%` }} />}
             </button>
           ))}

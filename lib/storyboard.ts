@@ -18,7 +18,7 @@
 
 import { getCreateModel, computeCreateCost } from '@/lib/chat-hub-models'
 import { getTicketCost } from '@/config/ai-models.config'
-import { flux3ImageTicketCost, gptImage25TicketCost, ideogramTicketCost } from '@/lib/ticket-pricing'
+import { flux3ImageTicketCost, gptImage25TicketCost, ideogramTicketCost, nb21TicketCost } from '@/lib/ticket-pricing'
 
 export type StoryboardShot = {
   id: string
@@ -629,6 +629,8 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
     if (REGISTRY_STILL_SETTINGS[id] || !m.fields) {
       switch (id) {
         case 'gpt-image-2.5': return gptImage25TicketCost({ quality: q ?? '2k', aspectRatio: aspect, refCount: refs })
+        // Default (medium) thinking - the studios do not offer the setting
+        case 'nano-banana-2.1': return nb21TicketCost({ quality: q ?? '2k', refCount: refs })
         case 'flux-3-image': return flux3ImageTicketCost({ quality: q, aspectRatio: aspect, refs })
         case 'qwen-image-3': return (q === '1k' ? 1 : 2) + (refs > 0 ? 1 : 0)
         case 'ideogram-v4': return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })

@@ -3,7 +3,7 @@
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, TICKET_PACKAGES } from "@/lib/ticket-pricing"
+import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, nb21TicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
 import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
@@ -245,13 +245,14 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
 ]
 
 // --- HELPERS ---
-function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectRatio, loraActive?: boolean, hasRefImages?: boolean): number {
+function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectRatio, loraActive?: boolean, hasRefImages?: boolean, refCount?: number): number {
   // Priced per request from measured fal costs; with "auto" + references the
   // shape is unknown here, so this is the upper bound (square).
   if (modelId === "gpt-image-2.5")       return gptImage25TicketCost({ quality, aspectRatio, refCount: hasRefImages ? 1 : 0 })
   if (modelId === "nano-banana-pro")     return quality === "4k" ? 14 : 7
   if (modelId === "nano-banana-pro-2")   return quality === "4k" ? 12 : 7
-  if (modelId === "nano-banana-2.1")     return quality === "4k" ? 4 : quality === "1k" ? 2 : 3   // fal $0.08 1K, x1.5 2K, x2 4K
+  // token-billed: size + each reference (thinking is priced where it is chosen)
+  if (modelId === "nano-banana-2.1")     return nb21TicketCost({ quality, refCount: refCount ?? (hasRefImages ? 1 : 0) })
   if (modelId === "seedream-4.5")        return quality === "4k" ? 4 : 2
   if (modelId === "seedream-5-lite")     return quality === "3k" ? 4 : 2
   if (modelId === "seedream-5-pro")      return 10   // flat 10 tickets/generation
@@ -3981,7 +3982,7 @@ function FeedDropdown({
                     </FeedOptionRow>
                     <p className="text-[9.5px] text-slate-600 leading-relaxed pt-0.5">
                       {tileRes === "full"
-                        ? <><span className="text-amber-400">Full size</span> loads originals — sharper, but long scrolls may reload the page.</>
+                        ? <><span className="text-amber-400">Full size</span> loads large 2048px previews — sharp at any tile size; tap any for the original.</>
                         : <>Whole images at their natural shape in a masonry flow — tap any for full resolution.</>}
                     </p>
                   </div>
@@ -8801,13 +8802,18 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   // images, so cross-user thumbnails 404 — use the admin dataset thumb route instead
   adminThumb?: boolean
 }) {
-  // directUrl: skip the proxy and load directly (used for just-completed images where the
-  // blob URL is already known — avoids the DB-auth → blob-fetch → sharp chain adding delay)
+  // A saved row (positive id) always shows its thumbnail. Just-completed tiles
+  // used to load directUrl - the full original - to dodge the proxy's
+  // download-and-resize; but every save now makes the thumbnail up front
+  // (lib/thumbnail), so the proxy is a redirect to a ~40KB webp, while a 4K
+  // NanoBanana 2.1 PNG is ~20MB: thirty of those queued ~600MB and the tiles
+  // sat blank for minutes. directUrl is only the fallback before a row exists.
   const thumbSrc = thumbUrl
     ? thumbUrl
     : adminThumb && imageId
     ? `/api/admin/dataset/thumb/${imageId}?v=2`
-    : directUrl || (imageId ? `/api/images/${imageId}?thumb=1` : src)
+    : imageId && imageId > 0 ? `/api/images/${imageId}?thumb=1`
+    : directUrl || src
   const fullSrc = directUrl || src
   // Remount ≠ reload: when a queued generation pushes tiles into a different
   // column, React remounts them — but the browser still has their images
@@ -8816,10 +8822,15 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   // spanBoost (multi-column masonry tiles): the feed thumbnail is too small to
   // stretch across 2-3 columns, so load a 1080px optimized rendition instead —
   // crisp at span width without decoding full 4K originals.
-  const midSrc = spanBoost && fullSrc.startsWith("https://")
-    ? `/_next/image?url=${encodeURIComponent(fullSrc)}&w=1080&q=75`
-    : fullSrc
-  const renderedSrc = fullWidth && fullRes ? fullSrc : spanBoost ? midSrc : thumbSrc
+  // The stored screen-sized copy (lib/display-image: 2048px WebP, a few hundred
+  // KB, made at save time) - what a tile needs when the thumbnail is too small.
+  // Full Size + "Full size" quality used to draw the ORIGINALS: ~20MB each for
+  // a 4K NanoBanana PNG, so a batch of thirty took minutes to appear. Tapping a
+  // tile still opens the true original in the viewer.
+  const displaySrc = imageId && imageId > 0 && !adminThumb && !isVideo ? `/api/images/${imageId}?display=tile` : null
+  const midSrc = !spanBoost ? fullSrc
+    : displaySrc ?? (fullSrc.startsWith("https://") ? `/_next/image?url=${encodeURIComponent(fullSrc)}&w=1080&q=75` : fullSrc)
+  const renderedSrc = fullWidth && fullRes ? (displaySrc ?? fullSrc) : spanBoost ? midSrc : thumbSrc
   const [loaded, setLoaded] = useState(() => seenTileSrcs.has(renderedSrc) || (spanBoost ? seenTileSrcs.has(thumbSrc) : false))
   // Locked at mount: recomputing per render would rewrite animation-delay on
   // the running rim sweep and jump its phase
@@ -12607,6 +12618,80 @@ function AspectRatioPicker({
               )}
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * A compact dropdown for the composer's settings line, styled like the aspect
+ * picker: the button shows a small label and the current value, the menu
+ * opens upward. Used where a row of buttons took too much room (resolution,
+ * NanoBanana 2.1's thinking and safety).
+ */
+function BarSelect<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  title,
+  menuWidth = "w-44",
+  footnote,
+}: {
+  label?: string
+  value: T
+  options: { value: T; text?: string; hint?: string; badge?: string }[]
+  onChange: (v: T) => void
+  title?: string
+  menuWidth?: string
+  footnote?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [open])
+  const current = options.find(o => o.value === value)
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        title={title}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono transition-all ${
+          open
+            ? "border-white/20 bg-white/10 text-white"
+            : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
+        }`}
+      >
+        {label && <span className="text-slate-500">{label}</span>}
+        {current?.text ?? value}
+        {current?.badge && <span className="text-amber-400/90">{current.badge}</span>}
+        <ChevronDown size={10} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className={`absolute bottom-full left-0 mb-2 ${menuWidth} rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden z-50`}>
+          {options.map(o => (
+            <button
+              key={o.value}
+              onClick={() => { onChange(o.value); setOpen(false) }}
+              className={`w-full text-left px-3 py-2 text-[12px] font-mono transition-colors ${
+                o.value === value ? "text-white bg-white/8" : "text-slate-400 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span>{o.text ?? o.value}</span>
+                {o.badge && <span className="text-[10px] text-amber-400/90">{o.badge}</span>}
+              </span>
+              {o.hint && <span className="block text-[10px] text-slate-500 normal-case font-sans">{o.hint}</span>}
+            </button>
+          ))}
+          {footnote && <p className="px-3 py-2 border-t border-white/[0.06] text-[10px] leading-snug text-slate-500">{footnote}</p>}
         </div>
       )}
     </div>
@@ -16910,6 +16995,11 @@ function PromptBox({
    * decision, not a detail.
    */
   const [ideogramRenderingSpeed, setIdeogramRenderingSpeed] = useState<"TURBO" | "BALANCED" | "QUALITY">("BALANCED")
+  // NanoBanana 2.1: thinking for everyone (priced - lib/ticket-pricing
+  // nb21TicketCost), safety tolerance for admins only (the server puts
+  // everyone else on fal's standard 4, lib/public-moderation)
+  const [nb21Thinking, setNb21Thinking] = useState<Nb21Thinking>("medium")
+  const [nb21Safety, setNb21Safety] = useState<"1" | "2" | "3" | "4" | "5" | "6">("6")
   /*
    * Edit, or strip the text out. "remove-text" leaves the v4 family for
    * ideogram/v3/layerize-text, which wants the image and nothing else - so
@@ -17619,6 +17709,9 @@ function PromptBox({
         quality, aspectRatio, refCount: activeRefImages.length, promptChars: prompt.length,
         refDims: gptRefDims && gptRefDims.url === gptRefUrl ? gptRefDims : null,
       })
+    : model.id === "nano-banana-2.1"
+    // The same function the server charges with: size, thinking, each reference
+    ? nb21TicketCost({ quality, thinking: nb21Thinking, refCount: activeRefImages.length })
     : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
   const needsRefImage = !!model.requiresReferenceImage && activeRefImages.length === 0
@@ -17639,7 +17732,7 @@ function PromptBox({
     ? Math.min(Math.max(1, pinnedTab.imageCount), pinnedModel.maxImages ?? 1)
     : 1
   const pinnedCost = pinnedRunnable && pinnedTab && pinnedModel
-    ? calcTicketCost(pinnedModel.id, pinnedTab.quality as Quality, pinnedTab.aspectRatio as AspectRatio, false, activeRefImages.length > 0)
+    ? calcTicketCost(pinnedModel.id, pinnedTab.quality as Quality, pinnedTab.aspectRatio as AspectRatio, false, activeRefImages.length > 0, activeRefImages.length)
       * (pinnedModel.maxImages ? pinnedImageCount : 1)
     : 0
   const pinnedSlotsNeeded = pinnedRunnable && pinnedModel
@@ -18553,7 +18646,7 @@ function PromptBox({
               signal: AbortSignal.timeout(180_000),
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
+              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
             })
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
@@ -18575,7 +18668,7 @@ function PromptBox({
           signal: AbortSignal.timeout(180_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
+          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
         })
         const data = await readGen(res)
         if (!res.ok) {
@@ -20710,21 +20803,54 @@ function PromptBox({
             {model.supportsQuality && !model.isUpscaler && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
-                <div className="flex items-center rounded-md overflow-hidden border border-white/10 shrink-0">
-                  {(model.qualityOptions ?? (["2k", "4k"] as Quality[])).map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => setQuality(q)}
-                      className={`px-2.5 py-1 text-[11px] font-mono uppercase transition-colors ${
-                        quality === q ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
-                      }`}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
+                <BarSelect<Quality>
+                  value={quality}
+                  title="Resolution"
+                  menuWidth="w-32"
+                  options={(model.qualityOptions ?? (["2k", "4k"] as Quality[])).map(q => ({ value: q, text: q.toUpperCase() }))}
+                  onChange={setQuality}
+                />
               </>
             )}
+
+            {/* NanoBanana 2.1: thinking (everyone - "high" costs more, shown
+                as +N) and the safety level (admins; everyone else runs at
+                fal's standard 4, set on the server) */}
+            {model.id === "nano-banana-2.1" && (() => {
+              const extra = (t: Nb21Thinking) => nb21TicketCost({ quality, thinking: t, refCount: activeRefImages.length })
+                - nb21TicketCost({ quality, thinking: "medium", refCount: activeRefImages.length })
+              return (
+                <>
+                  <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
+                  <BarSelect<Nb21Thinking>
+                    label="think"
+                    value={nb21Thinking}
+                    title="Thinking level"
+                    onChange={setNb21Thinking}
+                    options={NB21_THINKING.map(t => ({
+                      value: t,
+                      badge: extra(t) > 0 ? `+${extra(t)}` : undefined,
+                      hint: t === "high" ? "Reasons longer - complex scenes, many references"
+                        : t === "minimal" ? "Fastest - simple prompts" : "fal's default",
+                    }))}
+                  />
+                  {isAdminAccount && (
+                    <BarSelect<"1" | "2" | "3" | "4" | "5" | "6">
+                      label="safety"
+                      value={nb21Safety}
+                      title="Safety tolerance (admins only)"
+                      menuWidth="w-40"
+                      onChange={setNb21Safety}
+                      options={(["1", "2", "3", "4", "5", "6"] as const).map(v => ({
+                        value: v,
+                        hint: v === "1" ? "strictest" : v === "4" ? "fal default - what users get" : v === "6" ? "most permissive" : undefined,
+                      }))}
+                      footnote="Admins only. Everyone else runs at 4."
+                    />
+                  )}
+                </>
+              )
+            })()}
 
             {/* Upscale factor toggle — upscaler only. NOT SeedVR2: its factor
                 is continuous 1-10 and lives in its own settings block, so a

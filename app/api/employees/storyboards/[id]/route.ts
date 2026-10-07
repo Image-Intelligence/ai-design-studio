@@ -1,10 +1,11 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, after } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireChatHubAdmin } from '@/lib/chat-hub-auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { STORYBOARD_ASPECTS, sanitizeShots, mergeStills, sanitizeAssets, sanitizeScenes, ensureScenes, isBoardMode, stillKey, migrateActiveRefs } from '@/lib/storyboard'
 import { withShotsLock } from '@/lib/storyboard-store'
+import { ensureThumbnail } from '@/lib/thumbnail'
 
 /**
  * One storyboard.
@@ -19,6 +20,35 @@ import { withShotsLock } from '@/lib/storyboard-store'
  * canonical, so a saved board never holds a link that expires.
  */
 type Ctx = { params: Promise<{ id: string }> }
+
+const IMAGE_URL_RE = /^https:\/\/[^?#]+\.(png|jpe?g|webp)(\?|#|$)/i
+/** The object key of a stored or signed media URL - both share the path. */
+const mediaKey = (u: string) => { try { return decodeURIComponent(new URL(u).pathname.slice(1)) } catch { return u } }
+
+/**
+ * Every still on the board (slot stills, takes, a clip's source frame) mapped
+ * to its library thumbnail, as [object key, thumbnail URL] pairs. A board
+ * showed each card, poster and strip square at FULL size - 2-20MB PNGs - so a
+ * big board took minutes to draw; the ~40KB thumbnail is what a card needs.
+ * Stills without one yet get it made after the response, for the next load.
+ */
+async function stillThumbs(userId: number, shots: unknown): Promise<[string, string][]> {
+  const urls = new Set<string>()
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') { if (IMAGE_URL_RE.test(v)) urls.add(v) }
+    else if (Array.isArray(v)) v.forEach(walk)
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk)
+  }
+  walk(shots)
+  if (!urls.size) return []
+  const rows = await prisma.generatedImage.findMany({
+    where: { userId, imageUrl: { in: [...urls].slice(0, 500) } },
+    select: { id: true, imageUrl: true, thumbnailUrl: true },
+  })
+  const missing = rows.filter(r => !r.thumbnailUrl).slice(0, 8)
+  if (missing.length) after(async () => { for (const r of missing) await ensureThumbnail(r.id).catch(() => {}) })
+  return rows.filter(r => r.thumbnailUrl).map(r => [mediaKey(r.imageUrl), r.thumbnailUrl!])
+}
 
 async function own(ctx: Ctx) {
   const user = await requireChatHubAdmin()
@@ -56,7 +86,8 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     assets = moved.assets
     shots = moved.shots
   }
-  return jsonPrivate({ storyboard: { ...r.row, shots, assets, scenes: doc.scenes } })
+  const thumbs = await stillThumbs(r.user.id, shots).catch(() => [])
+  return jsonPrivate({ storyboard: { ...r.row, shots, assets, scenes: doc.scenes }, thumbs })
 }
 
 export async function PATCH(req: NextRequest, ctx: Ctx) {

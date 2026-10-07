@@ -1,6 +1,7 @@
 import prisma from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
 import { fetchMedia } from '@/lib/media-fetch'
+import { DISPLAY_LONG_SIDE, ensureDisplayImage } from '@/lib/display-image'
 
 const VIDEO_RE = /\.(mp4|webm|mov|m4v|avi|mkv)(\?|#|$)/i
 // Meshes and archives have no picture in them to thumbnail.
@@ -57,6 +58,14 @@ export async function ensureThumbnail(imageId: number): Promise<'made' | 'had' |
         ...(width && height ? { videoMetadata: { ...vm, width, height } as object } : {}),
       },
     })
+    // And the screen-sized copy (lib/display-image), while the original is in
+    // memory: a feed in Full Size mode shows THAT, not the original - a 4K
+    // NanoBanana PNG is ~20MB, its display copy a few hundred KB. Only for
+    // images bigger than it; after the update above, whose videoMetadata
+    // write would otherwise drop the displayUrl it merges in.
+    if (typeof vm.displayUrl !== 'string' && width && height && Math.max(width, height) > DISPLAY_LONG_SIDE) {
+      await ensureDisplayImage(imageId, buffer).catch(() => null)
+    }
     return row.thumbnailUrl ? 'had' : 'made'
   } catch {
     return 'failed'

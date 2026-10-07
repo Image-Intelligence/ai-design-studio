@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
@@ -6,7 +6,7 @@ import { uploadToR2 } from '@/lib/r2'
 import { signMediaUrl } from '@/lib/media-url'
 import sharp from 'sharp'
 import { fetchMedia } from '@/lib/media-fetch'
-import { ensureDisplayImage } from '@/lib/display-image'
+import { ensureDisplayImage, queueDisplayImage } from '@/lib/display-image'
 import { makeVideoPoster, VIDEO_URL_RE } from '@/lib/video-poster'
 
 
@@ -40,6 +40,26 @@ export async function GET(
     const isDownload = searchParams.get('download') === '1'
     const isThumb = searchParams.get('thumb') === '1'
     const isDisplay = searchParams.get('display') === '1'
+
+    // A feed tile's display copy (?display=tile): never waits for one to be
+    // built. Without a stored copy the tile gets its thumbnail now, and the
+    // copy is queued (lib/display-image, two at a time) for the next view -
+    // waiting on ~17s builds per tile, forty at once, left the feed blank.
+    if (searchParams.get('display') === 'tile') {
+      const vm = (image.videoMetadata ?? {}) as Record<string, unknown>
+      if (typeof vm.displayUrl === 'string') {
+        const res = NextResponse.redirect(signMediaUrl(vm.displayUrl), 302)
+        res.headers.set('Cache-Control', 'private, max-age=3600')
+        return res
+      }
+      if (vm.isVideo !== true && !VIDEO_URL_RE.test(image.imageUrl)) after(() => queueDisplayImage(id))
+      // Not cached: the next view should pick up the display copy
+      const res = image.thumbnailUrl
+        ? NextResponse.redirect(signMediaUrl(image.thumbnailUrl), 302)
+        : NextResponse.redirect(new URL(`/api/images/${id}?thumb=1`, request.url), 302)
+      res.headers.set('Cache-Control', 'no-store')
+      return res
+    }
 
     if (isDisplay) {
       // The screen-sized copy (lib/display-image.ts): made on first request,
