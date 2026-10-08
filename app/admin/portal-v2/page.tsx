@@ -26591,6 +26591,12 @@ export default function PortalV2Page() {
    * forever (an 18s phone clip, 2026-10-08). Small files - and anything the
    * direct path can't take - still go through /api/upload-video-media.
    * Returns the signed link (works as the preview too), or null on failure.
+   *
+   * The bucket's CORS only allows our two origins (localhost:3000 and
+   * production). The dev server opened from another device (a LAN or
+   * Tailscale address) gets a 403 preflight - Safari's "Load failed" - so
+   * there the server route is used from the start; it has no body cap off
+   * Vercel. Any direct failure also falls back to it, whatever the size.
    */
   const uploadVideoFrame = useCallback(async (file: File): Promise<string | null> => {
     const typeOf = (f: File) => f.type
@@ -26626,11 +26632,11 @@ export default function PortalV2Page() {
         const blob = await res2.blob()
         uploadFile = new File([blob], file.name, { type: 'image/jpeg' })
       }
-      if (uploadFile.size > 3 * 1024 * 1024 || !uploadFile.type.startsWith("image/")) {
+      const directOrigin = /^(http:\/\/localhost:3000|https:\/\/prompt-protocol\.vercel\.app)$/.test(window.location.origin)
+      if (directOrigin && (uploadFile.size > 3 * 1024 * 1024 || !uploadFile.type.startsWith("image/"))) {
         const direct = await putDirect(uploadFile)
         if (direct) return direct
-        // Too big for the server route as well: nothing more to try
-        if (uploadFile.size > 4 * 1024 * 1024) return null
+        // Fall through: the server route takes it (on Vercel, only up to ~4.5 MB)
       }
 
       const fd = new FormData()
