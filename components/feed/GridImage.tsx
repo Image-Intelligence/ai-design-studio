@@ -3,6 +3,7 @@
 import { useRef, useState } from "react"
 import { Check, Pause, Play } from "lucide-react"
 import { AudioCardArt } from "@/components/home/AudioCardArt"
+import { FeedVideoTile } from "@/components/feed/FeedVideoTile"
 
 // Feed tile for the my-generations page. Copied from the portal-v2 GridImage
 // (minus the admin cross-user thumbnail branch — this feed only shows the signed-in
@@ -59,6 +60,27 @@ export function GridImage({
   const handleClick = () => {
     if (selectMode && imageId !== undefined) { onSelect?.(imageId); return }
     onClick?.()
+  }
+  // A video: the studio feed's tile - its still until the shared cycle gives it
+  // a turn to play, and its real measured shape in Full Size
+  if (isVideo) {
+    const still = thumbUrl
+      || (posterUrl && /\.(webp|jpe?g|png|avif)(\?|$)/i.test(posterUrl) ? posterUrl : null)
+      || (imageId && imageId > 0 ? `/api/images/${imageId}?thumb=1` : null)
+    return (
+      <div onClick={handleClick} className={`relative ${onClick || selectMode ? "cursor-pointer group" : ""} ${selected ? "ring-2 ring-white/90 ring-inset" : ""}`}>
+        <FeedVideoTile videoSrc={directUrl || src} stillSrc={still} natural={fullWidth} initialAspect={arCss}>
+          <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-[9px] font-semibold text-white/85 pointer-events-none">
+            <Play size={8} className="fill-white/85" /> VIDEO
+          </div>
+          {selectMode && (
+            <div className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-white border-white" : "border-white/60 bg-black/40"}`}>
+              {selected && <Check size={11} className="text-black" />}
+            </div>
+          )}
+        </FeedVideoTile>
+      </div>
+    )
   }
   const mediaCls = `${fullWidth ? (arCss ? "w-full h-full object-cover" : "w-full h-auto block") : "w-full h-full object-cover"} transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${(onClick && !selectMode) ? "group-hover:opacity-85" : ""} ${selected ? "opacity-80" : ""}`
   const poster = isVideo ? (posterUrl || thumbUrl || null) : null

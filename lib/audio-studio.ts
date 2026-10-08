@@ -67,9 +67,16 @@ export interface AudioRunInput {
   duration?: number
   instrumental?: boolean
   audioUrl?: string
+  /** The model's own pickers (`options` below), by key. */
+  options?: Record<string, string>
+  /** Mureka Lyrics Video: the Mureka id of the song it is made from (looked up server-side from the user's own song). */
+  sourceSongId?: string
+  /** ...and that song's length, ms (the window the video covers). */
+  sourceSongMs?: number
 }
 
-export interface AudioOutput { url: string; label?: string }
+/** One output file; `meta` is kept on its feed row (Mureka's song id, so a lyrics video can be made from it later). */
+export interface AudioOutput { url: string; label?: string; meta?: Record<string, unknown> }
 
 export interface AudioStudioModel {
   /** Stored as `audio:<id>`. */
@@ -98,6 +105,18 @@ export interface AudioStudioModel {
   audioIn?: { label: string; required: boolean; maxMinutes: number; hint?: string; clonesVoice?: boolean }
   /** Admin-only while under test: hidden from the menus and refused by /api/audio/generate for everyone else. */
   admin?: boolean
+  /** Extra pickers the model takes (vocal, genre, layout...): sent as `options[key]`, checked against `values` by the route. */
+  options?: { key: string; label: string; values: [string, string][]; default: string }[]
+  /** Shows "Write lyrics" under the lyrics box: Mureka Lyrics drafts them from an idea (/api/audio/lyrics). */
+  lyricsHelper?: boolean
+  /** Made FROM one of the user's Mureka songs (launched from the song's card, not the model menu). */
+  fromSong?: boolean
+  /** Not listed in the model menu (reached from elsewhere - fromSong). */
+  hidden?: boolean
+  /** The output is a VIDEO, saved under this model id so it lands in the video feed. */
+  outputVideo?: { storeAs: string }
+  /** A last check on the input the shape alone can't make (a message = refused before any charge). */
+  validate?: (i: AudioRunInput) => string | null
   price: AudioPrice
   build: (i: AudioRunInput) => Record<string, unknown>
   outputs: (data: any) => AudioOutput[]
@@ -151,6 +170,32 @@ export function parseDialogue(text: string): { speaker: number; text: string }[]
       out.push({ speaker: Math.min(i, 1), text: m[2] })
     } else if (out.length) out[out.length - 1].text += ' ' + line
     else out.push({ speaker: 0, text: line })
+  }
+  return out
+}
+
+// ── Mureka (2026-10-07, admin while under test) ──────────────────────────────
+const MUREKA_MODEL = 'mureka-9.5'
+const MUREKA_GENRES = ['pop', 'rock', 'jazz', 'r&b', 'edm', 'ambient', 'folk', 'latin', 'k-pop', 'j-pop', 'house', 'gospel', 'lo-fi']
+const MUREKA_PODCAST_VOICES = ['Ethan', 'Victoria', 'Jake', 'Luna', 'Emma']
+/** A Mureka result: the file, plus its song id (what a lyrics video is made from) and length. */
+const murekaOut = (d: any): AudioOutput[] => (d?.audio?.url ? [{
+  url: d.audio.url,
+  meta: clean({ murekaSongId: typeof d.song_id === 'string' ? d.song_id : undefined, durationMs: typeof d.duration === 'number' ? d.duration : undefined }),
+}] : [])
+/** Podcast turns: "Name: line" script lines, each cut to fal's 400 characters at a sentence or word break. */
+export function murekaPodcastTurns(i: AudioRunInput): { text: string; voice: string }[] {
+  const out: { text: string; voice: string }[] = []
+  for (const l of parseDialogue(i.text)) {
+    const voice = l.speaker ? (i.voice2 || 'Victoria') : (i.voice || 'Ethan')
+    let rest = l.text.trim()
+    while (rest.length > 400) {
+      const cut = Math.max(rest.lastIndexOf('. ', 399), rest.lastIndexOf('? ', 399), rest.lastIndexOf('! ', 399), rest.lastIndexOf(', ', 399), rest.lastIndexOf(' ', 399))
+      const at = cut > 100 ? cut + 1 : 400
+      out.push({ text: rest.slice(0, at).trim(), voice })
+      rest = rest.slice(at).trim()
+    }
+    if (rest) out.push({ text: rest, voice })
   }
   return out
 }
@@ -281,7 +326,75 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     build: i => clean({ prompt: i.text, voice: i.voice || 'af_heart' }), outputs: audioOut,
   },
 
+  // ── Mureka 9.5 (2026-10-07, ADMIN while under test). fal bills per request:
+  // a song SUNG FROM LYRICS $0.225, a song from a description $0.75 - so the
+  // song model takes lyrics (and "Write lyrics" drafts them, $0.0135), and the
+  // description version is its own, dearer entry.
+  {
+    id: 'mureka-song', name: 'Mureka 9.5 Song', group: 'music', provider: 'Mureka', endpoint: 'mureka/api/generate/song',
+    blurb: 'A full song sung from your lyrics. No lyrics yet? "Write lyrics" drafts them from an idea. Each song can then become a lyrics video.',
+    lyrics: { required: true, max: 5000, placeholder: '[Verse]\n…\n[Chorus]\n…' },
+    style: { label: 'Music style (optional)', placeholder: 'e.g. upbeat synth-pop, airy vocal, 120 bpm' },
+    options: [{ key: 'gender', label: 'Vocal', values: [['', 'Any'], ['female', 'Female'], ['male', 'Male']], default: '' }],
+    lyricsHelper: true, admin: true,
+    price: { usd: 0.225, per: 'request' },
+    build: i => clean({ model: MUREKA_MODEL, lyrics: i.lyrics, prompt: i.style?.slice(0, 2000) || undefined, gender: i.options?.gender || undefined }),
+    outputs: murekaOut,
+  },
+  {
+    id: 'mureka-song-prompt', name: 'Mureka 9.5 Song from a Description', group: 'music', provider: 'Mureka', endpoint: 'mureka/api/generate/song',
+    blurb: 'Describe a song and Mureka writes and sings it. Over 3x the price of singing your own lyrics - Mureka 9.5 Song with "Write lyrics" is the cheaper way.',
+    text: { label: 'Describe the song', placeholder: 'A bright summer love song with a catchy chorus', max: 2000, required: true },
+    options: [{ key: 'genre', label: 'Genre', values: [['', 'Any'], ...MUREKA_GENRES.map(g => [g, g] as [string, string])], default: '' }],
+    admin: true,
+    price: { usd: 0.75, per: 'request' },
+    build: i => clean({ model: MUREKA_MODEL, prompt: i.text, styles: i.options?.genre ? [i.options.genre] : undefined }),
+    outputs: murekaOut,
+  },
+  {
+    id: 'mureka-instrumental', name: 'Mureka 9.5 Instrumental', group: 'music', provider: 'Mureka', endpoint: 'mureka/api/generate/instrumental',
+    blurb: 'A full instrumental track from a description - no vocals.',
+    text: { label: 'Describe the track', placeholder: 'e.g. moody lo-fi beat with soft piano and vinyl crackle', max: 1024, required: true },
+    admin: true,
+    price: { usd: 0.225, per: 'request' },
+    build: i => ({ model: MUREKA_MODEL, prompt: i.text }),
+    outputs: murekaOut,
+  },
+  {
+    // Shown from a Mureka song's card ("Lyrics video"), not the model menu
+    id: 'mureka-lyrics-video', name: 'Mureka Lyrics Video', group: 'music', provider: 'Mureka', endpoint: 'mureka/api/generate/lyrics-video',
+    blurb: 'Turns one of your Mureka songs into a video with its lyrics on screen.',
+    text: { label: 'Title (optional)', placeholder: 'Shown on the video', max: 100, required: false },
+    options: [
+      { key: 'layout', label: 'Layout', values: [1, 2, 3, 4, 5, 6, 7].map(n => [`layout_${n}`, `Layout ${n}`] as [string, string]), default: 'layout_1' },
+      { key: 'aspect', label: 'Shape', values: [['9:16', '9:16 (vertical)'], ['16:9', '16:9 (wide)'], ['3:4', '3:4'], ['4:3', '4:3']], default: '9:16' },
+    ],
+    fromSong: true, hidden: true, admin: true, outputVideo: { storeAs: 'mureka-lyrics-video' },
+    price: { usd: 0.15, per: 'request' },
+    // A window is REQUIRED (tested 2026-10-07: song_id alone -> "The supplied
+    // input could not be processed"); the whole song's works (0 - 250s tested)
+    // and bills the same flat $0.15
+    build: i => clean({
+      song_id: i.sourceSongId, layout: i.options?.layout || 'layout_1', aspect_ratio: i.options?.aspect || '9:16', title: i.text?.trim() || undefined,
+      selection_start: 0, selection_end: Math.round(i.sourceSongMs ?? 0),
+    }),
+    outputs: (d: any) => (d?.video?.url ? [{ url: d.video.url }] : []),
+  },
   // ── Dialogue ───────────────────────────────────────────────────────────────
+  {
+    // fal $0.1725 per minute of output; the length is estimated from the
+    // script at 12 characters a second (conservative - more seconds, not fewer)
+    id: 'mureka-podcast', name: 'Mureka 9.5 Podcast', group: 'dialogue', provider: 'Mureka', endpoint: 'mureka/api/generate/podcast',
+    blurb: 'A two-host podcast from a script. One line per speaker: "Name: line" - up to 10 turns.',
+    text: { label: 'Script', placeholder: 'Ethan: Welcome back to the show.\nVictoria: Today we are talking about the ocean at night.', max: 4000, required: true },
+    voices: { options: MUREKA_PODCAST_VOICES, default: 'Ethan', label: 'First host' },
+    voice2: { options: MUREKA_PODCAST_VOICES, default: 'Victoria' },
+    admin: true,
+    price: { usd: 0.1725, per: 'minute', charsPerSecond: 12 },
+    validate: i => { const n = murekaPodcastTurns(i).length; return n === 0 ? 'Write the script' : n > 10 ? `That script makes ${n} turns - Mureka takes 10 at most (a turn is one line, or 400 characters of it)` : null },
+    build: i => ({ conversations: murekaPodcastTurns(i) }),
+    outputs: murekaOut,
+  },
   {
     id: 'eleven-dialogue-v3', name: 'ElevenLabs Dialogue v3', group: 'dialogue', provider: 'ElevenLabs', endpoint: 'fal-ai/elevenlabs/text-to-dialogue/eleven-v3',
     blurb: 'A two-voice scene from a script. Write one line per speaker: "Name: line".',

@@ -40,6 +40,9 @@ const STALE_MINUTES_3D = 60
  *  - Slot promotion uses the atomic updateMany (currentActive < maxConcurrent)
  *    inside promoteNextQueuedJob, which is safe under concurrent webhook calls.
  */
+// Bounded passes (images 40s, 3D 45s...) inside one function run
+export const maxDuration = 300
+
 export async function GET(request: Request) {
   const authHeader = request.headers.get('authorization')
   if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -55,7 +58,8 @@ export async function GET(request: Request) {
     const staleThreshold = new Date(Date.now() - STALE_MINUTES * 60 * 1000)
 
     const staleCandidates = await prisma.generationQueue.findMany({
-      where: { status: 'processing', startedAt: { lt: staleThreshold } },
+      // 3D jobs settle (and give up, with a refund) in lib/threed/pipeline - below
+      where: { status: 'processing', startedAt: { lt: staleThreshold }, modelType: { not: 'threed' } },
       select: {
         id: true, modelType: true, startedAt: true, falRequestId: true, parameters: true,
         userId: true, modelId: true, prompt: true, ticketCost: true, createdAt: true,
@@ -271,6 +275,18 @@ export async function GET(request: Request) {
       if (h.harvested || h.failed || h.marked) console.log(`[cron-drain] polled images: saved ${h.harvested}, settled-failed ${h.failed}, marked ${h.marked}`)
     } catch (e) {
       console.error('[cron-drain] image harvest pass failed:', e)
+    }
+
+    // ── 1a-3d. Finish 3D jobs whose page is gone ───────────────────────────
+    // A model finished at fal is saved (files copied to our storage, viewer
+    // copy built) whether or not anyone has the 3D studio open; a job fal lost
+    // or never finished is failed and refunded (lib/threed/pipeline).
+    try {
+      const { settleThreeD } = await import('@/lib/threed/pipeline')
+      const n = await settleThreeD({ budgetMs: 45_000, limit: 20 })
+      if (n) console.log(`[cron-drain] 3D: saved ${n}`)
+    } catch (e) {
+      console.error('[cron-drain] 3D settle failed:', e)
     }
 
     // ── 1b. Sweep orphaned 'pending' claims ─────────────────────────────────

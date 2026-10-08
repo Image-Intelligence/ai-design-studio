@@ -1,3 +1,4 @@
+import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, batch1007TicketCost } from '@/lib/batch-1007-video'
 // ── Ticket pricing: ONE source of truth ──────────────────────────────────────
 // The per-generation video ticket cost used to live inline in
 // app/api/video/generate/route.ts. It is a BILLING path, so it now lives here
@@ -32,6 +33,8 @@ export const VIDEO_TOOL_MODELS = new Set([
   'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
   // 2026-10-03 second round: text-prompted tracking masks, audio-only dubbing
   'sam-3.1-video', 'elevenlabs-dubbing',
+  // 2026-10-07: re-light a clip from a lit-sphere picture
+  'minimax-h3-max-relight',
   // Pixelcut: cut the subject out of a clip
   'pixelcut-video-bg-removal',
 ])
@@ -53,6 +56,8 @@ export const INPUT_ROUTED_MODELS = new Set([
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
   // 2026-10-03: references -> r2v, else the start frame (priced by batch1003TicketCost)
   'happy-horse-1.1',
+  // 2026-10-07: same routing (priced by batch1007TicketCost)
+  'vidu-q4',
 ])
 
 export interface VideoTicketCostInput {
@@ -326,6 +331,9 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   } else if (model.startsWith('luma-ray-')) {
     // Before the generic tool branch: the Luma tools price by their own rates
     ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec, !!input.hasStartImage)
+  } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {
+    // Ahead of the generic tool branch: Vidu Q4 by length x resolution, Relight by the source's length
+    ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec })
   } else if (BATCH_1003_MODELS.has(model)) {
     // Ahead of the generic tool branch: these price by their own rates
     ticketCost = batch1003TicketCost(model, {
@@ -1038,6 +1046,9 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'heygen-translate', label: 'HeyGen Translate', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.10 per s of output (+15% for dynamic duration).' },
   { id: 'heygen-translate-fast', label: 'HeyGen Translate Fast', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 per s of output (+15%).' },
   { id: 'mirelo-sfx-video', label: 'Mirelo SFX 1.6', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.01 per s, one sample (60s max).' },
+  // 2026-10-07 (admin): lib/batch-1007-video
+  { id: 'vidu-q4', label: 'Vidu Q4', kind: 'generator', durations: ['3', '5', '8', '10', '16'], resolutions: ['540p', '720p', '1080p', '2k', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.045 / $0.095 / $0.12 / $0.19 / $0.39 per s (regular rates; 30% off until Nov 30). Audio free.' },
+  { id: 'minimax-h3-max-relight', label: 'H3 Max Relight', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 / $0.32 per s of the source (15s max).' },
   { id: 'minimax-h3-max-recast', label: 'MiniMax H3 Max Recast', kind: 'tool', durations: [], resolutions: ['768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.30 / $0.45 per s of clip (5-30s).' },
   { id: 'minimax-h3-max-extend', label: 'MiniMax H3 Max Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05/$0.08/$0.16 per s added.' },
   { id: 'marey-motion-transfer', label: 'Marey Motion Transfer', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },

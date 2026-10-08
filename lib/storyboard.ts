@@ -566,8 +566,10 @@ export type StillSetting = {
   options: { value: string; label: string }[]
   def: string
   as?: 'bool' | 'number'
-  /** One line on what it changes, under the buttons. */
+  /** One line on what it changes (the control's tooltip). */
   hint?: string
+  /** Shown to admins only - the routes ignore it for everyone else (publicStillSafety). */
+  admin?: boolean
 }
 const o = (...vals: (string | [string, string])[]) => vals.map(v => Array.isArray(v) ? { value: v[0], label: v[1] } : { value: v, label: v.toUpperCase() })
 const RES = (vals: string[], def: string): StillSetting => ({ key: 'quality', label: 'Resolution', options: o(...vals), def })
@@ -603,6 +605,8 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
     RES(['1k', '2k', '4k'], '2k'),
     { key: 'nb21Thinking', label: 'Thinking', options: o(['minimal', 'Minimal'], ['medium', 'Medium'], ['high', 'High']), def: 'medium', hint: 'High plans complex scenes, text and many references more carefully' },
     { key: 'nb21WebSearch', label: 'Web search', options: o(['false', 'Off'], ['true', 'On']), def: 'false', as: 'bool', hint: 'Looks up real, current facts (an infographic, a landmark, today\'s news) before drawing' },
+    // As the portal's admin picker (nb21Knobs reads it); everyone else is held at 4 by publicStillSafety
+    { key: 'nb21SafetyTolerance', label: 'Safety', options: o(['1', '1 - strictest'], ['2', '2'], ['3', '3'], ['4', '4 - what users get'], ['5', '5'], ['6', '6 - most permissive']), def: '6', admin: true, hint: 'Safety tolerance (admins only). Everyone else runs at 4.' },
   ],
   'grok-imagine-2': [
     RES(['1k', '2k'], '2k'),
@@ -760,6 +764,8 @@ export function fitDurations(shots: StoryboardShot[], target: number): Storyboar
  * every option in the picker actually runs.
  */
 export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean }[] = [
+  // First: the house default (2026-10-07) - the menus and the planners read this order
+  { id: 'nano-banana-2.1', label: 'NanoBanana 2.1', refs: true },
   { id: 'nano-banana-pro-2', label: 'NanoBanana Pro 2', refs: true },
   { id: 'nano-banana-pro', label: 'NanoBanana Pro', refs: true },
   { id: 'seedream-5-pro', label: 'SeeDream 5.0 Pro', refs: true },
@@ -783,8 +789,6 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'seedream-5-flash', label: 'SeeDream 5.0 Flash', refs: true },
   { id: 'grok-imagine-2', label: 'Grok Imagine 2', refs: true },
   { id: 'nano-banana-2-lite', label: 'NanoBanana 2 Lite', refs: false },
-  // 2026-10-06 (public): text, or the edit endpoint with references
-  { id: 'nano-banana-2.1', label: 'NanoBanana 2.1', refs: true },
   { id: 'mai-image-2.5-pro', label: 'MAI Image 2.5 Pro', refs: true },
   { id: 'hunyuan-image-3', label: 'Hunyuan Image 3', refs: false },
   { id: 'hunyuan-image-3-instruct', label: 'Hunyuan Image 3 Instruct', refs: true },
@@ -845,8 +849,9 @@ export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
  */
 export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   // images (by id)
-  'nano-banana-pro-2': 'best all-rounder; keeps a character consistent across many references; photoreal or stylised',
-  'nano-banana-pro': 'strong photoreal edits that hold likeness from references',
+  'nano-banana-2.1': 'THE DEFAULT for every still: newest NanoBanana - holds faces and outfits across up to 14 refs, changes pose/angle/outfit/background, several subjects, clean in-image text, long prompts; cheaper than Pro',
+  'nano-banana-pro-2': 'older premium NanoBanana; only when NanoBanana 2.1 has failed a shot',
+  'nano-banana-pro': 'older NanoBanana; NanoBanana 2.1 does the same job better',
   'seedream-5-pro': 'sharp 2K photoreal detail; cinematic lighting',
   'seedream-5-lite': 'quick, cheap drafts', 'seedream-4.5': 'dependable general images',
   'seedream-5-flash': 'fast and cheap; fine for many filler or background shots',
@@ -858,7 +863,7 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'ideogram-4.5': 'TITLE CARDS, signage, posters - the most reliable lettering; precise edits from refs',
   'ideogram-v4': 'text inside images, speed tiers', 'qwen-image-3': 'strong text rendering; edits with refs',
   'meta-muse': 'cheap, clean general images; edits with up to 10 refs', 'grok-imagine-2': 'expressive, bold style',
-  'nano-banana-2-lite': 'cheap NanoBanana for simple frames', 'nano-banana-2.1': 'the newest NanoBanana - strong likeness from many refs', 'mai-image-2.5-pro': 'photoreal people and products',
+  'nano-banana-2-lite': 'cheap NanoBanana for simple frames', 'mai-image-2.5-pro': 'photoreal people and products',
   'hunyuan-image-3': 'rich detailed illustration', 'hunyuan-image-3-instruct': 'follows complex instructions; edits up to 3 images',
   'krea-2-large': 'aesthetic, art-directed looks; copies a style from refs', 'krea-2-medium': 'art-directed looks, cheaper',
   'krea-2-medium-turbo': 'fastest Krea look', 'bria-fibo': 'licensed-data, commercially safe imagery',

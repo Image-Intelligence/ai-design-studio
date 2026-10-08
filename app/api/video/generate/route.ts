@@ -13,6 +13,7 @@ import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
 import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
+import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input } from '@/lib/batch-1007-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 
@@ -381,6 +382,15 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: false, error: 'Insert Shot takes clips up to 60 seconds.' }, { status: 400 });
         }
       }
+      // H3 Max Relight (2026-10-07): the lighting comes from a picture of a lit sphere
+      if (model === 'minimax-h3-max-relight') {
+        if (!(Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0) && !imageUrl) {
+          return NextResponse.json({ success: false, error: 'Add the lighting picture (a lit sphere) as a reference image next to the clip.' }, { status: 400 });
+        }
+        if (editVideoDurationSec > RELIGHT_MAX_SEC + 0.5) {
+          return NextResponse.json({ success: false, error: `Relight takes clips up to ${RELIGHT_MAX_SEC} seconds - trim it first.` }, { status: 400 });
+        }
+      }
       if ((model === 'mirelo-sfx-video') && editVideoDurationSec > 60.5) {
         return NextResponse.json({ success: false, error: 'Mirelo SFX takes clips up to 60 seconds.' }, { status: 400 });
       }
@@ -424,6 +434,16 @@ export async function POST(request: NextRequest) {
       }
       if (model === 'luma-ray-3.2-reframe' && editVideoDurationSec > 10.5) {
         return NextResponse.json({ success: false, error: 'Ray 3.2 reframe takes clips up to 10 seconds.' }, { status: 400 });
+      }
+    } else if (BATCH_1007_GENERATORS.has(model)) {
+      // Vidu Q4: a start frame (prompt optional), or references (prompt required)
+      const refCount = Array.isArray(referenceImageUrls) ? referenceImageUrls.length : 0
+      if (effectiveSd20Mode === 'r2v' && refCount > 0) {
+        if (!prompt?.trim()) {
+          return NextResponse.json({ success: false, error: 'Describe the video - references need a prompt.' }, { status: 400 });
+        }
+      } else if (!imageUrl && refCount === 0) {
+        return NextResponse.json({ success: false, error: 'Vidu Q4 needs a start image (or references).' }, { status: 400 });
       }
     } else if (BATCH_1003_GENERATORS.has(model)) {
       // The 2026-10-03 generators: a photo and/or an audio track, prompt optional
@@ -593,6 +613,8 @@ export async function POST(request: NextRequest) {
       ? FAL_ENDPOINTS[imageUrl ? 'minimax-h3-max' : 'minimax-h3-max-text']
       : BATCH_0928_GENERATORS.has(model)
       ? FAL_ENDPOINTS[`${model}-${batchMode}`]
+      : BATCH_1007_GENERATORS.has(model)
+      ? FAL_ENDPOINTS[batch1007EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode })]
       : BATCH_1003_GENERATORS.has(model)
       ? FAL_ENDPOINTS[batch1003EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode })]
       : BATCH_0929_GENERATORS.has(model)
@@ -728,6 +750,14 @@ export async function POST(request: NextRequest) {
       falInput = pixelcutVideoInput(model, {
         prompt, imageUrl, editVideoUrl, duration, resolution, generateAudio,
         choice: typeof videoChoice === 'string' ? videoChoice : undefined,
+      });
+    } else if (BATCH_1007_TOOLS.has(model) || BATCH_1007_GENERATORS.has(model)) {
+      // lib/batch-1007-video builds the exact input (inputs checked above)
+      falInput = batch1007Input(model, {
+        prompt, imageUrl, editVideoUrl,
+        referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
+        duration, resolution, aspectRatio: klingAspectRatio, effectiveMode: effectiveSd20Mode, generateAudio,
+        sourceWidth: probed?.width, sourceHeight: probed?.height,
       });
     } else if (BATCH_1003_TOOLS.has(model) || BATCH_1003_GENERATORS.has(model)) {
       // lib/batch-1003-video builds the exact input (inputs checked above)

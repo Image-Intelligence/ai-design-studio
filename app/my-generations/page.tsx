@@ -3,8 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Download, ExternalLink, Copy, Sparkles, AlertTriangle, Trash2, X, Square, CheckSquare,
-  Images, LayoutDashboard, Folder, FolderOpen, FolderPlus, MoreVertical,
-  ChevronRight, ChevronLeft, FolderInput, EyeOff, Eye, Check, Loader2, Home, Layers, Boxes, ImagePlus,
+  Images, LayoutDashboard, Folder, FolderOpen, FolderPlus, MoreVertical, Music,
+  ChevronRight, ChevronLeft, FolderInput, EyeOff, Eye, Loader2, Home, Layers, Boxes, ImagePlus,
+  FolderPlus as FolderAdd, FolderMinus, Search,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -19,6 +20,8 @@ import {
   useUserAssets, AssetsGrid, AssetEditor, NewAssetModal, AddToAssetModal, type UserAsset,
 } from "@/components/my-generations/Assets"
 import type { AssetKind } from "@/lib/storyboard"
+import { FolderPicker, touchRecentFolders, type PickerMode } from "@/components/my-generations/FolderPicker"
+import { holdCardVideos } from "@/components/home/card-video-scheduler"
 
 interface GeneratedImage extends MyGenImage {
   prompt: string
@@ -29,7 +32,8 @@ interface GeneratedImage extends MyGenImage {
   expiresAt?: string
 }
 
-type GenFolder = { id: number; name: string; parentId: number | null }
+/** A folder, and (from /api/user/generation-folders) what its card shows: newest pictures, counts. */
+type GenFolder = { id: number; name: string; parentId: number | null; count?: number; subfolders?: number; previews?: string[]; previewsFromSubfolders?: boolean }
 type View = "generations" | "assets"
 
 /*
@@ -80,6 +84,17 @@ export default function MyGenerationsPage() {
   const [view, setViewState] = useState<View>("generations")
   const setView = (v: View) => { setViewState(v); try { localStorage.setItem(VIEW_KEY, v) } catch {} }
   useEffect(() => { try { if (localStorage.getItem(VIEW_KEY) === "assets") setViewState("assets") } catch {} }, [])
+
+  // The toolbar's height (it wraps on narrow screens): the select bar pins just below it
+  const headerRef = useRef<HTMLElement>(null)
+  const [headerH, setHeaderH] = useState(60)
+  useEffect(() => {
+    const el = headerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setHeaderH(el.offsetHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Force the feed to fully reload (after move / delete / hide).
   const [refreshKey, setRefreshKey] = useState(0)
@@ -145,6 +160,10 @@ export default function MyGenerationsPage() {
 
   // --- Folder state ---
   const [folders, setFolders] = useState<GenFolder[]>([])
+  // The latest list for handlers that run right after a change (a folder made
+  // in the picker is moved into before the next render)
+  const foldersRef = useRef<GenFolder[]>(folders)
+  foldersRef.current = folders
   const [folderPath, setFolderPath] = useState<GenFolder[]>([])
   const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : null
   const visibleFolders = folders.filter(f => (f.parentId ?? null) === currentFolderId)
@@ -164,10 +183,12 @@ export default function MyGenerationsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [showMovePicker, setShowMovePicker] = useState(false)
-  const [movePickerPath, setMovePickerPath] = useState<GenFolder[]>([])
-  const [isMoving, setIsMoving] = useState(false)
+  // The folder picker: Move (where they live) or Add to folder (shown there too)
+  const [picker, setPicker] = useState<PickerMode | null>(null)
+  const [isRemoving, setIsRemoving] = useState(false)
   const [isHiding, setIsHiding] = useState(false)
+  // Sidebar tree search (every folder)
+  const [treeQuery, setTreeQuery] = useState("")
 
   // --- Assets ---
   const assetsApi = useUserAssets(signedIn)
@@ -186,6 +207,11 @@ export default function MyGenerationsPage() {
   const [fullLoaded, setFullLoaded] = useState(false)
   const [fullFailed, setFullFailed] = useState(false)
   useEffect(() => { setFullLoaded(false); setFullFailed(false) }, [selectedImage?.id])
+  // A viewer or the folder picker over the feed: the feed's video cycle holds
+  // still (frozen frames, nothing new starts) until it closes - crossfading
+  // tiles behind a popup shimmer and take the viewer's decoders
+  const overlayOpen = !!selectedImage || !!picker
+  useEffect(() => (overlayOpen ? holdCardVideos() : undefined), [overlayOpen])
 
   const fetchFolders = useCallback(async () => {
     try {
@@ -238,8 +264,24 @@ export default function MyGenerationsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, parentId: currentFolderId }),
       })
-      if (res.ok) await fetchFolders()
+      if (res.ok) { touchRecentFolders([(await res.json())?.folder?.id]); await fetchFolders() }
     } catch {}
+  }
+
+  /** A folder made from the picker (it then saves the selection into it). */
+  const createFolderIn = async (name: string, parentId: number | null): Promise<GenFolder | null> => {
+    const res = await fetch("/api/user/generation-folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, parentId }),
+    })
+    if (!res.ok) return null
+    const f = (await res.json())?.folder as GenFolder | undefined
+    if (!f) return null
+    touchRecentFolders([f.id])
+    foldersRef.current = [...foldersRef.current, { id: f.id, name: f.name, parentId: f.parentId ?? null }]
+    setFolders(prev => [...prev, { id: f.id, name: f.name, parentId: f.parentId ?? null }])
+    return { id: f.id, name: f.name, parentId: f.parentId ?? null }
   }
 
   const renameFolder = async (id: number) => {
@@ -247,6 +289,7 @@ export default function MyGenerationsPage() {
     setRenamingFolderId(null)
     setMenuFolderId(null)
     if (!name) return
+    touchRecentFolders([id])
     // Optimistic
     setFolders(prev => prev.map(f => f.id === id ? { ...f, name } : f))
     setFolderPath(prev => prev.map(f => f.id === id ? { ...f, name } : f))
@@ -293,22 +336,58 @@ export default function MyGenerationsPage() {
     return next
   })
 
+  const folderName = (id: number | null) => (id === null ? "Unfiled" : foldersRef.current.find(f => f.id === id)?.name ?? "the folder")
+
+  /** Move: the selection now LIVES in this folder (and leaves the one being viewed). Throws so the picker can say why. */
   const moveSelectedTo = async (targetFolderId: number | null) => {
     if (selectedIds.size === 0) return
-    setIsMoving(true)
+    const n = selectedIds.size
+    const res = await fetch("/api/my-images", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "move", ids: Array.from(selectedIds), folderId: targetFolderId, fromFolderId: currentFolderId }),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Could not move them")
+    touchRecentFolders([targetFolderId])
+    setPicker(null)
+    exitSelectMode()
+    bumpFeed()
+    fetchFolders()
+    flash(`Moved ${n} to ${folderName(targetFolderId)}`)
+  }
+
+  /** Add to folder: the selection is ALSO shown in these folders; it stays where it is. */
+  const addSelectedTo = async (folderIds: number[]) => {
+    if (selectedIds.size === 0 || folderIds.length === 0) return
+    const n = selectedIds.size
+    const res = await fetch("/api/my-images", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add", ids: Array.from(selectedIds), folderIds }),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Could not add them")
+    touchRecentFolders(folderIds)
+    setPicker(null)
+    exitSelectMode()
+    bumpFeed()
+    fetchFolders()
+    flash(`Added ${n} to ${folderIds.length === 1 ? folderName(folderIds[0]) : `${folderIds.length} folders`}`)
+  }
+
+  /** Out of the folder being viewed (added ones lose the link; ones living here go to Unfiled). */
+  const removeSelectedFromFolder = async () => {
+    if (selectedIds.size === 0 || currentFolderId === null) return
+    setIsRemoving(true)
     try {
+      const n = selectedIds.size
       const res = await fetch("/api/my-images", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "move", ids: Array.from(selectedIds), folderId: targetFolderId }),
+        body: JSON.stringify({ action: "remove", ids: Array.from(selectedIds), folderId: currentFolderId }),
       })
-      if (res.ok) {
-        setShowMovePicker(false)
-        exitSelectMode()
-        bumpFeed()
-      }
+      if (res.ok) { exitSelectMode(); bumpFeed(); fetchFolders(); flash(`Took ${n} out of ${folderName(currentFolderId)}`) }
     } catch {}
-    finally { setIsMoving(false) }
+    finally { setIsRemoving(false) }
   }
 
   const setSelectedHidden = async (hidden: boolean) => {
@@ -320,7 +399,7 @@ export default function MyGenerationsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: Array.from(selectedIds), hidden }),
       })
-      if (res.ok) { exitSelectMode(); bumpFeed() }
+      if (res.ok) { exitSelectMode(); bumpFeed(); fetchFolders() }
     } catch {}
     finally { setIsHiding(false) }
   }
@@ -334,7 +413,7 @@ export default function MyGenerationsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: Array.from(selectedIds) }),
       })
-      if (res.ok) { exitSelectMode(); bumpFeed() }
+      if (res.ok) { exitSelectMode(); bumpFeed(); fetchFolders() }
     } catch {}
     finally {
       setIsDeleting(false)
@@ -475,10 +554,6 @@ export default function MyGenerationsPage() {
     )
   }
 
-  // Move-picker: folders navigable from root (all folders shown by parent).
-  const movePickerCurrentId = movePickerPath.length > 0 ? movePickerPath[movePickerPath.length - 1].id : null
-  const movePickerVisible = folders.filter(f => (f.parentId ?? null) === movePickerCurrentId)
-
   // The path from the root to a folder, for the sidebar tree.
   const pathTo = (id: number): GenFolder[] => {
     const out: GenFolder[] = []
@@ -588,6 +663,72 @@ export default function MyGenerationsPage() {
     })
   }
 
+  /*
+   * Folder cards (2026-10-07): the open folder's subfolders, first in the feed
+   * among the generations, like the admin dataset page's folders - a 2x2 of
+   * the newest pictures inside (or the subfolders' when it has none of its
+   * own), the name and counts. Click to open; the menu renames / deletes.
+   */
+  const folderTiles = pickingFor ? [] : visibleFolders.map(f => {
+    const pics = f.previews ?? []
+    const parts = [f.count ? `${f.count.toLocaleString()} item${f.count === 1 ? "" : "s"}` : null, f.subfolders ? `${f.subfolders} folder${f.subfolders === 1 ? "" : "s"}` : null].filter(Boolean)
+    return {
+      key: `folder-${f.id}`,
+      node: (
+        <div className="relative group/folder">
+          {renamingFolderId === f.id ? (
+            <div className="aspect-square rounded-xl silver-edge flex items-center p-3">
+              {renameInput(f, "w-full px-2.5 py-2 rounded-lg bg-black/50 border border-white/30 text-sm text-white focus:outline-none")}
+            </div>
+          ) : (
+            <button
+              onClick={() => setFolderPath(p => [...p, f])}
+              title={`Open ${f.name}`}
+              className="relative block w-full aspect-square rounded-xl overflow-hidden silver-edge bg-[#0b111d] text-left transition-transform hover:-translate-y-0.5"
+            >
+              {pics.length === 0 ? (
+                <div className="absolute inset-0 flex items-center justify-center text-slate-600">
+                  {f.count ? <Music size={34} /> : <Folder size={38} />}
+                </div>
+              ) : pics.length === 1 ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={pics[0]} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+              ) : (
+                <div className="absolute inset-0 grid grid-cols-2 grid-rows-2 gap-px bg-black/40">
+                  {[0, 1, 2, 3].map(k => (
+                    <div key={k} className="relative overflow-hidden bg-white/[0.03]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {pics[k] && <img src={pics[k]} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" onError={e => { e.currentTarget.style.display = "none" }} />}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* The name over a dark foot, with what is inside */}
+              <div className="absolute inset-x-0 bottom-0 pt-8 pb-2.5 px-3 bg-gradient-to-t from-black/90 via-black/60 to-transparent">
+                <p className="flex items-center gap-1.5 text-[13px] font-bold text-white truncate">
+                  <Folder size={13} className="shrink-0 text-slate-300" /> <span className="truncate">{f.name}</span>
+                </p>
+                <p className="text-[10px] font-mono text-slate-400 truncate">
+                  {parts.length ? parts.join(" · ") : "Empty"}{f.previewsFromSubfolders ? " · from subfolders" : ""}
+                </p>
+              </div>
+            </button>
+          )}
+          {renamingFolderId !== f.id && (
+            <button
+              onClick={e => { e.stopPropagation(); setMenuFolderId(menuFolderId === f.id ? null : f.id) }}
+              className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/65 border border-white/15 text-slate-200 hover:text-white opacity-0 group-hover/folder:opacity-100 focus:opacity-100 transition-opacity"
+              aria-label="Folder options"
+            >
+              <MoreVertical size={13} />
+            </button>
+          )}
+          <div className="absolute top-9 right-2">{folderMenu(f)}</div>
+        </div>
+      ),
+    }
+  })
+
   const gutter = "px-3 sm:px-6 lg:px-8 2xl:px-12"
   const chip = "flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-all"
   const chipOff = "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/25 hover:text-white"
@@ -599,7 +740,7 @@ export default function MyGenerationsPage() {
       <ShopBackdrop />
 
       {/* Toolbar - pinned, so filters and Select stay in reach down a long page. */}
-      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#05080f]/85 backdrop-blur-xl">
+      <header ref={headerRef} className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#05080f]/85 backdrop-blur-xl">
         <div className={`w-full max-w-[2560px] mx-auto ${gutter} py-2.5 flex flex-wrap items-center gap-2 sm:gap-3`}>
           {/* Brand: the synced logo and the page's title */}
           <div className="min-w-0 mr-auto flex items-center gap-2.5">
@@ -706,13 +847,46 @@ export default function MyGenerationsPage() {
             <div className="px-1 pb-2.5">
               <BrandTitle title="Folders" eyebrow={`${folders.length} folder${folders.length === 1 ? "" : "s"}`} logo={22} size="sm" />
             </div>
-            <button
-              onClick={() => openFolder([])}
-              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[13px] text-left transition-colors ${view === "generations" && currentFolderId === null ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}
-            >
-              <Images size={14} className="shrink-0" /> Unfiled
-            </button>
-            {renderTree(null, 0)}
+            {/* Search every folder in the tree */}
+            {folders.length > 0 && (
+              <div className="relative pb-1.5">
+                <Search size={12} className="absolute left-2.5 top-[13px] text-slate-500" />
+                <input value={treeQuery} onChange={e => setTreeQuery(e.target.value)} placeholder="Search folders…"
+                  className="w-full pl-7 pr-7 py-1.5 rounded-lg bg-black/40 border border-white/10 text-[12px] text-white placeholder:text-slate-600 focus:outline-none focus:border-white/30" />
+                {treeQuery && <button onClick={() => setTreeQuery("")} className="absolute right-2 top-[11px] text-slate-500 hover:text-white"><X size={12} /></button>}
+              </div>
+            )}
+            {treeQuery.trim() ? (() => {
+              const tq = treeQuery.trim().toLowerCase()
+              const hits = folders.filter(f => f.name.toLowerCase().includes(tq))
+                .sort((a, b) => (a.name.toLowerCase().startsWith(tq) ? 0 : 1) - (b.name.toLowerCase().startsWith(tq) ? 0 : 1) || a.name.localeCompare(b.name))
+              return hits.length === 0
+                ? <p className="px-2 py-3 text-[11px] text-slate-600">No folders match</p>
+                : hits.slice(0, 80).map(f => {
+                  const trail = pathTo(f.id)
+                  const active = view === "generations" && f.id === currentFolderId
+                  return (
+                    <button key={f.id} onClick={() => { openFolder(trail); setTreeQuery("") }}
+                      className={`w-full flex items-start gap-2 px-2.5 py-1.5 rounded-lg border text-left transition-colors ${active ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}>
+                      <Folder size={13} className="mt-0.5 shrink-0 text-slate-500" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px]">{f.name}</span>
+                        {trail.length > 1 && <span className="block truncate text-[10px] text-slate-600">{trail.slice(0, -1).map(x => x.name).join(" › ")}</span>}
+                      </span>
+                    </button>
+                  )
+                })
+            })() : (
+              <>
+                <button
+                  onClick={() => openFolder([])}
+                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[13px] text-left transition-colors ${view === "generations" && currentFolderId === null ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}
+                >
+                  <Images size={14} className="shrink-0" /> Unfiled
+                </button>
+                {renderTree(null, 0)}
+              </>
+            )}
             <div className="pt-2">{newFolderControl("w-full")}</div>
             <div className="mt-3 pt-3 border-t border-white/[0.06]">
               <button
@@ -761,9 +935,11 @@ export default function MyGenerationsPage() {
                 </div>
               )}
 
-              {/* Select-mode action bar - pinned under the toolbar while selecting. */}
+              {/* Select-mode action bar - at the top of the feed, and pinned just
+                  under the toolbar (its measured height) as you scroll, so its
+                  buttons stay in reach down a long page. */}
               {isSelectMode && (
-                <div className="sticky top-[60px] z-20 mb-4 rounded-2xl silver-edge bg-[#070b14]/95 backdrop-blur-md">
+                <div style={{ top: headerH + 8 }} className="sticky z-20 mb-4 rounded-2xl silver-edge bg-[#070b14]/95 backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
                   {pickingFor && (
                     <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5 text-[12px] text-slate-300">
                       <ImagePlus size={13} className="text-slate-200" />
@@ -793,12 +969,30 @@ export default function MyGenerationsPage() {
                           Add to asset
                         </BrandButton>
                         <button
-                          onClick={() => { setMovePickerPath([]); setShowMovePicker(true) }}
+                          onClick={() => setPicker("add")}
+                          disabled={selectedIds.size === 0}
+                          title="Show them in more folders - they stay where they are too"
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.05] hover:bg-white/10 hover:border-white/30 text-slate-100 text-xs font-semibold transition-all disabled:opacity-30"
+                        >
+                          <FolderAdd size={12} /> Add to folder
+                        </button>
+                        <button
+                          onClick={() => setPicker("move")}
                           disabled={selectedIds.size === 0}
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.05] hover:bg-white/10 hover:border-white/30 text-slate-100 text-xs font-semibold transition-all disabled:opacity-30"
                         >
                           <FolderInput size={12} /> Move
                         </button>
+                        {currentFolderId !== null && (
+                          <button
+                            onClick={removeSelectedFromFolder}
+                            disabled={selectedIds.size === 0 || isRemoving}
+                            title={`Take them out of ${folderName(currentFolderId)}`}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.05] hover:bg-white/10 hover:border-white/30 text-slate-100 text-xs font-semibold transition-all disabled:opacity-30"
+                          >
+                            {isRemoving ? <Loader2 size={12} className="animate-spin" /> : <FolderMinus size={12} />} Remove from folder
+                          </button>
+                        )}
                         <button
                           onClick={() => setSelectedHidden(!feedShowHidden)}
                           disabled={selectedIds.size === 0 || isHiding}
@@ -820,33 +1014,10 @@ export default function MyGenerationsPage() {
                 </div>
               )}
 
-              {/* Folder chips (narrower screens; wide ones have the sidebar) */}
-              <div className="lg:hidden flex items-center flex-wrap gap-2 mb-5">
-                {visibleFolders.map(f => (
-                  <div key={f.id} className="relative">
-                    {renamingFolderId === f.id ? (
-                      renameInput(f, "w-40 px-3 py-2 rounded-lg bg-black/40 border border-white/30 text-sm text-white focus:outline-none")
-                    ) : (
-                      <div className="flex items-center gap-1.5 pl-3 pr-1 py-2 rounded-lg silver-edge hover:border-white/30 transition-colors">
-                        <button
-                          onClick={() => setFolderPath(p => [...p, f])}
-                          className="flex items-center gap-2 text-sm text-slate-200 hover:text-white transition-colors max-w-[180px] truncate"
-                        >
-                          <Folder size={14} className="text-slate-400 shrink-0" />
-                          <span className="truncate">{f.name}</span>
-                        </button>
-                        <button
-                          onClick={() => setMenuFolderId(menuFolderId === f.id ? null : f.id)}
-                          className="p-1 rounded-md text-slate-500 hover:text-white hover:bg-white/10 transition-colors"
-                        >
-                          <MoreVertical size={13} />
-                        </button>
-                      </div>
-                    )}
-                    {folderMenu(f)}
-                  </div>
-                ))}
-                {newFolderControl("w-40")}
+              {/* New folder (narrower screens; wide ones have it in the sidebar) - the
+                  folders themselves are cards at the start of the feed */}
+              <div className="lg:hidden flex items-center flex-wrap gap-2 mb-4">
+                {newFolderControl("w-44")}
               </div>
             </>
           )}
@@ -872,6 +1043,7 @@ export default function MyGenerationsPage() {
               onNavListChange={setNavList}
               onTotalChange={setTotal}
               refreshKey={refreshKey}
+              leadingTiles={folderTiles}
             />
           </div>
         </main>
@@ -903,66 +1075,17 @@ export default function MyGenerationsPage() {
         />
       )}
 
-      {/* ── Move picker ──────────────────────────────────────────────────────── */}
-      {showMovePicker && (
-        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm" onClick={() => setShowMovePicker(false)}>
-          <div className="relative isolate overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] p-5 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
-            <SilverRimOverlay />
-            <div className="relative mb-3">
-              <BrandTitle
-                title={`Move ${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""}`}
-                eyebrow="Pick a folder"
-                logo={26}
-                right={<button onClick={() => setShowMovePicker(false)} className="p-1 text-slate-500 hover:text-white"><X size={16} /></button>}
-              />
-            </div>
-
-            {/* Picker breadcrumb */}
-            <div className="relative flex items-center gap-1 flex-wrap mb-2 text-xs">
-              <button
-                onClick={() => setMovePickerPath([])}
-                className={`px-2 py-1 rounded-md ${movePickerCurrentId === null ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
-              >
-                Unfiled
-              </button>
-              {movePickerPath.map((f, i) => (
-                <span key={f.id} className="flex items-center gap-1">
-                  <ChevronRight size={12} className="text-slate-700" />
-                  <button
-                    onClick={() => setMovePickerPath(movePickerPath.slice(0, i + 1))}
-                    className={`px-2 py-1 rounded-md ${i === movePickerPath.length - 1 ? "text-white font-semibold" : "text-slate-500 hover:text-white"}`}
-                  >
-                    {f.name}
-                  </button>
-                </span>
-              ))}
-            </div>
-
-            {/* Picker folder list */}
-            <div className="relative rounded-xl border border-white/[0.07] bg-black/30 p-2 mb-4 max-h-56 overflow-y-auto">
-              {movePickerVisible.length === 0 ? (
-                <p className="text-[11px] text-slate-600 text-center py-6">No subfolders here</p>
-              ) : (
-                <div className="flex flex-col gap-1">
-                  {movePickerVisible.map(f => (
-                    <button
-                      key={f.id}
-                      onClick={() => setMovePickerPath(p => [...p, f])}
-                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border border-white/10 bg-white/[0.03] hover:border-white/30 hover:bg-white/[0.06] text-slate-200 text-xs transition-colors"
-                    >
-                      <span className="flex items-center gap-2 truncate"><Folder size={13} className="text-slate-400 shrink-0" /> {f.name}</span>
-                      <ChevronRight size={13} className="text-slate-600 shrink-0" />
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <BrandButton onClick={() => moveSelectedTo(movePickerCurrentId)} busy={isMoving} primary size="lg" className="relative w-full" icon={<Check size={14} />}>
-              Move here - {movePickerCurrentId === null ? "Unfiled" : movePickerPath[movePickerPath.length - 1].name}
-            </BrandButton>
-          </div>
-        </div>
+      {/* ── Folder picker: Move / Add to folder ───────────────────────────── */}
+      {picker && (
+        <FolderPicker
+          mode={picker}
+          count={selectedIds.size}
+          folders={folders}
+          onCreateFolder={createFolderIn}
+          onMove={moveSelectedTo}
+          onAdd={addSelectedTo}
+          onClose={() => setPicker(null)}
+        />
       )}
 
       {/* ── Preview Modal ────────────────────────────────────────────────────── */}
@@ -1142,7 +1265,7 @@ export default function MyGenerationsPage() {
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2.5 rounded-xl silver-edge bg-[#0b111d]/95 backdrop-blur-md text-[12px] text-slate-100 shadow-2xl max-w-[calc(100vw-32px)]">
+        <div className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2.5 rounded-xl silver-edge bg-[#0b111d]/95 backdrop-blur-md text-[12px] text-slate-100 shadow-2xl max-w-[calc(100vw-32px)]`}>
           {toast}
         </div>
       )}

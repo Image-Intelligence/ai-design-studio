@@ -6,7 +6,7 @@ import {
   ImagePlus, ArrowRight, Clock, Clapperboard, Sparkles, Check, Film, ImageUp,
   Download, CircleDashed, CircleCheck, CircleX, MinusCircle, Ticket, SquareCheck, Square,
   Megaphone, Package, UserRound, Shirt, Music, Smartphone, MapPin, Lightbulb, ChevronDown, Search, Minus,
-  ShoppingBag, Layers, ChevronUp, Scissors, ScanFace, Wand2, GalleryHorizontalEnd, Upload,
+  ShoppingBag, Layers, ChevronUp, Scissors, ScanFace, Wand2, GalleryHorizontalEnd, Upload, Globe,
   type LucideIcon,
 } from "lucide-react"
 import { StillThumbs, AddStillThumbs, thumbFrom, useThumb, mergeThumbs } from "@/components/employees/still-thumbs"
@@ -2420,7 +2420,7 @@ function ShotCard({
                 value={aiText}
                 onChange={setAiText}
                 minRows={2}
-                placeholder="e.g. use LTX 2.5 Fast instead · rewrite the still for NanoBanana Pro 2 · slower camera, add rain"
+                placeholder="e.g. use LTX 2.5 Fast instead · rewrite the still for NanoBanana 2.1 · slower camera, add rain"
                 className="sb-input"
               />
               <div className="flex items-center gap-1">
@@ -2492,33 +2492,37 @@ ${t.prompt.slice(0, 200)}` : ""}`}
               )}
               {/* The model's own settings - resolution, quality, speed, style... -
                   whatever it offers (lib/storyboard stillSettings) */}
-              {knobs.settings.length > 0 ? (
-                <div className="mt-1.5 flex flex-col gap-1.5">
-                  {knobs.settings.map(set => {
-                    const cur = stillSettingValue(set, shot.imageQuality, shot.imageOptions)
-                    return (
-                      <div key={set.key}>
-                        <p className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-0.5">{set.label}</p>
-                        <div className="flex gap-1">
-                          {set.options.map(opt => {
-                            const on = cur === opt.value
-                            return (
-                              <button
-                                key={opt.value}
-                                onClick={() => onChange(set.key === "quality" ? { imageQuality: opt.value } : { imageOptions: { ...(shot.imageOptions ?? {}), [set.key]: opt.value } })}
-                                className={`flex-1 min-w-0 truncate py-1 px-1 rounded-md border text-[10px] font-mono ${on ? "border-white/50 bg-white/15 text-white" : "border-white/10 text-slate-400 hover:text-white"}`}
-                              >
-                                {opt.label}
-                              </button>
-                            )
-                          })}
+              {knobs.settings.length > 0 ? (() => {
+                // One grid, two to a row: choices as compact dropdowns, on/off
+                // ones as a toggle button in a cell of their own (web search
+                // sits beside the safety level); what each does is its tooltip
+                const sets = knobs.settings.filter(set => !set.admin || isAdmin)
+                const setOpt = (key: string, v: string) => onChange(key === "quality" ? { imageQuality: v } : { imageOptions: { ...(shot.imageOptions ?? {}), [key]: v } })
+                return (
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                    {sets.map(set => {
+                      const cur = stillSettingValue(set, shot.imageQuality, shot.imageOptions)
+                      const on = cur === "true"
+                      const Icon = set.key === "nb21WebSearch" ? Globe : on ? SquareCheck : Square
+                      return (
+                        <div key={set.key} title={set.hint} className="min-w-0">
+                          <p className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-0.5 truncate">{set.label}{set.admin ? " · admin" : ""}</p>
+                          {set.as === "bool" ? (
+                            <button
+                              onClick={() => setOpt(set.key, on ? "false" : "true")}
+                              className={`w-full flex items-center justify-center gap-1.5 py-[5px] rounded-lg border text-[11px] font-mono transition-colors ${on ? "border-sky-400/40 bg-sky-500/15 text-sky-200" : "border-white/10 bg-black/40 text-slate-400 hover:text-white hover:border-white/25"}`}
+                            >
+                              <Icon size={11} /> {on ? "On" : "Off"}
+                            </button>
+                          ) : (
+                            <Dropdown value={cur} options={set.options} onChange={v => setOpt(set.key, v)} className="w-full" />
+                          )}
                         </div>
-                        {set.hint && <p className="text-[9px] text-slate-500 mt-0.5">{set.hint}</p>}
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
+                      )
+                    })}
+                  </div>
+                )
+              })() : (
                 <p className="text-[9.5px] mt-1 text-slate-500">{imageModelLabel(shot.imageModel)} has no size or quality settings - it renders at its own size for the board&apos;s frame</p>
               )}
               <p className={`text-[9.5px] mt-1 ${refsInfo.on > refsInfo.max ? "text-amber-300" : "text-slate-500"}`}>

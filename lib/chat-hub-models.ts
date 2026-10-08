@@ -277,7 +277,7 @@ export const CHAT_CREATE_MODELS: ChatCreateModel[] = [
     guide: 'Same prompting rules as nano-banana-pro-2.',
     fields: [A('AR', ['1:1', '2:3', '3:2', '4:5', '3:4', '4:3', '9:16', '16:9'], '1:1'), Q(['2k', '4k'], '2k')] },
   { id: 'nano-banana-pro-2', label: 'NanoBanana Pro 2',   kind: 'image', group: 'Gemini', maxRefs: 14, ticketCost: 7,
-    strengths: 'newest Gemini image model — best-in-class realism and prompt adherence, up to 14 refs for character/product consistency. PREFERRED for people: skin texture, faces, photoreal portraits',
+    strengths: 'premium Gemini image model — top realism and prompt adherence, up to 14 refs for character/product consistency; strong on skin texture and faces. NanoBanana 2.1 is newer and cheaper and does the same jobs',
     guide: 'Natural conversational sentences — NO keyword tags or "masterpiece" boosters (they actively hurt). Order: subject → composition → action → location → style; 1-3 sentences (longer only for text-heavy designs). Text to render goes in "double quotes" with a style note ("TITLE" in bold sans-serif), max 3-5 text elements; use 2k+ when text is small. Edits: plain-English instructions, no masks; explicitly state what to PRESERVE ("keep pose identical"); one edit per call.',
     fields: [A('AR', ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9'], 'auto'), Q(['1k', '2k', '4k'], '2k')] },
   { id: 'gemini-2.5-flash-image', label: 'Flash Scanner v2.5', kind: 'image', group: 'Gemini', maxRefs: 4, ticketCost: 2,
@@ -382,6 +382,20 @@ for (const v of CHAT_VIDEO_MODELS) {
 for (const i of CHAT_IMAGE_MODELS) {
   if (!CHAT_CREATE_MODELS.some(m => m.id === i.id)) {
     CHAT_CREATE_MODELS.push(i as ChatCreateModel)
+  }
+}
+
+// NanoBanana 2.1 is derived from the site catalog above, which only knows
+// its endpoint - so the planners (Storyboard draft and "Edit with AI", the
+// chat hub) saw a one-line stub beside Pro 2's hand-written "newest... PREFERRED
+// for people" and kept casting Pro 2. Its fields and price stay the derived
+// ones; only what it is FOR and how to prompt it are written here.
+{
+  const k = CHAT_CREATE_MODELS.findIndex(m => m.id === 'nano-banana-2.1')
+  if (k >= 0) CHAT_CREATE_MODELS[k] = {
+    ...CHAT_CREATE_MODELS[k],
+    strengths: 'NEWEST NanoBanana and the default pick for stills: photoreal people with faces and outfits held across up to 14 refs; changes of pose, angle, outfit, character or background; several subjects in one frame; crisp in-image text; very long detailed prompts; optional web search for real places and products; costs less than Pro / Pro 2',
+    guide: 'Natural, specific sentences — no keyword tags or "masterpiece" boosters. Order: subject → composition → action → location → lighting/style. It handles long prompts well, so spell out wardrobe, props and camera (shot size, angle, lens) when they matter. Text to render goes in "double quotes" with a style note; use 2k+ when text is small. With references, say which ref is which ("the woman from image 1 wearing the jacket from image 2") and state what to PRESERVE ("keep her face and outfit identical").',
   }
 }
 

@@ -1,6 +1,7 @@
 import { BATCH_0929_ENDPOINTS } from '@/lib/batch-0929-video'
 import { BATCH_1003_ENDPOINTS, BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PUBLIC } from '@/lib/batch-1003-video'
 import { PIXELCUT_VIDEO_ENDPOINTS } from '@/lib/pixelcut-video'
+import { BATCH_1007_ENDPOINTS, BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_PUBLIC } from '@/lib/batch-1007-video'
 
 // Every fal video endpoint this app can submit to, keyed by the model id the
 // UI uses. Lives here rather than inside the route so other code (the Model
@@ -153,6 +154,8 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   // 2026-10-03 batch (lip sync, music video, camera controls, Happy Horse 1.1
   // and the clip tools) - routed by lib/batch-1003-video
   ...BATCH_1003_ENDPOINTS,
+  // 2026-10-07 batch (Vidu Q4, H3 Max Relight) - routed by lib/batch-1007-video
+  ...BATCH_1007_ENDPOINTS,
   // Pixelcut video (looping product video, background removal)
   ...PIXELCUT_VIDEO_ENDPOINTS,
 };
@@ -213,6 +216,8 @@ export const VIDEO_MODEL_IDS: string[] = [
   'minimax-h3-max-turbo', 'minimax-h3-max-ref',
   'marey', 'seedance-2.0-mini', 'hunyuan-video-1.5',
   'kandinsky6-pro', 'kandinsky6-lite',
+  // 2026-10-07 (Mureka Lyrics Video is made in the Audio Studio, saved as a video)
+  'vidu-q4', 'mureka-lyrics-video',
   'lipsync-v3', 'happy-horse',
   // tools that output video
   'flux-video-upscale', 'topaz-upscale-precision', 'topaz-upscale-creative',
@@ -227,6 +232,7 @@ export const VIDEO_MODEL_IDS: string[] = [
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
   'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
+  'minimax-h3-max-relight',
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -242,6 +248,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   // The 2026-10-03 batch while under test - minus the ones made public
   // 2026-10-04 (BATCH_1003_PUBLIC)
   ...[...BATCH_1003_GENERATORS, ...BATCH_1003_TOOLS].filter(id => !BATCH_1003_PUBLIC.has(id)),
+  // The 2026-10-07 batch (Vidu Q4, H3 Max Relight) while under test
+  ...[...BATCH_1007_GENERATORS, ...BATCH_1007_TOOLS].filter(id => !BATCH_1007_PUBLIC.has(id)),
   // Pixelcut video: looping public 2026-10-01, background removal 2026-10-02
   // (priced per measured frame)
   // Public 2026-10-01 (priced, tested): gemini-omni-flash, gemini-omni-1.1,

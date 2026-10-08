@@ -104,7 +104,7 @@ const SHOT_RULES = [
   // The whole roster, each with what it is for - the plan casts a model per shot
   '- "imageModel" is the id of the image model that makes the still - pick the best tool for THAT frame from this list:',
   storyboardModelMenu().images,
-  '  Keep one model for shots that share a character or product (consistency beats variety); switch only where a shot needs a specialist (a title card -> ideogram-4.5; a logo or graphic -> recraft-v4.1; complex text or diagrams -> gpt-image-2.5).',
+  '  Use nano-banana-2.1 for every still by default - people, products, places, action, text in the scene. Keep one model for shots that share a character or product (consistency beats variety); switch only where a shot needs a specialist (a title card -> ideogram-4.5; a logo or graphic -> recraft-v4.1; complex diagrams -> gpt-image-2.5).',
   '- "videoModel" is the video model that animates the still - one of these labels, chosen for the motion the shot needs:',
   storyboardModelMenu().videos,
   '  SeeDance 2.5 suits most shots; close-ups of realistic faces need Kling 3.0 or Veo 3.1 (SeeDance refuses them); a title card needs only a gentle move (LTX 2.5 Fast or Kling V3 Turbo).',

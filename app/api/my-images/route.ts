@@ -5,6 +5,7 @@ import { deleteFromR2 } from '@/lib/r2'
 import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { AUDIO_MODEL_PREFIX } from '@/lib/audio-studio'
+import { linkedImageIds, addLinks, removeLinks } from '@/lib/generation-folder-links'
 
 
 export async function GET(request: Request) {
@@ -26,13 +27,17 @@ export async function GET(request: Request) {
     const type = searchParams.get('type') // 'image' | 'video' | null (all)
     const showHidden = searchParams.get('hidden') === 'true' // hidden-only view
     // Folder scope: absent → all folders; 'root' → unfiled only (folderId null);
-    // numeric → that folder. A scalar folderId key composes safely alongside the
-    // type filter's OR and the cursor's AND (no key collision).
+    // numeric → that folder: what lives in it AND what was added to it ("Add
+    // to folder" links). That is an OR, so it goes in the AND list below as its
+    // own clause - spread into baseWhere it would clobber the type filter's OR.
     const folderIdParam = searchParams.get('folderId')
+    const folderNum = folderIdParam && folderIdParam !== 'root' ? parseInt(folderIdParam) : NaN
+    const linkedInFolder = Number.isFinite(folderNum) ? await linkedImageIds(user.id, folderNum) : []
     const folderFilter =
       folderIdParam === null || folderIdParam === '' ? {}
       : folderIdParam === 'root' ? { folderId: null }
-      : { folderId: parseInt(folderIdParam) }
+      : linkedInFolder.length ? { OR: [{ folderId: folderNum }, { id: { in: linkedInFolder } }] }
+      : { folderId: folderNum }
     const falRequestIdsParam = searchParams.get('falRequestIds') // comma-separated list
     // Cursor (keyset) pagination — the feed sends the last item it has (createdAt + id).
     // Loading "everything older than this cursor" is O(limit) at any depth, unlike
@@ -162,7 +167,6 @@ export async function GET(request: Request) {
       // Normal feed excludes hidden items; ?hidden=true shows only hidden items
       isHidden: showHidden,
       ...typeFilter,
-      ...folderFilter,
     }
 
     // Keyset predicate: rows strictly "older" than the cursor, using id as a tiebreak
@@ -210,8 +214,8 @@ export async function GET(request: Request) {
     // cursor predicate all use model/OR/AND keys that a plain spread would
     // silently clobber
     const where = hasCursor
-      ? { AND: [baseWhere, cursorWhere, uploadWhere, modelFilter] }
-      : { AND: [baseWhere, uploadWhere, modelFilter] }
+      ? { AND: [baseWhere, folderFilter, cursorWhere, uploadWhere, modelFilter] }
+      : { AND: [baseWhere, folderFilter, uploadWhere, modelFilter] }
 
     /*
      * Page mode's total count runs alongside the page instead of after it.
@@ -223,7 +227,7 @@ export async function GET(request: Request) {
      */
     const wantCount = !cursorMode && searchParams.get('count') !== '0'
     const countPromise = wantCount
-      ? prisma.generatedImage.count({ where: { AND: [baseWhere, uploadWhere, modelFilter] } })
+      ? prisma.generatedImage.count({ where: { AND: [baseWhere, folderFilter, uploadWhere, modelFilter] } })
       : null
 
     const images = await prisma.generatedImage.findMany({
@@ -256,6 +260,8 @@ export async function GET(request: Request) {
         promptExpansion: (img.videoMetadata as any)?.promptExpansion ?? null,
         extraLoras: (img.videoMetadata as any)?.extraLoras ?? null,
       folderId: img.folderId ?? null,
+      // Shown in this folder by "Add to folder" rather than living in it
+      ...(linkedInFolder.length && img.folderId !== folderNum ? { linkedHere: true } : {}),
     }))
 
     await Promise.all([attachGptRenderer(mapped, user.id), attachSeedvrSettings(mapped, user.id)])
@@ -317,7 +323,9 @@ export async function PATCH(request: Request) {
     }
 
     // Move action: reassign the images' folder. folderId null = unfiled (root).
-    // Destination folder ownership is verified before the update.
+    // Destination folder ownership is verified before the update. `fromFolderId`
+    // (the folder being viewed) also takes the images out of it when they were
+    // only added there, so a move always leaves the folder it was made from.
     if (body.action === 'move') {
       const folderId: number | null = typeof body.folderId === 'number' ? body.folderId : null
       if (folderId !== null) {
@@ -328,7 +336,37 @@ export async function PATCH(request: Request) {
         where: { id: { in: ids }, userId: user.id, isDeleted: false },
         data: { folderId },
       })
+      if (typeof body.fromFolderId === 'number' && body.fromFolderId !== folderId) await removeLinks(user.id, ids, body.fromFolderId)
+      // Now living in the destination, a link to it is redundant
+      if (folderId !== null) await removeLinks(user.id, ids, folderId)
       return jsonPrivate({ success: true, moved: moved.count })
+    }
+
+    // Add action ("Add to folder"): show the images in these folders too,
+    // without moving them. Every folder must be the user's.
+    if (body.action === 'add') {
+      const folderIds: number[] = Array.isArray(body.folderIds)
+        ? [...new Set<number>(body.folderIds.filter((n: unknown): n is number => typeof n === 'number'))].slice(0, 50)
+        : []
+      if (!folderIds.length) return jsonPrivate({ error: 'Pick a folder' }, { status: 400 })
+      const owned = await prisma.userGenerationFolder.count({ where: { id: { in: folderIds }, userId: user.id } })
+      if (owned !== folderIds.length) return jsonPrivate({ error: 'Invalid folder' }, { status: 400 })
+      const added = await addLinks(user.id, ids, folderIds)
+      return jsonPrivate({ success: true, added })
+    }
+
+    // Remove action: take the images out of one folder. Added ones lose the
+    // link; ones living there go back to Unfiled (they stay in any folder
+    // they were added to).
+    if (body.action === 'remove') {
+      const folderId = typeof body.folderId === 'number' ? body.folderId : null
+      if (folderId === null) return jsonPrivate({ error: 'Pick a folder' }, { status: 400 })
+      const unlinked = await removeLinks(user.id, ids, folderId)
+      const unfiled = await prisma.generatedImage.updateMany({
+        where: { id: { in: ids }, userId: user.id, isDeleted: false, folderId },
+        data: { folderId: null },
+      })
+      return jsonPrivate({ success: true, removed: unlinked + unfiled.count })
     }
 
     // Default action: hide/unhide.

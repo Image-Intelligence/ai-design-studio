@@ -9,7 +9,7 @@
  * Deliberately a plain module, not the client component, so server routes can
  * import the same flags. Releasing an employee here opens its UI; the routes
  * its workspace calls are gated separately (the chat-hub routes for Movie
- * Studio, Face Swap and Character Design, /api/admin/threed for 3D Studio,
+ * Studio, Face Swap and Character Design, /api/employees/studio3d for 3D Studio,
  * /api/admin/frames-clips for Frames, /api/employees/storyboards for
  * Storyboard, /api/employees/image-studio for Image Studio) and must be
  * opened with it.

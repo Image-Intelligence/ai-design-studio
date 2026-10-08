@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Download, Loader2, Music, Pause, Play, SlidersHorizontal, Ticket, Trash2, Upload, Wand2, X } from "lucide-react"
+import { Clapperboard, Download, Loader2, Music, Pause, Play, PenLine, SlidersHorizontal, Ticket, Trash2, Upload, Wand2, X } from "lucide-react"
 import {
   AUDIO_GROUPS, AUDIO_MODEL_PREFIX, AUDIO_STUDIO_MODELS, audioPriceNote, audioTicketCost, getAudioStudioModel,
   type AudioStudioModel,
@@ -28,8 +28,10 @@ type AudioItem = {
   prompt: string
   model: string
   createdAt: string
-  videoMetadata?: { label?: string | null; modelName?: string; provider?: string; voice?: string | null } | null
+  videoMetadata?: { label?: string | null; modelName?: string; provider?: string; voice?: string | null; murekaSongId?: string } | null
 }
+/** Mureka Lyrics Video settings, picked on the song's card. */
+type LyricsVideoOpts = { layout: string; aspect: string; title: string }
 type Pending = { requestId: string; modelId: string; name: string; prompt: string; startedAt: number; ticketCost: number }
 type Failed = { key: string; name: string; prompt: string; error: string }
 
@@ -66,14 +68,39 @@ function Waveform({ seed, playing, className = "" }: { seed: number; playing?: b
   )
 }
 
+/** A Mureka Lyrics Video result: saved as a video, so it plays as one. */
+function VideoCard({ item }: { item: AudioItem }) {
+  return (
+    <div className="group rounded-2xl border border-white/10 bg-slate-900/70 hover:border-white/20 transition-colors overflow-hidden">
+      <video src={item.imageUrl} controls playsInline preload="metadata" className="w-full max-h-80 bg-black" />
+      <div className="px-3 py-2.5">
+        <div className="flex items-center gap-1.5 mb-1">
+          <Clapperboard size={11} className="text-amber-300" />
+          <span className="text-[11px] font-bold text-white truncate">{item.videoMetadata?.modelName ?? "Lyrics video"}</span>
+        </div>
+        <p className="text-[11px] text-slate-400 line-clamp-2" title={item.prompt}>{item.prompt}</p>
+        <a href={`/api/images/${item.id}?download=1`} className="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white/5 border border-white/10 text-[10px] text-slate-200 hover:bg-white/10">
+          <Download size={11} /> Download
+        </a>
+      </div>
+    </div>
+  )
+}
+
 /** One clip: its waveform, a play button, the prompt, model and a download. */
-function AudioCard({ item, onUsePrompt }: { item: AudioItem; onUsePrompt?: (t: string) => void }) {
+function AudioCard({ item, onUsePrompt, onLyricsVideo }: { item: AudioItem; onUsePrompt?: (t: string) => void; onLyricsVideo?: (item: AudioItem, o: LyricsVideoOpts) => Promise<void> }) {
   const ref = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState({ cur: 0, dur: 0 })
   const m = getAudioStudioModel(item.model)
   const g = m ? groupOf(m) : AUDIO_GROUPS[0]
   const label = item.videoMetadata?.label
+  // A Mureka song can become a lyrics video (its Mureka id is on the row)
+  const lv = getAudioStudioModel("mureka-lyrics-video")
+  const canLyricsVideo = !!onLyricsVideo && !!item.videoMetadata?.murekaSongId && !!lv
+  const [lvOpen, setLvOpen] = useState(false)
+  const [lvBusy, setLvBusy] = useState(false)
+  const [lvOpts, setLvOpts] = useState<LyricsVideoOpts>({ layout: "layout_1", aspect: "9:16", title: "" })
   const fmt = (s: number) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00")
   const toggle = () => {
     const a = ref.current
@@ -129,7 +156,34 @@ function AudioCard({ item, onUsePrompt }: { item: AudioItem; onUsePrompt?: (t: s
               <Wand2 size={11} /> Reuse text
             </button>
           )}
+          {canLyricsVideo && (
+            <button onClick={() => setLvOpen(o => !o)} className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] ${lvOpen ? "bg-amber-400/15 border-amber-300/40 text-amber-100" : "bg-white/5 border-white/10 text-slate-200 hover:bg-white/10"}`}>
+              <Clapperboard size={11} /> Lyrics video
+            </button>
+          )}
         </div>
+        {canLyricsVideo && lvOpen && lv && (
+          <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-400/[0.05] p-2 space-y-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
+              {lv.options!.map(o => (
+                <select key={o.key} value={lvOpts[o.key as "layout" | "aspect"]} onChange={e => setLvOpts(v => ({ ...v, [o.key]: e.target.value }))}
+                  className="rounded-md bg-black/50 border border-white/10 px-1.5 py-1 text-[10px] text-white">
+                  {o.values.map(([val, lab]) => <option key={val} value={val}>{lab}</option>)}
+                </select>
+              ))}
+            </div>
+            <input value={lvOpts.title} onChange={e => setLvOpts(v => ({ ...v, title: e.target.value.slice(0, 100) }))} placeholder="Title on the video (optional)"
+              className="w-full rounded-md bg-black/50 border border-white/10 px-1.5 py-1 text-[10px] text-white placeholder:text-slate-500" />
+            <button
+              disabled={lvBusy}
+              onClick={async () => { setLvBusy(true); try { await onLyricsVideo!(item, lvOpts); setLvOpen(false) } finally { setLvBusy(false) } }}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-white text-slate-900 text-[11px] font-bold hover:bg-slate-200 disabled:opacity-50"
+            >
+              {lvBusy ? <Loader2 size={11} className="animate-spin" /> : <Clapperboard size={11} />} Make the lyrics video
+              <span className="flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-slate-900/20 font-mono"><Ticket size={10} />{audioTicketCost(lv, {})}</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -139,7 +193,7 @@ function AudioCard({ item, onUsePrompt }: { item: AudioItem; onUsePrompt?: (t: s
 function AudioSettings({
   model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
   instrumental, setInstrumental, style, setStyle, lyrics, setLyrics, audioFile, audioUploading, onAudioPick, onAudioClear,
-  voiceConsent, setVoiceConsent, isAdmin,
+  voiceConsent, setVoiceConsent, isAdmin, options, setOption, onWriteLyrics,
 }: {
   model: AudioStudioModel
   onModelChange: (id: string) => void
@@ -157,7 +211,13 @@ function AudioSettings({
   voiceConsent: boolean; setVoiceConsent: (v: boolean) => void
   /** Admin-only models (under test) are listed for admins only. */
   isAdmin: boolean
+  options: Record<string, string>
+  setOption: (key: string, v: string) => void
+  /** "Write lyrics" (models with lyricsHelper): drafts lyrics from an idea and returns them. */
+  onWriteLyrics: (idea: string) => Promise<string | null>
 }) {
+  const [idea, setIdea] = useState("")
+  const [writing, setWriting] = useState(false)
   const g = groupOf(model)
   const fileRef = useRef<HTMLInputElement>(null)
   const label = "block text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400 mb-1.5"
@@ -172,7 +232,7 @@ function AudioSettings({
         <select value={model.id} onChange={e => onModelChange(e.target.value)} className={`${field} font-bold text-sm`}>
           {AUDIO_GROUPS.map(gr => (
             <optgroup key={gr.key} label={gr.label}>
-              {AUDIO_STUDIO_MODELS.filter(m => m.group === gr.key && (!m.admin || isAdmin)).map(m => <option key={m.id} value={m.id}>{m.name}{m.admin ? " (admin)" : ""}</option>)}
+              {AUDIO_STUDIO_MODELS.filter(m => m.group === gr.key && !m.hidden && (!m.admin || isAdmin)).map(m => <option key={m.id} value={m.id}>{m.name}{m.admin ? " (admin)" : ""}</option>)}
             </optgroup>
           ))}
         </select>
@@ -221,6 +281,14 @@ function AudioSettings({
           )}
         </div>
       )}
+      {model.options?.map(o => (
+        <div key={o.key}>
+          <span className={label}>{o.label}</span>
+          <select value={options[o.key] ?? o.default} onChange={e => setOption(o.key, e.target.value)} className={field}>
+            {o.values.map(([val, lab]) => <option key={val} value={val}>{lab}</option>)}
+          </select>
+        </div>
+      ))}
       {model.instrumental && (
         <label className="flex items-center justify-between cursor-pointer">
           <span className={label + " mb-0"}>Instrumental only</span>
@@ -240,6 +308,25 @@ function AudioSettings({
           <span className={label}>Lyrics {model.lyrics.required ? "" : <span className="normal-case tracking-normal text-slate-600">(optional)</span>}</span>
           <textarea value={lyrics} onChange={e => setLyrics(e.target.value.slice(0, model.lyrics!.max))} rows={7} placeholder={model.lyrics.placeholder ?? "[verse]\n…\n[chorus]\n…"} className={`${field} resize-y font-mono text-[11px]`} />
           <p className="mt-1 text-right text-[9px] font-mono text-slate-600">{lyrics.length}/{model.lyrics.max}</p>
+          {/* Mureka Lyrics drafts a full song from an idea - then edit and sing it */}
+          {model.lyricsHelper && (
+            <div className="mt-1.5 rounded-lg border border-white/10 bg-white/[0.03] p-2">
+              <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400 mb-1"><PenLine size={10} /> Write lyrics</span>
+              <div className="flex gap-1.5">
+                <input value={idea} onChange={e => setIdea(e.target.value.slice(0, 500))} placeholder="What the song is about…" className={`${field} py-1.5`}
+                  onKeyDown={async e => { if (e.key === "Enter" && idea.trim() && !writing) { setWriting(true); const l = await onWriteLyrics(idea); setWriting(false); if (l) setLyrics(l) } }} />
+                <button
+                  disabled={!idea.trim() || writing}
+                  onClick={async () => { setWriting(true); const l = await onWriteLyrics(idea); setWriting(false); if (l) setLyrics(l) }}
+                  className="shrink-0 flex items-center gap-1 px-2 rounded-lg bg-white text-slate-900 text-[11px] font-bold hover:bg-slate-200 disabled:opacity-40"
+                  title={lyrics.trim() ? "Replaces the lyrics in the box" : "Drafts lyrics into the box"}
+                >
+                  {writing ? <Loader2 size={11} className="animate-spin" /> : <PenLine size={11} />}
+                  <span className="flex items-center gap-0.5 font-mono"><Ticket size={10} />1</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {model.audioIn && (
@@ -304,6 +391,7 @@ export function AudioStudio({
   const [language, setLanguage] = useState(model.languages?.default ?? "")
   const [duration, setDuration] = useState(model.duration?.default ?? 30)
   const [instrumental, setInstrumental] = useState(false)
+  const [options, setOptions] = useState<Record<string, string>>({})
   const [audio, setAudio] = useState<{ name: string; seconds: number; url: string } | null>(null)
   const [audioUploading, setAudioUploading] = useState(false)
   // Asked again for every new file
@@ -315,6 +403,7 @@ export function AudioStudio({
     setLanguage(model.languages?.default ?? "")
     setDuration(model.duration?.default ?? 30)
     setInstrumental(false)
+    setOptions(Object.fromEntries((model.options ?? []).map(o => [o.key, o.default])))
     if (!model.audioIn) setAudio(null)
   }, [model.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -429,6 +518,7 @@ export function AudioStudio({
           duration: model.duration ? duration : undefined, instrumental,
           audioUrl: audio?.url, inputSeconds: audio?.seconds,
           voiceConsent: model.audioIn?.clonesVoice && audio ? voiceConsent : undefined,
+          options: model.options ? options : undefined,
         }),
       })
       const d = await res.json().catch(() => ({}))
@@ -442,11 +532,40 @@ export function AudioStudio({
     } finally { setSubmitting(false) }
   }
 
+  // "Write lyrics": Mureka Lyrics (1 ticket) drafts a song into the lyrics box
+  const writeLyrics = async (idea: string): Promise<string | null> => {
+    setError(null)
+    try {
+      const res = await fetch("/api/audio/lyrics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: idea }) })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || !d.lyrics) throw new Error(d.error || "Could not write lyrics")
+      if (!isAdmin) onTicketsSpent(d.ticketCost ?? 1)
+      return d.lyrics
+    } catch (e: any) { setError(e?.message || "Could not write lyrics"); return null }
+  }
+
+  // A Mureka song's card -> Mureka Lyrics Video (the server reads the song's Mureka id)
+  const makeLyricsVideo = async (item: AudioItem, o: LyricsVideoOpts) => {
+    setError(null)
+    try {
+      const res = await fetch("/api/audio/generate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "mureka-lyrics-video", songAssetId: item.id, text: o.title || undefined, options: { layout: o.layout, aspect: o.aspect } }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || !d.success) throw new Error(d.error || "Could not start the lyrics video")
+      if (d.charged) onTicketsSpent(d.charged)
+      const p: Pending = { requestId: d.requestId, modelId: "mureka-lyrics-video", name: "Mureka Lyrics Video", prompt: item.prompt, startedAt: Date.now(), ticketCost: d.ticketCost }
+      setPending(ps => { const next = [p, ...ps]; writePending(next); return next })
+    } catch (e: any) { setError(e?.message || "Could not start the lyrics video") }
+  }
+
   const settingsProps = {
     model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
     instrumental, setInstrumental, style, setStyle, lyrics, setLyrics,
     audioFile: audio, audioUploading, onAudioPick, onAudioClear: () => setAudio(null),
     voiceConsent, setVoiceConsent, isAdmin,
+    options, setOption: (k: string, v: string) => setOptions(o => ({ ...o, [k]: v })), onWriteLyrics: writeLyrics,
   }
   const shown = [...session, ...past.filter(p => !session.some(s => s.id === p.id))]
   const g = groupOf(model)
@@ -492,7 +611,9 @@ export function AudioStudio({
                 <p className="mt-1 text-[10px] text-slate-500 line-clamp-2">{f.prompt}</p>
               </div>
             ))}
-            {shown.map(item => <AudioCard key={item.id} item={item} onUsePrompt={t => setText(t)} />)}
+            {shown.map(item => item.model === "mureka-lyrics-video" || /\.mp4(\?|$)/i.test(item.imageUrl)
+              ? <VideoCard key={item.id} item={item} />
+              : <AudioCard key={item.id} item={item} onUsePrompt={t => setText(t)} onLyricsVideo={isAdmin ? makeLyricsVideo : undefined} />)}
           </div>
 
           {!shown.length && !pending.length && !loadingPast && (
@@ -529,7 +650,12 @@ export function AudioStudio({
               className="w-full resize-none bg-transparent text-sm text-white placeholder:text-slate-500 focus:outline-none"
             />
           ) : (
-            <p className="py-3 text-sm text-slate-400">{audio ? `Ready: ${audio.name}` : `Upload ${model.audioIn?.label.toLowerCase() ?? "a file"} in the settings panel, then generate.`}</p>
+            <p className="py-3 text-sm text-slate-400">
+              {/* A lyrics-driven model (Mureka 9.5 Song) has no text box here - its lyrics are in the panel */}
+              {model.lyrics && !model.audioIn
+                ? (lyrics.trim() ? `Ready: ${lyrics.trim().split(/\r?\n/).filter(l => l.trim() && !/^\[.*\]$/.test(l.trim())).length} lines of lyrics` :"Write or paste the lyrics in the settings panel - or let \"Write lyrics\" draft them - then generate.")
+                : audio ? `Ready: ${audio.name}` : `Upload ${model.audioIn?.label.toLowerCase() ?? "a file"} in the settings panel, then generate.`}
+            </p>
           )}
           <div className="flex items-center gap-2 mt-1">
             {model.text && <span className="text-[10px] font-mono text-slate-600">{text.length.toLocaleString()}/{model.text.max.toLocaleString()}</span>}

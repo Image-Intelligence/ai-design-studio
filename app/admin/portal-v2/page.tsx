@@ -21,7 +21,7 @@ import { EmployeesView, type EmployeeId } from "@/components/employees/Employees
 import { ImageStudio } from "@/components/image-studio/ImageStudio"
 import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/employees"
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
-import { ThreeDStudioWorkspace } from "@/components/employees/ThreeDStudioWorkspace"
+import { Studio3D } from "@/components/studio3d/Studio3D"
 import { StoryboardWorkspace } from "@/components/employees/StoryboardWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
@@ -725,6 +725,8 @@ const BATCH_0928_VIDEO = new Set([
   "heygen-avatar4", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast", "sam-3.1-video", "elevenlabs-dubbing",
   // 2026-10-06: Kandinsky 6.0 Pro / Lite and its VSR
   "kandinsky6-pro", "kandinsky6-lite", "kandinsky6-vsr", "kandinsky6-vsr-lite",
+  // 2026-10-07 batch (admin): Vidu Q4, H3 Max Relight
+  "vidu-q4", "minimax-h3-max-relight",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -1284,6 +1286,11 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "veed-subtitles", name: "VEED Subtitles", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 600,
     choice: { label: "Caption style", note: "✦ animated styles cost 2x", options: [{ value: "simple", label: "Simple" }, { value: "plain", label: "Plain" }, { value: "corpo", label: "Corporate" }, { value: "karl", label: "Karl" }, { value: "mint", label: "Mint" }, { value: "vegas", label: "Vegas" }, { value: "beans", label: "Beans" }, { value: "hustle", label: "Hustle" }, { value: "rizz", label: "Rizz" }, { value: "lowkey", label: "Lowkey" }, { value: "glide", label: "Glide ✦" }, { value: "glass", label: "Glass ✦" }, { value: "handwritten", label: "Handwritten ✦" }, { value: "backdrop", label: "Backdrop ✦" }, { value: "terminal", label: "Terminal ✦" }, { value: "fusion", label: "Fusion ✦" }] } },
   { id: "minimax-h3-max-insert", name: "H3 Max Insert Shot", durations: ["5","8","10","13"], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60, insertTimes: true },
+  // ── 2026-10-07 batch (ADMIN ONLY while under test) - lib/batch-1007-video ──
+  // Vidu Q4: one image = the start frame (native audio always on); more = references (up to 12; audio is the toggle)
+  { id: "vidu-q4", name: "Vidu Q4", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["540p","720p","1080p","2k","4k"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: false, audioType: "toggle", supportsReferenceVideo: true, refImagesOnly: true },
+  // H3 Max Relight: the clip (up to 15s) and a picture of a lit sphere in the refs panel
+  { id: "minimax-h3-max-relight", name: "H3 Max Relight", durations: [], resolutions: ["480p","768p","1080p","2k"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true },
   { id: "depth-anything-video", name: "Depth Anything Video", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 100,
     choice: { label: "Colours", options: [{ value: "turbo", label: "Turbo (near = warm)" }, { value: "grayscale", label: "Grayscale" }, { value: "inferno", label: "Inferno" }, { value: "magma", label: "Magma" }, { value: "viridis", label: "Viridis" }] } },
   { id: "heygen-translate", name: "HeyGen Translate", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 480,
@@ -1395,6 +1402,8 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "void-video-removal": "$",
   "veed-subtitles":     "$",
   "minimax-h3-max-insert": "$$",
+  "vidu-q4": "$$",
+  "minimax-h3-max-relight": "$$",
   "depth-anything-video": "$",
   "heygen-translate":   "$$$",
   "heygen-translate-fast": "$$",
@@ -1490,7 +1499,7 @@ const AUDIO_MODEL_GROUPS = AUDIO_GROUPS.map(g => ({
 // Audio models still under test (admin flag in lib/audio-studio): admins only
 const ADMIN_AUDIO_MODEL_GROUPS = [
   { label: "Under test", type: "admin", accent: "text-sky-300", dot: "bg-sky-400",
-    items: AUDIO_STUDIO_MODELS.filter(m => m.admin).map(m => m.name) },
+    items: AUDIO_STUDIO_MODELS.filter(m => m.admin && !m.hidden).map(m => m.name) },
 ].filter(g => g.items.length > 0)
 const AUDIO_MODEL_COST_BY_NAME = Object.fromEntries(AUDIO_STUDIO_MODELS.map(m => [m.name, audioCostTier(m)])) as Record<string, "$" | "$$" | "$$$" | "$$$+">
 function CostBadge({ tier }: { tier: "$" | "$$" | "$$$" | "$$$+" }) {
@@ -1698,10 +1707,12 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    */
   { label: "Wan",    type: "LoRA video · pricing TBD",                        accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA"] },
   { label: "Topaz", type: "colorize · fal's endpoint is down", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Colorize"] },
-  // 2026-10-03 batch, under test
+  // 2026-10-07 batch, under test (lib/batch-1007-video)
+  { label: "Vidu", type: "image or up to 12 refs to video · 3-16s · native audio · up to 4K", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q4"] },
+  { label: "MiniMax", type: "re-light a clip from a lit-sphere picture", accent: "text-rose-400", dot: "bg-rose-400", items: ["H3 Max Relight"] },
 ]
 // Models fal runs without any prompt (their inputs are the image/audio)
-const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera"])
+const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
 /** Minutes the portal keeps polling a video before giving up (default 20) - the
@@ -1726,6 +1737,8 @@ const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "ltx-2.5-audio-fast": "Describe the video (required without a start image)",
   "happy-horse-1.1": "Describe the motion (required with character references)",
   "minimax-h3-max-camera": "Describe the scene (optional) - the camera move is set on the left",
+  "vidu-q4": "Describe the motion (optional with a start image, required with references)",
+  "minimax-h3-max-relight": "No prompt needed - add the clip and a picture of a lit sphere (the lighting to match) in References",
 }
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
@@ -1734,6 +1747,8 @@ const ADMIN_VIDEO_MODEL_IDS = new Set([
   "marey",
   "marey-motion-transfer", "marey-pose-transfer",
   "topaz-colorize",
+  // 2026-10-07 batch while under test
+  "vidu-q4", "minimax-h3-max-relight",
 ])
 
 // ── Wan 2.2 custom-LoRA picker (admin) ─────────────────────────────────────
@@ -24220,7 +24235,7 @@ function VideoPromptBar({
     // audio, camera controls from the photo + move...
     || PROMPTLESS_VIDEO_MODELS.has(model.id)
     // ...these only once their image is in (else the text is what drives them)...
-    || (["happy-horse-1.1", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast"].includes(model.id) && !!startFramePreview)
+    || (["happy-horse-1.1", "vidu-q4", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast"].includes(model.id) && !!startFramePreview)
     // ...and the talking photo once a voice track replaces the typed script
     || (model.id === "heygen-avatar4" && !!audioSeconds)
   // Models that take no prompt have nothing to enhance
@@ -26569,7 +26584,39 @@ export default function PortalV2Page() {
   // Uploads go THROUGH THE SERVER (multipart → R2). The old presigned direct
   // browser→R2 PUT is blocked by the bucket's CORS policy — uploads hung forever
   // with Safari's "Load failed" (same root cause as the home-cards upload bug).
+  /*
+   * Uploads for the video panel. Big files (clips, audio, anything over ~3 MB)
+   * go STRAIGHT to storage with a presigned PUT: through the server they hit
+   * Vercel's ~4.5 MB request limit, failed, and the panel sat on "uploading"
+   * forever (an 18s phone clip, 2026-10-08). Small files - and anything the
+   * direct path can't take - still go through /api/upload-video-media.
+   * Returns the signed link (works as the preview too), or null on failure.
+   */
   const uploadVideoFrame = useCallback(async (file: File): Promise<string | null> => {
+    const typeOf = (f: File) => f.type
+      || ({ mov: "video/quicktime", mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm", mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" } as Record<string, string>)[f.name.split(".").pop()?.toLowerCase() ?? ""]
+      || "application/octet-stream"
+    const putDirect = async (f: File): Promise<string | null> => {
+      try {
+        const pre = await fetch("/api/upload-video-media/presign", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contentType: typeOf(f), size: f.size, name: f.name }),
+        })
+        if (!pre.ok) { console.error("Direct upload refused:", pre.status, await pre.text().catch(() => "")); return null }
+        const { uploadUrl, contentType, url } = await pre.json()
+        // A dead connection must not hang the panel: give up after 10 minutes
+        const ac = new AbortController()
+        const timer = setTimeout(() => ac.abort(), 10 * 60 * 1000)
+        try {
+          const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: f, signal: ac.signal })
+          if (!put.ok) { console.error("Direct upload failed:", put.status); return null }
+          return url as string
+        } finally { clearTimeout(timer) }
+      } catch (err) {
+        console.error("Direct upload error:", err)
+        return null
+      }
+    }
     try {
       let uploadFile: File = file
       // Compress images before upload (video/audio upload as-is)
@@ -26578,6 +26625,12 @@ export default function PortalV2Page() {
         const res2 = await fetch(dataUrl)
         const blob = await res2.blob()
         uploadFile = new File([blob], file.name, { type: 'image/jpeg' })
+      }
+      if (uploadFile.size > 3 * 1024 * 1024 || !uploadFile.type.startsWith("image/")) {
+        const direct = await putDirect(uploadFile)
+        if (direct) return direct
+        // Too big for the server route as well: nothing more to try
+        if (uploadFile.size > 4 * 1024 * 1024) return null
       }
 
       const fd = new FormData()
@@ -26620,6 +26673,13 @@ export default function PortalV2Page() {
     setVideoMotionVideoPreview(file.name)
     setVideoMotionVideoUrl(null)
     const url = await uploadVideoFrame(file)
+    if (!url) {
+      // Say so and clear the slot - an empty url with a filename reads as "still uploading"
+      setVideoMotionVideoPreview(null)
+      setVideoMotionVideoDuration(null)
+      setRefVideoNotice(`Couldn't upload "${file.name}" - check your connection and try again.`)
+      return
+    }
     setVideoMotionVideoUrl(url)
   }, [uploadVideoFrame])
 
@@ -26660,6 +26720,14 @@ export default function PortalV2Page() {
     setVideoRefVideoDuration(d => d + duration)
     const idx = videoRefVideoFilenames.length
     const url = await uploadVideoFrame(file)
+    if (!url) {
+      // A failed upload leaves the panel, rather than spinning on as "uploading"
+      setVideoRefVideoFilenames(f => f.filter((_, i) => i !== idx))
+      setVideoRefVideoUrls(u => u.filter((_, i) => i !== idx))
+      setVideoRefVideoDuration(d => Math.max(0, d - duration))
+      setRefVideoNotice(`Couldn't upload "${file.name}" - check your connection and try again.`)
+      return
+    }
     setVideoRefVideoUrls(u => u.map((v, i) => i === idx ? url : v))
   }, [uploadVideoFrame, videoRefVideoFilenames.length])
 
@@ -26874,7 +26942,7 @@ export default function PortalV2Page() {
   // that clip's length - so the price (shown and charged) needs that length,
   // not the 8s fallback it was billed at before
   const videoToolSourceSec = videoEditSourceDuration
-    || ((selectedVideoModel.id.startsWith("luma-ray-") || selectedVideoModel.id === "pixelcut-video-bg-removal" || selectedVideoModel.id.startsWith("gemini-omni") || selectedVideoModel.id === "flux-3") ? videoRefVideoDuration : 0)
+    || ((selectedVideoModel.id.startsWith("luma-ray-") || selectedVideoModel.id === "pixelcut-video-bg-removal" || selectedVideoModel.id.startsWith("gemini-omni") || selectedVideoModel.id === "flux-3" || selectedVideoModel.id === "minimax-h3-max-relight") ? videoRefVideoDuration : 0)
     // Every single-clip tool (the refs panel's one "Source clip" slot): VOID,
     // SAM Track, Insert Shot, VEED... priced and limited by that clip's length
     || (selectedVideoModel.sourceClipMaxSec ? videoRefVideoDuration : 0)
@@ -30521,12 +30589,19 @@ function employeePending(
               onEditRef={(id, url) => setEditingRef({ id, url })}
             />
           ) : activeEmployee === "3d-studio" ? (
-            <ThreeDStudioWorkspace
-              signedIn={user !== null}
-              activeRefs={refLibrary
-                .filter(img => activeRefIds.includes(img.id))
-                .map(r => ({ id: r.id, url: r.url }))}
-              onRemoveRef={handleDeactivateRef}
+            // The 3D Production Studio (2026-10-07): a rendered frame goes to the
+            // Refs library - and, for "Animate this frame", on into the video models
+            <Studio3D
+              isAdmin={isAdminAccount}
+              refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
+              logo={<SiteLogoBox size={26} />}
+              onBalanceChange={handleBalanceChange}
+              onUseFrame={async (dataUrl, to) => {
+                const blob = await (await fetch(dataUrl)).blob()
+                const file = new File([blob], `3d-frame-${Date.now()}.webp`, { type: blob.type || "image/webp" })
+                await addRefsToAccount([file], null, { autoActivate: true })
+                if (to === "video") { setActiveEmployee(null); setScannerMode("video") }
+              }}
             />
           ) : activeEmployee === "image-studio" ? (
             // Layered editing: the Refs library is where images come from and

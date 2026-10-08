@@ -32,6 +32,10 @@ export const autoColsFor = (width: number) =>
  */
 export function tileAspect(img: { aspectRatio?: string | null; videoMetadata?: any }): number | null {
   const vm = img.videoMetadata
+  // aspectW/H: a video's real shape, measured when its poster was made - the
+  // stored aspectRatio of older videos is a hardcoded 16:9
+  const aw = Number(vm?.aspectW), ah = Number(vm?.aspectH)
+  if (aw > 0 && ah > 0) return aw / ah
   const w = Number(vm?.width), h = Number(vm?.height)
   if (w > 0 && h > 0) return w / h
   const ar = img.aspectRatio

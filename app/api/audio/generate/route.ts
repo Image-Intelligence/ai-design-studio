@@ -67,6 +67,14 @@ export async function POST(req: Request) {
       input.duration = Number.isFinite(d) ? Math.min(spec.duration.max, Math.max(spec.duration.min, d)) : spec.duration.default
       if (spec.duration.options) input.duration = spec.duration.options.reduce((a, b) => Math.abs(b - input.duration!) < Math.abs(a - input.duration!) ? b : a)
     }
+    // The model's own pickers (Mureka's vocal, genre, layout...): only values it lists
+    if (spec.options) {
+      const sent = body.options && typeof body.options === 'object' ? body.options as Record<string, unknown> : {}
+      input.options = Object.fromEntries(spec.options.map(o => {
+        const v = typeof sent[o.key] === 'string' ? sent[o.key] as string : o.default
+        return [o.key, o.values.some(([val]) => val === v) ? v : o.default]
+      }))
+    }
     // Only the options the model offers; anything else falls back to its default
     if (spec.voices && input.voice && !spec.voices.options.includes(input.voice)) input.voice = spec.voices.default
     if (spec.voice2 && input.voice2 && !spec.voice2.options.includes(input.voice2)) input.voice2 = spec.voice2.default
@@ -81,6 +89,26 @@ export async function POST(req: Request) {
       if (!(await checkIsAdmin(user.email))) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
     }
     if (spec.audioIn?.required && !input.audioUrl) return jsonPrivate({ error: `${spec.audioIn.label} is required` }, { status: 400 })
+    // Made from one of the user's own Mureka songs (Lyrics Video): its Mureka
+    // id comes from that song's feed row, never from the client
+    let sourceSong: { id: number; prompt: string } | null = null
+    if (spec.fromSong) {
+      const songId = parseInt(String(body.songAssetId ?? ''))
+      const row = Number.isFinite(songId) ? await prisma.generatedImage.findFirst({
+        where: { id: songId, userId: user.id, isDeleted: false, model: { startsWith: `${AUDIO_MODEL_PREFIX}mureka-` } },
+        select: { id: true, prompt: true, videoMetadata: true },
+      }) : null
+      const meta = row?.videoMetadata as { murekaSongId?: unknown; durationMs?: unknown } | null
+      const murekaId = meta?.murekaSongId
+      if (!row || typeof murekaId !== 'string') return jsonPrivate({ error: 'Pick one of your Mureka songs to make this from' }, { status: 400 })
+      // The video covers the whole song, so its length is needed (saved with every Mureka result)
+      if (typeof meta?.durationMs !== 'number' || meta.durationMs < 1000) return jsonPrivate({ error: 'This song has no length on record, so it cannot be made into a lyrics video' }, { status: 400 })
+      input.sourceSongId = murekaId
+      input.sourceSongMs = meta.durationMs
+      sourceSong = { id: row.id, prompt: row.prompt }
+    }
+    const invalid = spec.validate?.(input)
+    if (invalid) return jsonPrivate({ error: invalid }, { status: 400 })
     if (input.audioUrl && !/^https:\/\//.test(input.audioUrl)) return jsonPrivate({ error: 'Invalid audio URL' }, { status: 400 })
 
     if (spec.audioIn?.clonesVoice && input.audioUrl && body.voiceConsent !== true) {
@@ -128,7 +156,9 @@ export async function POST(req: Request) {
         modelId: `${AUDIO_MODEL_PREFIX}${spec.id}`,
         modelType: 'audio',
         // A tool run with no text is named after its model and the file it worked on
-        prompt: (input.text || input.lyrics || (params_fileName(body) ? `${spec.name} · ${params_fileName(body)}` : spec.name)).slice(0, 5000),
+        prompt: (sourceSong
+          ? `${spec.name}${input.text ? ` · ${input.text}` : ''} · ${sourceSong.prompt}`
+          : input.text || input.lyrics || (params_fileName(body) ? `${spec.name} · ${params_fileName(body)}` : spec.name)).slice(0, 5000),
         parameters: {
           falEndpoint: spec.endpoint,
           falInput: falInput as object,
@@ -137,6 +167,8 @@ export async function POST(req: Request) {
           duration: input.duration ?? null,
           inputSeconds: inputSeconds ?? null,
           audioUrl: input.audioUrl ?? null,
+          options: input.options ?? null,
+          sourceSongAssetId: sourceSong?.id ?? null,
           chargeMode: 'deduct',
         },
         status: 'audio-processing',

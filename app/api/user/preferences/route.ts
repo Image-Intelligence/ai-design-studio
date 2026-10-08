@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
+import { jsonPrivate } from '@/lib/api-json'
+import { canonicalisePayload } from '@/lib/media-url'
 
 async function getAuthUser() {
   const cookieStore = await cookies()
@@ -21,7 +23,9 @@ export async function GET() {
       select: { portalPreferences: true },
     })
 
-    return NextResponse.json({ preferences: row?.portalPreferences ?? {} })
+    // Signed on the way out: the video draft keeps uploads (start frames, motion
+    // clips) whose stored links are private - unsigned, a restored thumbnail 401s
+    return jsonPrivate({ preferences: row?.portalPreferences ?? {} })
   } catch {
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
   }
@@ -33,7 +37,8 @@ export async function PUT(req: Request) {
     const user = await getAuthUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await req.json()
+    // Stored canonical: a signed link's signature expires, the stored file does not
+    const body = canonicalisePayload(await req.json())
     // `_enhance` is the server's daily prompt-enhancement count
     // (lib/prompt-enhance) - never writable from the browser
     if (body && typeof body === 'object') delete body._enhance

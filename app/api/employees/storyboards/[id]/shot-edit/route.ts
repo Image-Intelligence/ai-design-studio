@@ -101,6 +101,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     '',
     'Rules:',
     '- If the instruction names a model, switch to that model (use its exact name from the list); otherwise keep the current model unless the instruction implies a change.',
+    '- When the image model should change but none is named (a better still, more realism, fix the face, keep the character consistent), use NanoBanana 2.1 - the default for stills - unless the shot needs a specialist (title card: Ideogram v4.5; logo or graphic: Recraft v4.1).',
     '- Write each prompt the way ITS model is best prompted (follow its guide when one is given). Keep what the shot shows and how it connects to its neighbours unless the instruction asks to change that.',
     '- The image prompt describes ONE frozen frame in full (subject, pose just before the motion, setting, camera angle and shot size, lighting) - self-contained, no on-screen text.',
     '- The video prompt describes only the MOTION from that still: what moves, how the camera moves, and the sound.',

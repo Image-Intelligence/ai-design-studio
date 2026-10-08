@@ -39,10 +39,12 @@ export async function syncActiveCounters() {
   const [processingByModel, totalFalProcessing] = await Promise.all([
     prisma.generationQueue.groupBy({
       by: ['modelId'],
-      where: { status: 'processing' },
+      // 3D jobs run on fal's own queue for minutes to an hour and never held
+      // one of the image/video slots - counting them throttled everyone else
+      where: { status: 'processing', modelType: { not: 'threed' } },
       _count: { id: true },
     }),
-    prisma.generationQueue.count({ where: { status: 'processing' } }),
+    prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' } } }),
   ]);
 
   const actualCounts: Record<string, number> = {};

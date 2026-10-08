@@ -39,6 +39,8 @@ export interface MyGenImage {
 }
 
 interface Pagination { page: number; limit: number; total: number; totalPages: number }
+/** A page request that hasn't answered by now is given up on (and retried once). */
+const PAGE_TIMEOUT_MS = 20_000
 
 // Numbered page nav — mirrors the /admin/dataset PageNav.
 function PageNav({ pagination, page, loading, setPage, className = "" }: {
@@ -56,7 +58,7 @@ function PageNav({ pagination, page, loading, setPage, className = "" }: {
 
   return (
     <div className={`flex items-center justify-center gap-2 flex-wrap ${className}`}>
-      <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1 || loading}
+      <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1}
         className="p-2 rounded-lg bg-white/[0.04] border border-white/[0.07] text-slate-400 hover:text-white disabled:opacity-30 transition-all">
         <ChevronLeft size={15} />
       </button>
@@ -69,7 +71,7 @@ function PageNav({ pagination, page, loading, setPage, className = "" }: {
           </button>
         ))}
       </div>
-      <button onClick={() => setPage(Math.min(total, page + 1))} disabled={page >= total || loading}
+      <button onClick={() => setPage(Math.min(total, page + 1))} disabled={page >= total}
         className="p-2 rounded-lg bg-white/[0.04] border border-white/[0.07] text-slate-400 hover:text-white disabled:opacity-30 transition-all">
         <ChevronRight size={15} />
       </button>
@@ -115,6 +117,7 @@ export function MyGenFeed({
   onNavListChange,
   onTotalChange,
   refreshKey = 0,
+  leadingTiles,
 }: {
   signedIn: boolean
   cols?: number | null
@@ -136,6 +139,8 @@ export function MyGenFeed({
   onTotalChange?: (total: number | null) => void
   // Bump to force a reload of the current page (after move / delete / hide).
   refreshKey?: number
+  /** Tiles shown first on page 1, among the generations (the open folder's subfolders). */
+  leadingTiles?: { key: string; node: React.ReactNode }[]
 }) {
   const fullRes = tileRes === "full"
   const [autoCols, setAutoCols] = useState(4)
@@ -151,6 +156,9 @@ export function MyGenFeed({
   const [page, setPage] = useState(1)
   // Starts true, or the empty-state message flashes before the first page arrives.
   const [loading, setLoading] = useState(true)
+  // A page that would not load (timed out twice / the server said no): said
+  // in words with a Retry, instead of leaving the last page up looking current
+  const [loadError, setLoadError] = useState<string | null>(null)
   // Discards stale responses when filters change mid-flight.
   const reqRef = useRef(0)
 
@@ -158,24 +166,31 @@ export function MyGenFeed({
   const filterKey = `${typeFilter}|${folderId ?? "root"}|${showHidden ? 1 : 0}|${pageSize}`
   const cache = useRef(new Map<string, { images: MyGenImage[]; pagination: Pagination | null }>())
   const totals = useRef(new Map<string, Pagination>())
-  const inflight = useRef(new Map<string, Promise<void>>())
+  const inflight = useRef(new Map<string, Promise<string | null>>())
 
-  /** Fetch one page into the cache (shared by the visible load and the prefetch). */
-  const fetchPage = useCallback((p: number): Promise<void> => {
+  /**
+   * Fetch one page into the cache (shared by the visible load and the
+   * prefetch). Resolves to an error message, or null once the page is cached.
+   * A request that hangs is given up on after PAGE_TIMEOUT_MS, so a stalled
+   * connection can never leave the feed waiting forever.
+   */
+  const fetchPage = useCallback((p: number): Promise<string | null> => {
     const key = `${filterKey}#${p}`
-    if (cache.current.has(key)) return Promise.resolve()
+    if (cache.current.has(key)) return Promise.resolve(null)
     const running = inflight.current.get(key)
     if (running) return running
     const typeQs = typeFilter !== "all" ? `&type=${typeFilter}` : ""
     // Root (folderId null) shows unfiled only; a folder shows its own contents.
     const folderQs = `&folderId=${folderId == null ? "root" : folderId}`
     const countQs = totals.current.has(filterKey) ? "&count=0" : ""
-    const job = fetch(`/api/my-images?page=${p}&limit=${pageSize}&includeAudio=1${typeQs}${folderQs}${showHidden ? "&hidden=true" : ""}${countQs}`)
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), PAGE_TIMEOUT_MS)
+    const job: Promise<string | null> = fetch(`/api/my-images?page=${p}&limit=${pageSize}&includeAudio=1${typeQs}${folderQs}${showHidden ? "&hidden=true" : ""}${countQs}`, { signal: ac.signal })
       .then(async res => {
-        if (res.status === 401) { window.location.href = "/login"; return }
-        if (!res.ok) return
+        if (res.status === 401) { window.location.href = "/login"; return "Signed out" }
+        if (!res.ok) return `The server answered ${res.status}`
         const data = await res.json()
-        if (!data.success) return
+        if (!data.success) return data.error || "The server could not load this page"
         const items: MyGenImage[] = (data.images || []).map((img: any) => ({
           id: img.id,
           imageUrl: img.imageUrl,
@@ -193,9 +208,10 @@ export function MyGenFeed({
         }))
         if (data.pagination) totals.current.set(filterKey, data.pagination)
         cache.current.set(key, { images: items, pagination: data.pagination ?? null })
+        return null
       })
-      .catch(() => {})
-      .finally(() => { inflight.current.delete(key) })
+      .catch((e: any) => (e?.name === "AbortError" ? "It took too long to answer" : "The connection dropped"))
+      .finally(() => { clearTimeout(timer); inflight.current.delete(key) })
     inflight.current.set(key, job)
     return job
   }, [filterKey, typeFilter, folderId, showHidden, pageSize])
@@ -221,11 +237,26 @@ export function MyGenFeed({
     }
     if (!show()) {
       setLoading(true)
-      await fetchPage(p)
+      setLoadError(null)
+      // One quiet retry: a single dropped or stalled request shouldn't strand the page
+      let err = await fetchPage(p)
+      if (err && rid === reqRef.current) err = await fetchPage(p)
       if (rid !== reqRef.current) return // filters changed mid-flight — discard
-      if (!show()) { setImages([]); setPagination({ page: p, limit: pageSize, total: 0, totalPages: 0 }) }
+      if (!show()) {
+        if (err) {
+          // Keep the pager (and its total) so another page or Retry is one click away
+          setLoadError(`Couldn't load page ${p} - ${err}.`)
+          setImages([])
+          const known = totals.current.get(filterKey)
+          if (known) setPagination({ ...known, page: p })
+        } else { setImages([]); setPagination({ page: p, limit: pageSize, total: 0, totalPages: 0 }) }
+      }
       setLoading(false)
-    }
+    } else setLoadError(null)
+    // The page emptied out from under you (the last page, after moving its
+    // items away): the new last page instead
+    const known = totals.current.get(filterKey)
+    if (rid === reqRef.current && known && known.totalPages > 0 && p > known.totalPages) { setPage(known.totalPages); return }
     // Then quietly fetch the neighbours.
     const totalPages = totals.current.get(filterKey)?.totalPages ?? 0
     for (const q of [p + 1, p - 1]) {
@@ -240,8 +271,10 @@ export function MyGenFeed({
     totals.current.clear()
   }, [refreshKey])
 
-  // Reset to page 1 whenever the filter set (or refreshKey) changes.
-  useEffect(() => { setPage(1) }, [typeFilter, folderId, showHidden, pageSize, refreshKey])
+  // Back to page 1 when the filter set changes. A refresh (after a move,
+  // delete or hide) reloads the page you are on instead - see load's clamp
+  // for a page that no longer exists.
+  useEffect(() => { setPage(1) }, [typeFilter, folderId, showHidden, pageSize])
 
   // Fetch whenever the page or the filter set changes.
   useEffect(() => {
@@ -271,7 +304,8 @@ export function MyGenFeed({
     )
   }
 
-  if (!loading && images.length === 0) {
+  const leading = page === 1 && !showHidden ? (leadingTiles ?? []) : []
+  if (!loading && images.length === 0 && !loadError && leading.length === 0) {
     return (
       <div className="flex items-center justify-center py-32 text-slate-600 text-sm">
         {showHidden ? "No hidden generations" : "No generations here yet"}
@@ -279,7 +313,7 @@ export function MyGenFeed({
     )
   }
 
-  const nodes = images.map((img) => ({
+  const nodes = [...leading.map(t => ({ weight: 1, node: <div key={t.key}>{t.node}</div> })), ...images.map((img) => ({
     weight: (() => { const a = tileAspect(img); return a ? 1 / a : arHeightWeight(img.aspectRatio) })(),
     node: (
       <GridImage
@@ -301,7 +335,7 @@ export function MyGenFeed({
         audio={img.videoMetadata?.isAudio === true ? { title: img.videoMetadata?.modelName ?? "Audio", label: img.videoMetadata?.label ?? null } : undefined}
       />
     ),
-  }))
+  }))]
 
   const showPager = pagination.totalPages > 1
 
@@ -311,7 +345,21 @@ export function MyGenFeed({
         <PageNav pagination={pagination} page={page} loading={loading} setPage={goToPage} className="mb-5" />
       )}
 
-      <div className={loading ? "opacity-50 transition-opacity" : "transition-opacity"}>
+      {/* Which page is on its way - up here where you are, not under the old page */}
+      {loading && pagination.page !== page && (
+        <div className="sticky top-[64px] z-10 mb-3 mx-auto w-fit flex items-center gap-2 px-3.5 py-2 rounded-full silver-edge bg-[#070b14]/95 backdrop-blur-md text-[12px] text-slate-200 shadow-xl">
+          <Loader2 size={13} className="animate-spin" /> Loading page {page}…
+        </div>
+      )}
+      {loadError && !loading && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 px-4 py-3 rounded-xl border border-red-400/25 bg-red-500/[0.06] text-[12.5px] text-red-100">
+          <span>{loadError}</span>
+          <button onClick={() => load(page)} className="ml-auto px-3 py-1.5 rounded-lg border border-white/20 bg-white/[0.06] hover:bg-white/[0.12] text-white text-xs font-semibold">Retry</button>
+        </div>
+      )}
+
+      {/* The last page fades right back while the next loads, so it never reads as the current one */}
+      <div className={loading && pagination.page !== page ? "opacity-25 pointer-events-none transition-opacity" : loading ? "opacity-60 transition-opacity" : "transition-opacity"}>
         {(() => {
           // Masonry "Rows": JS shortest-column packing.
           if (fullSize && fullSizeLayout === "masonry" && masonryMode === "rows") {

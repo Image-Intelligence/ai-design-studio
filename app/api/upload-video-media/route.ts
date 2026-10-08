@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { uploadToR2 } from '@/lib/r2'
+import { jsonPrivate } from '@/lib/api-json'
 
 // POST /api/upload-video-media — video-panel media uploads (start/end frames,
 // reference images/videos/audio, motion + lipsync sources) THROUGH THE SERVER.
@@ -44,7 +45,8 @@ export async function POST(req: Request) {
     const buffer = Buffer.from(await file.arrayBuffer())
     const key = `admin-upload-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
     const url = await uploadToR2(key, buffer, mime)
-    return NextResponse.json({ url })
+    // Signed: the panel shows this link as the preview (the raw private URL 401s)
+    return jsonPrivate({ url })
   } catch (error: any) {
     console.error('upload-video-media error:', error)
     return NextResponse.json({ error: error?.message || 'Upload failed' }, { status: 500 })

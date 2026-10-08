@@ -235,6 +235,8 @@ model GeneratedImage {
   // Per-user organization folder (null = unfiled). Deleting a folder re-parents its images.
   folderId           Int?
   folder             UserGenerationFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  /// Extra folders this generation also appears in ("Add to folder"); folderId is where it lives
+  folderLinks        GenerationFolderLink[]
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -994,6 +996,7 @@ model UserGenerationFolder {
   parent   UserGenerationFolder?  @relation("UserGenerationFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
   children UserGenerationFolder[] @relation("UserGenerationFolderTree")
   images   GeneratedImage[]
+  links    GenerationFolderLink[]
 
   @@index([userId])
   @@index([parentId])
@@ -1382,4 +1385,21 @@ model UserAsset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, updatedAt])
+}
+
+/// My Generations "Add to folder" (2026-10-07): a generation shown in a folder
+/// besides the one it lives in (GeneratedImage.folderId). Created out of band
+/// (scratchpad add-generation-folder-links.mts); read and written with raw SQL.
+model GenerationFolderLink {
+  folderId  Int
+  imageId   Int
+  userId    Int
+  createdAt DateTime @default(now())
+
+  folder UserGenerationFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  image  GeneratedImage       @relation(fields: [imageId], references: [id], onDelete: Cascade)
+
+  @@id([folderId, imageId])
+  @@index([imageId])
+  @@index([userId, folderId])
 }

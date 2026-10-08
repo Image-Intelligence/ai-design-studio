@@ -22,9 +22,9 @@ import { getAudioStudioModel } from '@/lib/audio-studio'
  */
 
 export const AUDIO_STALE_MS = 30 * 60 * 1000
-const TYPES: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/ogg' }
+const TYPES: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/ogg', mp4: 'video/mp4' }
 const extOf = (url: string, type: string | null) => {
-  const fromUrl = url.split('?')[0].match(/\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i)?.[1]?.toLowerCase()
+  const fromUrl = url.split('?')[0].match(/\.(mp3|wav|flac|m4a|aac|ogg|opus|mp4)$/i)?.[1]?.toLowerCase()
   if (fromUrl) return fromUrl
   return Object.entries(TYPES).find(([, t]) => type?.startsWith(t))?.[0] ?? 'mp3'
 }
@@ -103,7 +103,8 @@ export async function settleAudioRun(row: QueueRow, email: string): Promise<Audi
         if (!res.ok) throw new Error(`fetch ${res.status}`)
         const buf = Buffer.from(await res.arrayBuffer())
         const ext = extOf(out.url, res.headers.get('content-type'))
-        url = await uploadToR2(`audio-${row.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.${ext}`, buf, TYPES[ext] ?? 'audio/mpeg')
+        // A video output (Mureka Lyrics Video) is named like the site's other videos
+        url = await uploadToR2(`${spec.outputVideo ? 'video' : 'audio'}-${row.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${i}.${spec.outputVideo ? 'mp4' : ext}`, buf, spec.outputVideo ? 'video/mp4' : TYPES[ext] ?? 'audio/mpeg')
       } catch (e) {
         console.error('audio re-host failed, keeping the fal URL:', e)
       }
@@ -112,14 +113,18 @@ export async function settleAudioRun(row: QueueRow, email: string): Promise<Audi
           userId: row.userId,
           prompt: row.prompt,
           imageUrl: url,
-          model: row.modelId,
+          // A video output is saved under its video model id, so it joins the video feed
+          model: spec.outputVideo?.storeAs ?? row.modelId,
           ticketCost: i === 0 ? row.ticketCost : 0,
           referenceImageUrls: params.audioUrl ? [String(params.audioUrl)] : [],
           createdAt: row.queuedAt,
           expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
           falRequestId: i === 0 ? requestId : `${requestId}#${i}`,
           videoMetadata: {
-            isAudio: true,
+            isAudio: !spec.outputVideo,
+            ...(spec.outputVideo ? { sourceSongAssetId: params.sourceSongAssetId ?? null, options: params.options ?? null } : {}),
+            // What the model returned beyond the file (Mureka's song id: a lyrics video is made from it)
+            ...(out.meta ?? {}),
             label: out.label ?? null,
             modelName: spec.name,
             provider: spec.provider,
