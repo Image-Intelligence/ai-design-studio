@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { uploadToR2, deleteFromR2 } from '@/lib/r2';
 import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
+import { requireIdVerified } from '@/lib/id-verification'
 
 async function requireSession() {
   const token = (await cookies()).get('session')?.value;
@@ -10,9 +11,13 @@ async function requireSession() {
 
 export async function POST(request: Request) {
   try {
-    if (!(await requireSession())) {
+    const sessionUser = await requireSession();
+    if (!sessionUser) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(sessionUser);
+    if (idGate) return idGate;
     const formData = await request.formData();
     const file = formData.get('file') as File;
     

@@ -21,6 +21,7 @@ import {
   AUDIO_GROUPS, AUDIO_MODEL_PREFIX, AUDIO_STUDIO_MODELS, audioPriceNote, audioTicketCost, getAudioStudioModel,
   type AudioStudioModel,
 } from "@/lib/audio-studio"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 type AudioItem = {
   id: number
@@ -332,7 +333,7 @@ function AudioSettings({
       {model.audioIn && (
         <div>
           <span className={label}>{model.audioIn.label}</span>
-          <input ref={fileRef} type="file" accept="audio/*,video/mp4" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onAudioPick(f) }} />
+          <input ref={fileRef} type="file" onClick={gateFileInput} accept="audio/*,video/mp4" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onAudioPick(f) }} />
           {audioFile ? (
             <div className="flex items-center gap-2 rounded-lg bg-black/40 border border-white/10 px-2.5 py-2">
               <Music size={13} className="text-slate-400 shrink-0" />
@@ -344,7 +345,7 @@ function AudioSettings({
             <button
               onClick={() => fileRef.current?.click()}
               onDragOver={e => e.preventDefault()}
-              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) onAudioPick(f) }}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f && gateUpload()) onAudioPick(f) }}
               disabled={audioUploading}
               className="w-full flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-white/20 bg-black/20 px-3 py-5 text-xs text-slate-300 hover:border-white/40 hover:bg-white/[0.03] transition-colors disabled:opacity-60"
             >

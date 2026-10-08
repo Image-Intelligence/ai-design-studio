@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { uploadToR2 } from '@/lib/r2';
+import { cookies } from 'next/headers';
+import { getUserFromSession } from '@/lib/auth';
+import { requireIdVerified } from '@/lib/id-verification';
 
 
 export async function POST(request: Request) {
@@ -16,6 +19,14 @@ export async function POST(request: Request) {
     // Upload images to Vercel Blob if provided
     const imageUrls: string[] = [];
     if (body.images && Array.isArray(body.images) && body.images.length > 0) {
+      // Pictures are uploads: a signed-in, ID-verified account only (CCBill;
+      // admins exempt). A text-only message stays open to anyone.
+      const token = (await cookies()).get('session')?.value;
+      const sessionUser = token ? await getUserFromSession(token) : null;
+      if (!sessionUser) return NextResponse.json({ error: 'Sign in to attach pictures' }, { status: 401 });
+      const idGate = await requireIdVerified(sessionUser);
+      if (idGate) return idGate;
+
       console.log('Uploading', body.images.length, 'images to blob storage...');
 
       for (let i = 0; i < body.images.length; i++) {

@@ -4,6 +4,7 @@ import { requireStudioUser } from '@/lib/studio-auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalMediaUrl } from '@/lib/media-url'
 import { ensureThumbnail } from '@/lib/thumbnail'
+import { requireIdVerified } from '@/lib/id-verification'
 
 /**
  * POST /api/employees/image-studio/[id]/export - put a flattened export of
@@ -17,6 +18,9 @@ type Ctx = { params: Promise<{ id: string }> }
 export async function POST(req: NextRequest, ctx: Ctx) {
   const user = await requireStudioUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
+  // The export is the browser's own composite (see upload/route.ts): verified accounts only
+  const gated = await requireIdVerified(user)
+  if (gated) return gated
   const id = parseInt((await ctx.params).id)
   const canvas = Number.isFinite(id) ? await prisma.imageCanvas.findFirst({ where: { id, userId: user.id } }) : null
   if (!canvas) return jsonPrivate({ error: 'Not found' }, { status: 404 })

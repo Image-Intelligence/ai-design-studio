@@ -63,7 +63,9 @@ a ticket/credit economy, payments, and a background generation queue. Deployed o
 - **Secrets** live in `.env.local` (gitignored) — there is no `.env.example`. Never print, log, or commit
   secret values. Required env includes: `DATABASE_URL`, `PRISMA_DATABASE_URL`, `APP_URL`, `ADMIN_PASSWORD`,
   `FAL_KEY`, `GEMINI_API_KEY`, `REPLICATE_API_TOKEN`, R2 keys (`R2_*`), `BLOB_READ_WRITE_TOKEN`, and payment
-  keys (PayPal / LemonSqueezy). If a change needs a new env var, add it to `.env.local` and note it here.
+  keys (PayPal / LemonSqueezy), and Didit ID verification (`DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID`,
+  `DIDIT_WEBHOOK_SECRET` — without them uploads stay locked for non-admins). If a change needs a new env var,
+  add it to `.env.local` and note it here.
 - **Database migrations** change production data — propose the schema change and the `prisma migrate` command,
   don't run destructive migrations unprompted.
 - Deployment is on **Vercel** (`vercel.json` defines a per-minute cron → `/api/cron/drain-queue`). Changing

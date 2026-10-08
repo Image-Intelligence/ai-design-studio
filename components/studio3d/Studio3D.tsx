@@ -29,6 +29,7 @@ import { ClipPicker } from "./ClipPicker"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { uploadImage } from "@/components/employees/StoryboardAssets"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 const Viewer3D = dynamic(() => import("./Viewer3D").then(m => m.Viewer3D), { ssr: false, loading: () => <div className="absolute inset-0 flex items-center justify-center"><Loader2 className="animate-spin text-slate-500" /></div> })
 
@@ -371,7 +372,7 @@ export function Studio3D({ isAdmin, refLibrary, logo, onBalanceChange, onUseFram
                   ))}
                   <label className="w-14 h-14 rounded-lg border border-dashed border-white/20 flex flex-col items-center justify-center text-[9px] text-slate-400 cursor-pointer hover:border-white/40">
                     {working === "upload" ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}Upload
-                    <input type="file" accept="image/*" multiple className="hidden" onChange={e => { void upload(e.target.files); e.target.value = "" }} />
+                    <input type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={e => { void upload(e.target.files); e.target.value = "" }} />
                   </label>
                   <button onClick={() => setPicker("refs")} className="w-14 h-14 rounded-lg border border-dashed border-white/20 flex flex-col items-center justify-center text-[9px] text-slate-400 hover:border-white/40"><ImagePlus size={13} />Library</button>
                 </div>

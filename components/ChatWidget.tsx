@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react"
 import { X, Send, ImagePlus, Trash2, Bot, ChevronRight } from "lucide-react"
 import { SiteLogoBox } from "@/components/SitePageHeader"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 interface Part {
   type: 'text' | 'image'
@@ -97,7 +98,8 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     for (const item of Array.from(e.clipboardData.items)) {
-      if (item.type.startsWith('image/')) {
+      // A pasted picture is an upload: ID-verified accounts only (CCBill)
+      if (item.type.startsWith('image/') && gateUpload()) {
         const file = item.getAsFile()
         if (file) handleImageFile(file)
       }
@@ -350,7 +352,7 @@ export default function ChatWidget({ sideTabOnly = false }: { sideTabOnly?: bool
 
       <input
         ref={fileInputRef}
-        type="file"
+        type="file" onClick={gateFileInput}
         accept="image/*"
         className="hidden"
         onChange={e => {

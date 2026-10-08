@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { isAdminEmail } from '@/lib/ticket-gate'
+import { devTierWhere } from '@/lib/dev-tier'
 
 /**
  * Who may use the Image Studio's editing engine.
@@ -25,7 +26,8 @@ export async function requireStudioUser() {
 export async function hasDevAccess(userId: number, email: string): Promise<boolean> {
   if (isAdminEmail(email) || email.endsWith('@audit.pp')) return true
   const sub = await prisma.subscription.findFirst({
-    where: { userId, tier: 'prompt-studio-dev', status: 'active', OR: [{ endDate: null }, { endDate: { gt: new Date() } }] },
+    // Active, or cancelled but still in its paid period (lib/dev-tier)
+    where: { userId, ...devTierWhere() },
     select: { id: true },
   })
   return !!sub

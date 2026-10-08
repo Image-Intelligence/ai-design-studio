@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { uploadToR2 } from '@/lib/r2'
 import { jsonPrivate } from '@/lib/api-json'
+import { requireIdVerified } from '@/lib/id-verification'
 
 // POST /api/upload-video-media — video-panel media uploads (start/end frames,
 // reference images/videos/audio, motion + lipsync sources) THROUGH THE SERVER.
@@ -22,6 +23,9 @@ export async function POST(req: Request) {
     if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     const user = await getUserFromSession(token)
     if (!user) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(user)
+    if (idGate) return idGate
 
     const form = await req.formData()
     const file = form.get('file')

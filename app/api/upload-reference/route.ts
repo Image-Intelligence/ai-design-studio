@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getUserFromSession } from '@/lib/auth';
 import { jsonPrivate } from '@/lib/api-json';
+import { requireIdVerified } from '@/lib/id-verification'
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15MB — client compresses to ≤1920px
 
@@ -19,6 +20,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!sessionUser) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
+
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(sessionUser);
+    if (idGate) return idGate;
 
     const formData = await req.formData();
     const file = formData.get('file') as File | null;

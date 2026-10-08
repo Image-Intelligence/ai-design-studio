@@ -6,6 +6,7 @@ import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { Dropdown } from "@/components/employees/Dropdown"
 import { CHAT_IMAGE_MODELS } from "@/lib/chat-image-catalog"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 /**
  * Character Design, as a board builder rather than a chat.
@@ -659,7 +660,7 @@ export function CharacterStudioWorkspace({
                 </button>
               )}
             </div>
-            <input ref={fileRef} type="file" accept="image/*" multiple hidden
+            <input ref={fileRef} type="file" onClick={gateFileInput} accept="image/*" multiple hidden
               onChange={e => { void addFiles([...(e.target.files ?? [])]); e.currentTarget.value = "" }} />
           </div>
 

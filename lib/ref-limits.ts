@@ -1,5 +1,6 @@
 import prisma from '@/lib/prisma'
 import { isAdminEmail } from '@/lib/ticket-gate'
+import { devTierWhere } from '@/lib/dev-tier'
 
 // Max ACTIVE (non-cleared) reference-library images per account.
 // Cleared refs don't count — they're soft-deleted (kept for admin review).
@@ -12,12 +13,8 @@ export async function getUserRefLimit(userId: number, email: string): Promise<nu
   // Audit/reviewer accounts (@audit.pp, e.g. CCBill compliance) test as Dev Tier
   if (email.endsWith('@audit.pp')) return REF_LIMIT_DEV
   const sub = await prisma.subscription.findFirst({
-    where: {
-      userId,
-      tier: 'prompt-studio-dev',
-      status: 'active',
-      OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
-    },
+    // Active, or cancelled but still in its paid period (lib/dev-tier)
+    where: { userId, ...devTierWhere() },
     select: { id: true },
   })
   return sub ? REF_LIMIT_DEV : REF_LIMIT_FREE

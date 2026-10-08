@@ -5,7 +5,7 @@ import {
   Download, ExternalLink, Copy, Sparkles, AlertTriangle, Trash2, X, Square, CheckSquare,
   Images, LayoutDashboard, Folder, FolderOpen, FolderPlus, MoreVertical, Music,
   ChevronRight, ChevronLeft, FolderInput, EyeOff, Eye, Loader2, Home, Layers, Boxes, ImagePlus,
-  FolderPlus as FolderAdd, FolderMinus, Search,
+  FolderPlus as FolderAdd, FolderMinus, Search, Image as ImageIcon,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -22,6 +22,7 @@ import {
 import type { AssetKind } from "@/lib/storyboard"
 import { FolderPicker, touchRecentFolders, type PickerMode } from "@/components/my-generations/FolderPicker"
 import { holdCardVideos } from "@/components/home/card-video-scheduler"
+import { RefLibraryGrid } from "@/components/my-generations/RefLibraryGrid"
 
 interface GeneratedImage extends MyGenImage {
   prompt: string
@@ -34,7 +35,8 @@ interface GeneratedImage extends MyGenImage {
 
 /** A folder, and (from /api/user/generation-folders) what its card shows: newest pictures, counts. */
 type GenFolder = { id: number; name: string; parentId: number | null; count?: number; subfolders?: number; previews?: string[]; previewsFromSubfolders?: boolean }
-type View = "generations" | "assets"
+/** "library" = the account's reference library (the Refs panel's uploads) */
+type View = "generations" | "assets" | "library"
 
 /*
  * The feed layout is site-wide: admins set it in the Feed dropdown for every
@@ -192,6 +194,16 @@ export default function MyGenerationsPage() {
 
   // --- Assets ---
   const assetsApi = useUserAssets(signedIn)
+  // How many references are in the library (badge on the Library entry);
+  // RefLibraryGrid keeps it current once it's open
+  const [refCount, setRefCount] = useState<number | null>(null)
+  useEffect(() => {
+    if (!signedIn) return
+    fetch("/api/user/references", { cache: "no-store" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (j && typeof j.count === "number") setRefCount(j.count) })
+      .catch(() => {})
+  }, [signedIn])
   const [openAssetId, setOpenAssetId] = useState<number | null>(null)
   const openAsset = assetsApi.assets?.find(a => a.id === openAssetId) ?? null
   const [newAssetOpen, setNewAssetOpen] = useState(false)
@@ -750,6 +762,8 @@ export default function MyGenerationsPage() {
               <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 whitespace-nowrap">
                 {view === "assets"
                   ? `${assetsApi.assets?.length ?? 0} asset${assetsApi.assets?.length === 1 ? "" : "s"}`
+                  : view === "library"
+                  ? `${refCount ?? 0} reference${refCount === 1 ? "" : "s"}`
                   : total !== null ? `${total.toLocaleString()} ${total === 1 ? "item" : "items"}${feedShowHidden ? " hidden" : ""}` : "Your library"}
               </p>
             </div>
@@ -763,6 +777,11 @@ export default function MyGenerationsPage() {
             <button onClick={() => { setView("assets"); if (isSelectMode && !pickingFor) exitSelectMode() }} className={`${segBtn(view === "assets")} flex items-center gap-1.5`}>
               <Boxes size={12} /> <span>Assets</span>
               {!!assetsApi.assets?.length && <span className="text-[9.5px] font-mono text-slate-400">{assetsApi.assets.length}</span>}
+            </button>
+            <button onClick={() => { setView("library"); if (isSelectMode && !pickingFor) exitSelectMode() }} className={`${segBtn(view === "library")} flex items-center gap-1.5`}
+              title="Your reference library - the pictures you've uploaded to Refs">
+              <ImageIcon size={12} /> <span>Library</span>
+              {!!refCount && <span className="text-[9.5px] font-mono text-slate-400">{refCount}</span>}
             </button>
           </div>
 
@@ -896,6 +915,14 @@ export default function MyGenerationsPage() {
                 <Boxes size={14} className="shrink-0" /> Assets
                 <span className="ml-auto text-[10px] font-mono text-slate-500">{assetsApi.assets?.length ?? ""}</span>
               </button>
+              {/* The reference library: what's been uploaded to Refs */}
+              <button
+                onClick={() => setView("library")}
+                className={`mt-0.5 w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[13px] text-left transition-colors ${view === "library" ? "bg-white/[0.10] border-white/20 text-white" : "border-transparent text-slate-400 hover:bg-white/[0.04] hover:text-white"}`}
+              >
+                <ImageIcon size={14} className="shrink-0" /> Library
+                <span className="ml-auto text-[10px] font-mono text-slate-500">{refCount ?? ""}</span>
+              </button>
             </div>
           </div>
         </aside>
@@ -903,6 +930,8 @@ export default function MyGenerationsPage() {
         <main className="flex-1 min-w-0">
           {view === "assets" ? (
             <AssetsGrid assets={assetsApi.assets} onOpen={a => setOpenAssetId(a.id)} onNew={() => setNewAssetOpen(true)} />
+          ) : view === "library" ? (
+            <RefLibraryGrid signedIn={signedIn} onCount={setRefCount} />
           ) : (
             <>
               {/* Breadcrumb */}
@@ -1024,7 +1053,7 @@ export default function MyGenerationsPage() {
 
           {/* Feed - starts loading at once, alongside the session check. Kept
               mounted (just hidden) on the Assets view, so going back is instant. */}
-          <div className={view === "assets" ? "hidden" : ""}>
+          <div className={view !== "generations" ? "hidden" : ""}>
             <MyGenFeed
               signedIn={signedIn && feedReady}
               cols={feed.cols}

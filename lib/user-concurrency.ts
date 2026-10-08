@@ -1,4 +1,5 @@
 import prisma from '@/lib/prisma'
+import { devTierWhere } from '@/lib/dev-tier'
 
 const OWNER_EMAILS = ['dirtysecretai@gmail.com', 'promptandprotocol@gmail.com']
 
@@ -7,12 +8,8 @@ export async function getUserConcurrencyLimit(userId: number): Promise<number> {
   const [user, sub] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { email: true } }),
     prisma.subscription.findFirst({
-      where: {
-        userId,
-        tier: 'prompt-studio-dev',
-        status: 'active',
-        OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
-      },
+      // Active, or cancelled but still in its paid period (lib/dev-tier)
+      where: { userId, ...devTierWhere() },
       select: { id: true },
     }),
   ])

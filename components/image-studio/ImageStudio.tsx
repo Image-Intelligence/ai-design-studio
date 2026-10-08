@@ -19,6 +19,7 @@ import { fileToCanvas, loadToCanvas } from "./engine"
 import { Editor, RefPicker } from "./Editor"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import type { StudioOpenRequest } from "./bridge"
+import { gateFileInput, gateUpload, useIdVerified, IdLockedPanel } from "@/components/id-verification/IdVerificationGate"
 
 type CanvasSummary = { id: number; title: string; width: number; height: number; thumbUrl: string | null; updatedAt: string }
 
@@ -41,6 +42,10 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
   onReplaceRef?: (refId: string, dataUrl: string) => Promise<unknown>
   onBalanceChange?: (n: number) => void
 }) {
+  // Every canvas saves pixels the browser uploads, so the studio is for
+  // ID-verified accounts (the upload / AI / export routes refuse the rest).
+  // Asked here, at the door, rather than mid-edit when a save would fail
+  const idVerified = useIdVerified()
   const [list, setList] = useState<CanvasSummary[] | null>(null)
   const [open, setOpen] = useState<{ id: number; seed?: Map<string, HTMLCanvasElement> } | null>(null)
   const [w, setW] = useState(2048), [h, setH] = useState(2048)
@@ -108,6 +113,16 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
 
   if (!signedIn) return <div className="py-24 text-center text-sm text-slate-400">Sign in to use the Image Studio.</div>
   if (busy === "ref" && !open && openRequest) return <div className="flex-1 flex flex-col items-center justify-center gap-2 py-24 text-[12px] text-slate-400"><Loader2 className="animate-spin" size={18} /> Opening the picture…</div>
+  if (idVerified === false && signedIn) return (
+    <div className="h-full overflow-y-auto overscroll-contain">
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-8 space-y-8">
+        <BrandTitle title="Image Studio" eyebrow="Layers · groups · masks · AI tools" logo={34} size="lg" />
+        <IdLockedPanel className="mx-auto max-w-lg" title="Verify your ID to use Image Studio"
+          label="Image Studio works on pictures you bring in, so it unlocks once your ID is verified." />
+      </div>
+    </div>
+  )
+
   if (open) return (
     <Editor
       key={open.id}
@@ -158,9 +173,10 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
             <div className="flex items-center gap-2 text-[12px] font-bold text-slate-100"><Layers size={14} /> Start from an image</div>
             <label className={`flex items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 px-3 py-4 text-[12px] text-slate-200 hover:border-white/40 hover:bg-white/[0.03] cursor-pointer ${busy ? "opacity-50 pointer-events-none" : ""}`}>
               {busy === "upload" ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Upload from this device
-              <input type="file" accept="image/*" className="hidden" onChange={e => onFile(e.target.files?.[0])} />
+              <input type="file" onClick={gateFileInput} accept="image/*" className="hidden" onChange={e => onFile(e.target.files?.[0])} />
             </label>
-            <button onClick={() => setPicker(true)} disabled={!!busy} className="flex items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-4 text-[12px] text-slate-200 hover:border-white/40 hover:bg-white/[0.03] disabled:opacity-50">
+            {/* Refs are the account's uploads - locked until it is ID-verified (CCBill) */}
+            <button onClick={() => { if (gateUpload()) setPicker(true) }} disabled={!!busy} className="flex items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-4 text-[12px] text-slate-200 hover:border-white/40 hover:bg-white/[0.03] disabled:opacity-50">
               {busy === "ref" ? <Loader2 size={14} className="animate-spin" /> : <Images size={14} />} Open one of my Refs
             </button>
             <p className="text-[10.5px] text-slate-500">The image becomes the base layer of a canvas its own size. A reference opened here can be updated in place when you export.</p>

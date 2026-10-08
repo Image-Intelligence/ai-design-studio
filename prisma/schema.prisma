@@ -24,6 +24,15 @@ model User {
   // CCBill compliance: timestamp of the user's 18+ certification (set at signup,
   // or via the one-time attestation modal for accounts that predate it)
   ageAttestedAt DateTime?
+  // CCBill / card-network rule: uploads (refs, start frames, clips...) only from
+  // ID-verified accounts. Didit does the check; we keep ONLY the outcome - never
+  // names, dates of birth or images (lib/id-verification). DDL applied out of
+  // band (pg script) - it must land BEFORE `prisma generate`, or every User read
+  // selects columns that do not exist yet.
+  idVerifiedAt           DateTime? // set only on Approved + 18 or over
+  idVerificationSessionId String?  // the latest Didit session
+  idVerificationStatus   String?   // Didit's status ("Approved", "In Review", "Declined (age)"...)
+  contentTermsAcceptedAt DateTime? // agreed to the Content Provider terms (ToS §21)
 
   // Relations
   sessions          Session[]

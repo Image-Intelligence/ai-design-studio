@@ -30,6 +30,7 @@ import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 /**
  * Storyboard Studio - see the cut before any motion is shot.
@@ -2391,7 +2392,7 @@ function ShotCard({
                   <div className="flex items-center gap-1">
                     <label className={`shrink-0 flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 text-[10px] font-semibold text-slate-200 cursor-pointer hover:bg-white/10 ${beforeBusy ? "opacity-50 pointer-events-none" : ""}`}>
                       {beforeBusy ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />}Upload
-                      <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                      <input type="file" onClick={gateFileInput} accept="image/*" className="hidden" onChange={async e => {
                         const f = e.target.files?.[0]
                         e.target.value = ""
                         if (!f) return

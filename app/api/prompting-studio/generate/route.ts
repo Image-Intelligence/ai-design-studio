@@ -12,6 +12,7 @@ import { isGenerationBlocked } from '@/lib/generation-guard';
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
+import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -44,6 +45,10 @@ export async function POST(req: NextRequest) {
     }
 
     const body = canonicalisePayload(await req.json());
+    // Not ID-verified: references only from the account's OWN generations
+    // (CCBill: uploads need a verified account; admins exempt - lib/id-verification)
+    const idGate = await requireOwnMediaUnlessVerified(sessionUser, [body?.referenceImages])
+    if (idGate) return idGate
     const {
       celebrityName,
       enhancement,

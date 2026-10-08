@@ -818,6 +818,8 @@ export const STORYBOARD_VIDEO_MODELS = [
   'Wan 3.0', 'Wan 3.0 Prime', 'Luma Ray 2', 'Luma Ray 2 Flash', 'Hunyuan Video 1.5', 'Grok Imagine 1.5 Lite',
   // 2026-10-06 (public): 5s with sound, 480p or upscaled in the same job
   'Kandinsky 6 Pro', 'Kandinsky 6 Lite',
+  // 2026-10-08 (public): the still is its start frame (fal's image-to-video), 3-16s, sound always on
+  'Vidu Q4',
 ] as const
 export const DEFAULT_VIDEO_MODEL = 'SeeDance 2.5'
 /**
@@ -839,6 +841,7 @@ export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
   'Wan 3.0': 'wan-3.0', 'Wan 3.0 Prime': 'wan-3.0-prime', 'Luma Ray 2': 'luma-ray-2', 'Luma Ray 2 Flash': 'luma-ray-2-flash',
   'Hunyuan Video 1.5': 'hunyuan-video-1.5', 'Grok Imagine 1.5 Lite': 'grok-video-1.5-lite',
   'Kandinsky 6 Pro': 'kandinsky6-pro', 'Kandinsky 6 Lite': 'kandinsky6-lite',
+  'Vidu Q4': 'vidu-q4',
 }
 
 /**
@@ -890,6 +893,7 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'Hunyuan Video 1.5': 'open model, permissive, simple motion',
   'Kandinsky 6 Pro': 'rich 5s shots with generated sound; slow and dear - hero moments',
   'Kandinsky 6 Lite': 'cheap 5s shots with sound; quick drafts and filler',
+  'Vidu Q4': 'newest Vidu: 3-16s with native sound, up to 4K; strong anime and stylised motion, holds the start frame closely',
 }
 
 /** The planner's menu: one line per model, image ids and video labels. */

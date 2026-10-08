@@ -33,8 +33,8 @@ export const VIDEO_TOOL_MODELS = new Set([
   'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
   // 2026-10-03 second round: text-prompted tracking masks, audio-only dubbing
   'sam-3.1-video', 'elevenlabs-dubbing',
-  // 2026-10-07: re-light a clip from a lit-sphere picture
-  'minimax-h3-max-relight',
+  // 2026-10-07: re-light a clip from a lit-sphere picture; swap its person for a character; edit it from words
+  'minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro',
   // Pixelcut: cut the subject out of a clip
   'pixelcut-video-bg-removal',
 ])
@@ -136,7 +136,26 @@ export const KANDINSKY_VSR_FACTORS = [2, 2.25, 4]
 export function bytedanceUpscaleRatio(factor: number, shortEdge: number): number {
   return Math.max(1.1, Math.min(factor, BYTEDANCE_UPSCALE_MAX_SHORT_EDGE / Math.max(1, shortEdge)))
 }
-export function upscalerVideoTicketCost(model: string, o: { seconds: number; width?: number; height?: number; fps?: number; factor?: number }): number {
+/*
+ * Clarity Upscaler: fal bills $0.03 per OUTPUT megapixel, and refuses outputs
+ * past ~4096px on the long side (the route shrinks the source to fit, at every
+ * factor). The long-standing 7 (2x) / 26 (4x) tickets stay the floor; 4x can't
+ * pass 16.8 MP ($0.50, under 26), but a big source at 2x could reach the same
+ * 16.8 MP against 7 tickets ($0.28) - so it rises with the real output, to 13.
+ * Unknown size = the floor (the server always measures before charging).
+ */
+export const CLARITY_MAX_OUTPUT_PX = 4096
+export function clarityUpscaleTicketCost(factor: number, width?: number, height?: number): number {
+  const floor = factor >= 4 ? 26 : 7
+  if (!width || !height) return floor
+  const scale = Math.min(factor, CLARITY_MAX_OUTPUT_PX / Math.max(width, height))
+  const outMp = (width * scale) * (height * scale) / 1e6
+  return Math.max(floor, Math.ceil(outMp * 0.03 / 0.04))
+}
+
+/** ByteDance / SeedVR2 output short edge for a target resolution (both upscale TO a resolution since 2026-10-08). */
+const UPSCALE_TARGET_SHORT: Record<string, number> = { '720p': 720, '1080p': 1080, '1440p': 1440, '2k': 1440, '2160p': 2160, '4k': 2160 }
+export function upscalerVideoTicketCost(model: string, o: { seconds: number; width?: number; height?: number; fps?: number; factor?: number; target?: string }): number {
   const sec = Math.max(1, o.seconds || 5)
   const w = o.width && o.width > 0 ? o.width : 1920
   const h = o.height && o.height > 0 ? o.height : 1080
@@ -151,10 +170,14 @@ export function upscalerVideoTicketCost(model: string, o: { seconds: number; wid
     const frames = Math.min(121, Math.ceil(sec * 24))
     usd = (w * f) * (h * f) / 1e6 * frames * 0.00036
   } else if (model === 'bytedance-video-upscale') {
-    const outShort = Math.min(w, h) * bytedanceUpscaleRatio(factor, Math.min(w, h))
+    const outShort = UPSCALE_TARGET_SHORT[String(o.target ?? '')] ?? Math.min(w, h) * bytedanceUpscaleRatio(factor, Math.min(w, h))
     const rate = outShort <= 1080 ? 0.0072 : outShort <= 1440 ? 0.0144 : 0.0288
     const outFps = Math.max(24, Math.min(60, Math.round(fps)))
     usd = rate * Math.max(1, outFps / 30) * sec
+  } else if (model === 'seedvr2-video' && UPSCALE_TARGET_SHORT[String(o.target ?? '')]) {
+    // Target mode: the output's short edge is the target, the long edge in proportion
+    const short = UPSCALE_TARGET_SHORT[String(o.target)], scale = short / Math.min(w, h)
+    usd = (w * scale) * (h * scale) * Math.ceil(sec * fps) / 1e6 * 0.001
   } else {
     const mpFrames = (w * factor) * (h * factor) * Math.ceil(sec * fps) / 1e6
     usd = mpFrames * (model === 'flashvsr-video' ? 0.0005 : 0.001)
@@ -333,7 +356,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec, !!input.hasStartImage)
   } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {
     // Ahead of the generic tool branch: Vidu Q4 by length x resolution, Relight by the source's length
-    ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec })
+    ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps })
   } else if (BATCH_1003_MODELS.has(model)) {
     // Ahead of the generic tool branch: these price by their own rates
     ticketCost = batch1003TicketCost(model, {
@@ -379,6 +402,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     ticketCost = upscalerVideoTicketCost(model, {
       seconds: editVideoDurationSec, width: input.sourceWidth, height: input.sourceHeight,
       fps: input.sourceFps, factor: parseFloat(videoUpscaleFactor) || 2,
+      target: model === 'bytedance-video-upscale' || model === 'seedvr2-video' ? resolution : undefined,
     })
   } else if (VIDEO_TOOL_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Billed against the SOURCE clip's
@@ -1049,6 +1073,9 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   // 2026-10-07 (admin): lib/batch-1007-video
   { id: 'vidu-q4', label: 'Vidu Q4', kind: 'generator', durations: ['3', '5', '8', '10', '16'], resolutions: ['540p', '720p', '1080p', '2k', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.045 / $0.095 / $0.12 / $0.19 / $0.39 per s (regular rates; 30% off until Nov 30). Audio free.' },
   { id: 'minimax-h3-max-relight', label: 'H3 Max Relight', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 / $0.32 per s of the source (15s max).' },
+  { id: 'wan-2.2-animate-replace', label: 'Wan 2.2 Animate Replace', kind: 'tool', durations: [], resolutions: ['480p', '580p', '720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.04 / $0.06 / $0.08 per "video second" (16 frames of the clip).' },
+  { id: 'dreamactor-v2', label: 'DreamActor v2', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 per s of the clip (30s max).' },
+  { id: 'lucy-edit-pro', label: 'Lucy Edit Pro', kind: 'tool', durations: [], resolutions: ['720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.15 per s of the clip (720p only).' },
   { id: 'minimax-h3-max-recast', label: 'MiniMax H3 Max Recast', kind: 'tool', durations: [], resolutions: ['768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.30 / $0.45 per s of clip (5-30s).' },
   { id: 'minimax-h3-max-extend', label: 'MiniMax H3 Max Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05/$0.08/$0.16 per s added.' },
   { id: 'marey-motion-transfer', label: 'Marey Motion Transfer', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $2.00 a run.' },

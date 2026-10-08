@@ -7,6 +7,7 @@ import { canonicalisePayload } from '@/lib/media-url'
 import { fal } from '@/lib/fal-client'
 import { jsonPrivate } from '@/lib/api-json'
 import { AUDIO_MODEL_PREFIX, audioTicketCost, getAudioStudioModel, type AudioRunInput } from '@/lib/audio-studio'
+import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 
 /**
  * POST /api/audio/generate - submit an Audio Studio run (public since 2026-10-02).
@@ -46,6 +47,11 @@ export async function POST(req: Request) {
     if (!user?.email) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
     const body = canonicalisePayload(await req.json().catch(() => ({})))
+    // A voice track / song to work from is an upload unless it is one of the
+    // account's own generations (CCBill: uploads need a verified account;
+    // admins exempt - lib/id-verification)
+    const idGate = await requireOwnMediaUnlessVerified(user, [body?.audioUrl])
+    if (idGate) return idGate
     const spec = getAudioStudioModel(String(body?.model ?? ''))
     if (!spec) return jsonPrivate({ error: 'Unknown audio model' }, { status: 400 })
 

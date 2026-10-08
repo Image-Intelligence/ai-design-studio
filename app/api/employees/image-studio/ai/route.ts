@@ -5,6 +5,7 @@ import { jsonPrivate } from '@/lib/api-json'
 import { fal } from '@/lib/fal-client'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { STUDIO_AI_TICKETS, type StudioAiOp } from '@/lib/image-studio'
+import { requireIdVerified } from '@/lib/id-verification'
 
 /**
  * POST /api/employees/image-studio/ai - the studio's AI selections.
@@ -62,6 +63,10 @@ async function mergeMasks(urls: string[]): Promise<string | null> {
 export async function POST(req: NextRequest) {
   const user = await requireStudioUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
+  // The selection tools take any picture as a data URL straight from the
+  // browser: verified accounts only, like every other way a picture gets in
+  const gated = await requireIdVerified(user)
+  if (gated) return gated
   const body = await req.json().catch(() => ({})) as Record<string, any>
   const op = body.op as StudioAiOp
   if (!(op in STUDIO_AI_TICKETS)) return jsonPrivate({ error: 'Unknown AI tool' }, { status: 400 })

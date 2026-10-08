@@ -45,6 +45,7 @@ import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import {
   fillRegion, fillTickets, editAspect, EXPAND_MAX_SIDE, EXPAND_MAX_PIXELS, EXPAND_TICKETS, UPSCALE_MAX_SIDE,
 } from "@/lib/image-studio-ai"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 type Tool = "move" | "marquee" | "lasso" | "ai" | "crop" | "brush" | "eraser" | "blur" | "fill" | "gradient" | "text" | "shape" | "eyedropper" | "hand"
 type SelMode = "new" | "add" | "subtract" | "intersect"
@@ -654,7 +655,8 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     const d = docRef.current
     if (!d) return
     if (what === "image") { fileRef.current?.click(); return }
-    if (what === "refs") { setRefPicker(true); return }
+    // Refs are the account's uploads - locked until it is ID-verified (CCBill)
+    if (what === "refs") { if (gateUpload()) setRefPicker(true); return }
     if (d.layers.length >= MAX_LAYERS) { flash(`Up to ${MAX_LAYERS} layers`, true); return }
     if (what === "adjust") {
       // Changes everything under it; with a selection, only there (its mask)
@@ -1861,6 +1863,8 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       const f = item?.getAsFile()
       if (!f) return
       e.preventDefault()
+      // A pasted picture is an upload: ID-verified accounts only (CCBill)
+      if (!gateUpload()) return
       try { addPixelsAsLayer(await fileToCanvas(f), "Pasted") } catch (er: any) { flash(String(er?.message || er), true) }
     }
     window.addEventListener("paste", onPaste)
@@ -2191,7 +2195,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         )}
       </div>
 
-      <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
+      <input ref={fileRef} type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
       {refPicker && <RefPicker refs={refLibrary} onPick={addRef} onClose={() => setRefPicker(false)} />}
     </div>
   )

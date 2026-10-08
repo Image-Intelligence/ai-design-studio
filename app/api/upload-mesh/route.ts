@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { uploadToR2, userKey } from '@/lib/r2'
+import { requireIdVerified } from '@/lib/id-verification'
 
 /**
  * Upload a 3D asset.
@@ -37,6 +38,9 @@ export async function POST(req: Request): Promise<Response> {
     const token = (await cookies()).get('session')?.value
     const user = token ? await getUserFromSession(token) : null
     if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(user)
+    if (idGate) return idGate
 
     const form = await req.formData()
     const file = form.get('file')

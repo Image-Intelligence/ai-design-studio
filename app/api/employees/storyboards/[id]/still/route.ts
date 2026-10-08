@@ -14,6 +14,7 @@ import { buildFalCall } from '@/lib/chat-hub-create'
 import { ensureThumbnail } from '@/lib/thumbnail'
 import { STORYBOARD_IMAGE_MODELS, stillModelSpec, stillBuildOptions, stillTickets, GPT_SIZE_FOR_ASPECT, sanitizeShots, shotAspect } from '@/lib/storyboard'
 import { claimStill, patchShot, queueStills } from '@/lib/storyboard-store'
+import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 
 /**
  * POST /api/employees/storyboards/[id]/still - make one slot's still.
@@ -96,6 +97,12 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!board) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
   const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
+  // Not ID-verified: references only from the account's OWN generations
+  // (CCBill: uploads need a verified account; admins exempt - lib/id-verification)
+  const idGate = await requireOwnMediaUnlessVerified(user, [
+    body.refs, ...(Array.isArray(body.queue) ? (body.queue as { refs?: unknown }[]).map(q => q?.refs) : []),
+  ])
+  if (idGate) return idGate
   // A batch: its slots show as queued everywhere until each one's turn
   if (Array.isArray(body.queue)) {
     const ids = (body.queue as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, 200)

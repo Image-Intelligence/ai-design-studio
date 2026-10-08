@@ -4,6 +4,7 @@ import { getUserFromSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { uploadToR2, uploadPublicAsset } from '@/lib/r2';
 import { jsonPrivate } from '@/lib/api-json'
+import { requireIdVerified } from '@/lib/id-verification'
 
 
 const MAX_IMAGES_PER_SIDE = 5;
@@ -82,6 +83,10 @@ export async function POST(req: NextRequest) {
         { status: 401 }
       );
     }
+
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(user);
+    if (idGate) return idGate;
 
     const formData = await req.formData();
     const file = formData.get('image') as File;

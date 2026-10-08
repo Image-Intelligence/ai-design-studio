@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { presignPutUrl } from '@/lib/r2'
 import { signMediaUrl } from '@/lib/media-url'
+import { requireIdVerified } from '@/lib/id-verification'
 
 /**
  * POST /api/upload-video-media/presign - a direct browser -> R2 upload for the
@@ -33,6 +34,9 @@ export async function POST(req: Request) {
     const token = (await cookies()).get('session')?.value
     const user = token ? await getUserFromSession(token) : null
     if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(user)
+    if (idGate) return idGate
 
     const body = await req.json().catch(() => ({})) as { contentType?: unknown; size?: unknown }
     const contentType = typeof body.contentType === 'string' ? body.contentType : ''

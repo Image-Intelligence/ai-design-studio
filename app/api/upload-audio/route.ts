@@ -3,9 +3,20 @@
 
 import { uploadToR2 } from '@/lib/r2';
 import { NextRequest, NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { getUserFromSession } from '@/lib/auth';
+import { requireIdVerified } from '@/lib/id-verification'
 
 export async function POST(req: NextRequest) {
   try {
+    // Signed in (it took anonymous uploads before) and ID-verified (CCBill;
+    // admins exempt - lib/id-verification)
+    const token = (await cookies()).get('session')?.value;
+    const user = token ? await getUserFromSession(token) : null;
+    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    const idGate = await requireIdVerified(user);
+    if (idGate) return idGate;
+
     const formData = await req.formData();
     const file = formData.get('file') as File;
 

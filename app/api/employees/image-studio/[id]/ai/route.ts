@@ -13,9 +13,10 @@ import { ensureThumbnail } from '@/lib/thumbnail'
 import { buildFalCall } from '@/lib/chat-hub-create'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { stillModelSpec, stillBuildOptions, GPT_SIZE_FOR_ASPECT } from '@/lib/storyboard'
+import { requireIdVerified } from '@/lib/id-verification'
 import {
   type StudioGenOp, FILL_MAX_PIXELS, EXPAND_MAX_PIXELS, UPSCALE_MAX_SIDE, ERASE_TICKETS, EXPAND_TICKETS,
-  fillTickets, isUpscaler, upscaleFactor, upscaleTickets, STUDIO_IMAGE_MODELS, genTickets, canEdit, isAdminOnlyModel, validAspect,
+  fillTickets, isUpscaler, upscaleFactor, upscaleTickets, UPSCALERS, STUDIO_IMAGE_MODELS, genTickets, canEdit, isAdminOnlyModel, validAspect,
 } from '@/lib/image-studio-ai'
 
 /**
@@ -87,6 +88,13 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!canvas) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
   const body = await req.json().catch(() => ({})) as Record<string, any>
+  // Every tool that works on a picture (fill, erase, expand, upscale, edit,
+  // generate from a reference) reads pixels the browser uploaded - verified
+  // accounts only. Generating from words alone stays open.
+  if (body.op !== 'generate' || body.image || body.mask) {
+    const gated = await requireIdVerified(user)
+    if (gated) return gated
+  }
   const op = body.op as StudioGenOp
   if (!(op in LABEL)) return jsonPrivate({ error: 'Unknown AI tool' }, { status: 400 })
   const bad = (error: string) => jsonPrivate({ error }, { status: 400 })
@@ -146,10 +154,40 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       const f = upscaleFactor(body.upscaler, Number(body.factor), src!.w, src!.h, maxSide)
       if (!f) return bad('This is already as large as it can go')
       cost = upscaleTickets(body.upscaler, f, src!.w, src!.h); model = body.upscaler
-      endpoint = body.upscaler === 'seedvr2-upscale' ? 'fal-ai/seedvr/upscale/image' : 'topaz/upscale/image/precision'
-      input = body.upscaler === 'seedvr2-upscale'
-        ? { image_url: image, upscale_mode: 'factor', upscale_factor: f, output_format: 'png' }
-        : { image_url: image, upscale_factor: f, output_format: 'png' }
+      const up = UPSCALERS.find(u => u.id === body.upscaler)!
+      // A 4x-only model (AuraSR, DRCT) asked for less: shrink the source so its
+      // 4x lands exactly on the size asked for (and priced)
+      let srcUrl: string = image
+      if (up.fixed && f < up.fixed - 0.01) {
+        const small = await sharp(src!.buf).resize(Math.max(16, Math.round(src!.w * f / up.fixed)), Math.max(16, Math.round(src!.h * f / up.fixed)), { fit: 'fill' }).png().toBuffer()
+        srcUrl = `data:image/png;base64,${small.toString('base64')}`
+      }
+      switch (body.upscaler) {
+        case 'seedvr2-upscale':
+          endpoint = 'fal-ai/seedvr/upscale/image'
+          input = { image_url: image, upscale_mode: 'factor', upscale_factor: f, output_format: 'png' }
+          break
+        case 'clarity-upscaler':
+          // The portal's settings (lib upscale defaults); f already holds the output to 4096px
+          endpoint = 'fal-ai/clarity-upscaler'
+          input = { image_url: image, upscale_factor: f, prompt: prompt || 'masterpiece, best quality, highres', creativity: 0.35, resemblance: 0.6, enable_safety_checker: false }
+          break
+        case 'esrgan':
+          endpoint = 'fal-ai/esrgan'
+          input = { image_url: image, scale: f, model: 'RealESRGAN_x4plus', output_format: 'png' }
+          break
+        case 'aura-sr':
+          endpoint = 'fal-ai/aura-sr'
+          input = { image_url: srcUrl, upscale_factor: 4, checkpoint: 'v2', overlapping_tiles: true }
+          break
+        case 'drct':
+          endpoint = 'fal-ai/drct-super-resolution'
+          input = { image_url: srcUrl, upscale_factor: 4 }
+          break
+        default:
+          endpoint = 'topaz/upscale/image/precision'
+          input = { image_url: image, upscale_factor: f, output_format: 'png' }
+      }
     } else {
       const spec = STUDIO_IMAGE_MODELS.find(m => m.id === body.model)
       if (!spec) return bad('Unknown image model')

@@ -9,6 +9,7 @@ import path from 'node:path'
 import ffmpegPath from 'ffmpeg-static'
 import { getUserFromSession } from '@/lib/auth'
 import { uploadToR2 } from '@/lib/r2'
+import { requireIdVerified } from '@/lib/id-verification'
 
 // POST /api/user/references/trim-video — cut a hosted reference video down to
 // a model's allowed input window (SeeDance 2.0: 2-15s, Kling Motion: ≤30s).
@@ -43,6 +44,9 @@ export async function POST(req: Request) {
   const token = (await cookies()).get('session')?.value
   const user = token ? await getUserFromSession(token) : null
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+  const idGate = await requireIdVerified(user)
+  if (idGate) return idGate
   if (!ffmpegPath) return NextResponse.json({ error: 'Trimming unavailable' }, { status: 500 })
 
   const body = await req.json().catch(() => ({})) as { url?: string; startSec?: number; endSec?: number; maxSec?: number }

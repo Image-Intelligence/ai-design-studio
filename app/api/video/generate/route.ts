@@ -13,9 +13,13 @@ import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
 import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
-import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input } from '@/lib/batch-1007-video'
+import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BATCH_1007_MAX_SEC, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input } from '@/lib/batch-1007-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
+import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
+
+/** Gemini Omni binds references as <IMAGE_REF_0>, <IMAGE_REF_1>…; the portal writes @Image1, @Image2… */
+const omniRefTags = (t: string) => (t ?? '').replace(/@Image(\d+)/gi, (_m, n) => `<IMAGE_REF_${Math.max(0, parseInt(n) - 1)}>`)
 
 
 fal.config({
@@ -102,6 +106,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
 
+    // An account that is not ID-verified may still pass media - but only its
+    // OWN generations (CCBill: uploads need a verified account; admins exempt -
+    // lib/id-verification). Checked on the links as sent, before
+    // normalizeVideoRefs re-encodes the pictures into new files.
+    const rawBody = canonicalisePayload(await request.json())
+    if (_u) {
+      const idGate = await requireOwnMediaUnlessVerified(_u, [
+        rawBody?.imageUrl, rawBody?.endImageUrl, rawBody?.audioUrl, rawBody?.motionVideoUrl,
+        rawBody?.referenceImageUrls, rawBody?.referenceVideoUrls, rawBody?.referenceAudioUrls,
+        rawBody?.editVideoUrl, rawBody?.lipsyncVideoUrl, rawBody?.lipsyncAudioUrl,
+      ])
+      if (idGate) return idGate
+    }
+
     const {
       userId: userIdRaw,
       prompt,
@@ -157,7 +175,7 @@ export async function POST(request: NextRequest) {
       insertResumeSec,
       // SeeDance 2.5 Complete: the draft video (a GeneratedImage id) to re-render at 1080p
       draftVideoId,
-    } = await normalizeVideoRefs(canonicalisePayload(await request.json()));
+    } = await normalizeVideoRefs(rawBody);
 
     // Video tools that fal bills by the source's length, size or frame rate:
     // measure the clip instead of trusting the browser (it sends no size or
@@ -391,6 +409,16 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: false, error: `Relight takes clips up to ${RELIGHT_MAX_SEC} seconds - trim it first.` }, { status: 400 });
         }
       }
+      // Character swap (2026-10-07): the clip and the character's picture
+      if (BATCH_1007_NEEDS_CHARACTER.has(model) && !(Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0) && !imageUrl) {
+        return NextResponse.json({ success: false, error: 'Add the character\'s picture next to the clip.' }, { status: 400 });
+      }
+      if (model === 'lucy-edit-pro' && !prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Describe the edit - e.g. "make him a chrome robot".' }, { status: 400 });
+      }
+      if (BATCH_1007_MAX_SEC[model] && model !== 'minimax-h3-max-relight' && editVideoDurationSec > BATCH_1007_MAX_SEC[model] + 0.5) {
+        return NextResponse.json({ success: false, error: `This tool takes clips up to ${BATCH_1007_MAX_SEC[model]} seconds - trim it first.` }, { status: 400 });
+      }
       if ((model === 'mirelo-sfx-video') && editVideoDurationSec > 60.5) {
         return NextResponse.json({ success: false, error: 'Mirelo SFX takes clips up to 60 seconds.' }, { status: 400 });
       }
@@ -475,6 +503,12 @@ export async function POST(request: NextRequest) {
       }
       if (model === 'happy-horse-1.1' && effectiveSd20Mode !== 'r2v' && !imageUrl) {
         return NextResponse.json({ success: false, error: 'Happy Horse 1.1 needs a start image (or references).' }, { status: 400 });
+      }
+    } else if (model === 'pikaframes') {
+      // Pikaframes morphs between 2-5 keyframes (its prompt is optional)
+      const frames = (Array.isArray(referenceImageUrls) ? referenceImageUrls.length : 0) || [imageUrl, endImageUrl].filter(Boolean).length
+      if (frames < 2) {
+        return NextResponse.json({ success: false, error: 'Pikaframes morphs between keyframes - add 2 to 5 images.' }, { status: 400 });
       }
     } else if (model !== 'kling-v3-motion' && !isLipsync && !prompt && !(model === 'wan-2.7' && imageUrl) && model !== PIXELCUT_LOOPING) {
       // Name the field — a bare "missing required fields" tells nobody anything
@@ -723,7 +757,8 @@ export async function POST(request: NextRequest) {
       if (effectiveSd20Mode === 'i2v') {
         falInput = { ...omniBase, image_url: imageUrl };
       } else if (effectiveSd20Mode === 'r2v') {
-        falInput = { ...omniBase, image_urls: (referenceImageUrls as string[]).slice(0, 9) };
+        // Omni binds references as <IMAGE_REF_0>, <IMAGE_REF_1>... - the panel's @Image1… become those
+        falInput = { ...omniBase, prompt: omniRefTags(prompt), image_urls: (referenceImageUrls as string[]).slice(0, 9) };
       } else if (effectiveSd20Mode === 'edit') {
         falInput = { prompt, video_url: editVideoUrl };
       } else {
@@ -790,18 +825,23 @@ export async function POST(request: NextRequest) {
       const MODES = ['adhere_1', 'adhere_2', 'adhere_3', 'flex_1', 'flex_2', 'flex_3', 'reimagine_1', 'reimagine_2', 'reimagine_3'];
       const mode = MODES.includes(lumaMode) ? lumaMode : 'flex_1';
       const ar = (allowed: string[]) => allowed.includes(klingAspectRatio) ? klingAspectRatio : '9:16';
+      // The panel's optional "First frame" picture (a restyled first frame steers the look)
+      const firstFrame = Array.isArray(referenceImageUrls) && referenceImageUrls[0] ? String(referenceImageUrls[0]) : null;
       if (model === 'luma-ray-2-modify' || model === 'luma-ray-2-flash-modify') {
         falInput = { video_url: editVideoUrl, mode };
         if (prompt?.trim()) falInput.prompt = prompt.trim();
+        if (firstFrame) falInput.image_url = firstFrame;
       } else if (model === 'luma-ray-2-reframe' || model === 'luma-ray-2-flash-reframe') {
         falInput = { video_url: editVideoUrl, aspect_ratio: ar(['1:1', '16:9', '9:16', '4:3', '3:4', '21:9', '9:21']) };
         if (prompt?.trim()) falInput.prompt = prompt.trim();
+        if (firstFrame) falInput.image_url = firstFrame;
       } else if (model === 'luma-ray-3.2-edit') {
         // Output length follows the source (and is billed that way)
         falInput = {
           video_url: editVideoUrl, prompt: prompt.trim(), edit_strength: mode, resolution: res,
           duration: (editVideoDurationSec > 0 ? editVideoDurationSec : 10) > 5.5 ? '10s' : '5s',
         };
+        if (firstFrame) falInput.start_image_url = firstFrame;
       } else {
         // luma-ray-3.2-reframe: duration defaults to the source's
         falInput = { video_url: editVideoUrl, prompt: prompt.trim(), aspect_ratio: ar(['3:4', '4:3', '1:1', '9:16', '16:9', '21:9']), resolution: res };
@@ -844,8 +884,14 @@ export async function POST(request: NextRequest) {
           if (prompt?.trim()) falInput.prompt = prompt.trim();
         }
         if (model === 'topaz-upscale-generative') falInput.model = 'Starlight Precise 2.6';
-      } else if (model === 'seedvr2-video' || model === 'flashvsr-video') {
+      } else if (model === 'seedvr2-video') {
+        // To a resolution (the panel's Resolution), as priced - fal's target mode
+        falInput.upscale_mode = 'target';
+        falInput.target_resolution = ['720p', '1080p', '1440p', '2160p'].includes(resolution) ? resolution : '1080p';
+      } else if (model === 'flashvsr-video') {
         falInput.upscale_factor = factor;
+        // fal drops the clip's sound unless asked to keep it
+        falInput.preserve_audio = true;
       } else if (model === 'kandinsky6-vsr' || model === 'kandinsky6-vsr-lite') {
         // Only 2, 2.25 (480p -> 1080p) or 4 - the factor upscalerVideoTicketCost billed
         const { KANDINSKY_VSR_FACTORS } = await import('@/lib/ticket-pricing')
@@ -854,9 +900,11 @@ export async function POST(request: NextRequest) {
         // Same ratio, tier and frame rate the price was computed on
         // (upscalerVideoTicketCost): output capped at 4K, standard tier, the
         // source's own frame rate instead of fal's default 30
-        const { bytedanceUpscaleRatio } = await import('@/lib/ticket-pricing')
-        falInput.scale_ratio = bytedanceUpscaleRatio(factor, probed ? Math.min(probed.width, probed.height) : 1080);
+        // To a resolution (the panel's Resolution: 1080p / 2K / 4K), as priced,
+        // with the footage preset ("aigc" for AI-made video)
+        falInput.target_resolution = ['1080p', '2k', '4k'].includes(resolution) ? resolution : '1080p';
         falInput.enhancement_tier = 'standard';
+        falInput.enhancement_preset = ['general', 'ugc', 'short_series', 'aigc', 'old_film'].includes(String(videoChoice)) ? String(videoChoice) : 'aigc';
         falInput.target_fps = Math.max(24, Math.min(60, Math.round(probed?.fps || 30)));
       } else if (model === 'topaz-interpolate') {
         falInput.target_fps = Math.max(16, Math.min(120, parseInt(videoTargetFps) || 60));
@@ -927,6 +975,7 @@ export async function POST(request: NextRequest) {
           aspect_ratio: klingAspectRatio === '9:16' ? '9:16' : '16:9',
         };
         if (effectiveSd20Mode === 'r2v') {
+          falInput.prompt = omniRefTags(prompt);
           falInput.image_urls = (referenceImageUrls as string[] || []).slice(0, 9);
           if (Array.isArray(referenceVideoUrls) && referenceVideoUrls.length) falInput.reference_video_urls = referenceVideoUrls;
         } else if (imageUrl) {

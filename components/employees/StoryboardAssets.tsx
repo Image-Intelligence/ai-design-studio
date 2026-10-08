@@ -15,6 +15,7 @@ import {
   ASSET_KINDS, MAX_ASSETS, MAX_ASSET_REFS, newAsset, newAssetRef, stillKey, pickRefs, MAX_SHOT_REFS,
   type AssetKind, type StoryAsset, type ShotRef,
 } from "@/lib/storyboard"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 /**
  * Storyboard Studio - the board's assets.
@@ -310,7 +311,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
         </div>
       )}
 
-      <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
+      <input ref={fileRef} type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
 
       {libOpen && (
         <LibraryPicker
@@ -639,7 +640,7 @@ export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max
         </div>
       )}
       {err && <p className="text-[10px] text-red-400">{err}</p>}
-      <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
+      <input ref={fileRef} type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
       {picker && (
         <RefPicker
           title="This shot's references"

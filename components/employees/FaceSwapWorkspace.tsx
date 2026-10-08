@@ -4,6 +4,7 @@ import { useRef, useState } from "react"
 import { Loader2, Plus, X, ScanFace, User } from "lucide-react"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 /**
  * Face Swap Studio, as two boxes and a button.
@@ -80,7 +81,7 @@ function UploadSlot({
       </button>
       <input
         ref={inputRef}
-        type="file"
+        type="file" onClick={gateFileInput}
         accept="image/*"
         hidden
         onChange={e => { void pick(e.target.files?.[0]); e.currentTarget.value = "" }}

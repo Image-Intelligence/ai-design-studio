@@ -35,6 +35,7 @@ import { holdCardVideos } from "@/components/home/card-video-scheduler"
 import { openInImageStudio, useImageStudioAvailable } from "./bridge"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { sha256Hex } from "@/lib/sha256"
+import { useIdVerified, IdLockedPanel } from "@/components/id-verification/IdVerificationGate"
 
 type OldItem = { id: string; url: string; x?: number; y?: number; w?: number; h?: number; r?: number }
 type OldLayer = { id: string; name: string; visible: boolean; opacity: number; auto?: boolean; items: OldItem[] }
@@ -88,6 +89,9 @@ async function importOldLayers(layers: OldLayer[], W: number, H: number, seed: M
 export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, layerStack = null, onLayerStackChange }: EditImagePopupProps) {
   const [state, setState] = useState<{ doc: StudioDoc; seed: Map<string, HTMLCanvasElement>; key: string; restored: boolean } | { error: string } | null>(null)
   const studioOK = useImageStudioAvailable()
+  // The editor saves pixels the browser uploads (the studio routes refuse
+  // unverified accounts), so it asks for the ID check before it opens
+  const idVerified = useIdVerified()
   // The feed's videos and rims rest behind the popup; the page does not scroll under it
   useEffect(() => holdCardVideos(), [])
   useEffect(() => {
@@ -171,6 +175,16 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
   // Portalled to <body>: it opens from inside the header's dropdowns, whose
   // backdrop blur would otherwise trap a fixed overlay inside the header strip
   if (typeof document === "undefined") return null
+  if (idVerified === false) return createPortal(
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 p-4" onClick={e => { e.stopPropagation(); if (e.target === e.currentTarget) onClose() }} onPointerDown={e => e.stopPropagation()}>
+      <div className="relative w-full max-w-md">
+        <button onClick={onClose} className="absolute right-3 top-3 z-10 rounded-md px-2 py-1 text-[12px] text-slate-400 hover:text-white">Close</button>
+        <IdLockedPanel className="bg-[#0b0f17]" title="Verify your ID to edit pictures"
+          label="The editor works on pictures you bring in, so it unlocks once your ID is verified." />
+      </div>
+    </div>,
+    document.body,
+  )
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/90 p-0 sm:p-3 lg:p-5" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
       <div className="relative w-full h-full max-w-[2400px] sm:rounded-2xl overflow-hidden border border-white/10 bg-[#060910] shadow-2xl">

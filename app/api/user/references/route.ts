@@ -6,6 +6,7 @@ import { getUserRefLimit } from '@/lib/ref-limits'
 import { resolveRequestUser, requireScopes } from '@/lib/api-key-auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
+import { requireIdVerified } from '@/lib/id-verification'
 
 // Account-scoped reference library (portal-v2 Refs dropdown).
 // "Clear" is a soft delete (isCleared) — rows and R2 files are kept so
@@ -60,6 +61,9 @@ export async function POST(req: Request) {
       const denied = requireScopes(apiAuth, 'references:write')
       if (denied) return denied
     }
+    // The Refs library is for ID-verified accounts (CCBill; admins exempt)
+    const idGate = await requireIdVerified(user)
+    if (idGate) return idGate
 
     const body = canonicalisePayload(await req.json())
     const items: { url?: unknown; folderId?: unknown }[] = Array.isArray(body?.items) ? body.items : []

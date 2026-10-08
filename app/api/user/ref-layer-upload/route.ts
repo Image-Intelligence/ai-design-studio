@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { uploadToR2 } from '@/lib/r2'
+import { requireIdVerified } from '@/lib/id-verification'
 
 export const maxDuration = 60
 
@@ -14,6 +15,9 @@ export async function POST(req: Request) {
     const token = cookieStore.get('session')?.value
     const user = token ? await getUserFromSession(token) : null
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // Uploads only from ID-verified accounts (CCBill; admins exempt - lib/id-verification)
+    const idGate = await requireIdVerified(user)
+    if (idGate) return idGate
 
     const body = await req.json().catch(() => null)
     const image: string = typeof body?.image === 'string' ? body.image : ''

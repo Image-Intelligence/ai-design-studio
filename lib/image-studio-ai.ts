@@ -15,7 +15,7 @@
  *   generate  any image model                  (lib/storyboard stillTickets)
  */
 import { getTicketCost } from '@/config/ai-models.config'
-import { topazImageTicketCost } from '@/lib/ticket-pricing'
+import { topazImageTicketCost, clarityUpscaleTicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
 import { STORYBOARD_IMAGE_MODELS, STORYBOARD_ASPECTS, stillTickets } from '@/lib/storyboard'
 import { ADMIN_ONLY_IMAGE_MODELS } from '@/lib/chat-image-catalog'
 import { getCreateModel } from '@/lib/chat-hub-models'
@@ -40,9 +40,20 @@ export function fillTickets(w: number, h: number): number {
   return Math.max(1, Math.ceil((0.05 * mp) / 0.04 - 1e-9))
 }
 
+/*
+ * fixed: the model only renders this factor (AuraSR, DRCT: 4x) - a smaller
+ * scale shrinks the source first, so the run makes exactly the size asked for
+ * and is priced on it. maxOut: the longest output side fal accepts (Clarity
+ * refuses past ~4096px). The four fal upscalers joined 2026-10-08, when the
+ * portal made them public.
+ */
 export const UPSCALERS = [
-  { id: 'seedvr2-upscale', label: 'SeedVR2', hint: 'Faithful and clean - photos, renders, stills', maxFactor: 10 },
-  { id: 'topaz-img-upscale-precision', label: 'Topaz Precision', hint: 'Recovers fine detail, enhances faces', maxFactor: 4 },
+  { id: 'seedvr2-upscale', label: 'SeedVR2', hint: 'Faithful and clean - photos, renders, stills', maxFactor: 10, fixed: 0, maxOut: UPSCALE_MAX_SIDE },
+  { id: 'topaz-img-upscale-precision', label: 'Topaz Precision', hint: 'Recovers fine detail, enhances faces', maxFactor: 4, fixed: 0, maxOut: UPSCALE_MAX_SIDE },
+  { id: 'clarity-upscaler', label: 'Clarity', hint: 'Creative - invents new detail as it enlarges; great on AI art (up to 4096px)', maxFactor: 4, fixed: 0, maxOut: CLARITY_MAX_OUTPUT_PX },
+  { id: 'esrgan', label: 'ESRGAN', hint: 'Classic Real-ESRGAN - clean, quick and cheap', maxFactor: 8, fixed: 0, maxOut: UPSCALE_MAX_SIDE },
+  { id: 'aura-sr', label: 'AuraSR', hint: 'Fast GAN upscaler, tuned for FLUX-style renders', maxFactor: 4, fixed: 4, maxOut: UPSCALE_MAX_SIDE },
+  { id: 'drct', label: 'DRCT', hint: 'Detail-preserving transformer - sharp, no invented detail', maxFactor: 4, fixed: 4, maxOut: UPSCALE_MAX_SIDE },
 ] as const
 export type UpscalerId = (typeof UPSCALERS)[number]['id']
 export const isUpscaler = (v: unknown): v is UpscalerId => UPSCALERS.some(u => u.id === v)
@@ -52,14 +63,21 @@ export const isUpscaler = (v: unknown): v is UpscalerId => UPSCALERS.some(u => u
  * own limit and to `maxSide` on the long edge. Below 1.1x it is not worth a run (0).
  */
 export function upscaleFactor(id: UpscalerId, asked: number, w: number, h: number, maxSide = UPSCALE_MAX_SIDE): number {
-  const lim = UPSCALERS.find(u => u.id === id)?.maxFactor ?? 4
-  const f = Math.min(Number(asked) || 2, lim, maxSide / Math.max(w, h, 1))
+  const u = UPSCALERS.find(x => x.id === id)
+  const lim = u?.maxFactor ?? 4
+  const f = Math.min(Number(asked) || 2, lim, Math.min(maxSide, u?.maxOut ?? maxSide) / Math.max(w, h, 1))
   return f < 1.1 ? 0 : Math.floor(f * 100) / 100
 }
 
 /** Tickets for one upscale of a w x h picture by `factor` - as the portal charges for the same upscaler. */
 export function upscaleTickets(id: UpscalerId, factor: number, w: number, h: number): number {
   if (id === 'seedvr2-upscale') return getTicketCost('seedvr2-upscale')
+  // The portal's prices: Clarity per output MP (floor 7 / 26), ESRGAN and
+  // AuraSR 1 flat (fal bills them by the compute second - pennies), DRCT 1
+  // ticket per 2 output MP ($0.0045 / MP)
+  if (id === 'clarity-upscaler') return clarityUpscaleTicketCost(factor, w, h)
+  if (id === 'esrgan' || id === 'aura-sr') return 1
+  if (id === 'drct') return Math.max(1, Math.ceil((w * factor) * (h * factor) / 1e6 * 0.5))
   return topazImageTicketCost(id, { upscaleFactor: factor, width: w, height: h })
 }
 

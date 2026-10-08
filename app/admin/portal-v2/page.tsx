@@ -3,7 +3,7 @@
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, nb21TicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
+import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
 import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
@@ -11,7 +11,7 @@ import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import ChatHub, { ChatProviderSettings, ChatLayoutSettings, ChatAgentSettings, ChatAgentCapabilities, ChatApiKeysSettings } from "@/components/chat-hub"
-import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff } from "lucide-react"
+import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes } from "lucide-react"
 import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
@@ -32,6 +32,9 @@ import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
 import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
+import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryPicker"
+import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
+import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -595,7 +598,11 @@ async function uploadRefBlob(blob: Blob): Promise<string> {
   const fd = new FormData()
   fd.append("file", new File([blob], `reference.${ext}`, { type }))
   const res = await fetch("/api/upload-reference", { method: "POST", body: fd })
-  if (!res.ok) throw new Error(`Upload failed (${res.status})`)
+  if (!res.ok) {
+    // The server's ID gate (CCBill) - open the verification popup
+    if (res.status === 403 && isIdGateError(await res.clone().json().catch(() => null))) throw new Error("Verify your ID to upload pictures")
+    throw new Error(`Upload failed (${res.status})`)
+  }
   const data = await res.json()
   if (!data?.url) throw new Error("Upload returned no URL")
   return data.url as string
@@ -700,6 +707,24 @@ interface VideoModelConfig {
    *  the reference block shows just a "Source clip" slot, capped at this many
    *  seconds, instead of SeeDance's images + videos + audio (15s combined). */
   sourceClipMaxSec?: number
+  /**
+   * Pictures that go WITH the source clip (Recast's new faces, the character
+   * for Wan Animate / DreamActor, Relight's lit sphere). Without it a
+   * single-clip tool shows only the clip - Recast had no way to add its faces.
+   */
+  sourceClipImages?: { max: number; label: string; hint: string; required?: boolean }
+  /**
+   * What the refs panel offers, as the model's fal endpoint takes it (the
+   * panel used to hard-code SeeDance's 9 images / 3 videos / 3 audio for every
+   * model, and builders silently dropped what their endpoint can't take).
+   */
+  refLimits?: { images: number; videos: number; audios: number }
+  /** Which frame tags the refs panel shows: start + end, start only, or none (default: start-end, none for clip tools). */
+  frameTags?: "start-end" | "start" | "none"
+  /** Creativity picker (sent as videoToolCreativity) - Flux upscale faithful/creative, Topaz Creative's strength. */
+  creativityOptions?: { value: string; label: string }[]
+  /** The factor a tool starts on (else 2 when offered, else the first). */
+  upscaleDefault?: string
   /** The audio upload's own wording, when it is the input that drives the model (lip sync, music video). */
   audioUpload?: { label: string; hint: string; required?: boolean }
   /** H3 Max Insert Shot: where the new shot starts in the source and where the source resumes. */
@@ -725,8 +750,8 @@ const BATCH_0928_VIDEO = new Set([
   "heygen-avatar4", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast", "sam-3.1-video", "elevenlabs-dubbing",
   // 2026-10-06: Kandinsky 6.0 Pro / Lite and its VSR
   "kandinsky6-pro", "kandinsky6-lite", "kandinsky6-vsr", "kandinsky6-vsr-lite",
-  // 2026-10-07 batch (admin): Vidu Q4, H3 Max Relight
-  "vidu-q4", "minimax-h3-max-relight",
+  // 2026-10-07 batch (public 2026-10-08): Vidu Q4, H3 Max Relight, character swap
+  "vidu-q4", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2", "lucy-edit-pro",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -754,6 +779,30 @@ interface VideoItem {
   characterOrientation?: "image" | "video"
 }
 
+/** The fields a video job starts with (VideoPendingSlot minus the fal ids). */
+type VideoPendingSlotBase = Omit<VideoPendingSlot, "requestId" | "falEndpoint" | "queueJobId">
+
+/** A picture's or clip's shape, "w:h" (null when it can't be read). */
+function measureMediaAspect(url: string, kind: "image" | "video"): Promise<string | null> {
+  return new Promise(resolve => {
+    const done = (w: number, h: number) => resolve(w > 0 && h > 0 ? `${w}:${h}` : null)
+    const timer = setTimeout(() => resolve(null), 15000)
+    if (kind === "image") {
+      const img = new window.Image()
+      img.onload = () => { clearTimeout(timer); done(img.naturalWidth, img.naturalHeight) }
+      img.onerror = () => { clearTimeout(timer); resolve(null) }
+      img.src = url
+    } else {
+      const v = document.createElement("video")
+      v.preload = "metadata"
+      v.muted = true
+      v.onloadedmetadata = () => { clearTimeout(timer); done(v.videoWidth, v.videoHeight); v.removeAttribute("src"); v.load() }
+      v.onerror = () => { clearTimeout(timer); resolve(null) }
+      v.src = url
+    }
+  })
+}
+
 interface VideoPendingSlot {
   slotId: string
   requestId: string
@@ -772,6 +821,8 @@ interface VideoPendingSlot {
   keepOriginalSound?: boolean
   characterOrientation?: "image" | "video"
   queueJobId?: number    // GenerationQueue DB ID — set when the job was queued (capacity exceeded)
+  /** The output's shape ("w:h") when it is known before the video finishes - the loading tile reserves it */
+  expectedAspect?: string
 }
 
 interface VideoDetailData {
@@ -1236,7 +1287,8 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "veo-3.1-fast-extend",    name: "Veo 3.1 Fast Extend",          durations: [], supportsEndFrame: false, audioType: "toggle", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "minimax-h3-max-turbo-extend", name: "MiniMax H3 Max Turbo Extend", durations: ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p","2k"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   // Recast: the clip as a video reference + one photo per new person as image references
-  { id: "minimax-h3-max-recast", name: "MiniMax H3 Max Recast",        durations: [], resolutions: ["768p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 30 },
+  { id: "minimax-h3-max-recast", name: "MiniMax H3 Max Recast",        durations: [], resolutions: ["768p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
+    sourceClipImages: { max: 4, label: "New faces", hint: "A clear photo of each person to put in the clip - 1 to 4, in the order they appear.", required: true } },
   { id: "minimax-h3-max-extend",  name: "MiniMax H3 Max Extend",        durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "marey-motion-transfer",  name: "Marey Motion Transfer",        durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
   { id: "marey-pose-transfer",    name: "Marey Pose Transfer",          durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true },
@@ -1285,12 +1337,20 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   { id: "void-video-removal", name: "VOID Object Removal", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 16 },
   { id: "veed-subtitles", name: "VEED Subtitles", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 600,
     choice: { label: "Caption style", note: "✦ animated styles cost 2x", options: [{ value: "simple", label: "Simple" }, { value: "plain", label: "Plain" }, { value: "corpo", label: "Corporate" }, { value: "karl", label: "Karl" }, { value: "mint", label: "Mint" }, { value: "vegas", label: "Vegas" }, { value: "beans", label: "Beans" }, { value: "hustle", label: "Hustle" }, { value: "rizz", label: "Rizz" }, { value: "lowkey", label: "Lowkey" }, { value: "glide", label: "Glide ✦" }, { value: "glass", label: "Glass ✦" }, { value: "handwritten", label: "Handwritten ✦" }, { value: "backdrop", label: "Backdrop ✦" }, { value: "terminal", label: "Terminal ✦" }, { value: "fusion", label: "Fusion ✦" }] } },
-  { id: "minimax-h3-max-insert", name: "H3 Max Insert Shot", durations: ["5","8","10","13"], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60, insertTimes: true },
+  { id: "minimax-h3-max-insert", name: "H3 Max Insert Shot", durations: ["5","8","10","13"], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60, insertTimes: true,
+    sourceClipImages: { max: 4, label: "Reference images", hint: "Optional - what the new shot should show (a character, a product, a place)." } },
   // ── 2026-10-07 batch (ADMIN ONLY while under test) - lib/batch-1007-video ──
   // Vidu Q4: one image = the start frame (native audio always on); more = references (up to 12; audio is the toggle)
   { id: "vidu-q4", name: "Vidu Q4", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["540p","720p","1080p","2k","4k"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: false, audioType: "toggle", supportsReferenceVideo: true, refImagesOnly: true },
   // H3 Max Relight: the clip (up to 15s) and a picture of a lit sphere in the refs panel
-  { id: "minimax-h3-max-relight", name: "H3 Max Relight", durations: [], resolutions: ["480p","768p","1080p","2k"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true },
+  { id: "minimax-h3-max-relight", name: "H3 Max Relight", durations: [], resolutions: ["480p","768p","1080p","2k"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    sourceClipImages: { max: 1, label: "Lighting picture", hint: "A lit sphere (a grey or chrome ball) in the light you want - the clip is re-lit to match.", required: true } },
+  // Character swap: the person in the clip becomes the one in the picture; the footage stays
+  { id: "wan-2.2-animate-replace", name: "Wan 2.2 Animate Replace", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    sourceClipImages: { max: 1, label: "Character", hint: "Who to put in the clip - one clear picture, framed like the person in it (full body for a full-body shot).", required: true } },
+  { id: "dreamactor-v2", name: "DreamActor v2", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
+    sourceClipImages: { max: 1, label: "Character", hint: "Who performs the clip - one clear picture; people, cartoon characters and pets all work. The video takes the PICTURE's shape, so frame it like the clip.", required: true } },
+  { id: "lucy-edit-pro", name: "Lucy Edit Pro", durations: [], resolutions: ["720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 15 },
   { id: "depth-anything-video", name: "Depth Anything Video", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 100,
     choice: { label: "Colours", options: [{ value: "turbo", label: "Turbo (near = warm)" }, { value: "grayscale", label: "Grayscale" }, { value: "inferno", label: "Inferno" }, { value: "magma", label: "Magma" }, { value: "viridis", label: "Viridis" }] } },
   { id: "heygen-translate", name: "HeyGen Translate", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 480,
@@ -1312,6 +1372,80 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // Never picked from a menu - the video viewer's "Complete in 1080p" on a SeeDance 2.5 draft runs it
   { id: "seedance-2.5-complete", name: "SeeDance 2.5 (completed draft)", durations: [], supportsEndFrame: false, audioType: "none" },
 ]
+
+/*
+ * Video panels matched to each model's real fal inputs (audit 2026-10-08,
+ * every endpoint's schema checked). Applied over VIDEO_MODEL_CONFIGS so the
+ * fixes read in one place:
+ *  - single-clip tools get the one "Source clip" slot (sourceClipMaxSec) -
+ *    they were showing SeeDance's 9 images / 3 videos / 3 audio panel - plus
+ *    the pictures fal takes beside the clip (sourceClipImages)
+ *  - generators offer only as many references as their endpoint takes
+ *    (refLimits) and only the frame tags it has (frameTags)
+ *  - ByteDance and SeedVR2 upscale TO a resolution (fal target_resolution)
+ */
+const CLIP = (sec: number): Partial<VideoModelConfig> => ({ supportsReferenceVideo: true, sourceClipMaxSec: sec })
+const FIRST_FRAME = { max: 1, label: "First frame (optional)", hint: "A restyled first frame steers the look of the result." }
+const VIDEO_UI_OVERRIDES: Record<string, Partial<VideoModelConfig>> = {
+  // Upscalers / restorers - one clip each (fal states no limit for most: held to 60s)
+  "flux-video-upscale": { ...CLIP(20), creativityOptions: [{ value: "0", label: "Faithful" }, { value: "1", label: "Creative" }] },
+  "topaz-upscale-precision": CLIP(60),
+  "topaz-upscale-creative": { ...CLIP(60), creativityOptions: [{ value: "0.2", label: "Subtle" }, { value: "0.5", label: "Balanced" }, { value: "0.8", label: "Bold" }] },
+  "topaz-upscale-generative": CLIP(60),
+  "flashvsr-video": CLIP(60),
+  "topaz-interpolate": CLIP(60),
+  "topaz-colorize": CLIP(60),
+  "topaz-deblur": CLIP(60),
+  "topaz-sdr-to-hdr": CLIP(60),
+  "kandinsky6-vsr": { upscaleDefault: "2.25" },
+  "kandinsky6-vsr-lite": { upscaleDefault: "2.25" },
+  // Upscale TO a resolution (fal target_resolution); ByteDance's footage preset
+  "seedvr2-video": { ...CLIP(60), upscaleFactors: undefined, resolutions: ["720p", "1080p", "1440p", "2160p"] },
+  "bytedance-video-upscale": {
+    ...CLIP(60), upscaleFactors: undefined, resolutions: ["1080p", "2k", "4k"],
+    choice: { label: "Footage", note: "tunes the enhancement", options: [{ value: "aigc", label: "AI video" }, { value: "general", label: "General" }, { value: "ugc", label: "Phone / UGC" }, { value: "short_series", label: "Short series" }, { value: "old_film", label: "Old film" }] },
+  },
+  // Clip edits - one clip, plus the pictures fal takes beside it
+  "luma-ray-2-modify": { ...CLIP(30), sourceClipImages: FIRST_FRAME },
+  "luma-ray-2-flash-modify": { ...CLIP(30), sourceClipImages: FIRST_FRAME },
+  "luma-ray-2-reframe": { ...CLIP(30), sourceClipImages: FIRST_FRAME },
+  "luma-ray-2-flash-reframe": { ...CLIP(30), sourceClipImages: FIRST_FRAME },
+  "luma-ray-3.2-edit": { ...CLIP(10), sourceClipImages: FIRST_FRAME },
+  "luma-ray-3.2-reframe": CLIP(10),
+  "kling-o3-pro-edit": { ...CLIP(15), sourceClipImages: { max: 4, label: "Style references (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (720 px or larger, 3-15s)." } },
+  "kling-o3-pro-reference": { ...CLIP(15), sourceClipImages: { max: 4, label: "References (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (720 px or larger, 3-15s)." } },
+  "kling-o3-4k-edit": { ...CLIP(15), sourceClipImages: { max: 4, label: "Style references (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (720 px or larger, 3-15s)." } },
+  "kling-o3-4k-reference": { ...CLIP(15), sourceClipImages: { max: 4, label: "References (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (720 px or larger, 3-15s)." } },
+  "pixverse-v6-extend": CLIP(30),
+  "grok-video-edit": CLIP(8),
+  "grok-video-extend": CLIP(15),
+  "veo-3.1-extend": CLIP(30),
+  "veo-3.1-fast-extend": CLIP(30),
+  "minimax-h3-max-extend": CLIP(60),
+  "minimax-h3-max-turbo-extend": CLIP(60),
+  "marey-motion-transfer": CLIP(30),
+  "marey-pose-transfer": CLIP(30),
+  // VOID reads at most 197 frames of the clip (~8s at 24fps, ~6.5s at 30)
+  "void-video-removal": { sourceClipMaxSec: 8 },
+  // Generators: the references their endpoint really takes, and their frame tags
+  "gemini-omni-flash": { refLimits: { images: 9, videos: 1, audios: 0 }, frameTags: "start" },
+  // Its edit endpoint refuses every prompt (the route says so) - videos go to references instead
+  "gemini-omni-1.1": { supportsVideoExtend: false, refLimits: { images: 9, videos: 3, audios: 0 } },
+  "flux-3": { refLimits: { images: 9, videos: 1, audios: 0 } },
+  "seedance-2.0-mini": { refLimits: { images: 9, videos: 0, audios: 0 } },
+  "kling-o3-pro": { refLimits: { images: 4, videos: 0, audios: 0 } },
+  "kling-o3-4k": { refLimits: { images: 4, videos: 0, audios: 0 } },
+  "pixverse-c1": { refLimits: { images: 7, videos: 0, audios: 0 } },
+  "grok-video-1.5": { refLimits: { images: 7, videos: 0, audios: 0 }, frameTags: "start" },
+  "vidu-q3": { refLimits: { images: 4, videos: 0, audios: 0 } },
+  "veo-3.1": { refLimits: { images: 3, videos: 0, audios: 0 } },
+  "veo-3.1-fast": { refLimits: { images: 3, videos: 0, audios: 0 } },
+  "pika-2.2": { refLimits: { images: 6, videos: 0, audios: 0 }, frameTags: "start" },
+  "pikaframes": { refLimits: { images: 5, videos: 0, audios: 0 }, frameTags: "none" },
+  "minimax-h3-max-ref": { refLimits: { images: 4, videos: 0, audios: 0 } },
+  "vidu-q4": { refLimits: { images: 12, videos: 0, audios: 0 } },
+}
+for (const m of VIDEO_MODEL_CONFIGS) Object.assign(m, VIDEO_UI_OVERRIDES[m.id] ?? {})
 const VIDEO_MODELS = VIDEO_MODEL_CONFIGS.map(m => m.name)
 
 // GIFs as video references: providers only accept real video, and a GIF will
@@ -1404,6 +1538,9 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "minimax-h3-max-insert": "$$",
   "vidu-q4": "$$",
   "minimax-h3-max-relight": "$$",
+  "wan-2.2-animate-replace": "$$$",
+  "dreamactor-v2": "$$",
+  "lucy-edit-pro": "$$$",
   "depth-anything-video": "$",
   "heygen-translate":   "$$$",
   "heygen-translate-fast": "$$",
@@ -1609,14 +1746,21 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Topaz",             type: "upscale · restore · adjust", accent: "text-lime-400",    dot: "bg-lime-400",    items: ["Topaz Image"] },
   { label: "Bria",              type: "text to image · edit · product tools", accent: "text-teal-400", dot: "bg-teal-400", items: ["Bria Fibo 1.5", "Bria Replace Background", "Bria Product in Hand", "Bria Embed Product"] },
   { label: "Microsoft",         type: "text to image · edit",      accent: "text-sky-400",     dot: "bg-sky-400",     items: ["MAI Image 2.5 Pro"] },
-  { label: "Tencent",           type: "text to image · edit",      accent: "text-sky-300",     dot: "bg-sky-300",     items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct"] },
+  // ESRGAN (Real-ESRGAN) is Tencent ARC Lab's - public with the other fal upscalers 2026-10-08
+  { label: "Tencent",           type: "text to image · edit · upscale", accent: "text-sky-300", dot: "bg-sky-300",     items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct", "ESRGAN"] },
   // Public 2026-10-02 (priced from fal's rates, tested)
   { label: "Alibaba",           type: "text to image · edit · new angles", accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3", "Multi-Angle Reshoot"] },
   { label: "Meta",              type: "text to image · edit · cut-outs", accent: "text-blue-400", dot: "bg-blue-400", items: ["Meta Muse", "SAM 3.1 Select"] },
   // Public 2026-10-02 (priced from fal's rates, tested)
   { label: "Krea",              type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
   // Public 2026-10-04: Marigold (ETH Zurich's open depth model)
-  { label: "Open Source",       type: "depth maps", accent: "text-slate-300", dot: "bg-slate-400", items: ["Marigold V2 Depth"] },
+  // DRCT: an academic super-resolution transformer (no company of its own)
+  { label: "Open Source",       type: "depth maps · upscale", accent: "text-slate-300", dot: "bg-slate-400", items: ["Marigold V2 Depth", "DRCT"] },
+  // Public 2026-10-08, each with its maker rather than an "Upscalers" block:
+  // Clarity Upscaler (Clarity AI; priced per output MP, clarityUpscaleTicketCost)
+  // and AuraSR (fal's own GAN upscaler)
+  { label: "Clarity AI",        type: "creative upscale · adds detail", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Clarity Upscaler"] },
+  { label: "fal",               type: "fast 4x upscale",           accent: "text-pink-300",    dot: "bg-pink-300",    items: ["AuraSR"] },
   { label: "Luma",              type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
 ]
 
@@ -1635,7 +1779,7 @@ const IMAGE_MODEL_GROUPS = [
  */
 const IMAGE_MODEL_SECTIONS: { label: string; note?: string; accent?: string; dot?: string; groups: { label: string; type: string; accent: string; dot: string; items: string[] }[] }[] = []
 /** The home page's Upscale / Tools sub-sections, by model (see HomeView). */
-const HOME_IMAGE_UPSCALE_NAMES = ["SeedVR2 Upscale"]
+const HOME_IMAGE_UPSCALE_NAMES = ["SeedVR2 Upscale", "Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"]
 // Single-image tools with no upscale factor: no 2x/4x picker, no "2x" on the tile
 const NO_FACTOR_TOOLS = new Set(["marigold-v2", "pixelcut-bg-removal", "recraft-vectorize", "seedream-5-pro-layerize", "qwen-multi-angle", "sam-3.1-image", "bria-replace-background", "seedream-5-flash-layerize"])
 // Single-image tools that take a short text: what it acts on (sent as the prompt)
@@ -1651,7 +1795,6 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // fal) and the two local RunPod upscalers. Their configs stay so old feed
   // items still resolve; they just aren't offered.
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
-  { label: "Upscalers", type: "enhance & enlarge images · fal", accent: "text-slate-400", dot: "bg-slate-500", items: ["Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"] },
   { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
 const VIDEO_MODEL_COST_BY_NAME: Record<string, "$" | "$$" | "$$$" | "$$$+"> = Object.fromEntries(
@@ -1661,12 +1804,12 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Kling",       type: "image to video",        accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling 3.0", "Kling V3 Motion"] },
   { label: "Kling O3 & Turbo", type: "text · image · refs to video · audio · clip edit", accent: "text-orange-300", dot: "bg-orange-300", items: ["Kling O3 Pro", "Kling O3 4K", "Kling V3 Turbo Pro", "Kling V3 Turbo", "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference"] },
   { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1", "PixVerse V6 Extend", "PixVerse Music Video"] },
-  { label: "Vidu", type: "text · image · start/end · refs to video · audio", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q3", "Vidu Q3 Turbo"] },
+  { label: "Vidu", type: "text · image · start/end · refs to video · audio · up to 4K", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q4", "Vidu Q3", "Vidu Q3 Turbo"] },
   { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
-  { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot"] },
-  { label: "ByteDance",   type: "image & text to video · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
+  { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot · relight", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot", "H3 Max Relight"] },
+  { label: "ByteDance",   type: "image & text to video · character swap · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "DreamActor v2", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
   { label: "Google Veo", type: "text · image · first/last · refs · audio · extend", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite", "Veo 3.1 Extend", "Veo 3.1 Fast Extend"] },
-  { label: "Wan",         type: "image & text to video", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7"] },
+  { label: "Wan",         type: "image & text to video · character swap", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7", "Wan 2.2 Animate Replace"] },
   { label: "Alibaba Wan 3.0", type: "text · image · refs · with audio", accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
   { label: "Pixelcut", type: "product loops · background removal", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Looping Video", "Pixelcut Video Background Removal"] },
   { label: "Tencent", type: "text & image to video", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["Hunyuan Video 1.5"] },
@@ -1683,6 +1826,8 @@ const VIDEO_MODEL_GROUPS = [
   { label: "VEED", type: "animated subtitles", accent: "text-violet-300", dot: "bg-violet-300", items: ["VEED Subtitles"] },
   { label: "ElevenLabs", type: "dub a clip into another language", accent: "text-slate-200", dot: "bg-slate-200", items: ["ElevenLabs Dubbing"] },
   { label: "Mirelo", type: "sound effects for a silent clip", accent: "text-orange-300", dot: "bg-orange-300", items: ["Mirelo SFX 1.6"] },
+  // Public 2026-10-08 with the rest of the 2026-10-07 batch
+  { label: "Decart", type: "edit a clip from words", accent: "text-sky-300", dot: "bg-sky-300", items: ["Lucy Edit Pro"] },
   { label: "Lipsync",     type: "lip sync video",        accent: "text-pink-400",    dot: "bg-pink-400",    items: ["Lipsync v3"] },
   { label: "Alibaba",     type: "image & references to video", accent: "text-yellow-400", dot: "bg-yellow-400", items: ["Happy Horse", "Happy Horse 1.1"] },
   { label: "Lightricks",  type: "text & image to video · directed camera · up to 4K · from audio", accent: "text-lime-400", dot: "bg-lime-400", items: ["LTX 2.5 Pro", "LTX 2.5 Fast", "LTX 2.5 Audio to Video Pro", "LTX 2.5 Audio to Video Fast"] },
@@ -1707,12 +1852,11 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    */
   { label: "Wan",    type: "LoRA video · pricing TBD",                        accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA"] },
   { label: "Topaz", type: "colorize · fal's endpoint is down", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Colorize"] },
-  // 2026-10-07 batch, under test (lib/batch-1007-video)
-  { label: "Vidu", type: "image or up to 12 refs to video · 3-16s · native audio · up to 4K", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q4"] },
-  { label: "MiniMax", type: "re-light a clip from a lit-sphere picture", accent: "text-rose-400", dot: "bg-rose-400", items: ["H3 Max Relight"] },
+  // The 2026-10-07 batch (Vidu Q4, H3 Max Relight, the character swaps) went
+  // public 2026-10-08 and moved to its makers' groups above
 ]
 // Models fal runs without any prompt (their inputs are the image/audio)
-const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight"])
+const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
 /** Minutes the portal keeps polling a video before giving up (default 20) - the
@@ -1739,6 +1883,9 @@ const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "minimax-h3-max-camera": "Describe the scene (optional) - the camera move is set on the left",
   "vidu-q4": "Describe the motion (optional with a start image, required with references)",
   "minimax-h3-max-relight": "No prompt needed - add the clip and a picture of a lit sphere (the lighting to match) in References",
+  "wan-2.2-animate-replace": "No prompt needed - add the clip and your character's picture in References",
+  "dreamactor-v2": "No prompt needed - add the clip and your character's picture in References",
+  "lucy-edit-pro": "Describe the edit - e.g. make him a chrome robot (it renders 16:9 at 720p, so landscape clips work best)",
 }
 // Model ids only admins may see/select in the video UI (also gated server-side)
 const ADMIN_VIDEO_MODEL_IDS = new Set([
@@ -1747,8 +1894,6 @@ const ADMIN_VIDEO_MODEL_IDS = new Set([
   "marey",
   "marey-motion-transfer", "marey-pose-transfer",
   "topaz-colorize",
-  // 2026-10-07 batch while under test
-  "vidu-q4", "minimax-h3-max-relight",
 ])
 
 // ── Wan 2.2 custom-LoRA picker (admin) ─────────────────────────────────────
@@ -3227,16 +3372,17 @@ function refTileThumb(url: string, w: 128 | 256 = 256): string {
 }
 
 /**
- * How wide the Refs panel is.
+ * How wide the Refs panel is, from the viewport (2026-10-08 redesign).
  *
- * Compact was 320px, which left the Total and Active counters in the header
- * clipped by the panel edge — "ACTIVE 0/14 img · 0/3 vid" needs real room, and
- * a counter you cannot read is worse than no counter. The value is written
- * once because it is needed both to position the panel and to size it, and
- * the two had to agree.
+ * One size never fitted: 384px (or a manual 640px "wide" toggle) was a sliver
+ * on a 2560px desktop and still crowded the header counters. Now it follows
+ * the screen - a phone gets an edge-to-edge sheet, a tablet / laptop a
+ * comfortable panel, a big desktop up to 1360px - and the picture grid adds
+ * or drops columns to keep tiles a usable size, so no toggle is needed.
  */
-function refsPanelWidth(wide: boolean): number {
-  return wide ? 640 : 384
+function refsPanelWidth(vw: number): number {
+  if (vw < 640) return vw - 16
+  return Math.min(vw - 16, 1360, Math.max(560, Math.round(vw * 0.6)))
 }
 
 /**
@@ -3453,6 +3599,10 @@ function RefThumb({
         src={thumbRetry ? `${refThumbSrc(img)}?r=1` : refThumbSrc(img)}
         alt=""
         decoding="async"
+        // A cached thumbnail can finish before React attaches onLoad (a tile
+        // just added from My Generations stayed at opacity 0, image loaded) -
+        // check on mount as well
+        ref={el => { if (!loaded && el?.complete && el.naturalWidth > 0) setLoaded(true) }}
         onLoad={() => setLoaded(true)}
         onError={() => { if (thumbRetry) setDead(true); else setThumbRetry(true) }}
         className={`relative h-full w-full ${fit === "contain" ? "object-contain" : "object-cover"} transition-opacity ${loaded ? "opacity-100" : "opacity-0"} ${className}`}
@@ -6349,7 +6499,7 @@ function FrameExtractorModal({ onClose, onAddRefs, canUseLayers = false }: {
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
           {/* Source picker */}
-          <input ref={fileInputRef} type="file" accept="video/*,image/gif" multiple className="hidden"
+          <input ref={fileInputRef} type="file" onClick={gateFileInput} accept="video/*,image/gif" multiple className="hidden"
             onChange={e => { for (const f of Array.from(e.target.files ?? [])) handleFile(f); e.target.value = "" }} />
           {!videoUrl ? (
             <button onClick={() => fileInputRef.current?.click()} disabled={gifConverting}
@@ -6950,7 +7100,8 @@ function RefDropdown({
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
+  // In the taskbar's (CSS-zoomed) space: every px is divided by z
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1, width: 384, maxHeight: 600, underDock: 0 })
   const [selectMode, setSelectMode] = useState(false)
   const [downloadingRefs, setDownloadingRefs] = useState<"idle" | "zipping" | "done">("idle")
   // Batch-download the selected references at ORIGINAL quality as one ZIP —
@@ -7044,16 +7195,9 @@ function RefDropdown({
   const [uploading, setUploading] = useState(false)
   const [consentGiven, setConsentGiven] = useState(false)
   const [showConsentModal, setShowConsentModal] = useState(false)
-  // Wide mode: double-width panel, rows of 10 (persisted)
-  const [wide, setWide] = useState(false)
-  // Folder navigation (account library folder tree)
-  const [folderPath, setFolderPath] = useState<RefFolder[]>([])
-  const [newFolderMode, setNewFolderMode] = useState(false)
-  const [newFolderName, setNewFolderName] = useState("")
-  const [folderMenuId, setFolderMenuId] = useState<number | null>(null)
-  const [renamingFolderId, setRenamingFolderId] = useState<number | null>(null)
-  const [renameValue, setRenameValue] = useState("")
-  const [movePicker, setMovePicker] = useState<{ path: RefFolder[] } | null>(null)
+  // null while loading; admins count as verified (/api/id-verification/status)
+  const idVerified = useIdVerified()
+  const idStatus = useIdStatus()
   /**
    * 2D or 3D. The library holds both now, and they are not browsable together:
    * a mesh has no thumbnail worth putting in a picture grid, and a photograph
@@ -7062,6 +7206,15 @@ function RefDropdown({
    * video refs — the file extension is the marker.
    */
   const [kindFilter, setKindFilter] = useState<"2d" | "3d">("2d")
+  // "Clear all" deletes the whole library: armed by the first tap, done by the second
+  const [confirmClear, setConfirmClear] = useState(false)
+  // Same for deleting a selection
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  // "Add to asset": the same popup as My Generations (components/my-generations/Assets),
+  // fed the selected references' links (the assets API keeps the account's own pictures only)
+  const [assetPickOpen, setAssetPickOpen] = useState(false)
+  const [assetNote, setAssetNote] = useState<string | null>(null)
+  const assetsApi = useUserAssets(assetPickOpen)
   const meshUploadRef = useRef<HTMLInputElement>(null)
   const [meshUploading, setMeshUploading] = useState(false)
   const activeCount = disabled ? 0 : activeIds.filter((id) => library.some((img) => img.id === id)).length
@@ -7087,20 +7240,15 @@ function RefDropdown({
       : activeCount >= modelMaxRefs
   )
 
-  const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : null
-  // Drop path segments whose folders were deleted (e.g. from another device)
-  useEffect(() => {
-    if (folderPath.some(p => !folders.some(f => f.id === p.id))) {
-      setFolderPath(prev => prev.filter(p => folders.some(f => f.id === p.id)))
-    }
-  }, [folders, folderPath])
-  const visibleFolders = folders.filter(f => (f.parentId ?? null) === currentFolderId)
+  /*
+   * One flat library (2026-10-08): the folder tree inside Refs was retired.
+   * References that were filed in a folder all show here now - nothing was
+   * deleted, the folder rows simply aren't used. New uploads go to the root.
+   */
+  const currentFolderId: number | null = null
   const is3D = (u: string) => /\.(glb|gltf|obj|stl|fbx|ply|usdz|3mf)(\?|$)/i.test(u ?? "")
-  const visibleRefs = library
-    .filter(i => (i.folderId ?? null) === currentFolderId)
-    .filter(i => (kindFilter === "3d" ? is3D(i.url) : !is3D(i.url)))
+  const visibleRefs = library.filter(i => (kindFilter === "3d" ? is3D(i.url) : !is3D(i.url)))
   const count3D = library.filter(i => is3D(i.url)).length
-  const refCountIn = (folderId: number) => library.filter(i => i.folderId === folderId).length
 
   useEffect(() => {
     setConsentGiven(sessionStorage.getItem("ref-rights-consent") === "true")
@@ -7108,15 +7256,7 @@ function RefDropdown({
     const grant = () => setConsentGiven(true)
     window.addEventListener("pv2-ref-consent", grant)
     return () => window.removeEventListener("pv2-ref-consent", grant)
-    try { setWide(localStorage.getItem("pv2-ref-wide") === "true") } catch {}
   }, [])
-
-  const toggleWide = () => {
-    setWide(w => {
-      try { localStorage.setItem("pv2-ref-wide", String(!w)) } catch {}
-      return !w
-    })
-  }
 
   // Exit select/edit mode + clear errors when dropdown closes
   useEffect(() => {
@@ -7125,10 +7265,6 @@ function RefDropdown({
       setSelectedForDelete(new Set())
       setEditMode(false)
       setUploadError(null)
-      setNewFolderMode(false)
-      setFolderMenuId(null)
-      setRenamingFolderId(null)
-      setMovePicker(null)
     }
   }, [open])
 
@@ -7150,13 +7286,38 @@ function RefDropdown({
   }, [open, onToggle, editingImage])
 
   useEffect(() => {
-    if (open && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect()
-      const z = cssZoomOf(buttonRef.current!)
-      const panelW = Math.min(refsPanelWidth(wide) * z, window.innerWidth - 16)
-      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
+    if (!open || !buttonRef.current) return
+    // Centred under the Refs button, kept on screen, as tall as the viewport
+    // allows (the grid scrolls inside); re-placed on resize / rotation
+    const place = () => {
+      const btn = buttonRef.current
+      if (!btn) return
+      const rect = btn.getBoundingClientRect()
+      const z = cssZoomOf(btn)
+      const vw = window.innerWidth, vh = window.innerHeight
+      const w = refsPanelWidth(vw)
+      const left = Math.max(8, Math.min(rect.left + rect.width / 2 - w / 2, vw - w - 8))
+      const top = rect.bottom + 8
+      const maxH = Math.max(260, vh - top - 12)
+      // The prompt box sits ON TOP of the panel (so it stays usable with Refs
+      // open): how far the panel runs under it, so the grid can scroll its
+      // last row up into view. The dock's own top padding is gradient, not box
+      const dock = [...document.querySelectorAll<HTMLElement>("[data-prompt-dock]")].find(d => d.offsetHeight > 0)
+      const dockTop = dock ? dock.getBoundingClientRect().top + 12 : vh
+      const underDock = Math.max(0, top + maxH - dockTop)
+      setMenuPos({ top: top / z, left: left / z, z, width: w / z, maxHeight: maxH / z, underDock: underDock / z })
     }
-  }, [open, wide])
+    place()
+    window.addEventListener("resize", place)
+    // While open, the page knows: globals.css lifts the prompt dock above the
+    // taskbar (whose layer this panel lives in) - for Refs only, so the model
+    // menus are never covered
+    document.documentElement.setAttribute("data-refs-open", "")
+    return () => {
+      window.removeEventListener("resize", place)
+      document.documentElement.removeAttribute("data-refs-open")
+    }
+  }, [open])
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
@@ -7201,11 +7362,10 @@ function RefDropdown({
   }
 
   const handleButtonClick = () => {
-    if (consentGiven) {
-      onToggle()
-    } else {
-      setShowConsentModal(true)
-    }
+    // No separate rights popup any more: the ID verification popup carries
+    // those statements (agreed once per account, before Didit). Verified
+    // opens the library; anyone else gets the locked panel and its way in
+    onToggle()
   }
 
   const handleConsentAgree = () => {
@@ -7248,421 +7408,416 @@ function RefDropdown({
           open ? "bg-white/10" : "hover:bg-white/5"
         }`}
       >
-        {consentGiven ? <ImagePlus size={15} className="text-slate-300" /> : <Lock size={13} className="text-slate-500" />}
+        {idVerified ? <ImagePlus size={15} className="text-slate-300" /> : <Lock size={13} className="text-slate-500" />}
         Refs
-        {consentGiven && activeCount > 0 && (
+        {idVerified && activeCount > 0 && (
           <span className="px-1.5 py-0.5 rounded-full bg-white/15 text-white text-[10px] font-bold leading-none">
             {activeCount}
           </span>
         )}
       </button>
 
-      {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999]" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(refsPanelWidth(wide), (window.innerWidth - 16) / menuPos.z) }}>
-          {/* Header — synced site logo in the silver rim, like the page heroes */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-            <div className="flex items-center gap-2.5">
-              <SiteLogoBox size={22} rounded={7} />
-              <span className="text-sm font-semibold text-white">Reference Images</span>
-              {/* Wide mode toggle — 2x width, rows of 10 */}
-              <button
-                onClick={toggleWide}
-                title={wide ? "Compact view (rows of 5)" : "Wide view (rows of 10)"}
-                className={`p-1.5 rounded-md border transition-all ${wide ? "border-white/30 bg-white/10 text-white" : "border-white/10 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10"}`}
-              >
-                {wide ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
-              </button>
-
-              {/* 2D / 3D. Meshes and photographs do not browse together: a mesh
-                  has no thumbnail worth putting in a picture grid, and a photo
-                  is noise when you are hunting for a model to remesh. */}
-              <div className="ml-1 flex items-center gap-0.5 rounded-md border border-white/10 p-0.5">
-                {(["2d", "3d"] as const).map(k => (
-                  <button
-                    key={k}
-                    onClick={() => setKindFilter(k)}
-                    title={k === "3d" ? "3D assets — meshes, rigs and printables" : "Images and clips"}
-                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider transition-colors ${
-                      kindFilter === k ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
-                    }`}
-                  >
-                    {k}
-                    {k === "3d" && count3D > 0 && (
-                      <span className="ml-1 font-mono text-slate-500">{count3D}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-
-              {kindFilter === "3d" && (
-                <button
-                  onClick={() => meshUploadRef.current?.click()}
-                  disabled={meshUploading}
-                  title="Upload a .glb, .gltf, .obj, .stl, .fbx, .ply, .usdz or .3mf"
-                  className="flex items-center gap-1 rounded-md border border-white/10 px-1.5 py-1 text-[9px] uppercase tracking-wider text-slate-400 transition-colors hover:border-white/30 hover:text-white"
-                >
-                  {meshUploading ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />} 3D
-                </button>
-              )}
-              <input
-                ref={meshUploadRef}
-                type="file"
-                accept=".glb,.gltf,.obj,.stl,.fbx,.ply,.usdz,.3mf"
-                multiple
-                hidden
-                onChange={async e => {
-                  const files = [...(e.target.files ?? [])]
-                  e.currentTarget.value = ""
-                  if (files.length === 0) return
-                  setMeshUploading(true)
-                  try {
-                    // Meshes go to their own endpoint: the image path gates on
-                    // MIME type, and browsers disagree wildly about what a .glb
-                    // or an .fbx is. Uploaded urls are then registered as
-                    // ordinary library rows, so folders and deletion just work.
-                    const urls: { url: string }[] = []
-                    for (const f of files) {
-                      const fd = new FormData()
-                      fd.append("file", f)
-                      const r = await fetch("/api/upload-mesh", { method: "POST", body: fd })
-                      const d = await r.json().catch(() => ({}))
-                      if (r.ok && d?.url) urls.push({ url: d.url })
-                    }
-                    if (urls.length > 0) await onUploadUrls?.(urls, currentFolderId)
-                  } finally {
-                    setMeshUploading(false)
-                  }
-                }}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              {/* Stacked Total / Active pills. shrink-0 so the counters keep
-                  their width and the header's left side gives way instead —
-                  they were the first thing to be squeezed off the edge. */}
-              <div className="flex flex-col gap-1 shrink-0">
-                {/* Library slots pill */}
-                <div className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-md border border-white/10 bg-black/60" title="Total images saved in your library">
-                  <span className="text-[10px] text-slate-500 uppercase tracking-wide font-medium">Total</span>
-                  <span className={`text-xs font-mono font-bold whitespace-nowrap ${library.length >= libraryLimit ? "text-amber-400" : "text-slate-300"}`}>
-                    {library.length}/{libraryLimit}
+      {/* Not ID-verified (CCBill: uploads only from verified accounts): the
+          library stays locked - a lock and the way in instead of the grid */}
+      {open && idVerified === false && (
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999] p-3" style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}>
+          <IdLockedPanel className="mx-auto max-w-lg border-none bg-transparent" />
+        </div>
+      )}
+      {open && idVerified !== false && (
+        <div
+          className="fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border border-white/[0.09] bg-[#070b14]/96 shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)] backdrop-blur-xl"
+          style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}
+        >
+          {/* ── Header: title + ID mark on the left, close on the right ── */}
+          <div className="flex items-center gap-3 px-4 sm:px-5 pt-4 pb-3">
+            <SiteLogoBox size={30} rounded={9} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <h3 className="text-[15px] sm:text-base font-semibold text-white leading-tight">Reference Images</h3>
+                {/* This account's ID check, at a glance (an admin never needs one) */}
+                {idStatus?.approved ? (
+                  <span title="This account is ID-verified - uploads are unlocked"
+                    className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                    <BadgeCheck size={11} /> ID verified
                   </span>
-                </div>
-                {/* Active refs pill */}
-                <div className={`flex items-center justify-between gap-2 px-2.5 py-1 rounded-md border ${
-                  atLimit
-                    ? "border-amber-500/30 bg-amber-500/10"
-                    : activeCount > 0
-                    ? "border-white/25 bg-black/60"
-                    : "border-white/8 bg-black/40"
-                }`} title={
-                  splitRefs
-                    ? `Sent with this film — up to ${modelMaxRefs} images and ${modelMaxVideos} of your own clips`
-                    : modelMaxRefs > 0
-                      ? `Images currently sent with your generation — max ${modelMaxRefs} for this model`
-                      : "Images currently sent with your generation"
-                }>
-                  <span className="text-[10px] text-slate-500 uppercase tracking-wide font-medium">Active</span>
-                  <span className={`text-xs font-mono font-bold whitespace-nowrap ${atLimit ? "text-amber-400" : activeCount > 0 ? "text-white" : "text-slate-500"}`}>
-                    {splitRefs ? (
-                      <>
-                        {activeImages}/{modelMaxRefs}<span className="text-slate-500 font-normal"> img</span>
-                        <span className="text-slate-600 font-normal"> · </span>
-                        <span className={activeVideos > 0 ? "text-fuchsia-300" : "text-slate-500"}>
-                          {activeVideos}/{modelMaxVideos}
-                        </span>
-                        <span className="text-slate-500 font-normal"> vid</span>
-                      </>
-                    ) : (
-                      <>{activeCount}{modelMaxRefs > 0 ? `/${modelMaxRefs}` : ""}</>
-                    )}
+                ) : idStatus?.admin ? (
+                  <span title="Admin accounts don't need an ID check"
+                    className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-white/15 bg-white/[0.05] px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                    <ShieldCheck size={11} /> Admin
                   </span>
-                </div>
+                ) : null}
               </div>
-            </div>
-          </div>
-
-          {/* Action buttons row */}
-          {library.length > 0 && (
-            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/5">
-              {!selectMode && !editMode && (
-                <>
-                  <button
-                    onClick={() => setSelectMode(true)}
-                    className="flex-1 text-[10px] font-bold text-slate-300 hover:text-white transition-all h-7 rounded-md border border-white/15 bg-white/6 hover:bg-white/10 hover:border-white/25 whitespace-nowrap flex items-center justify-center"
-                  >
-                    Select
-                  </button>
-                  <button
-                    onClick={() => setEditMode(true)}
-                    className="flex-1 text-[10px] font-bold text-white transition-all h-7 rounded-md border border-white/25 bg-white/10 hover:bg-white/15 hover:border-white/40 whitespace-nowrap flex items-center justify-center"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={handleClearAll}
-                    className="flex-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-all h-7 rounded-md border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 hover:border-rose-500/50 whitespace-nowrap flex items-center justify-center"
-                  >
-                    Clear all
-                  </button>
-                </>
-              )}
-              {(selectMode || editMode) && (
-                <button
-                  onClick={() => { setSelectMode(false); setSelectedForDelete(new Set()); setEditMode(false) }}
-                  className="flex-1 text-[10px] font-bold text-slate-400 hover:text-white transition-all h-7 rounded-md border border-white/10 hover:border-white/20 bg-white/[0.03] hover:bg-white/[0.06] flex items-center justify-center"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Description */}
-          {!selectMode && !editMode && (
-            <div className="px-4 py-2.5 border-b border-white/5 bg-white/2">
-              <p className="text-[10px] text-slate-400 leading-relaxed">
-                Upload images here to use as visual references. <span className="text-white">Tap an image to toggle it on/off</span> — only <span className="text-white font-semibold">active</span> images are sent with your generation. Your library is <span className="text-white">saved to your account</span> and syncs across devices.
+              <p className="mt-0.5 text-[11px] text-slate-500 leading-snug">
+                Tap a picture to switch it on - only <span className="text-slate-300">active</span> ones go with your generation. Saved to your account.
               </p>
             </div>
-          )}
-
-          {/* Upload button — hidden in select/edit mode */}
-          {!selectMode && !editMode && (
-            <div className="px-3 py-2 border-b border-white/5">
-              <input
-                ref={fileInputRef}
-                type="file"
-                // Reference VIDEOS ride the same library — SeeDance 2.0 and
-                // Kling Motion Control accept them as inputs
-                accept="image/*,video/mp4,video/webm,video/quicktime,video/x-m4v"
-                multiple
-                className="hidden"
-                onChange={handleFileChange}
-              />
-              <button
-                onClick={() => { if (!uploading && library.length < libraryLimit) { setUploadError(null); fileInputRef.current?.click() } }}
-                disabled={library.length >= libraryLimit || uploading}
-                className="w-full py-2 rounded-lg border border-dashed border-white/10 text-[11px] text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {uploading
-                  ? <>
-                      <div className="w-2.5 h-2.5 rounded-full border border-slate-500 border-t-slate-200 animate-spin" />
-                      {uploadProgress ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…` : "Preparing…"}
-                    </>
-                  : <><Plus size={11} />{library.length >= libraryLimit ? `Library full (${libraryLimit}/${libraryLimit})` : `Upload Images · ${libraryLimit - library.length} slots left`}</>
-                }
-              </button>
-              {uploadError && (
-                <p className="text-[10px] text-red-400 mt-1.5 px-1 leading-snug">{uploadError}</p>
-              )}
-            </div>
-          )}
-
-          {/* Jump to the full generations gallery */}
-          {!selectMode && !editMode && (
-            <div className="px-3 py-2 border-b border-white/5">
-              <Link
-                href="/my-generations"
-                className="w-full py-2 rounded-lg border border-white/10 bg-white/[0.04] text-[11px] text-slate-300 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all flex items-center justify-center gap-2"
-              >
-                <Image size={11} />
-                My Generations
-                <ArrowUpRight size={11} className="text-slate-500" />
-              </Link>
-            </div>
-          )}
-
-          {/* Select mode hint */}
-          {selectMode && (
-            <div className="px-4 py-2 border-b border-white/5 bg-rose-500/5">
-              <p className="text-[10px] text-rose-400/80">Tap images to select them for deletion</p>
-            </div>
-          )}
-
-          {/* Edit mode hint */}
-          {editMode && (
-            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.04]">
-              <p className="text-[10px] text-slate-300">Tap an image to open the editor — crop, draw, blur and more</p>
-            </div>
-          )}
-
-          {/* Disabled notice for video mode */}
-          {!selectMode && !editMode && disabled && (
-            <div className="px-4 py-2 border-b border-white/5 bg-slate-800/60">
-              <p className="text-[10px] text-slate-400">Reference images are not used by video models. Upload start/end frames through the video configuration panel instead.</p>
-            </div>
-          )}
-
-          {/* Model support notice */}
-          {!selectMode && !editMode && !disabled && modelMaxRefs === 0 && (
-            <div className="px-4 py-2 border-b border-white/5 bg-amber-500/5">
-              <p className="text-[10px] text-amber-400/70">Current model doesn't support reference images.</p>
-            </div>
-          )}
-
-          {/* Folder breadcrumb + new-folder */}
-          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-white/5 overflow-x-auto">
-            <button
-              onClick={() => setFolderPath([])}
-              className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors shrink-0 ${currentFolderId === null ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
-            >
-              Library
+            <button onClick={onToggle} title="Close" aria-label="Close references"
+              className="shrink-0 self-start rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-white">
+              <X size={16} />
             </button>
-            {folderPath.map((f, i) => (
-              <span key={f.id} className="flex items-center gap-1 shrink-0">
-                <span className="text-slate-700 text-[10px]">/</span>
+          </div>
+
+          {/* ── Counters: their own row, so nothing is pushed off an edge ── */}
+          <div className="grid grid-cols-2 gap-2 px-4 sm:px-5 pb-3">
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2" title="Pictures saved in your library">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Library</span>
+                <span className={`font-mono text-[13px] font-bold ${library.length >= libraryLimit ? "text-amber-400" : "text-slate-200"}`}>
+                  {library.length}<span className="text-slate-600">/{libraryLimit}</span>
+                </span>
+              </div>
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+                <div className={`h-full rounded-full ${library.length >= libraryLimit ? "bg-amber-400" : "bg-slate-300/70"}`}
+                  style={{ width: `${Math.min(100, (library.length / Math.max(1, libraryLimit)) * 100)}%` }} />
+              </div>
+            </div>
+            <div className={`rounded-xl border px-3 py-2 ${atLimit ? "border-amber-500/30 bg-amber-500/[0.07]" : activeCount > 0 ? "border-white/20 bg-white/[0.04]" : "border-white/[0.08] bg-white/[0.025]"}`}
+              title={
+                splitRefs
+                  ? `Sent with this film - up to ${modelMaxRefs} images and ${modelMaxVideos} of your own clips`
+                  : modelMaxRefs > 0
+                    ? `Pictures sent with your generation - max ${modelMaxRefs} for this model`
+                    : "Pictures sent with your generation"
+              }>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Active</span>
+                <span className={`whitespace-nowrap font-mono text-[13px] font-bold ${atLimit ? "text-amber-400" : activeCount > 0 ? "text-white" : "text-slate-500"}`}>
+                  {splitRefs ? (
+                    <>
+                      {activeImages}<span className="text-slate-600">/{modelMaxRefs}</span><span className="font-normal text-slate-500"> img</span>
+                      <span className="font-normal text-slate-600"> · </span>
+                      <span className={activeVideos > 0 ? "text-fuchsia-300" : "text-slate-500"}>{activeVideos}<span className="text-slate-600">/{modelMaxVideos}</span></span>
+                      <span className="font-normal text-slate-500"> vid</span>
+                    </>
+                  ) : (
+                    <>{activeCount}{modelMaxRefs > 0 && <span className="text-slate-600">/{modelMaxRefs}</span>}</>
+                  )}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+                <div className={`h-full rounded-full ${atLimit ? "bg-amber-400" : "bg-white/80"}`}
+                  style={{ width: `${modelMaxRefs > 0 ? Math.min(100, ((splitRefs ? activeImages : activeCount) / modelMaxRefs) * 100) : 0}%` }} />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Toolbar: one wrapping row ── */}
+          <div className="flex flex-wrap items-center gap-1.5 border-y border-white/[0.06] bg-white/[0.015] px-4 sm:px-5 py-2.5">
+            <input
+              ref={fileInputRef}
+              type="file" onClick={gateFileInput}
+              // Reference VIDEOS ride the same library - SeeDance 2.0 and
+              // Kling Motion Control accept them as inputs
+              accept="image/*,video/mp4,video/webm,video/quicktime,video/x-m4v"
+              multiple
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            <input
+              ref={meshUploadRef}
+              type="file" onClick={gateFileInput}
+              accept=".glb,.gltf,.obj,.stl,.fbx,.ply,.usdz,.3mf"
+              multiple
+              hidden
+              onChange={async e => {
+                const files = [...(e.target.files ?? [])]
+                e.currentTarget.value = ""
+                if (files.length === 0) return
+                setMeshUploading(true)
+                try {
+                  // Meshes go to their own endpoint: the image path gates on
+                  // MIME type, and browsers disagree wildly about what a .glb
+                  // or an .fbx is. Uploaded urls are then registered as
+                  // ordinary library rows, so folders and deletion just work.
+                  const urls: { url: string }[] = []
+                  for (const f of files) {
+                    const fd = new FormData()
+                    fd.append("file", f)
+                    const r = await fetch("/api/upload-mesh", { method: "POST", body: fd })
+                    const d = await r.json().catch(() => ({}))
+                    if (r.ok && d?.url) urls.push({ url: d.url })
+                  }
+                  if (urls.length > 0) await onUploadUrls?.(urls, currentFolderId)
+                } finally {
+                  setMeshUploading(false)
+                }
+              }}
+            />
+            {selectMode ? (
+              /* Select mode: the actions live HERE, at the top. They used to be
+                 a bar pinned to the panel's bottom - which, with the prompt box
+                 now drawn over the panel, sat hidden behind it. */
+              (() => {
+                const picked = visibleRefs.filter(r => selectedForDelete.has(r.id))
+                const allPicked = visibleRefs.length > 0 && picked.length === visibleRefs.length
+                const allOn = picked.length > 0 && picked.every(r => activeIds.includes(r.id))
+                const room = Math.max(0, modelMaxRefs - activeCount)
+                const btn = "flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[12px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-30"
+                return (
+                  <>
+                    <button
+                      onClick={() => setSelectedForDelete(allPicked ? new Set() : new Set(visibleRefs.map(r => r.id)))}
+                      className={`${btn} border-white/12 bg-white/[0.04] text-slate-200 hover:bg-white/[0.09]`}
+                    >
+                      <span className={`flex h-3.5 w-3.5 items-center justify-center rounded border ${allPicked ? "border-white bg-white" : "border-white/40"}`}>
+                        {allPicked && <Check size={10} className="text-black" />}
+                      </span>
+                      {allPicked ? "None" : "All"}
+                    </button>
+                    <span className="mr-auto px-1 text-[12px] text-slate-400">
+                      {picked.length > 0 ? `${picked.length} selected` : "Tap pictures to select them"}
+                    </span>
+                    {/* Use them as references now (as many as the model takes) - or switch them all off */}
+                    {!disabled && modelMaxRefs > 0 && (
+                      <button
+                        onClick={() => {
+                          if (allOn) { picked.forEach(r => onDeactivate(r.id)) }
+                          else { picked.filter(r => !activeIds.includes(r.id)).slice(0, room).forEach(r => onActivate(r.id)) }
+                          setSelectMode(false); setSelectedForDelete(new Set())
+                        }}
+                        disabled={picked.length === 0 || (!allOn && room === 0)}
+                        title={allOn ? "Stop sending these with your generation" : room === 0 ? `This model takes ${modelMaxRefs} - switch some off first` : `Send these with your generation (up to ${room} more)`}
+                        className={`${btn} ${allOn ? "border-white/15 bg-white/[0.05] text-slate-200 hover:bg-white/[0.1]" : "border-white/30 bg-white/90 text-slate-900 hover:bg-white"}`}
+                      >
+                        {allOn ? <><X size={13} /> Turn off</> : <><Check size={13} /> Use{picked.length > room && room > 0 ? ` ${room}` : ""}</>}
+                      </button>
+                    )}
+                    <button
+                      onClick={handleDownloadSelected}
+                      disabled={picked.length === 0 || downloadingRefs === "zipping"}
+                      title="Download the selected pictures at original quality as one ZIP"
+                      className={`${btn} ${downloadingRefs === "done" ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300" : "border-white/15 bg-white/[0.05] text-white hover:bg-white/[0.1]"}`}
+                    >
+                      {downloadingRefs === "zipping" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                      {downloadingRefs === "done" ? "Saved!" : downloadingRefs === "zipping" ? "Zipping…" : "Download"}
+                    </button>
+                    <button
+                      onClick={() => { setAssetNote(null); setAssetPickOpen(true) }}
+                      disabled={picked.filter(r => !isVideoRefUrl(r.url) && !is3D(r.url)).length === 0}
+                      title="Save these pictures into one of your Assets (a character, location or prop) - or a new one"
+                      className={`${btn} border-white/15 bg-white/[0.05] text-white hover:bg-white/[0.1]`}
+                    >
+                      <Boxes size={13} /> Add to asset
+                    </button>
+                    {onDuplicate && (
+                      <button
+                        onClick={handleDuplicateSelected}
+                        disabled={picked.length === 0 || duplicating === "working" || library.length + picked.length > libraryLimit}
+                        title={library.length + picked.length > libraryLimit ? `Not enough room - the library holds ${libraryLimit}` : "Make a copy of each selected picture, with its layers"}
+                        className={`${btn} ${duplicating === "done" ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300" : "border-violet-500/25 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20"}`}
+                      >
+                        {duplicating === "working" ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
+                        {duplicating === "done" ? "Copied!" : duplicating === "working" ? "Copying\u2026" : "Duplicate"}
+                      </button>
+                    )}
+                    {/* Deleting is permanent: the first tap arms it */}
+                    <button
+                      onClick={() => {
+                        if (confirmDelete) { setConfirmDelete(false); handleDeleteSelected(); return }
+                        setConfirmDelete(true)
+                        setTimeout(() => setConfirmDelete(false), 4000)
+                      }}
+                      disabled={picked.length === 0}
+                      className={`${btn} ${confirmDelete ? "border-rose-400/60 bg-rose-500/30 font-semibold text-rose-100" : "border-rose-500/30 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"}`}
+                    >
+                      <Trash2 size={13} /> {confirmDelete ? `Delete ${picked.length}?` : "Delete"}
+                    </button>
+                    <button
+                      onClick={() => { setSelectMode(false); setSelectedForDelete(new Set()); setConfirmDelete(false) }}
+                      className={`${btn} border-white/12 bg-white/[0.04] font-semibold text-slate-200 hover:bg-white/[0.09]`}
+                    >
+                      Done
+                    </button>
+                    {duplicateError && <p className="w-full text-[11.5px] leading-snug text-rose-300">{duplicateError}</p>}
+                    {assetNote && <p className="w-full text-[11.5px] leading-snug text-emerald-300">{assetNote}</p>}
+                  </>
+                )
+              })()
+            ) : editMode ? (
+              <>
+                <span className="mr-auto text-[12px] text-slate-300">Tap a picture to open the editor - crop, draw, blur and more</span>
                 <button
-                  onClick={() => setFolderPath(folderPath.slice(0, i + 1))}
-                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors max-w-[90px] truncate ${i === folderPath.length - 1 ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
+                  onClick={() => setEditMode(false)}
+                  className="h-8 rounded-lg border border-white/12 bg-white/[0.04] px-3 text-[12px] font-semibold text-slate-200 transition-colors hover:bg-white/[0.09]"
                 >
-                  {f.name}
+                  Done
                 </button>
-              </span>
-            ))}
-            <div className="flex-1" />
-            {!selectMode && !editMode && onCreateFolder && (
-              newFolderMode ? (
-                <form
-                  className="flex items-center gap-1 shrink-0"
-                  onSubmit={async (e) => {
-                    e.preventDefault()
-                    const name = newFolderName.trim()
-                    if (!name) return
-                    const created = await onCreateFolder(name, currentFolderId)
-                    if (created) { setNewFolderName(""); setNewFolderMode(false) }
-                  }}
-                >
-                  <input
-                    autoFocus
-                    value={newFolderName}
-                    onChange={e => setNewFolderName(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Escape") { setNewFolderMode(false); setNewFolderName("") } }}
-                    placeholder="Folder name"
-                    className="w-24 px-1.5 py-0.5 rounded bg-black/60 border border-white/15 text-[10px] text-white focus:outline-none focus:border-white/40"
-                  />
-                  <button type="submit" className="p-1 rounded bg-white/15 border border-white/30 text-white"><Check size={9} /></button>
-                  <button type="button" onClick={() => { setNewFolderMode(false); setNewFolderName("") }} className="p-1 rounded bg-white/5 border border-white/10 text-slate-400"><X size={9} /></button>
-                </form>
-              ) : (
-                <button
-                  onClick={() => setNewFolderMode(true)}
-                  title="New folder"
-                  className="p-1 rounded-md border border-white/10 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 transition-all shrink-0"
-                >
-                  <FolderPlus size={11} />
-                </button>
-              )
+              </>
+            ) : (
+              <>
+                {kindFilter === "3d" ? (
+                  <button
+                    onClick={() => meshUploadRef.current?.click()}
+                    disabled={meshUploading}
+                    title="Upload a .glb, .gltf, .obj, .stl, .fbx, .ply, .usdz or .3mf"
+                    className="flex h-8 items-center gap-1.5 rounded-lg bg-slate-100 px-3 text-[12px] font-semibold text-slate-900 transition-colors hover:bg-white disabled:opacity-50"
+                  >
+                    {meshUploading ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} Upload 3D
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { if (!uploading && library.length < libraryLimit) { setUploadError(null); fileInputRef.current?.click() } }}
+                    disabled={library.length >= libraryLimit || uploading}
+                    className="flex h-8 items-center gap-1.5 rounded-lg bg-slate-100 px-3 text-[12px] font-semibold text-slate-900 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin" />
+                        {uploadProgress ? `Uploading ${uploadProgress.done}/${uploadProgress.total}` : "Preparing"}
+                      </>
+                    ) : (
+                      <>
+                        <Plus size={13} />
+                        {library.length >= libraryLimit ? "Library full" : "Upload"}
+                        {library.length < libraryLimit && <span className="font-normal text-slate-500">· {libraryLimit - library.length} left</span>}
+                      </>
+                    )}
+                  </button>
+                )}
+                {/* Reuse what's already made: pick from My Generations (its
+                    folders) or Assets, added to this library - no re-upload.
+                    The page itself is a tap away on the arrow. */}
+                <div className="flex h-8 items-stretch overflow-hidden rounded-lg border border-white/12 bg-white/[0.04]">
+                  <button
+                    onClick={async () => {
+                      const slots = libraryLimit - library.length
+                      if (slots <= 0 || uploading || !onUploadUrls) { if (slots <= 0) setUploadError(`Library is full (${libraryLimit}/${libraryLimit})`); return }
+                      const urls = await openLibraryPicker({ max: slots, title: "Add to your references" })
+                      if (!urls.length) return
+                      setUploadError(null)
+                      setUploading(true)
+                      try {
+                        const r = await onUploadUrls(urls.map(url => ({ url })), currentFolderId) as { failed?: number; limitHit?: boolean } | undefined
+                        if (r?.limitHit) setUploadError("Library limit reached - some pictures were not added")
+                        else if (r?.failed) setUploadError(`${r.failed} picture${r.failed === 1 ? "" : "s"} couldn't be added`)
+                      } finally { setUploading(false) }
+                    }}
+                    disabled={library.length >= libraryLimit || uploading || !onUploadUrls}
+                    title="Add pictures from My Generations or your Assets"
+                    className="flex items-center gap-1.5 px-3 text-[12px] text-slate-200 transition-colors hover:bg-white/[0.09] hover:text-white disabled:opacity-40"
+                  >
+                    <Images size={13} /> From My Generations
+                  </button>
+                  <Link href="/my-generations" title="Open the My Generations page"
+                    className="flex items-center border-l border-white/10 px-2 text-slate-500 transition-colors hover:bg-white/[0.09] hover:text-white">
+                    <ArrowUpRight size={12} />
+                  </Link>
+                </div>
+
+                {/* 2D / 3D. Meshes and photographs do not browse together: a mesh
+                    has no thumbnail worth putting in a picture grid, and a photo
+                    is noise when you are hunting for a model to remesh. */}
+                <div className="flex h-8 items-center gap-0.5 rounded-lg border border-white/12 p-0.5">
+                  {(["2d", "3d"] as const).map(k => (
+                    <button
+                      key={k}
+                      onClick={() => setKindFilter(k)}
+                      title={k === "3d" ? "3D assets - meshes, rigs and printables" : "Images and clips"}
+                      className={`h-full rounded-md px-2.5 text-[11px] font-bold uppercase tracking-wider transition-colors ${
+                        kindFilter === k ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
+                      }`}
+                    >
+                      {k}
+                      {k === "3d" && count3D > 0 && <span className="ml-1 font-mono text-slate-500">{count3D}</span>}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="ml-auto flex items-center gap-1.5">
+                  {library.length > 0 && (
+                    <>
+                      <button
+                        onClick={() => setSelectMode(true)}
+                        className="h-8 rounded-lg border border-white/12 bg-white/[0.04] px-3 text-[12px] text-slate-200 transition-colors hover:bg-white/[0.09] hover:text-white"
+                      >
+                        Select
+                      </button>
+                      <button
+                        onClick={() => setEditMode(true)}
+                        className="flex h-8 items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 text-[12px] text-slate-200 transition-colors hover:bg-white/[0.09] hover:text-white"
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      {/* Deletes the WHOLE library (every reference, from the
+                          account) - so a second tap confirms it */}
+                      <button
+                        onClick={() => {
+                          if (confirmClear) { setConfirmClear(false); handleClearAll(); return }
+                          setConfirmClear(true)
+                          setTimeout(() => setConfirmClear(false), 4000)
+                        }}
+                        title="Delete every picture in your reference library"
+                        className={`h-8 rounded-lg border px-3 text-[12px] transition-colors ${confirmClear
+                          ? "border-rose-400/60 bg-rose-500/25 font-semibold text-rose-100"
+                          : "border-rose-500/25 bg-rose-500/[0.07] text-rose-300 hover:bg-rose-500/15"}`}
+                      >
+                        {confirmClear ? `Delete all ${library.length}?` : "Clear all"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
             )}
           </div>
 
-          {/* Thumbnail grid */}
-          <div className="p-3 max-h-72 overflow-y-auto" style={wide ? { maxHeight: "24rem" } : undefined}>
-            {/* Folder tiles (current level) */}
-            {visibleFolders.length > 0 && (
-              <div className={`grid ${wide ? "grid-cols-4" : "grid-cols-2"} gap-1.5 mb-2`}>
-                {visibleFolders.map((f) => (
-                  <div key={f.id} className="relative">
-                    {renamingFolderId === f.id ? (
-                      <form
-                        className="flex items-center gap-1 px-2 py-1.5 rounded-md border border-white/30 bg-black/60"
-                        onSubmit={(e) => {
-                          e.preventDefault()
-                          const name = renameValue.trim()
-                          if (name && onRenameFolder) onRenameFolder(f.id, name)
-                          setRenamingFolderId(null)
-                        }}
-                      >
-                        <input
-                          autoFocus
-                          value={renameValue}
-                          onChange={e => setRenameValue(e.target.value)}
-                          onKeyDown={e => { if (e.key === "Escape") setRenamingFolderId(null) }}
-                          className="w-full min-w-0 bg-transparent text-[10px] text-white focus:outline-none"
-                        />
-                        <button type="submit" className="text-white shrink-0"><Check size={9} /></button>
-                      </form>
-                    ) : (
-                      <button
-                        onClick={() => { setFolderMenuId(null); setFolderPath([...folderPath, f]) }}
-                        className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-amber-500/20 bg-amber-500/[0.06] hover:bg-amber-500/[0.12] hover:border-amber-500/35 transition-all"
-                      >
-                        <Folder size={11} className="text-amber-400/80 shrink-0" />
-                        <span className="text-[10px] text-slate-200 font-medium truncate flex-1 text-left">{f.name}</span>
-                        <span className="text-[9px] text-slate-600 font-mono shrink-0">{refCountIn(f.id)}</span>
-                      </button>
-                    )}
-                    {/* Folder context menu */}
-                    {!selectMode && !editMode && renamingFolderId !== f.id && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setFolderMenuId(folderMenuId === f.id ? null : f.id) }}
-                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/15 text-slate-400 hover:text-white text-[9px] leading-none flex items-center justify-center z-10"
-                      >
-                        ⋯
-                      </button>
-                    )}
-                    {folderMenuId === f.id && (
-                      <div className="absolute right-0 top-4 z-20 w-28 rounded-lg border border-white/10 bg-slate-900 shadow-xl overflow-hidden">
-                        <button
-                          onClick={() => { setRenameValue(f.name); setRenamingFolderId(f.id); setFolderMenuId(null) }}
-                          className="w-full px-2.5 py-1.5 text-left text-[10px] text-slate-300 hover:bg-white/10 hover:text-white"
-                        >
-                          Rename
-                        </button>
-                        <button
-                          onClick={() => { onDeleteFolder?.(f.id); setFolderMenuId(null) }}
-                          className="w-full px-2.5 py-1.5 text-left text-[10px] text-rose-400 hover:bg-rose-500/10"
-                        >
-                          Delete folder
-                        </button>
-                        <p className="px-2.5 py-1 text-[8px] text-slate-600 border-t border-white/5">Images move up a level</p>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+          {/* ── Notices ── */}
+          {uploadError && <p className="px-4 sm:px-5 pt-2 text-[11.5px] leading-snug text-red-400">{uploadError}</p>}
+          {!selectMode && !editMode && disabled && (
+            <p className="mx-4 sm:mx-5 mt-2.5 rounded-lg border border-white/[0.07] bg-white/[0.03] px-3 py-2 text-[11.5px] text-slate-400">
+              Reference images are not used by video models. Upload start / end frames through the video panel instead.
+            </p>
+          )}
+          {!selectMode && !editMode && !disabled && modelMaxRefs === 0 && (
+            <p className="mx-4 sm:mx-5 mt-2.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-3 py-2 text-[11.5px] text-amber-300/80">
+              This model doesn&apos;t take reference images.
+            </p>
+          )}
 
+          {/* ── The library: scrolls inside the panel ── */}
+          <div className="min-h-[140px] flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 pt-3 pb-4"
+            style={menuPos.underDock > 0 ? { paddingBottom: menuPos.underDock + 16 } : undefined}>
             {/* ── Batch bar (admin batch mode) ── */}
             {batchMode && (
-              <div className="mb-2 rounded-lg border border-cyan-500/25 bg-cyan-500/[0.04] p-2 space-y-2">
+              <div className="mb-3 space-y-2 rounded-xl border border-cyan-500/25 bg-cyan-500/[0.04] p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-300/90">
-                    Batch mode — {batches.length} batch{batches.length === 1 ? "" : "es"}
+                  <span className="font-mono text-[11px] uppercase tracking-wider text-cyan-300/90">
+                    Batch mode - {batches.length} batch{batches.length === 1 ? "" : "es"}
                   </span>
                   {batches.length > 0 && (
                     <button onClick={() => onBatchesChange?.([])}
-                      className="text-[10px] text-slate-500 hover:text-white transition-colors">Clear all</button>
+                      className="text-[11px] text-slate-500 transition-colors hover:text-white">Clear all</button>
                   )}
                 </div>
-                <p className="text-[9.5px] text-slate-500 leading-relaxed">
-                  Tap images to stage them, then commit. Each batch runs as its own generation with the same prompt — an image can appear in as many batches as you like.
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  Tap pictures to stage them, then commit. Each batch runs as its own generation with the same prompt - a picture can appear in as many batches as you like.
                 </p>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-[10px] font-mono text-cyan-300">{staged.size} staged</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[11px] text-cyan-300">{staged.size} staged</span>
                   <button onClick={() => commitBatch("one")} disabled={staged.size === 0}
-                    className="px-2 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-[10px] text-cyan-200 hover:bg-cyan-500/20 transition-colors disabled:opacity-35">
+                    className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-200 transition-colors hover:bg-cyan-500/20 disabled:opacity-35">
                     Add as 1 batch
                   </button>
                   <button onClick={() => commitBatch("each")} disabled={staged.size === 0}
-                    title="One generation per staged image — the bulk case"
-                    className="px-2 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-[10px] text-cyan-200 hover:bg-cyan-500/20 transition-colors disabled:opacity-35">
+                    title="One generation per staged picture - the bulk case"
+                    className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-200 transition-colors hover:bg-cyan-500/20 disabled:opacity-35">
                     Each → own batch ({staged.size})
                   </button>
                   <button onClick={() => setStaged(new Set(visibleRefs.map(r => r.id)))}
-                    className="px-2 py-1 rounded-lg border border-white/10 text-[10px] text-slate-400 hover:text-white transition-colors">
+                    className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:text-white">
                     Stage all shown
                   </button>
                   {staged.size > 0 && (
                     <button onClick={() => setStaged(new Set())}
-                      className="px-2 py-1 rounded-lg border border-white/10 text-[10px] text-slate-400 hover:text-white transition-colors">
+                      className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:text-white">
                       Unstage
                     </button>
                   )}
                 </div>
                 {batches.length > 0 && (
-                  <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto pt-0.5">
+                  <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto pt-0.5">
                     {batches.map((b, i) => (
-                      <span key={i} className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-cyan-500/25 bg-cyan-500/10 text-[9px] text-cyan-200">
+                      <span key={i} className="flex items-center gap-1 rounded-full border border-cyan-500/25 bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-200">
                         #{i + 1} · {b.length} ref{b.length === 1 ? "" : "s"}
                         <button onClick={() => onBatchesChange?.(batches.filter((_, j) => j !== i))}
                           className="opacity-60 hover:opacity-100">×</button>
@@ -7673,12 +7828,17 @@ function RefDropdown({
               </div>
             )}
 
-            {visibleRefs.length === 0 && visibleFolders.length === 0 ? (
-              <p className="text-center text-slate-600 text-[11px] py-8">
-                {currentFolderId === null ? "No images in library yet" : "This folder is empty"}
-              </p>
+            {visibleRefs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+                <ImagePlus size={22} className="text-slate-600" />
+                <p className="text-[13px] text-slate-400">{kindFilter === "3d" ? "No 3D files in your library yet" : "No pictures in your library yet"}</p>
+                {kindFilter === "2d" && (
+                  <p className="text-[11.5px] text-slate-600">Upload pictures or clips you want to reuse as references.</p>
+                )}
+              </div>
             ) : (
-              <div className={`grid ${wide ? "grid-cols-10" : "grid-cols-5"} gap-1.5`}>
+              // Columns follow the panel: ~4 across on a phone, 7-8 on a desktop
+              <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(clamp(76px, 8vw, 150px), 1fr))" }}>
                 {visibleRefs.map((img) => {
                   const isStaged = batchMode && staged.has(img.id)
                   const isActive = !batchMode && !selectMode && !editMode && activeIds.includes(img.id)
@@ -7688,44 +7848,44 @@ function RefDropdown({
                   const inBatches = batchMode ? batches.reduce((n, b) => n + (b.includes(img.id) ? 1 : 0), 0) : 0
                   return (
                     // Overlays are stacked via CSS grid (every child in cell 1/1), NOT
-                    // position:absolute — iPad Safari mis-places absolutely positioned
+                    // position:absolute - iPad Safari mis-places absolutely positioned
                     // elements inside this fixed panel when the taskbar is CSS-zoomed
                     // (the active checkmark rendered half a tile away at 1.5x).
                     <div key={img.id} className="relative group aspect-square grid [grid-template-columns:100%] [grid-template-rows:100%]">
                       <button
-                        // Video refs have no pixel editor — edit-mode clicks fall through to toggle
+                        // Video refs have no pixel editor - edit-mode clicks fall through to toggle
                         onClick={() =>
                           batchMode
                             ? setStaged(prev => { const n = new Set(prev); n.has(img.id) ? n.delete(img.id) : n.add(img.id); return n })
                             : (editMode && !isVideoRefUrl(img.url) && !is3D(img.url)) ? setEditingImage(img) : selectMode ? toggleSelectForDelete(img.id) : handleToggle(img)}
                         disabled={!batchMode && !selectMode && !editMode && (isDisabled || disabled)}
                         title={
-                          batchMode ? (isStaged ? "Staged — click to unstage" : "Click to stage for a batch")
+                          batchMode ? (isStaged ? "Staged - click to unstage" : "Click to stage for a batch")
                             : editMode ? "Click to edit"
                             : selectMode
-                            ? isSelectedForDelete ? "Click to deselect" : "Click to select for deletion"
+                            ? isSelectedForDelete ? "Click to deselect" : "Click to select"
                             : disabled ? "Not available for video models"
                             : isDisabled ? `Limit reached (${modelMaxRefs})`
-                            : isActive ? "Click to deactivate" : "Click to activate"
+                            : isActive ? "Click to switch off" : "Click to switch on"
                         }
-                        className={`col-start-1 row-start-1 w-full h-full rounded-md overflow-hidden border-2 transition-all ${
+                        className={`col-start-1 row-start-1 w-full h-full rounded-lg overflow-hidden border-2 bg-black/40 transition-all ${
                           batchMode
                             ? isStaged
-                              ? "border-cyan-400 ring-1 ring-cyan-400/40"
-                              : "border-transparent hover:border-cyan-400/40"
+                              ? "border-cyan-400 ring-2 ring-cyan-400/30"
+                              : "border-white/[0.06] hover:border-cyan-400/40"
                             : editMode
-                            ? "border-transparent hover:border-white/70"
+                            ? "border-white/[0.06] hover:border-white/70"
                             : selectMode
                             ? isSelectedForDelete
-                              ? "border-rose-400 ring-1 ring-rose-400/30"
-                              : "border-transparent hover:border-white/30"
+                              ? "border-rose-400 ring-2 ring-rose-400/25"
+                              : "border-white/[0.06] hover:border-white/30"
                             : disabled
                             ? "border-transparent opacity-30 cursor-not-allowed"
                             : isActive
-                            ? "border-white ring-1 ring-white/40"
+                            ? "border-white ring-2 ring-white/30"
                             : isDisabled
                             ? "border-transparent opacity-25 cursor-not-allowed"
-                            : "border-transparent hover:border-white/30"
+                            : "border-white/[0.06] hover:border-white/35"
                         }`}
                       >
                         {/* Eager: loading="lazy" never fires in this nested
@@ -7735,8 +7895,8 @@ function RefDropdown({
                           // name is more use than a broken image icon, and the
                           // 3D Studio is where it gets looked at properly.
                           <span className="flex h-full w-full flex-col items-center justify-center gap-1 bg-black/50">
-                            <Box size={16} className="text-red-400/70" />
-                            <span className="font-mono text-[8px] uppercase text-slate-500">
+                            <Box size={18} className="text-red-400/70" />
+                            <span className="font-mono text-[9px] uppercase text-slate-500">
                               {(img.url.split(".").pop() ?? "3d").split("?")[0]}
                             </span>
                           </span>
@@ -7747,37 +7907,37 @@ function RefDropdown({
                         )}
                         {/* Edit hint overlay (edit mode) */}
                         {editMode && !isVideoRefUrl(img.url) && !is3D(img.url) && (
-                          <div className="absolute inset-0 rounded-md bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                            <Pencil size={12} className="text-white" />
+                          <div className="absolute inset-0 rounded-lg bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                            <Pencil size={14} className="text-white" />
                           </div>
                         )}
                       </button>
 
                       {/* Batch badges: staged tick + how many batches hold it */}
                       {batchMode && isStaged && (
-                        <div className="col-start-1 row-start-1 self-end justify-self-end m-0.5 w-4 h-4 rounded-full bg-cyan-400 flex items-center justify-center pointer-events-none z-10">
-                          <Check size={9} className="text-black" />
+                        <div className="col-start-1 row-start-1 self-end justify-self-end m-1 w-5 h-5 rounded-full bg-cyan-400 flex items-center justify-center pointer-events-none z-10">
+                          <Check size={11} className="text-black" />
                         </div>
                       )}
                       {batchMode && inBatches > 0 && (
-                        <span className="col-start-1 row-start-1 self-start justify-self-start m-0.5 px-1 rounded bg-black/75 text-cyan-300 text-[8px] font-bold leading-4 pointer-events-none z-10">
+                        <span className="col-start-1 row-start-1 self-start justify-self-start m-1 px-1 rounded bg-black/75 text-cyan-300 text-[9px] font-bold leading-4 pointer-events-none z-10">
                           ×{inBatches}
                         </span>
                       )}
 
                       {/* Active checkmark (normal mode) */}
                       {!selectMode && isActive && (
-                        <div className="col-start-1 row-start-1 self-end justify-self-end m-0.5 w-4 h-4 rounded-full bg-white flex items-center justify-center pointer-events-none z-10">
-                          <Check size={9} className="text-black" />
+                        <div className="col-start-1 row-start-1 self-end justify-self-end m-1 w-5 h-5 rounded-full bg-white flex items-center justify-center pointer-events-none z-10 shadow">
+                          <Check size={11} className="text-black" />
                         </div>
                       )}
 
-                      {/* Selected-for-delete indicator (select mode) */}
+                      {/* Selected indicator (select mode) */}
                       {selectMode && (
-                        <div className={`col-start-1 row-start-1 self-start justify-self-start m-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center pointer-events-none transition-all z-10 ${
+                        <div className={`col-start-1 row-start-1 self-start justify-self-start m-1 w-5 h-5 rounded-full border-2 flex items-center justify-center pointer-events-none transition-all z-10 ${
                           isSelectedForDelete ? "bg-rose-500 border-rose-400" : "bg-black/50 border-white/40"
                         }`}>
-                          {isSelectedForDelete && <Check size={8} className="text-white" />}
+                          {isSelectedForDelete && <Check size={10} className="text-white" />}
                         </div>
                       )}
 
@@ -7786,18 +7946,19 @@ function RefDropdown({
                         <button
                           onClick={(e) => { e.stopPropagation(); openInImageStudio({ url: img.url, refId: img.id, title: "Reference edit" }) }}
                           title="Open in the Image Studio"
-                          className="col-start-1 row-start-1 self-start justify-self-end m-0.5 w-5 h-5 rounded-md bg-black/80 border border-white/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          className="col-start-1 row-start-1 self-start justify-self-end m-1 w-6 h-6 rounded-md bg-black/80 border border-white/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
                         >
-                          <Layers size={10} className="text-white" />
+                          <Layers size={11} className="text-white" />
                         </button>
                       )}
                       {/* Delete on hover (normal mode only) */}
                       {!selectMode && !editMode && (
                         <button
                           onClick={(e) => { e.stopPropagation(); onDelete(img.id) }}
-                          className="col-start-1 row-start-1 self-start justify-self-start m-0.5 w-4 h-4 rounded-full bg-black/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          title="Remove from the library"
+                          className="col-start-1 row-start-1 self-start justify-self-start m-1 w-5 h-5 rounded-full bg-black/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
                         >
-                          <X size={8} className="text-white" />
+                          <X size={10} className="text-white" />
                         </button>
                       )}
                     </div>
@@ -7807,132 +7968,35 @@ function RefDropdown({
             )}
           </div>
 
-          {/* Select mode action bar */}
-          {selectMode && duplicateError && (
-            <p className="px-3 pt-2 text-[10px] leading-snug text-rose-300">{duplicateError}</p>
-          )}
-          {selectMode && (
-            <div className="px-3 py-2.5 border-t border-white/5 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-slate-400">
-                {selectedForDelete.size > 0 ? `${selectedForDelete.size} selected` : "None selected"}
-              </span>
-              <div className="flex items-center gap-1.5">
-                {onMove && (
-                  <button
-                    onClick={() => setMovePicker({ path: [] })}
-                    disabled={selectedForDelete.size === 0}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px] font-medium hover:bg-amber-500/20 hover:border-amber-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                  >
-                    <FolderInput size={11} />
-                    Move
-                  </button>
-                )}
-                <button
-                  onClick={handleDownloadSelected}
-                  disabled={selectedForDelete.size === 0 || downloadingRefs === "zipping"}
-                  title="Download the selected references at original quality as one ZIP"
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all ${
-                    downloadingRefs === "done"
-                      ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
-                      : "bg-white/10 border-white/25 text-white hover:bg-white/15"}`}
-                >
-                  {downloadingRefs === "zipping" ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
-                  {downloadingRefs === "done" ? "Saved!" : downloadingRefs === "zipping" ? "Zipping…" : "Download"}
-                </button>
-                {onDuplicate && (
-                  <button
-                    onClick={handleDuplicateSelected}
-                    disabled={selectedForDelete.size === 0 || duplicating === "working"}
-                    title="Make a copy of each selected reference, with its folder and layers"
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all ${
-                      duplicating === "done"
-                        ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
-                        : "bg-violet-500/10 border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:border-violet-500/40"}`}
-                  >
-                    {duplicating === "working" ? <Loader2 size={11} className="animate-spin" /> : <Copy size={11} />}
-                    {duplicating === "done" ? "Copied!" : duplicating === "working" ? "Copying\u2026" : "Duplicate"}
-                  </button>
-                )}
-                <button
-                  onClick={handleDeleteSelected}
-                  disabled={selectedForDelete.size === 0}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-medium hover:bg-rose-500/25 hover:border-rose-500/50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                >
-                  <Trash2 size={11} />
-                  Delete ({selectedForDelete.size})
-                </button>
-              </div>
-            </div>
-          )}
 
-          {/* Move-to-folder picker (select mode) */}
-          {movePicker && (
-            <div className="px-3 py-2.5 border-t border-white/5 bg-black/40">
-              <div className="flex items-center gap-1 mb-1.5 overflow-x-auto">
-                <span className="text-[10px] text-slate-500 shrink-0">Move to:</span>
-                <button
-                  onClick={() => setMovePicker({ path: [] })}
-                  className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${movePicker.path.length === 0 ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
-                >
-                  Library
-                </button>
-                {movePicker.path.map((f, i) => (
-                  <span key={f.id} className="flex items-center gap-1 shrink-0">
-                    <span className="text-slate-700 text-[10px]">/</span>
-                    <button
-                      onClick={() => setMovePicker({ path: movePicker.path.slice(0, i + 1) })}
-                      className={`text-[10px] px-1.5 py-0.5 rounded max-w-[80px] truncate ${i === movePicker.path.length - 1 ? "text-white bg-white/10" : "text-slate-500 hover:text-white"}`}
-                    >
-                      {f.name}
-                    </button>
-                  </span>
-                ))}
-              </div>
-              {(() => {
-                const pickerFolderId = movePicker.path.length > 0 ? movePicker.path[movePicker.path.length - 1].id : null
-                const subFolders = folders.filter(f => (f.parentId ?? null) === pickerFolderId)
-                return subFolders.length > 0 ? (
-                  <div className="flex flex-wrap gap-1 mb-1.5">
-                    {subFolders.map(f => (
-                      <button
-                        key={f.id}
-                        onClick={() => setMovePicker({ path: [...movePicker.path, f] })}
-                        className="flex items-center gap-1 px-2 py-1 rounded-md border border-amber-500/20 bg-amber-500/[0.06] hover:bg-amber-500/[0.12] text-[10px] text-slate-300"
-                      >
-                        <Folder size={9} className="text-amber-400/80" />
-                        <span className="max-w-[80px] truncate">{f.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null
-              })()}
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => {
-                    const targetId = movePicker.path.length > 0 ? movePicker.path[movePicker.path.length - 1].id : null
-                    onMove?.([...selectedForDelete], targetId)
-                    setMovePicker(null)
-                    setSelectedForDelete(new Set())
-                    setSelectMode(false)
-                  }}
-                  className="flex-1 py-1.5 rounded-lg bg-white/15 border border-white/30 text-white text-[11px] font-medium hover:bg-white/20 transition-all"
-                >
-                  Move {selectedForDelete.size} here
-                </button>
-                <button
-                  onClick={() => setMovePicker(null)}
-                  className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[11px] text-slate-400 hover:text-white transition-all"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
       {showConsentModal && (
         <RefConsentModal onAgree={handleConsentAgree} onDecline={handleConsentDecline} />
+      )}
+
+      {assetPickOpen && typeof document !== "undefined" && createPortal(
+        <div data-keep-refs-open className="relative z-[10060]">
+          {(() => {
+            const urls = library.filter(r => selectedForDelete.has(r.id) && !isVideoRefUrl(r.url) && !is3D(r.url)).map(r => r.url)
+            const done = (a: UserAsset, added: number) => {
+              setAssetPickOpen(false)
+              setAssetNote(added > 0 ? `Added ${added} picture${added === 1 ? "" : "s"} to ${a.name}` : `Nothing new for ${a.name} - already there, or it's full`)
+              setSelectedForDelete(new Set())
+            }
+            return (
+              <AddToAssetModal
+                count={urls.length}
+                assets={assetsApi.assets}
+                onAdd={async a => { const r = await assetsApi.update({ id: a.id, addUrls: urls }); done(r.asset, r.added) }}
+                onCreate={async (kind, name) => { const a = await assetsApi.create({ kind, name, urls }); done(a, a.refs.length) }}
+                onClose={() => setAssetPickOpen(false)}
+              />
+            )
+          })()}
+        </div>,
+        document.body,
       )}
 
       {/* Ref image editor — opened from edit mode */}
@@ -9122,7 +9186,7 @@ function useSiteLogoCached() {
 // Branded in-progress tile: silver rim outline, site-theme backdrop (silver
 // glows + drifting light band) and the synced logo in a fast-spinning rim as
 // the loading indicator — replaces the old grey box + plain spinner.
-function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, modelId, coldStart, durVariant, durPrior, aspectRatio, waiting }: {
+function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, modelId, coldStart, durVariant, durPrior, aspectRatio, waiting, frame }: {
   label: string
   accent?: "silver" | "amber"
   onClick?: () => void
@@ -9136,6 +9200,13 @@ function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, mode
   aspectRatio?: string
   // Job is still in the RunPod queue — no timer/ETA yet (nothing is running)
   waiting?: boolean
+  /**
+   * The frame the FINISHED tile will have, so finishing swaps the picture in
+   * without the tile changing size or border (2026-10-08): `aspect` = its CSS
+   * aspect-ratio (square in grid views, the real shape in Full Size), `rim` =
+   * the feed's Borders setting. Without it: the generation's shape, slim rim.
+   */
+  frame?: { aspect?: string; rim?: false | "slim" | "fill" | "smart" }
 }) {
   const logoUrl = useSiteLogoCached()
   // 1s ticker drives the elapsed/ETA readout + progress fill
@@ -9165,19 +9236,26 @@ function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, mode
   const remain = expected && elapsed != null ? Math.round(expected - elapsed) : null
   // CSS aspect-ratio (not Tailwind aspect-square) + flex-col/flex-1 — the same
   // Safari-safe pattern as FailedSlot; "2:3" and "1024x1536" both parse
-  const cssAr = aspectRatio && aspectRatio !== 'auto'
+  const cssAr = frame?.aspect
+    ? frame.aspect
+    : aspectRatio && aspectRatio !== 'auto'
     ? aspectRatio.replace(/x/i, ':').replace(':', ' / ')
     : '1 / 1'
+  // The rim follows the feed's Borders setting when the frame is given
+  const rim = frame ? frame.rim : "slim"
+  const rimmed = rim === "slim" || rim === "fill"
   return (
-    <div className="relative isolate w-full rounded-lg overflow-hidden p-[1.5px] flex flex-col" style={{ aspectRatio: cssAr }}>
+    <div className={`relative isolate w-full overflow-hidden flex flex-col ${rimmed ? `rounded-lg ${rim === "fill" ? "p-2" : "p-[1.5px]"}` : ""}`} style={{ aspectRatio: cssAr }}>
       {/* Outer animated silver rim */}
-      <span
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin feed-rim pointer-events-none -z-10"
-        style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
-      />
+      {rimmed && (
+        <span
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin feed-rim pointer-events-none -z-10"
+          style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
+        />
+      )}
       <button
         onClick={onClick}
-        className="relative flex-1 min-h-0 w-full rounded-[7px] bg-[#070b14] overflow-hidden flex flex-col items-center justify-center gap-2.5"
+        className={`relative flex-1 min-h-0 w-full ${rimmed ? (rim === "fill" ? "rounded-md" : "rounded-[7px]") : ""} bg-[#070b14] overflow-hidden flex flex-col items-center justify-center gap-2.5`}
       >
         {/* Site-theme backdrop — soft silver glows + a drifting band of light */}
         <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at center, rgba(148,163,184,0.10), transparent 70%)" }} />
@@ -9234,8 +9312,8 @@ function BrandLoadingTile({ label, accent = "silver", onClick, startedAtMs, mode
   )
 }
 
-function LoadingSlot({ onClick, startedAtMs, modelId, coldStart, durVariant, durPrior, aspectRatio, waiting }: { onClick?: () => void; startedAtMs?: number | null; modelId?: string; coldStart?: boolean; durVariant?: string; durPrior?: number; aspectRatio?: string; waiting?: boolean }) {
-  return <BrandLoadingTile label={waiting ? "Queued" : "Generating"} onClick={onClick} startedAtMs={startedAtMs ?? undefined} modelId={modelId} coldStart={coldStart} durVariant={durVariant} durPrior={durPrior} aspectRatio={aspectRatio} waiting={waiting} />
+function LoadingSlot({ onClick, startedAtMs, modelId, coldStart, durVariant, durPrior, aspectRatio, waiting, frame }: { onClick?: () => void; startedAtMs?: number | null; modelId?: string; coldStart?: boolean; durVariant?: string; durPrior?: number; aspectRatio?: string; waiting?: boolean; frame?: { aspect?: string; rim?: false | "slim" | "fill" | "smart" } }) {
+  return <BrandLoadingTile label={waiting ? "Queued" : "Generating"} onClick={onClick} startedAtMs={startedAtMs ?? undefined} modelId={modelId} coldStart={coldStart} durVariant={durVariant} durPrior={durPrior} aspectRatio={aspectRatio} waiting={waiting} frame={frame} />
 }
 
 // The generation's shape for a pending slot: flux dims from the stored config,
@@ -9287,8 +9365,8 @@ function StreamingSlot({ dataUrl, onClick }: { dataUrl: string; onClick?: () => 
   )
 }
 
-function QueuedSlot({ onClick }: { onClick?: () => void }) {
-  return <BrandLoadingTile label="Queued" accent="amber" onClick={onClick} />
+function QueuedSlot({ onClick, frame }: { onClick?: () => void; frame?: { aspect?: string; rim?: false | "slim" | "fill" | "smart" } }) {
+  return <BrandLoadingTile label="Queued" accent="amber" onClick={onClick} frame={frame} />
 }
 
 // One-click retry bridge: failed feed tiles live in the page component, but the
@@ -10757,7 +10835,7 @@ function ImageDetailModal({
                           in one panel. */}
                       {image.aspectRatio && (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
-                          {image.aspectRatio}
+                          {aspectLabelFor(measuredSize ? measuredSize.w / measuredSize.h : null, image.aspectRatio)}
                         </span>
                       )}
                       {image.quality && (
@@ -10870,7 +10948,7 @@ function ImageDetailModal({
             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
               <span className="px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/15 text-white text-[10px] font-mono">{modelName}</span>
               {isUpscalerImage && image.videoMetadata?.upscaleFactor != null && <span className="px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] font-mono">{image.videoMetadata.upscaleFactor}x upscale</span>}
-              {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.aspectRatio}</span>}
+              {!isUpscalerImage && image.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{aspectLabelFor(measuredSize ? measuredSize.w / measuredSize.h : null, image.aspectRatio)}</span>}
               {!isUpscalerImage && image.quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{image.quality.toUpperCase()}</span>}
               {panelLoraUrl && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono"><Sparkles size={8} />{panelLoraName || "LoRA"}{panelLoraScale !== null && <span className="text-amber-300/60">· {panelLoraScale.toFixed(2)}</span>}</span>}{panelLoraUrl && panelExtraLoras.map((e, i) => <span key={`c-${e.url}-${i}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-mono">{e.name || "LoRA"}{typeof e.scale === "number" && <span className="text-amber-300/60">· {e.scale.toFixed(2)}</span>}</span>)}
               {measuredSize && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono tabular-nums">{measuredSize.w}&times;{measuredSize.h}</span>}
@@ -10988,7 +11066,18 @@ function ImageDetailModal({
                 <>
                   <button
                     onClick={() => {
-                      if (!consentGiven) { setShowRefConsent(true); return }
+                      // The reference library is for verified accounts (the
+                      // server refuses the rest): the ID popup, then add
+                      if (!consentGiven) {
+                        void requireIdVerification().then(ok => {
+                          if (!ok) return
+                          setConsentGiven(true)
+                          onAddRef(image.imageUrl, image.r2Key)
+                          setAddedRef(true)
+                          setTimeout(() => setAddedRef(false), 2000)
+                        })
+                        return
+                      }
                       onAddRef(image.imageUrl, image.r2Key)
                       setAddedRef(true)
                       setTimeout(() => setAddedRef(false), 2000)
@@ -11131,6 +11220,24 @@ function DraftCompleteButton({ videoId, draftSeconds }: { videoId: number; draft
   )
 }
 
+// The popup's aspect badge: the stored aspectRatio is only what was asked for -
+// models without an aspect picker (motion control, character swap, edits,
+// image-to-video) record the 16:9 default whatever shape fal returns. Once the
+// video's real size is known, show the nearest standard ratio instead (keeping
+// the stored label when it already matches, e.g. "21:9" vs a measured 2.37).
+const STANDARD_VIDEO_ASPECTS = ["21:9", "2:1", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "1:2", "9:21"]
+function aspectLabelFor(measured: number | null, stored?: string): string | undefined {
+  const parse = (s?: string) => {
+    const p = (s ?? "").replace(/x/i, ":").split(":").map(parseFloat)
+    return p.length === 2 && p[0] > 0 && p[1] > 0 ? p[0] / p[1] : null
+  }
+  if (!measured || !(measured > 0)) return stored
+  const off = (label: string) => Math.abs(Math.log((parse(label) ?? 1) / measured))
+  const storedAr = parse(stored)
+  if (stored && storedAr && Math.abs(Math.log(storedAr / measured)) < 0.04) return stored
+  return STANDARD_VIDEO_ASPECTS.reduce((best, l) => (off(l) < off(best) ? l : best), "16:9")
+}
+
 function VideoDetailModal({
   video,
   onClose,
@@ -11238,6 +11345,7 @@ function VideoDetailModal({
     return () => el.removeEventListener("loadedmetadata", onMeta)
   }, [video.videoUrl])
   const mediaAr = measuredAr ?? arFromMeta ?? 16 / 9
+  const aspectLabel = aspectLabelFor(measuredAr, video.aspectRatio)
   const sidePanelPx = infoPos === "left" || infoPos === "right" ? 288 : 0
   const cardMaxWidth = mediaAr > 1.15
     ? `min(96vw, calc(86vh * ${Math.min(mediaAr, 2.5).toFixed(3)} + ${sidePanelPx}px))`
@@ -11387,13 +11495,13 @@ function VideoDetailModal({
                 {modelName}
               </span>
             </div>
-            {(video.duration || video.resolution || video.aspectRatio) && (
+            {(video.duration || video.resolution || aspectLabel) && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Settings</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {video.aspectRatio && (
+                  {aspectLabel && (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[11px] font-mono">
-                      {video.aspectRatio}
+                      {aspectLabel}
                     </span>
                   )}
                   {video.resolution && (
@@ -11461,7 +11569,7 @@ function VideoDetailModal({
             <p className="text-[11px] text-slate-300 leading-relaxed line-clamp-2">{video.prompt}</p>
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
               <span className="px-2 py-0.5 rounded-md bg-orange-500/10 border border-orange-500/20 text-orange-400 text-[10px] font-mono">{modelName}</span>
-              {video.aspectRatio && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{video.aspectRatio}</span>}
+              {aspectLabel && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{aspectLabel}</span>}
               {video.resolution && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{video.resolution}</span>}
               {video.duration && <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-300 text-[10px] font-mono">{video.duration}s</span>}
               {formattedDate && <span className="text-[10px] text-slate-600">{formattedDate}</span>}
@@ -11933,12 +12041,20 @@ function ImageGrid({
               })
               return
             }
+            // The loading tile wears the finished tile's frame: square unless Full
+            // Size (Full Size + Grid is square too - letterboxed), its shape in
+            // Full Size, and the feed's Borders - so finishing doesn't jump
+            const slotAr = slotAspectRatio(slot)
+            const loadFrame = {
+              aspect: !fullSize || fullSizeLayout === "grid" || !slotAr ? "1 / 1" : slotAr.replace(/x/i, ":").replace(":", " / "),
+              rim: tileBorders,
+            }
             const node = slot.status === "loading"
               ? (slot.streamDataUrl
                   ? <StreamingSlot key={slot.slotId} dataUrl={slot.streamDataUrl} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
                   : slot.queueJobId && !slot.nb2RequestId
-                    ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} />
-                    : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} startedAtMs={slot.execStartMs ?? slot.queuedAtMs ?? slotStartMs(slot.slotId)} modelId={slot.modelId} coldStart={slot.coldStart} durVariant={fluxDurationVariant(slot.videoMetadata)} durPrior={fluxVariantPrior(slot.videoMetadata)} aspectRatio={slotAspectRatio(slot)} waiting={slot.inQueue} />)
+                    ? <QueuedSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} frame={loadFrame} />
+                    : <LoadingSlot key={slot.slotId} onClick={onPendingClick ? () => onPendingClick(slot) : undefined} startedAtMs={slot.execStartMs ?? slot.queuedAtMs ?? slotStartMs(slot.slotId)} modelId={slot.modelId} coldStart={slot.coldStart} durVariant={fluxDurationVariant(slot.videoMetadata)} durPrior={fluxVariantPrior(slot.videoMetadata)} aspectRatio={slotAr} waiting={slot.inQueue} frame={loadFrame} />)
               : <FailedSlot key={slot.slotId} prompt={slot.prompt} error={slot.error || "Generation failed"} aspectRatio={slot.aspectRatio}
                   onRetry={onRetryPending ? () => onRetryPending(slot) : undefined}
                   // Click opens the fail-detail popup, same as savedFails cards
@@ -12561,7 +12677,7 @@ function PresetsPanel({
             <div className="flex flex-wrap gap-2">
               {newFiles.length < 8 && (
                 <>
-                  <input ref={createFileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileChange} />
+                  <input ref={createFileInputRef} type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={handleFileChange} />
                   <button
                     onClick={() => createFileInputRef.current?.click()}
                     className="w-16 h-16 rounded-lg border-2 border-dashed border-white/10 hover:border-white/25 bg-white/3 hover:bg-white/5 flex flex-col items-center justify-center gap-1 transition-all text-slate-500 hover:text-slate-300"
@@ -13684,7 +13800,7 @@ function StencilModal({
             </div>
           )}
 
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden"
+          <input ref={fileInputRef} type="file" onClick={gateFileInput} accept="image/*" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) loadFile(f); e.target.value = '' }} />
 
           <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -15239,7 +15355,9 @@ function CustomFluxPanel({
   const activeLoras = loras.filter(l => l.key)
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
+    // data-prompt-dock: lifted above the taskbar while Refs is open (globals.css),
+    // and data-keep-refs-open so typing in it doesn't close the panel
+    <div data-prompt-dock data-keep-refs-open className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
       <div className="max-w-3xl mx-auto pointer-events-auto space-y-2">
 
         {/* Result image — floats above the card */}
@@ -15350,7 +15468,7 @@ function CustomFluxPanel({
                   ) : (
                     <span className="text-[10px] text-amber-400/50">⚠ No image</span>
                   )}
-                  <input ref={el => { cnRefsMap.current[cond.id] = el }} type="file" accept="image/*" className="hidden"
+                  <input ref={el => { cnRefsMap.current[cond.id] = el }} type="file" onClick={gateFileInput} accept="image/*" className="hidden"
                     onChange={e => {
                       const file = e.target.files?.[0]
                       if (!file) return
@@ -16379,7 +16497,7 @@ function CustomFluxPanel({
                 image max: picking a file replaces the current active ref */}
             {mode === 'runpod' && (
               <>
-                <input ref={refUploadInputRef} type="file" accept="image/*" className="hidden"
+                <input ref={refUploadInputRef} type="file" onClick={gateFileInput} accept="image/*" className="hidden"
                   onChange={e => { const f = e.target.files?.[0]; if (f) handleRefFilePick(f); e.target.value = '' }} />
                 <button onClick={() => refUploadInputRef.current?.click()}
                   title="Upload a reference image — becomes the i2i source"
@@ -16806,6 +16924,7 @@ function PromptBox({
   activeRefImages,
   refLibrary,
   onDeactivateRef,
+  onReorderRefs,
   onEditRef,
   canUseLayers = false,
   onSaveLayers,
@@ -16845,6 +16964,8 @@ function PromptBox({
   activeRefImages: RefImage[]
   refLibrary: RefImage[]
   onDeactivateRef: (id: string) => void
+  /** Drag-to-reorder the active references (the order they're sent in) */
+  onReorderRefs?: (ids: string[]) => void
   onEditRef: (id: string, newUrl: string) => void | Promise<RefImage | null>
   // Dev-Tier multi-layer canvases
   canUseLayers?: boolean
@@ -16881,6 +17002,55 @@ function PromptBox({
 }) {
   const PROMPT_STORAGE_KEY = "pv2-prompt-state"
   const [editingRefImage, setEditingRefImage] = useState<RefImage | null>(null)
+  /*
+   * Drag to reorder the active references (pointer events: mouse, pen and
+   * touch alike). A press that moves more than a few px is a drag - the strip
+   * shows the new order live and commits it on release; a press that doesn't
+   * move is still a tap, which opens the editor. Wrapping rows are handled by
+   * snapping to the nearest tile centre, not just left/right.
+   */
+  const stripRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ id: string; x: number; y: number; moved: boolean; centres: { id: string; x: number; y: number }[] } | null>(null)
+  const justDraggedRef = useRef(false)
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const stripRefs = dragOrder
+    ? dragOrder.map(id => activeRefImages.find(r => r.id === id)).filter((r): r is RefImage => !!r)
+    : activeRefImages
+  const onTilePointerDown = (e: React.PointerEvent, id: string) => {
+    if (!onReorderRefs || activeRefImages.length < 2 || e.button !== 0) return
+    if ((e.target as HTMLElement).closest("button")) return // the × stays a plain click
+    const tiles = [...(stripRef.current?.querySelectorAll<HTMLElement>("[data-ref-tile]") ?? [])]
+    dragRef.current = {
+      id, x: e.clientX, y: e.clientY, moved: false,
+      centres: tiles.map(t => { const r = t.getBoundingClientRect(); return { id: t.dataset.refTile!, x: r.left + r.width / 2, y: r.top + r.height / 2 } }),
+    }
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }
+  const onTilePointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d) return
+    if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return
+    if (!d.moved) { d.moved = true; setDraggingId(d.id) }
+    // The slot nearest the pointer (measured at the start, so the live
+    // reshuffle can't make it jitter)
+    let best = 0, bd = Infinity
+    d.centres.forEach((c, i) => { const dd = Math.hypot(e.clientX - c.x, e.clientY - c.y); if (dd < bd) { bd = dd; best = i } })
+    const base = activeRefImages.map(r => r.id).filter(x => x !== d.id)
+    base.splice(best, 0, d.id)
+    setDragOrder(prev => (prev && prev.join() === base.join() ? prev : base))
+  }
+  const onTilePointerUp = () => {
+    const d = dragRef.current
+    dragRef.current = null
+    if (d?.moved) {
+      justDraggedRef.current = true
+      setTimeout(() => { justDraggedRef.current = false }, 0)
+      if (dragOrder && dragOrder.join() !== activeRefImages.map(r => r.id).join()) onReorderRefs?.(dragOrder)
+    }
+    setDragOrder(null)
+    setDraggingId(null)
+  }
   // Refresh persistence shares the RefDropdown's key (that instance restores);
   // guarded so this mount's initial null can't wipe a stored id
   const hadEditingRefImage = useRef(false)
@@ -17748,7 +17918,23 @@ function PromptBox({
     seedvrMode === "target" ? (seedvrTarget === "2160p" ? 3 : 2)
     : seedvrMode === "default" ? 2
     : seedvrFactor <= 2 ? 2 : seedvrFactor <= 4 ? 4 : seedvrFactor <= 6 ? 8 : 16
-  const upscaleTicketCost = (model.id === "aura-sr" || model.id === "esrgan" || model.id === "drct") ? 1 : (upscaleFactor === 4 ? 26 : 7)
+  /*
+   * Clarity bills per output megapixel: read the source's real size (the full
+   * image - a thumbnail has the shape but not the pixels) to show what the
+   * server will charge. Until it loads, the 7 / 26 floor.
+   */
+  const claritySrc = model.id === "clarity-upscaler" && upscaleSourceUrl.trim().startsWith("http") ? upscaleSourceUrl.trim() : undefined
+  const [claritySrcDims, setClaritySrcDims] = useState<{ url: string; width: number; height: number } | null>(null)
+  useEffect(() => {
+    if (!claritySrc || claritySrcDims?.url === claritySrc) return
+    const img = new window.Image() // (Image is an icon import in this file)
+    img.onload = () => { if (img.naturalWidth && img.naturalHeight) setClaritySrcDims({ url: claritySrc, width: img.naturalWidth, height: img.naturalHeight }) }
+    img.src = claritySrc
+  }, [claritySrc, claritySrcDims?.url])
+  const clarityDims = claritySrcDims && claritySrcDims.url === claritySrc ? claritySrcDims : null
+  const upscaleTicketCost = (model.id === "aura-sr" || model.id === "esrgan" || model.id === "drct") ? 1
+    : model.id === "clarity-upscaler" ? clarityUpscaleTicketCost(upscaleFactor, clarityDims?.width, clarityDims?.height)
+    : (upscaleFactor === 4 ? 26 : 7)
   const ticketCost = model.id === "seedvr2-upscale"
     ? seedvrTicketCost
     : model.isUpscaler && !model.isTryOn && usesFactorPricing
@@ -19304,21 +19490,29 @@ function PromptBox({
   }, [showCheckpointPicker])
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
+    // data-prompt-dock: lifted above the taskbar while Refs is open (globals.css),
+    // and data-keep-refs-open so typing in it doesn't close the panel
+    <div data-prompt-dock data-keep-refs-open className="fixed bottom-0 left-0 right-0 px-6 pb-6 pt-3 bg-gradient-to-t from-[#050810] via-[#050810]/80 to-transparent pointer-events-none">
       {/* 48rem suits a laptop and is a third of a 21:9 monitor. Widened by
           breakpoint rather than unbounded, so the textarea keeps a readable
           measure everywhere. */}
       <div className="max-w-3xl xl:max-w-5xl 2xl:max-w-6xl [@media(min-width:1900px)]:max-w-[88rem] mx-auto pointer-events-auto space-y-2" style={{ zoom: promptScale }}>
 
-        {/* Active reference image previews — click to edit */}
+        {/* Active reference image previews — tap to edit, drag to reorder.
+            The number is the order they're sent in ("Image 1" in a prompt). */}
         {activeRefImages.length > 0 && (
-          <div className="flex items-center gap-2 px-1 flex-wrap">
-            {activeRefImages.map((img) => (
+          <div ref={stripRef} className="flex items-center gap-2 px-1 flex-wrap">
+            {stripRefs.map((img, i) => (
               // Silver-rim wrapper; inner tile letterboxes on black so the WHOLE
               // image is visible regardless of aspect ratio (object-contain)
-              <div key={img.id} className="relative isolate shrink-0 rounded-lg overflow-hidden p-[1.5px] group cursor-pointer"
-                onClick={() => setEditingRefImage(img)}
-                title="Click to edit">
+              <div key={img.id} data-ref-tile={img.id}
+                className={`relative isolate shrink-0 rounded-lg overflow-hidden p-[1.5px] group select-none transition-transform ${activeRefImages.length > 1 && onReorderRefs ? "cursor-grab active:cursor-grabbing touch-none" : "cursor-pointer"} ${draggingId === img.id ? "scale-110 z-10 opacity-90" : ""}`}
+                onPointerDown={e => onTilePointerDown(e, img.id)}
+                onPointerMove={onTilePointerMove}
+                onPointerUp={onTilePointerUp}
+                onPointerCancel={onTilePointerUp}
+                onClick={() => { if (!justDraggedRef.current) setEditingRefImage(img) }}
+                title={activeRefImages.length > 1 && onReorderRefs ? `Image ${i + 1} - tap to edit, drag to reorder` : "Click to edit"}>
                 <span
                   className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[300%] animate-spin rim-spin pointer-events-none -z-10"
                   style={{ background: SILVER_RIM_CONIC, animationDuration: "5s" }}
@@ -19337,6 +19531,10 @@ function PromptBox({
                   >
                     <X size={9} className="text-white" />
                   </button>
+                  {/* Its place in the order sent */}
+                  {activeRefImages.length > 1 && (
+                    <span className="absolute bottom-0.5 left-0.5 z-10 min-w-[16px] rounded bg-black/75 px-1 text-center text-[9px] font-bold leading-4 text-white pointer-events-none">{i + 1}</span>
+                  )}
                 </div>
               </div>
             ))}
@@ -19375,7 +19573,7 @@ function PromptBox({
         {/* Hidden file input for upscaler upload */}
         <input
           ref={upscaleFileInputRef}
-          type="file"
+          type="file" onClick={gateFileInput}
           accept="image/*"
           className="sr-only"
           onChange={e => {
@@ -19718,7 +19916,7 @@ function PromptBox({
 
               <input
                 ref={tryOnFileInputRef}
-                type="file"
+                type="file" onClick={gateFileInput}
                 accept="image/*"
                 className="hidden"
                 onChange={e => {
@@ -21553,7 +21751,7 @@ function PromptBox({
               <>
                 <input
                   ref={fileInputRef}
-                  type="file"
+                  type="file" onClick={gateFileInput}
                   accept="image/*"
                   multiple
                   className="hidden"
@@ -21561,7 +21759,7 @@ function PromptBox({
                 />
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
                 <button
-                  onClick={() => { if (refConsentGiven) { fileInputRef.current?.click() } else { setShowRefConsent(true) } }}
+                  onClick={() => fileInputRef.current?.click()}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-[11px] text-slate-300 hover:border-white/20 hover:text-white transition-all shrink-0"
                 >
                   {refConsentGiven ? <ImagePlus size={11} /> : <Lock size={11} className="text-slate-500" />}
@@ -22010,10 +22208,10 @@ function useRefConsent() {
     window.addEventListener("pv2-ref-consent", grant)
     return () => window.removeEventListener("pv2-ref-consent", grant)
   }, [])
-  const request = (action: () => void) => {
-    if (consented) { action() }
-    else { pendingRef.current = action; setShowModal(true) }
-  }
+  // Every action here opens a file input, and every input is gated by the ID
+  // check (gateFileInput) - whose popup now carries the old rights
+  // statements. So no separate popup: straight to the action
+  const request = (action: () => void) => { action() }
   const modal = showModal ? (
     <RefConsentModal
       onAgree={() => {
@@ -22030,7 +22228,7 @@ function useRefConsent() {
 }
 
 function FrameUploadArea({
-  preview, uploading, onSelect, onClear, label, optional, inputRef,
+  preview, uploading, onSelect, onClear, label, optional, inputRef, onPickUrl,
 }: {
   preview: string | null
   uploading: boolean
@@ -22039,13 +22237,15 @@ function FrameUploadArea({
   label: string
   optional?: boolean
   inputRef: React.RefObject<HTMLInputElement>
+  /** A picture chosen from My Generations / Assets instead of uploaded (no re-upload) */
+  onPickUrl?: (url: string) => void
 }) {
   const { request: requestConsent, modal: consentModal } = useRefConsent()
   return (
     <div className="relative">
       <input
         ref={inputRef}
-        type="file"
+        type="file" onClick={gateFileInput}
         accept="image/*"
         className="hidden"
         onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onSelect(f) } }}
@@ -22066,13 +22266,23 @@ function FrameUploadArea({
           </button>
         </div>
       ) : (
-        <button
-          onClick={() => requestConsent(() => inputRef.current?.click())}
-          className="w-full rounded-lg border border-dashed border-white/20 hover:border-white/40 flex flex-col items-center justify-center gap-1.5 transition-all py-6"
-        >
-          <ImagePlus size={16} className="text-slate-400" />
-          <span className="text-[10px] text-slate-500">{label}</span>
-        </button>
+        <div className="space-y-1.5">
+          <button
+            onClick={() => requestConsent(() => inputRef.current?.click())}
+            className="w-full rounded-lg border border-dashed border-white/20 hover:border-white/40 flex flex-col items-center justify-center gap-1.5 transition-all py-6"
+          >
+            <ImagePlus size={16} className="text-slate-400" />
+            <span className="text-[10px] text-slate-500">{label}</span>
+          </button>
+          {onPickUrl && (
+            <button
+              onClick={() => openLibraryPicker({ max: 1 }).then(urls => { if (urls[0]) onPickUrl(urls[0]) })}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/25 text-[10px] text-slate-300 transition-all"
+            >
+              <Images size={11} /> From My Generations / Assets
+            </button>
+          )}
+        </div>
       )}
       {consentModal}
     </div>
@@ -22087,7 +22297,10 @@ function SD20RefPanel({
   videoRefVideoDuration = 0,
   maxVideos = 3,
   maxAudios = 3,
+  maxImages = 9,
   sourceClipMaxSec,
+  clipImages,
+  onAddRefImageUrls,
   refTagHint = "prompt with @Image1…",
   allowFrameTags = false,
   startTagOnly = false,
@@ -22110,8 +22323,14 @@ function SD20RefPanel({
   // Gemini Omni Flash r2v reuses this panel with images only (maxVideos/maxAudios 0)
   maxVideos?: number
   maxAudios?: number
+  /** How many reference images the model's endpoint takes (VideoModelConfig.refLimits) */
+  maxImages?: number
   /** Single-clip tools: one "Source clip" slot, no images/audio, this cap */
   sourceClipMaxSec?: number
+  /** ...plus this many pictures alongside the clip (VideoModelConfig.sourceClipImages) */
+  clipImages?: { max: number; label: string; hint: string; required?: boolean }
+  /** Pictures chosen from My Generations / Assets instead of uploaded */
+  onAddRefImageUrls?: (urls: string[]) => void
   refTagHint?: string
   // SeeDance 2.0: pick the start/end frame out of the references (S/E tags per tile)
   allowFrameTags?: boolean
@@ -22136,7 +22355,7 @@ function SD20RefPanel({
   const SD20_MAX_VIDEO_SEC = sourceClipMaxSec ?? 15
   const videoSlots = sourceOnly ? 1 : 3
   const totalFiles = videoRefImagePreviews.length + videoRefVideoFilenames.length + videoRefAudioFilenames.length
-  const filesLeft = (9 + maxVideos + maxAudios) - totalFiles
+  const filesLeft = (maxImages + maxVideos + maxAudios) - totalFiles
 
   async function handleVideoFile(rawFile: File) {
     const isGif = /\.gif$/i.test(rawFile.name) || rawFile.type === "image/gif"
@@ -22178,28 +22397,39 @@ function SD20RefPanel({
 
   return (
     <div className="space-y-4">
-      {/* Reference Images */}
-      {!sourceOnly && (
+      {/* Reference Images (a clip tool's own pictures when it takes some) */}
+      {(!sourceOnly || !!clipImages) && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-            Reference Image(s) <span className="text-slate-600 normal-case font-normal">(optional · up to 9 · {videoRefImagePreviews.length}/9)</span>
+            {clipImages
+              ? <>{clipImages.label} <span className="text-slate-600 normal-case font-normal">({clipImages.required ? "required" : "optional"} · {clipImages.max === 1 ? "1 picture" : `up to ${clipImages.max}`} · {videoRefImagePreviews.length}/{clipImages.max})</span></>
+              : <>Reference Image(s) <span className="text-slate-600 normal-case font-normal">(optional · up to {maxImages} · {videoRefImagePreviews.length}/{maxImages})</span></>}
           </p>
-          {videoRefImagePreviews.length < 9 && filesLeft > 0 && (
-            <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
-              className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
-              <Plus size={10} />Add
-            </button>
+          {videoRefImagePreviews.length < (clipImages?.max ?? maxImages) && (clipImages || filesLeft > 0) && (
+            <span className="flex items-center gap-2">
+              {onAddRefImageUrls && (
+                <button onClick={() => openLibraryPicker({ max: (clipImages?.max ?? maxImages) - videoRefImagePreviews.length }).then(urls => { if (urls.length) onAddRefImageUrls(urls) })}
+                  title="Choose from My Generations / Assets"
+                  className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
+                  <Images size={10} />Library
+                </button>
+              )}
+              <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
+                className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
+                <Plus size={10} />Add
+              </button>
+            </span>
           )}
         </div>
         <p className="text-[10px] text-slate-600 leading-snug">
-          {allowFrameTags
+          {clipImages ? clipImages.hint : allowFrameTags
             ? startTagOnly
-              ? <>Up to 9 character references ({refTagHint}) - or tap <span className="text-slate-200 font-semibold">S</span> on one image to animate it as the exact first frame.</>
-              : <>Guide the video with up to 9 images ({refTagHint}). Tap <span className="text-slate-200 font-semibold">S</span> / <span className="text-slate-200 font-semibold">E</span> on an image to make it the exact start / end frame.</>
-            : <>Guide the video with up to 9 images ({refTagHint}).</>}
+              ? <>Up to {maxImages} character references ({refTagHint}) - or tap <span className="text-slate-200 font-semibold">S</span> on one image to animate it as the exact first frame.</>
+              : <>Guide the video with up to {maxImages} images ({refTagHint}). Tap <span className="text-slate-200 font-semibold">S</span> / <span className="text-slate-200 font-semibold">E</span> on an image to make it the exact start / end frame.</>
+            : <>Guide the video with up to {maxImages} images ({refTagHint}).</>}
         </p>
-        <input ref={imgInputRef} type="file" accept="image/*" className="hidden"
+        <input ref={imgInputRef} type="file" onClick={gateFileInput} accept="image/*" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onAddRefImage(f) } }} />
         {videoRefImagePreviews.length > 0 ? (
           <div className="grid grid-cols-4 gap-1.5">
@@ -22236,10 +22466,17 @@ function SD20RefPanel({
             ))}
           </div>
         ) : (
-          <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
-            className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
-            <ImagePlus size={12} />Upload reference image(s)
-          </button>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button onClick={() => requestConsent(() => imgInputRef.current?.click())}
+              className="py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
+              <ImagePlus size={12} />{clipImages ? `Upload ${clipImages.max === 1 ? "the picture" : "pictures"}` : "Upload"}
+            </button>
+            <button onClick={() => onAddRefImageUrls && openLibraryPicker({ max: clipImages?.max ?? maxImages }).then(urls => { if (urls.length) onAddRefImageUrls(urls) })}
+              disabled={!onAddRefImageUrls}
+              className="py-4 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/25 text-[10px] text-slate-400 hover:text-slate-200 transition-all flex items-center justify-center gap-1.5 disabled:opacity-40">
+              <Images size={12} />From My Generations
+            </button>
+          </div>
         )}
       </div>
       )}
@@ -22260,7 +22497,7 @@ function SD20RefPanel({
             </button>
           )}
         </div>
-        <input ref={vidInputRef} type="file" accept="video/*,image/gif" className="hidden"
+        <input ref={vidInputRef} type="file" onClick={gateFileInput} accept="video/*,image/gif" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; handleVideoFile(f) } }} />
         {videoRefVideoFilenames.length > 0 ? (
           <div className="space-y-1">
@@ -22298,7 +22535,7 @@ function SD20RefPanel({
             </button>
           )}
         </div>
-        <input ref={audInputRef} type="file" accept="audio/*" className="hidden"
+        <input ref={audInputRef} type="file" onClick={gateFileInput} accept="audio/*" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onAddRefAudio(f) } }} />
         {videoRefAudioFilenames.length > 0 ? (
           <div className="space-y-1">
@@ -22333,8 +22570,8 @@ function VideoCustomizationPanel({
   resolution, onResolutionChange,
   audioEnabled, onAudioToggle,
   audioFile, onAudioFileChange,
-  startFramePreview, onStartFrameSelect, onClearStartFrame,
-  endFramePreview, onEndFrameSelect, onClearEndFrame,
+  startFramePreview, onStartFrameSelect, onClearStartFrame, onStartFrameUrl,
+  endFramePreview, onEndFrameSelect, onClearEndFrame, onEndFrameUrl, onAddRefImageUrls,
   startFrameUploading, endFrameUploading, audioUploading,
   motionVideoFilename, onMotionVideoSelect, onClearMotionVideo, motionVideoUploading,
   motionVideoDuration, onMotionVideoDurationChange,
@@ -22368,6 +22605,10 @@ function VideoCustomizationPanel({
   ltxFps = "25",
   toolFactor = "2",
   toolCreativity = "0.35",
+  toolTargetFps = "60",
+  onToolFactorChange,
+  onToolCreativityChange,
+  onToolTargetFpsChange,
   onLtxFpsChange,
   lumaMode = "flex_1",
   onLumaModeChange,
@@ -22387,6 +22628,10 @@ function VideoCustomizationPanel({
   audioFile: File | null; onAudioFileChange: (f: File) => void
   startFramePreview: string | null; onStartFrameSelect: (f: File) => void; onClearStartFrame: () => void
   endFramePreview: string | null; onEndFrameSelect: (f: File) => void; onClearEndFrame: () => void
+  /** Pictures chosen from My Generations / Assets (LibraryPicker) for the frame and reference slots */
+  onStartFrameUrl?: (url: string) => void
+  onEndFrameUrl?: (url: string) => void
+  onAddRefImageUrls?: (urls: string[]) => void
   startFrameUploading: boolean; endFrameUploading: boolean; audioUploading: boolean
   motionVideoFilename: string | null; onMotionVideoSelect: (f: File) => void; onClearMotionVideo: () => void; motionVideoUploading: boolean
   motionVideoDuration: number | null; onMotionVideoDurationChange: (d: number) => void
@@ -22437,6 +22682,11 @@ function VideoCustomizationPanel({
   /** Video tools' upscale factor and creativity - Flux Video Upscale's price depends on both */
   toolFactor?: string
   toolCreativity?: string
+  /** Topaz Interpolate's target frame rate */
+  toolTargetFps?: string
+  onToolFactorChange?: (v: string) => void
+  onToolCreativityChange?: (v: string) => void
+  onToolTargetFpsChange?: (v: string) => void
   onLtxFpsChange?: (fps: string) => void
   lumaMode?: string
   onLumaModeChange?: (mode: string) => void
@@ -22557,7 +22807,7 @@ function VideoCustomizationPanel({
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration, fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration, fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps, hasStartImage: !!startFramePreview,
         sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         audioDurationSec: audioSec, videoChoice: choiceValue,
         promptWords: (promptText ?? "").trim().split(/\s+/).filter(Boolean).length,
@@ -22619,9 +22869,9 @@ function VideoCustomizationPanel({
       {isLipsync && (
         <>
           {/* Hidden file inputs */}
-          <input ref={lipsyncVidRef} type="file" accept="video/*" className="hidden"
+          <input ref={lipsyncVidRef} type="file" onClick={gateFileInput} accept="video/*" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; handleLipsyncVideoFile(f) }}} />
-          <input ref={lipsyncAudRef} type="file" accept="audio/*,audio/mpeg,audio/mp3,audio/wav,audio/aac,audio/ogg,audio/flac,audio/x-m4a,.mp3,.wav,.aac,.ogg,.flac,.m4a,.aiff,.aif" className="hidden"
+          <input ref={lipsyncAudRef} type="file" onClick={gateFileInput} accept="audio/*,audio/mpeg,audio/mp3,audio/wav,audio/aac,audio/ogg,audio/flac,audio/x-m4a,.mp3,.wav,.aac,.ogg,.flac,.m4a,.aiff,.aif" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onLipsyncAudioSelect?.(f) }}} />
 
           {/* Video upload */}
@@ -22741,6 +22991,7 @@ function VideoCustomizationPanel({
             preview={startFramePreview}
             uploading={startFrameUploading}
             onSelect={onStartFrameSelect}
+            onPickUrl={onStartFrameUrl}
             onClear={onClearStartFrame}
             label={model.supportsMotionControl ? "Click to upload character image" : model.textToVideo ? "Click to upload reference image (optional)" : "Click to upload start frame"}
             optional={!!model.textToVideo}
@@ -22758,7 +23009,7 @@ function VideoCustomizationPanel({
               Motion Reference Video <span className="text-slate-400">*</span>
             </p>
             <p className="text-[10px] text-slate-600 leading-snug">The character's movements in the output will follow this video</p>
-            <input ref={endRef} type="file" accept="video/*" className="hidden"
+            <input ref={endRef} type="file" onClick={gateFileInput} accept="video/*" className="hidden"
               onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; setMotionVideoError(null); handleMotionVideoFile(f) }}} />
             {motionVideoFilename ? (
               <div className={`relative rounded-lg overflow-hidden flex items-center gap-3 px-3 py-3 border ${motionVideoUploading ? "bg-slate-900/80 border-white/10" : "bg-white/5 border-white/10"}`}>
@@ -22794,10 +23045,15 @@ function VideoCustomizationPanel({
             )}
           </div>
 
-          {/* Background Control */}
+          {/* Character orientation (fal's character_orientation). This was
+              labelled "Background Control", but Kling Motion Control ALWAYS
+              takes the scene from the character image - the switch only picks
+              whose facing / body orientation the character keeps, and the
+              length limit that goes with it. A clip's own background needs a
+              swap model instead (Wan 2.2 Animate Replace). */}
           <div className="space-y-1.5">
-            <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Background Control</p>
-            <p className="text-[10px] text-slate-600 leading-snug">Choose where you want the background of the video to come from</p>
+            <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Character Orientation</p>
+            <p className="text-[10px] text-slate-600 leading-snug">Which way the character faces. The background always comes from the character image - to keep the clip's own background, use Wan 2.2 Animate Replace.</p>
             <div className="flex gap-1.5">
               <button onClick={() => onCharacterOrientationChange("image")}
                 className={`flex-1 ${btnBase} ${characterOrientation === "image" ? btnActive : btnIdle}`}>
@@ -22810,8 +23066,8 @@ function VideoCustomizationPanel({
             </div>
             <p className="text-[10px] text-slate-600 leading-snug">
               {characterOrientation === "video"
-                ? "Background follows the reference video (max 30s output)"
-                : "Background follows the character image (max 10s output)"}
+                ? "Faces like the person in the clip - best for complex moves like dancing (clips up to 30s)"
+                : "Faces like the character image - best when the camera moves (clips up to 10s)"}
             </p>
           </div>
 
@@ -22840,6 +23096,7 @@ function VideoCustomizationPanel({
             <SD20RefPanel
               videoRefImagePreviews={videoRefImagePreviews}
               onAddRefImage={onAddRefImage!}
+              onAddRefImageUrls={onAddRefImageUrls}
               onRemoveRefImage={onRemoveRefImage!}
               videoRefVideoFilenames={videoRefVideoFilenames}
               videoRefVideoUrls={videoRefVideoUrls}
@@ -22850,8 +23107,11 @@ function VideoCustomizationPanel({
               onRemoveRefAudio={onRemoveRefAudio!}
               videoRefVideoDuration={videoRefVideoDuration}
               sourceClipMaxSec={model.sourceClipMaxSec}
-              allowFrameTags={!model.sourceClipMaxSec}
-              {...(model.refImagesOnly ? { maxVideos: 0, maxAudios: 0, startTagOnly: true, refTagHint: "name them @Image1… in the prompt" } : {})}
+              clipImages={model.sourceClipImages}
+              allowFrameTags={model.frameTags ? model.frameTags !== "none" : !model.sourceClipMaxSec}
+              startTagOnly={model.frameTags === "start" || !!model.refImagesOnly}
+              {...(model.refLimits ? { maxImages: model.refLimits.images, maxVideos: model.refLimits.videos, maxAudios: model.refLimits.audios } : {})}
+              {...(model.refImagesOnly ? { maxVideos: 0, maxAudios: 0, refTagHint: "name them @Image1… in the prompt" } : {})}
               startIdx={refStartIdx}
               endIdx={refEndIdx}
               onTagStart={onTagRefStart}
@@ -22863,6 +23123,7 @@ function VideoCustomizationPanel({
             <SD20RefPanel
               videoRefImagePreviews={videoRefImagePreviews}
               onAddRefImage={onAddRefImage!}
+              onAddRefImageUrls={onAddRefImageUrls}
               onRemoveRefImage={onRemoveRefImage!}
               videoRefVideoFilenames={[]}
               videoRefVideoUrls={[]}
@@ -22884,7 +23145,7 @@ function VideoCustomizationPanel({
                 Source Video <span className="text-slate-400">*</span>
               </p>
               <p className="text-[10px] text-slate-600 leading-snug">The video to edit/restyle — output duration follows the source</p>
-              <input ref={editSrcRef} type="file" accept="video/*,image/gif" className="hidden"
+              <input ref={editSrcRef} type="file" onClick={gateFileInput} accept="video/*,image/gif" className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; handleEditSourceFile(f) } }} />
               {editSourceFilename ? (
                 <div className={`relative rounded-lg overflow-hidden flex items-center gap-3 px-3 py-3 border ${editSourceUploading ? "bg-slate-900/80 border-white/10" : "bg-white/5 border-white/10"}`}>
@@ -22925,6 +23186,7 @@ function VideoCustomizationPanel({
                 preview={endFramePreview}
                 uploading={endFrameUploading}
                 onSelect={onEndFrameSelect}
+                onPickUrl={onEndFrameUrl}
                 onClear={onClearEndFrame}
                 label="Click to upload end frame"
                 optional
@@ -23003,6 +23265,43 @@ function VideoCustomizationPanel({
                 {model.fpsOptions.map(f => (
                   <button key={f} onClick={() => onLtxFpsChange?.(f)}
                     className={`flex-1 ${btnBase} ${ltxFps === f ? btnActive : btnIdle}`}>{f} fps</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* A tool's own knobs (2026-10-08: declared in the configs since the tools
+              were added, but never drawn - every upscale ran at 2x, Interpolate
+              at 60 fps, Flux faithful) */}
+          {model.upscaleFactors && model.upscaleFactors.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Upscale <span className="text-slate-600 normal-case font-normal">(times the clip&apos;s size)</span></p>
+              <div className="flex gap-1.5">
+                {model.upscaleFactors.map(f => (
+                  <button key={f} onClick={() => onToolFactorChange?.(f)}
+                    className={`flex-1 ${btnBase} ${toolFactor === f ? btnActive : btnIdle}`}>{f}x</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {model.targetFpsOptions && model.targetFpsOptions.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Target frame rate</p>
+              <div className="flex gap-1.5">
+                {model.targetFpsOptions.map(f => (
+                  <button key={f} onClick={() => onToolTargetFpsChange?.(f)}
+                    className={`flex-1 ${btnBase} ${toolTargetFps === f ? btnActive : btnIdle}`}>{f}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {model.creativityOptions && model.creativityOptions.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Creativity <span className="text-slate-600 normal-case font-normal">(how much new detail it may invent)</span></p>
+              <div className="flex gap-1.5">
+                {model.creativityOptions.map(o => (
+                  <button key={o.value} onClick={() => onToolCreativityChange?.(o.value)}
+                    className={`flex-1 ${btnBase} ${toolCreativity === o.value ? btnActive : btnIdle}`}>{o.label}</button>
                 ))}
               </div>
             </div>
@@ -23103,7 +23402,7 @@ function VideoCustomizationPanel({
               </p>
               <input
                 ref={audioRef}
-                type="file"
+                type="file" onClick={gateFileInput}
                 accept="audio/wav,audio/mp3,audio/mpeg,audio/mp4,audio/x-m4a"
                 className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; measureAudio(f); onAudioFileChange(f) } }}
@@ -23712,19 +24011,25 @@ function VideoFeed({
 
   if (!showHidden) {
     // Loading / queued slots (hidden view shows only DB results)
-    pendingSlots.forEach(slot => headNodes.push({ weight: W169, key: slot.slotId, node: (
-      <button
-        key={slot.slotId}
-        onClick={onPendingClick ? () => onPendingClick(slot) : undefined}
-        className={`rounded-lg border flex flex-col items-center justify-center gap-2 p-4 w-full transition-colors ${slot.queueJobId && !slot.requestId ? "bg-slate-900 border-amber-500/20 hover:border-amber-500/40" : "bg-slate-900 border-white/5 hover:border-white/10"}`}
-        style={{ aspectRatio: "16/9" }}
-      >
-        <div className={`w-5 h-5 rounded-full border-2 animate-spin ${slot.queueJobId && !slot.requestId ? "border-amber-500/30 border-t-amber-400" : "border-orange-400/30 border-t-orange-400"}`} />
-        {slot.queueJobId && !slot.requestId && <p className="text-[9px] text-amber-400/60 font-mono tracking-wide">QUEUED</p>}
-        <p className="text-[10px] text-slate-500 text-center line-clamp-2 italic">"{slot.prompt}"</p>
-        <p className="text-[9px] text-orange-400/50 font-mono">{slot.model}</p>
-      </button>
-    )}))
+    // The image feed's branded tile (2026-10-08 - was an orange spinner), in the
+    // frame the finished video will have: its shape when it is already known
+    // (a motion clip's, a source clip's, the start image's, the chosen aspect),
+    // laid out exactly as that VideoTile will be - so finishing doesn't jump
+    pendingSlots.forEach(slot => {
+      const ar = slot.expectedAspect || (slot.aspectRatio && slot.aspectRatio !== "auto" ? slot.aspectRatio : undefined)
+      const queued = !!slot.queueJobId && !slot.requestId
+      headNodes.push({ weight: tileWeight(ar), key: slot.slotId, node: (
+        <BrandLoadingTile
+          key={slot.slotId}
+          label={queued ? "Queued" : "Generating"}
+          accent={queued ? "amber" : "silver"}
+          onClick={onPendingClick ? () => onPendingClick(slot) : undefined}
+          startedAtMs={queued ? undefined : slot.startedAt}
+          modelId={slot.model}
+          frame={{ aspect: tileAspect(ar), rim: tileBorders }}
+        />
+      )})
+    })
 
     // Session items (new this session)
     items.forEach(item => headNodes.push(item.failed ? { weight: W169, key: item.id, node: (
@@ -24025,7 +24330,7 @@ function VideoFeed({
       <div ref={videoSentinelRef} className="h-1" />
       {dbLoading && (
         <div className="flex justify-center py-4">
-          <div className="w-5 h-5 rounded-full border-2 border-orange-400/30 border-t-orange-400 animate-spin" />
+          <div className="w-5 h-5 rounded-full border-2 border-white/15 border-t-slate-200 animate-spin" />
         </div>
       )}
     </div>
@@ -24088,6 +24393,7 @@ function VideoPromptBar({
   toolFactor = "2",
   editSourceDims,
   toolCreativity = "0.35",
+  toolTargetFps = "60",
   audioSeconds,
   choiceValue,
 }: {
@@ -24103,6 +24409,7 @@ function VideoPromptBar({
   /** the source clip's pixel size, when known (upscalers bill output pixels) */
   editSourceDims?: { w: number; h: number } | null
   toolCreativity?: string
+  toolTargetFps?: string
   onPromptChange?: (text: string) => void
   generating: boolean
   canGenerate: boolean
@@ -24197,7 +24504,7 @@ function VideoPromptBar({
     ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
     // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
     : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, hasStartImage: !!startFramePreview,
+    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps, hasStartImage: !!startFramePreview,
         sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         // The same inputs the settings panel prices with, so the two quotes agree
         audioDurationSec: audioSeconds, videoChoice: choiceValue,
@@ -24265,12 +24572,12 @@ function VideoPromptBar({
             {/* Hidden file inputs */}
             <input
               ref={startFrameInputRef}
-              type="file" accept="image/*" className="hidden"
+              type="file" onClick={gateFileInput} accept="image/*" className="hidden"
               onChange={e => { const f = e.target.files?.[0]; if (f) { e.target.value = ""; onStartFrameSelect(f) } }}
             />
             <input
               ref={motionVideoInputRef}
-              type="file" accept="video/*,image/gif" className="hidden"
+              type="file" onClick={gateFileInput} accept="video/*,image/gif" className="hidden"
               onChange={e => {
                 const f = e.target.files?.[0]
                 if (!f) return
@@ -26643,6 +26950,8 @@ export default function PortalV2Page() {
       fd.append("file", uploadFile)
       const res = await fetch("/api/upload-video-media", { method: "POST", body: fd })
       if (!res.ok) {
+        // The server's ID gate (CCBill) - open the verification popup
+        if (res.status === 403 && isIdGateError(await res.clone().json().catch(() => null))) return null
         console.error('Video media upload failed:', res.status, await res.text().catch(() => ''))
         return null
       }
@@ -26660,6 +26969,14 @@ export default function PortalV2Page() {
     const url = await uploadVideoFrame(file)
     setVideoStartFrameUrl(url)
   }, [uploadVideoFrame])
+
+  // Chosen from My Generations / Assets: already on our storage, so the link is the preview and the input
+  const handleVideoStartFrameUrl = useCallback((url: string) => { setVideoStartFramePreview(url); setVideoStartFrameUrl(url) }, [])
+  const handleVideoEndFrameUrl = useCallback((url: string) => { setVideoEndFramePreview(url); setVideoEndFrameUrl(url) }, [])
+  const handleAddRefImageUrls = useCallback((urls: string[]) => {
+    setVideoRefImagePreviews(p => [...p, ...urls])
+    setVideoRefImageUrls(u => [...u, ...urls])
+  }, [])
 
   const handleVideoEndFrameSelect = useCallback(async (file: File) => {
     setVideoEndFramePreview(URL.createObjectURL(file))
@@ -27142,6 +27459,34 @@ export default function PortalV2Page() {
         keepOriginalSound:    videoKeepOriginalSound,
         characterOrientation: videoCharacterOrientation,
       }
+      /*
+       * The shape the video will come out in, when it is known now, for the
+       * loading tile: Motion Control takes its motion clip's (character from
+       * the video) or the character image's; clip tools keep their source
+       * clip's (Lucy Edit is always 16:9, DreamActor takes its character
+       * picture's); image-to-video takes the start image's; text and
+       * reference runs the aspect chosen. Media sizes are measured after the
+       * tile is up and patched in.
+       */
+      const m = selectedVideoModel
+      const chosenAr = m.aspectRatios?.length && videoAspectRatio && videoAspectRatio !== "auto" ? videoAspectRatio : undefined
+      const shapeFrom: { url: string; kind: "image" | "video" } | { ar: string } | null =
+        m.id === "kling-v3-motion"
+          ? (videoCharacterOrientation === "video" && videoMotionVideoUrl ? { url: videoMotionVideoUrl, kind: "video" } : videoStartFrameUrl ? { url: videoStartFrameUrl, kind: "image" } : null)
+        : m.id === "lucy-edit-pro" ? { ar: "16:9" }
+        : m.id === "dreamactor-v2" ? (sdRefImageUrls[0] ? { url: sdRefImageUrls[0], kind: "image" } : null)
+        : sdMode === "edit" && sdEditVideoUrl ? (chosenAr ? { ar: chosenAr } : { url: sdEditVideoUrl, kind: "video" })
+        : isLipsync ? null
+        : sdImageUrl && sdMode !== "r2v" ? { url: sdImageUrl, kind: "image" }
+        : chosenAr ? { ar: chosenAr }
+        : null
+      if (shapeFrom && "ar" in shapeFrom) (slotBase as VideoPendingSlotBase).expectedAspect = shapeFrom.ar
+      const measureLater = shapeFrom && "url" in shapeFrom ? shapeFrom : null
+      if (measureLater) {
+        measureMediaAspect(measureLater.url, measureLater.kind).then(ar => {
+          if (ar) setVideoPendingSlots(prev => prev.map(s => (s.slotId === slotBase.slotId ? { ...s, expectedAspect: ar } : s)))
+        })
+      }
       // Update UI balance immediately.
       // For admin users the generate route skips deduction, so we also persist via use-tickets.
       // For regular users the generate route already deducted server-side — UI update only.
@@ -27190,6 +27535,10 @@ export default function PortalV2Page() {
     setVideoAspectRatio(model.aspectRatios?.[0] ?? "16:9")
     setVideoResolution(model.id === "pixelcut-looping-video" ? "1080p" : model.resolutions?.[1] ?? "1080p")
     setVideoChoice(model.choice?.options[0]?.value ?? "")
+    // A tool's knobs start on its defaults (2x - or the model's own - fal's 60 fps, its first creativity)
+    setVideoToolFactor(model.upscaleDefault ?? (model.upscaleFactors?.includes("2") ? "2" : model.upscaleFactors?.[0] ?? "2"))
+    setVideoToolTargetFps(model.targetFpsOptions?.includes("60") ? "60" : model.targetFpsOptions?.[0] ?? "60")
+    setVideoToolCreativity(model.creativityOptions?.[0]?.value ?? "0.35")
     setVideoAudioEnabled(false)
     setVideoAudioFile(null)
     setVideoAudioUrl(null)
@@ -28725,10 +29074,15 @@ export default function PortalV2Page() {
     pollNowRef.current?.()
   }, [pendingSlots.length])
 
-  // Computed: active ref images limited to the current model's cap
-  const activeRefImages = refLibrary
-    .filter((img) => activeRefIds.includes(img.id))
-    .slice(0, selectedModel.maxReferenceImages)
+  // Computed: active ref images limited to the current model's cap, IN THE
+  // ORDER THEY'RE ARRANGED (activeRefIds: switch-on order, then whatever the
+  // user drags them into above the prompt box). This is the order they're sent
+  // in - "Image 1" in a prompt is the first one here. It used to follow the
+  // library's order, so the strip's order meant nothing.
+  const orderedActiveRefs = activeRefIds
+    .map(id => refLibrary.find(img => img.id === id))
+    .filter((img): img is RefImage => !!img)
+  const activeRefImages = orderedActiveRefs.slice(0, selectedModel.maxReferenceImages)
 
   // --- ACCOUNT REFERENCE LIBRARY CORE ---
   // Every path that adds refs funnels through here: compress → upload to R2 →
@@ -28910,6 +29264,11 @@ export default function PortalV2Page() {
 
   const handleActivateRef   = useCallback((id: string) => setActiveRefIds((prev) => [...prev, id]), [])
   const handleDeactivateRef = useCallback((id: string) => setActiveRefIds((prev) => prev.filter((rid) => rid !== id)), [])
+  // Dragged into a new order above the prompt box: those first, any active
+  // ones the model's cap hides keep their places after them
+  const handleReorderActiveRefs = useCallback((ids: string[]) => {
+    setActiveRefIds(prev => [...ids.filter(id => prev.includes(id)), ...prev.filter(id => !ids.includes(id))])
+  }, [])
 
   // ── Refs dropdown ↔ SeeDance 2.0: in video mode on a supportsReferenceVideo model,
   // activating a library ref loads it DIRECTLY into the model's reference images
@@ -30143,6 +30502,10 @@ function employeePending(
   return (
     <div className="bg-[#050810] text-white min-h-screen">
       {needsAgeAttest && <AgeAttestModal onDone={() => setNeedsAgeAttest(false)} />}
+      {/* "From My Generations" for the video panel's picture slots */}
+      <LibraryPickerHost />
+      {/* One-time ID verification before any upload (CCBill) - every file input calls gateFileInput */}
+      <IdVerificationHost />
       {/* Taskbar — user-scalable via Feed → Taskbar Size (CSS zoom reflows layout) */}
       <div ref={taskbarRef} className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: taskbarZoom }}>
 
@@ -30199,6 +30562,22 @@ function employeePending(
             style={{ background: "linear-gradient(100deg,#64748b,#e2e8f0,#94a3b8,#f8fafc,#94a3b8,#e2e8f0,#64748b)" }}
           >
             <TaskbarScroller className="rounded-[10px] bg-[#0a0f1a] flex items-center min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden divide-x divide-white/[0.07]">
+            {/* Studios - first in the taskbar (owner's choice, 2026-10-08). For everyone since 2026-10-07 (Storyboard Studio and the
+                Frame Extractor are public; the page lists what each account can
+                open - lib/employees). White like the other public entries;
+                admin-only taskbar entries are the red ones. Frames and 3D
+                Studio live inside Studios. */}
+            <div className="relative flex-none min-w-[110px] sm:flex-1">
+              <button
+                onClick={() => { setScannerMode("employees"); setOpenDropdown(null) }}
+                title="Studios — workspaces built for one job each"
+                className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
+                  scannerMode === "employees" ? "bg-white/10" : "hover:bg-white/5"}`}
+              >
+                <Wand2 size={15} className="text-slate-300" />
+                Studios
+              </button>
+            </div>
             <GroupedTaskbarDropdown
               label="Image"
               icon={Image}
@@ -30350,22 +30729,6 @@ function employeePending(
               }
               onClearErrors={handleClearAllErrors}
             />
-            {/* Studios: for everyone since 2026-10-07 (Storyboard Studio and the
-                Frame Extractor are public; the page lists what each account can
-                open - lib/employees). White like the other public entries;
-                admin-only taskbar entries are the red ones. Frames and 3D
-                Studio live inside Studios. */}
-            <div className="relative flex-none min-w-[110px] sm:flex-1">
-              <button
-                onClick={() => { setScannerMode("employees"); setOpenDropdown(null) }}
-                title="Studios — workspaces built for one job each"
-                className={`flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-bold tracking-wide text-white transition-all ${
-                  scannerMode === "employees" ? "bg-white/10" : "hover:bg-white/5"}`}
-              >
-                <Wand2 size={15} className="text-slate-300" />
-                Studios
-              </button>
-            </div>
             {/* AI Chat Hub moved to the logo dropdown's admin-only section */}
             </TaskbarScroller>
           </div>
@@ -30723,7 +31086,7 @@ function employeePending(
               onRemovePending={handleRemovePending}
               onStartNb2Polling={startNb2SlotPolling}
               onPrependImage={handlePrependImage}
-              activeRefImages={refLibrary.filter(img => activeRefIds.includes(img.id)).slice(0, 3)}
+              activeRefImages={orderedActiveRefs.slice(0, 3)}
               onUploadRef={handleUploadRef}
               onDeactivateRef={handleDeactivateRef}
               onEditRef={handleEditRef}
@@ -30753,6 +31116,7 @@ function employeePending(
             activeRefImages={activeRefImages}
             refLibrary={refLibrary}
             onDeactivateRef={handleDeactivateRef}
+            onReorderRefs={handleReorderActiveRefs}
             onEditRef={handleEditRef}
             canUseLayers={hasEffectiveDevAccess}
             onSaveLayers={handleSaveRefLayers}
@@ -30816,6 +31180,10 @@ function employeePending(
               isAdminAccount={isAdminAccount}
               ltxFps={videoLtxFps}
               toolFactor={videoToolFactor}
+              toolTargetFps={videoToolTargetFps}
+              onToolFactorChange={setVideoToolFactor}
+              onToolCreativityChange={setVideoToolCreativity}
+              onToolTargetFpsChange={setVideoToolTargetFps}
               toolCreativity={videoToolCreativity}
               onLtxFpsChange={setVideoLtxFps}
               lumaMode={videoLumaMode}
@@ -30837,6 +31205,9 @@ function employeePending(
               onAudioFileChange={handleVideoAudioSelect}
               startFramePreview={videoStartFramePreview}
               onStartFrameSelect={handleVideoStartFrameSelect}
+              onStartFrameUrl={handleVideoStartFrameUrl}
+              onEndFrameUrl={handleVideoEndFrameUrl}
+              onAddRefImageUrls={handleAddRefImageUrls}
               onClearStartFrame={() => { setVideoStartFramePreview(null); setVideoStartFrameUrl(null) }}
               endFramePreview={videoEndFramePreview}
               onEndFrameSelect={handleVideoEndFrameSelect}
@@ -30926,6 +31297,7 @@ function employeePending(
             audioSeconds={videoAudioSec}
             choiceValue={videoChoice}
             toolFactor={videoToolFactor}
+              toolTargetFps={videoToolTargetFps}
             toolCreativity={videoToolCreativity}
             key={`vpb-${user?.id ?? "anon"}`}
             cardMedia={homeCards}
@@ -31021,6 +31393,9 @@ function employeePending(
                   onAudioFileChange={handleVideoAudioSelect}
                   startFramePreview={videoStartFramePreview}
                   onStartFrameSelect={handleVideoStartFrameSelect}
+                  onStartFrameUrl={handleVideoStartFrameUrl}
+                  onEndFrameUrl={handleVideoEndFrameUrl}
+                  onAddRefImageUrls={handleAddRefImageUrls}
                   onClearStartFrame={() => { setVideoStartFramePreview(null); setVideoStartFrameUrl(null) }}
                   endFramePreview={videoEndFramePreview}
                   onEndFrameSelect={handleVideoEndFrameSelect}

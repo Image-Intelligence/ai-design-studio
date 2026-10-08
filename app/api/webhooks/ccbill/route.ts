@@ -13,7 +13,7 @@
 
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { verifyWebhookSecret, expectedClientAccnum, getCcbillPlan } from '@/lib/ccbill'
+import { verifyWebhookSecret, expectedClientAccnum, getCcbillPlan, ccbillCancelSubscription } from '@/lib/ccbill'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,12 +34,34 @@ async function parseBody(request: Request): Promise<Record<string, string>> {
   return out
 }
 
-async function creditTickets(userId: number, tickets: number) {
-  await prisma.ticket.upsert({
+async function creditTickets(userId: number, tickets: number): Promise<{ before: number; after: number }> {
+  const before = (await prisma.ticket.findUnique({ where: { userId }, select: { balance: true } }))?.balance ?? 0
+  const t = await prisma.ticket.upsert({
     where: { userId },
     create: { userId, balance: tickets, totalBought: tickets, totalUsed: 0 },
     update: { balance: { increment: tickets }, totalBought: { increment: tickets } },
+    select: { balance: true },
   })
+  return { before, after: t.balance }
+}
+
+/**
+ * The billing history /subscriptions shows: one payment row and one ticket
+ * row per successful charge. Best effort - a history row must never fail the
+ * webhook (CCBill would retry and the idempotency guards make that safe, but
+ * there's no reason to bounce a good payment over a log line).
+ */
+async function recordCharge(subscriptionId: number, userId: number, amount: number, tickets: number, balance: { before: number; after: number }, description: string, transactionId: string) {
+  try {
+    await prisma.subscriptionTransaction.createMany({
+      data: [
+        { subscriptionId, userId, type: 'payment', amount, description, metadata: { provider: 'ccbill', transactionId: transactionId || null } },
+        { subscriptionId, userId, type: 'ticket_distribution', ticketsAdded: tickets, previousBalance: balance.before, newBalance: balance.after, description: `${tickets} tickets credited` },
+      ],
+    })
+  } catch (e) {
+    console.error('CCBill webhook: could not record billing history', e)
+  }
 }
 
 export async function POST(request: Request) {
@@ -87,7 +109,7 @@ export async function POST(request: Request) {
         ? new Date(body.renewalDate)
         : new Date(Date.now() + plan.periodDays * 24 * 60 * 60 * 1000)
 
-      await prisma.subscription.create({
+      const created = await prisma.subscription.create({
         data: {
           userId,
           tier: 'prompt-studio-dev',
@@ -103,7 +125,44 @@ export async function POST(request: Request) {
           metadata: { provider: 'ccbill', planId: plan.id, planName: plan.name, ticketsPerCycle: plan.tickets },
         },
       })
-      await creditTickets(userId, plan.tickets)
+      const bal = await creditTickets(userId, plan.tickets)
+      await recordCharge(created.id, userId, plan.price, plan.tickets, bal, `${plan.name} plan - first month`, transactionId)
+
+      /*
+       * A plan change (X-replaces = the Subscription it replaces, set by
+       * /api/user/subscription/manage). The new plan is paid for, so the old
+       * one ends now: its renewal is cancelled at CCBill and it stops granting
+       * anything. Tickets it already credited stay with the account.
+       */
+      const replacesId = parseInt(body['X-replaces'] ?? '')
+      if (!isNaN(replacesId)) {
+        const old = await prisma.subscription.findFirst({ where: { id: replacesId, userId } })
+        if (old && old.id !== created.id) {
+          let cancelNote: string | null = null
+          if (old.ccbillSubscriptionId && old.autoRenew) {
+            const r = await ccbillCancelSubscription(old.ccbillSubscriptionId)
+            if (!r.ok) {
+              // Flag it loudly: the old renewal must be stopped by hand
+              cancelNote = r.detail ?? 'cancel failed'
+              console.error(`CCBill plan change: could not cancel old subscription ${old.ccbillSubscriptionId} (ours ${old.id}) - cancel it in the CCBill admin. ${cancelNote}`)
+            }
+          }
+          await prisma.subscription.update({
+            where: { id: old.id },
+            data: {
+              status: 'expired',
+              autoRenew: false,
+              endDate: new Date(),
+              cancelledAt: old.cancelledAt ?? new Date(),
+              metadata: {
+                ...((old.metadata as Record<string, unknown> | null) ?? {}),
+                replacedBy: created.id,
+                ...(cancelNote ? { ccbillCancelPending: cancelNote } : {}),
+              },
+            },
+          })
+        }
+      }
       return NextResponse.json({ received: true })
     }
 
@@ -137,7 +196,10 @@ export async function POST(request: Request) {
           ...(transactionId ? { ccbillLastTransactionId: transactionId } : {}),
         },
       })
-      if (tickets > 0) await creditTickets(sub.userId, tickets)
+      if (tickets > 0) {
+        const bal = await creditTickets(sub.userId, tickets)
+        await recordCharge(sub.id, sub.userId, sub.billingAmount ?? plan?.price ?? 0, tickets, bal, `${plan?.name ?? 'Dev Tier'} plan - renewal`, transactionId)
+      }
       return NextResponse.json({ received: true })
     }
 

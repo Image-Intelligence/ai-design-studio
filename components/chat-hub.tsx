@@ -36,6 +36,7 @@ import {
   AGENT_SKILLS, ALL_SKILL_IDS, BUILT_IN_EMPLOYEES, SKILL_CATEGORIES, estimateRunCost,
   MOVIE_FORMATS, DEFAULT_MOVIE_FORMAT,
 } from "@/lib/chat-hub-skills"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 const ROUTING_LS_KEY = "chat-hub-routing"
 const ROUTING_EVENT = "chat-hub-routing-changed"
@@ -4252,7 +4253,7 @@ export default function ChatHub({
       {/* Hidden picker for the "+ → Upload references" flow */}
       <input
         ref={fileInputRef}
-        type="file"
+        type="file" onClick={gateFileInput}
         accept="image/*"
         multiple
         className="hidden"
@@ -6751,7 +6752,7 @@ export default function ChatHub({
                       {layerErr && <div className="text-[10px] text-red-400">{layerErr}</div>}
                       <input
                         ref={layerImageInputRef}
-                        type="file"
+                        type="file" onClick={gateFileInput}
                         accept="image/*"
                         className="hidden"
                         onChange={e => {

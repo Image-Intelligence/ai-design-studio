@@ -7,6 +7,7 @@ import { Dropdown } from "@/components/employees/Dropdown"
 import { matchPlan, extraOf, type Gen, type PlanRow } from "@/components/employees/plan-progress"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { MOVIE_FORMATS, movieFormatById, AUDIO_PLANS, DEFAULT_AUDIO_PLAN } from "@/lib/chat-hub-skills"
+import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 
 
 /**
@@ -2212,7 +2213,7 @@ export function MovieStudioWorkspace({
           </div>
           <input
             ref={fileRef}
-            type="file"
+            type="file" onClick={gateFileInput}
             accept="image/*,video/*"
             multiple
             hidden

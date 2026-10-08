@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAiGuideEnabled } from '@/lib/ai-guide'
+import { cookies } from 'next/headers'
+import { getUserFromSession } from '@/lib/auth'
+import { requireIdVerified } from '@/lib/id-verification'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
@@ -243,6 +246,16 @@ export async function POST(request: NextRequest) {
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json({ error: 'Messages required' }, { status: 400 })
+    }
+
+    // A picture in the chat is an upload: signed-in, ID-verified accounts only
+    // (CCBill; admins exempt - lib/id-verification). Text stays open.
+    if (messages.some(m => Array.isArray(m.content) && m.content.some(p => p?.type === 'image'))) {
+      const token = (await cookies()).get('session')?.value
+      const user = token ? await getUserFromSession(token) : null
+      if (!user) return NextResponse.json({ error: 'Sign in to share pictures' }, { status: 401 })
+      const idGate = await requireIdVerified(user)
+      if (idGate) return idGate
     }
 
     // Build Gemini contents array

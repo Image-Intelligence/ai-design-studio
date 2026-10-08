@@ -6,6 +6,10 @@
  *                540p to 4K
  *   clip tool    H3 Max Relight - re-lights a clip (up to 15s) from a picture
  *                of a lit sphere, keeping its subjects, motion, camera and audio
+ *   character    Wan 2.2 Animate Replace, DreamActor v2 - the person in a clip
+ *   swap         becomes the character in a picture, keeping the footage's
+ *                camera, set, timing and lip movement (the "swap the rapper"
+ *                music-video edits); Lucy Edit Pro - edits a clip from words
  *
  * One place that decides which fal endpoint runs and builds its exact input,
  * called by app/api/video/generate. Every field was checked against the live
@@ -14,14 +18,28 @@
  */
 
 export const BATCH_1007_GENERATORS = new Set(['vidu-q4'])
-export const BATCH_1007_TOOLS = new Set(['minimax-h3-max-relight'])
-/** Promoted after a priced, end-to-end run through the portal UI (none yet). */
-export const BATCH_1007_PUBLIC = new Set<string>([])
+export const BATCH_1007_TOOLS = new Set(['minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro'])
+/** The clip tools that put the character from a picture (the first reference image) into the clip. */
+export const BATCH_1007_NEEDS_CHARACTER = new Set(['wan-2.2-animate-replace', 'dreamactor-v2'])
+/** Longest source clip each takes, seconds (DreamActor: fal's 30s; the others held to the panel's 15s). */
+export const BATCH_1007_MAX_SEC: Record<string, number> = {
+  'minimax-h3-max-relight': 15, 'wan-2.2-animate-replace': 15, 'dreamactor-v2': 30, 'lucy-edit-pro': 15,
+}
+/**
+ * Promoted after a priced, end-to-end run through the portal UI: all five,
+ * public 2026-10-08 (Vidu Q4 at fal's regular - not promo - rates).
+ */
+export const BATCH_1007_PUBLIC = new Set<string>([
+  'vidu-q4', 'minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro',
+])
 
 export const BATCH_1007_ENDPOINTS: Record<string, string> = {
   'vidu-q4-i2v': 'fal-ai/vidu/q4/image-to-video',
   'vidu-q4-r2v': 'fal-ai/vidu/q4/reference-to-video',
   'minimax-h3-max-relight': 'minimax/h3-max/relight',
+  'wan-2.2-animate-replace': 'fal-ai/wan/v2.2-14b/animate/replace',
+  'dreamactor-v2': 'fal-ai/bytedance/dreamactor/v2',
+  'lucy-edit-pro': 'decart/lucy-edit/pro',
 }
 
 /** Vidu Q4: references (r2v) when they are given, else the start frame (i2v). */
@@ -35,6 +53,10 @@ export const VIDU_Q4_RESOLUTIONS = ['540p', '720p', '1080p', '2k', '4k'] as cons
 const VIDU_Q4_USD: Record<string, number> = { '540p': 0.045, '720p': 0.095, '1080p': 0.12, '2k': 0.19, '4k': 0.39 }
 /** fal per second of the (source-length) output. */
 const RELIGHT_USD: Record<string, number> = { '480p': 0.05, '768p': 0.08, '1080p': 0.16, '2k': 0.32 }
+/** Wan Animate: per "video second" = 16 frames of the clip (a 30 fps clip bills ~1.9x its length). */
+const WAN_ANIMATE_USD: Record<string, number> = { '480p': 0.04, '580p': 0.06, '720p': 0.08 }
+/** Lucy Edit Pro: per second of the clip, 720p - the only resolution it accepts (fal's 480p price is for the dev tier; 480p is refused: "Input should be '720p'") */
+const LUCY_USD_PER_SEC = 0.15
 /** fal converts the source to 24 fps and renders at least ~2.33s; it takes up to 15s. */
 export const RELIGHT_MAX_SEC = 15
 const RELIGHT_MIN_SEC = 2.33
@@ -83,7 +105,8 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
       if (batch1007EndpointKey(model, p) === 'vidu-q4-r2v') {
         // The references keep characters and objects; the prompt says what happens
         return {
-          ...base, prompt: prompt.replace(/@Image(\d+)/gi, 'reference $1'), reference_image_urls: refs.slice(0, 12),
+          // fal's reference tag is [@reference_image_N]; the panel writes @ImageN
+          ...base, prompt: prompt.replace(/@Image(\d+)/gi, '[@reference_image_$1]'), reference_image_urls: refs.slice(0, 12),
           aspect_ratio: pick(['16:9', '9:16', '4:3', '3:4', '1:1'], p.aspectRatio, '16:9'),
           audio: !!p.generateAudio,
         }
@@ -91,6 +114,25 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
       // i2v always has native audio; the prompt is optional
       return { ...base, image_url: p.imageUrl || refs[0], ...(prompt ? { prompt } : {}) }
     }
+    case 'wan-2.2-animate-replace':
+      // The person in the clip becomes the character in the picture; the
+      // clip's camera, set and timing stay. Turbo off: quality over speed
+      return {
+        video_url: p.editVideoUrl, image_url: refs[0] || p.imageUrl,
+        resolution: pick(['480p', '580p', '720p'], res, '720p'),
+        video_quality: 'high', video_write_mode: 'balanced',
+      }
+    case 'dreamactor-v2':
+      // The picture's character performs the clip (motion, face, lips). The
+      // first second of fal's output is a transition - trimmed
+      return { video_url: p.editVideoUrl, image_url: refs[0] || p.imageUrl, trim_first_second: true }
+    case 'lucy-edit-pro':
+      // An edit described in words ("make him a chrome robot"); sync_mode off
+      // so the result comes back as a file, not inline
+      return {
+        video_url: p.editVideoUrl, prompt: prompt.slice(0, 1500),
+        resolution: '720p', enhance_prompt: true, sync_mode: false,
+      }
     case 'minimax-h3-max-relight':
       // The lighting comes from the first reference image (a lit sphere); the
       // output keeps the source's shape (the nearest ratio fal offers)
@@ -105,7 +147,7 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
 }
 
 /** Tickets for a run (fal cost / $0.04, rounded up). */
-export function batch1007TicketCost(model: string, o: { duration?: string | number; resolution?: string; sourceSec?: number }): number {
+export function batch1007TicketCost(model: string, o: { duration?: string | number; resolution?: string; sourceSec?: number; sourceFps?: number }): number {
   const res = String(o.resolution ?? '').toLowerCase()
   let usd: number
   switch (model) {
@@ -118,6 +160,19 @@ export function batch1007TicketCost(model: string, o: { duration?: string | numb
       usd = Math.ceil(Math.min(RELIGHT_MAX_SEC, Math.max(RELIGHT_MIN_SEC, src))) * (RELIGHT_USD[res] ?? RELIGHT_USD['768p'])
       break
     }
+    case 'wan-2.2-animate-replace': {
+      // Billed frames / 16; an unknown clip is priced as 10s at 30 fps
+      const src = o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10
+      const fps = o.sourceFps && o.sourceFps > 0 ? o.sourceFps : 30
+      usd = Math.ceil((src * fps) / 16) * (WAN_ANIMATE_USD[res] ?? WAN_ANIMATE_USD['720p'])
+      break
+    }
+    case 'dreamactor-v2':
+      usd = Math.ceil(Math.min(30, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10)) * 0.05
+      break
+    case 'lucy-edit-pro':
+      usd = Math.ceil(o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10) * LUCY_USD_PER_SEC
+      break
     default:
       usd = 1
   }

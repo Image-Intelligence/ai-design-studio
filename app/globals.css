@@ -328,3 +328,10 @@
 @media (width >= 96rem) {
   .feat-inner { --g: 1rem; }
 }
+
+/* Portal-v2: with the Refs panel open the prompt box stays on top and usable
+   (the panel lives in the sticky taskbar's z-40 layer). Scoped to Refs - the
+   model menus keep covering the dock as before. */
+html[data-refs-open] [data-prompt-dock] {
+  z-index: 50;
+}

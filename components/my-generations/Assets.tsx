@@ -52,12 +52,13 @@ export function useUserAssets(enabled: boolean) {
   return {
     assets,
     load,
-    create: async (o: { kind: AssetKind; name: string; notes?: string; imageIds?: number[] }) => {
+    // urls / addUrls: pictures by link (the Refs panel's references) - the API keeps the account's own only
+    create: async (o: { kind: AssetKind; name: string; notes?: string; imageIds?: number[]; urls?: string[] }) => {
       const { asset } = await call<{ asset: UserAsset }>("POST", o)
       put(asset)
       return asset
     },
-    update: async (o: { id: number; kind?: AssetKind; name?: string; notes?: string; addImageIds?: number[]; removeRefIds?: string[] }) => {
+    update: async (o: { id: number; kind?: AssetKind; name?: string; notes?: string; addImageIds?: number[]; addUrls?: string[]; removeRefIds?: string[] }) => {
       const { asset, added } = await call<{ asset: UserAsset; added: number }>("PATCH", o)
       put(asset)
       return { asset, added }

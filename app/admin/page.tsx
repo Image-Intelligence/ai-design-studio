@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import {
   MessageSquare, Wrench, Image as ImageIcon, Sparkles, Tag,
   Users, CreditCard, ListOrdered, FlaskConical, Home, LayoutDashboard,
-  LogOut, ChevronRight, ShieldOff, Loader2, Shield, FileText, HardDrive, Database, Brain, ClipboardCheck, PackageOpen, Telescope, ShieldAlert, ShieldCheck, Film, Radar, Calculator } from "lucide-react"
+  LogOut, ChevronRight, ShieldOff, Loader2, Shield, FileText, HardDrive, Database, Brain, ClipboardCheck, PackageOpen, Telescope, ShieldAlert, ShieldCheck, Film, Radar, Calculator, BadgeCheck } from "lucide-react"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 
 const TOOL_PAGES = [
@@ -14,6 +14,7 @@ const TOOL_PAGES = [
     items: [
       { name: "Content Reports",    description: "CCBill complaints & monthly export",    href: "/admin/content-reports", icon: ShieldAlert, badge: "reports" },
       { name: "Content Filter",     description: "CCBill prompt filter & engine mode",    href: "/admin/content-filter", icon: ShieldCheck },
+      { name: "ID Verification",    description: "Didit uploader checks - who's verified", href: "/admin/id-verifications", icon: BadgeCheck },
       { name: "Audit Accounts",     description: "Merchant auditor bypass accounts",      href: "/admin/audit-accounts", icon: ClipboardCheck },
     ]
   },

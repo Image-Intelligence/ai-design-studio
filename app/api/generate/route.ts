@@ -5,7 +5,7 @@ import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
-import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost } from '@/lib/ticket-pricing'
+import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, clarityUpscaleTicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
@@ -21,6 +21,7 @@ import {
 } from '@/lib/fal-image-models'
 import { jsonPrivate } from '@/lib/api-json'
 import { fetchMedia } from '@/lib/media-fetch'
+import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
@@ -94,6 +95,11 @@ export async function POST(request: Request) {
 
     // Parse request body
     const body = canonicalisePayload(await request.json())
+    // Not ID-verified: reference / source pictures only from the account's OWN
+    // generations (CCBill: uploads need a verified account; admins exempt -
+    // lib/id-verification). Text-only requests carry no links and pass.
+    const idGate = await requireOwnMediaUnlessVerified(user, [body?.referenceImages, body?.upscaleImageUrl])
+    if (idGate) return idGate
     const {
       prompt,
       quality: qualityRaw = '2k',
@@ -385,6 +391,42 @@ export async function POST(request: Request) {
           }
           const upscalePrompt = (prompt || 'masterpiece, best quality, highres').trim()
 
+          // Re-upload source image to FAL storage so FAL can fetch it reliably.
+          // R2 URLs can be inaccessible from FAL's servers; FAL CDN URLs always work.
+          // Pre-shrink so the output stays <=4096px on the long side, at EVERY
+          // factor: FAL clarity-upscaler rejects inputs where upscale_factor *
+          // max(w,h) > ~4096 (only 4x was fitted before, so a big source at 2x
+          // failed). Measured first so the price follows the real output.
+          let falSourceUrl = upscaleImageUrl
+          try {
+            const srcRes = await fetch(upscaleImageUrl, { signal: AbortSignal.timeout(20_000) })
+            if (srcRes.ok) {
+              const contentType = srcRes.headers.get('content-type') || 'image/jpeg'
+              const rawBuffer = Buffer.from(await srcRes.arrayBuffer())
+              let uploadBuffer: Buffer | Uint8Array = rawBuffer
+
+              const sharp = (await import('sharp')).default
+              const meta = await sharp(rawBuffer).metadata()
+              const maxDim = Math.max(meta.width ?? 0, meta.height ?? 0)
+              const maxInputPx = Math.floor(CLARITY_MAX_OUTPUT_PX / upscaleFactor)
+              if (maxDim > maxInputPx) {
+                uploadBuffer = await sharp(rawBuffer)
+                  .resize({ [meta.width! >= meta.height! ? 'width' : 'height']: maxInputPx, withoutEnlargement: true })
+                  .jpeg({ quality: 95 })
+                  .toBuffer()
+                console.log(`[clarity-upscaler] pre-resized source to fit ${upscaleFactor}x limit (was ${maxDim}px, capped at ${maxInputPx}px)`)
+              }
+              // $0.03 per output MP: a big source at 2x costs more than the 7-ticket floor
+              ticketCost = clarityUpscaleTicketCost(upscaleFactor, meta.width, meta.height)
+
+              const srcBlob = new Blob([new Uint8Array(uploadBuffer)], { type: contentType })
+              falSourceUrl = await fal.storage.upload(srcBlob)
+              console.log(`[clarity-upscaler] re-uploaded source to FAL storage: ${falSourceUrl}`)
+            }
+          } catch (uploadErr) {
+            console.warn('[clarity-upscaler] failed to re-upload to FAL storage, using original URL:', uploadErr)
+          }
+
           if (!skipTickets) {
             const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
             if (!reserveResult.ok) {
@@ -401,41 +443,6 @@ export async function POST(request: Request) {
 
           const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
           const webhookUrl = `${process.env.APP_URL || `https://${process.env.VERCEL_URL}`}/api/webhooks/fal`
-
-          // Re-upload source image to FAL storage so FAL can fetch it reliably.
-          // R2 URLs can be inaccessible from FAL's servers; FAL CDN URLs always work.
-          // For 4x upscale: pre-shrink the image so output stays ≤4096px on the long side,
-          // since FAL clarity-upscaler rejects inputs where upscale_factor * max(w,h) > ~4096.
-          const FAL_MAX_OUTPUT_PX = 4096
-          let falSourceUrl = upscaleImageUrl
-          try {
-            const srcRes = await fetch(upscaleImageUrl, { signal: AbortSignal.timeout(20_000) })
-            if (srcRes.ok) {
-              const contentType = srcRes.headers.get('content-type') || 'image/jpeg'
-              const rawBuffer = Buffer.from(await srcRes.arrayBuffer())
-              let uploadBuffer: Buffer | Uint8Array = rawBuffer
-
-              if (upscaleFactor > 2) {
-                const sharp = (await import('sharp')).default
-                const meta = await sharp(rawBuffer).metadata()
-                const maxDim = Math.max(meta.width ?? 0, meta.height ?? 0)
-                const maxInputPx = Math.floor(FAL_MAX_OUTPUT_PX / upscaleFactor)
-                if (maxDim > maxInputPx) {
-                  uploadBuffer = await sharp(rawBuffer)
-                    .resize({ [meta.width! >= meta.height! ? 'width' : 'height']: maxInputPx, withoutEnlargement: true })
-                    .jpeg({ quality: 95 })
-                    .toBuffer()
-                  console.log(`[clarity-upscaler] pre-resized source to fit ${upscaleFactor}x limit (was ${maxDim}px, capped at ${maxInputPx}px)`)
-                }
-              }
-
-              const srcBlob = new Blob([new Uint8Array(uploadBuffer)], { type: contentType })
-              falSourceUrl = await fal.storage.upload(srcBlob)
-              console.log(`[clarity-upscaler] re-uploaded source to FAL storage: ${falSourceUrl}`)
-            }
-          } catch (uploadErr) {
-            console.warn('[clarity-upscaler] failed to re-upload to FAL storage, using original URL:', uploadErr)
-          }
 
           const { request_id } = await fal.queue.submit('fal-ai/clarity-upscaler', {
             input: {

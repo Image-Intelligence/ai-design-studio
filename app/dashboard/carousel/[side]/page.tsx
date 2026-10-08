@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { ArrowLeft, Upload, Trash2, GripVertical, Image as ImageIcon, X } from "lucide-react"
 import { useRouter, useParams } from "next/navigation"
 import Link from "next/link"
+import { IdVerificationHost, gateFileInput } from "@/components/id-verification/IdVerificationGate"
 
 interface CarouselImage {
   id: number
@@ -181,6 +182,8 @@ export default function CarouselCustomizePage() {
 
   return (
     <div className="min-h-screen bg-[#050810] text-white relative overflow-hidden">
+      {/* Carousel pictures are uploads: ID-verified accounts only (CCBill) */}
+      <IdVerificationHost />
       {/* Background effects */}
       <div className="fixed inset-0 bg-[linear-gradient(rgba(0,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,255,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
       <div className="fixed top-20 left-20 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl" />
@@ -207,7 +210,7 @@ export default function CarouselCustomizePage() {
         {/* Upload Section */}
         <div className={`mb-8 p-6 rounded-2xl border-2 border-dashed border-${sideColor}-500/30 bg-slate-900/50 hover:border-${sideColor}-400/50 transition-colors`}>
           <input
-            type="file"
+            type="file" onClick={gateFileInput}
             accept="image/*"
             multiple
             onChange={handleUpload}

@@ -248,7 +248,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   // The 2026-10-03 batch while under test - minus the ones made public
   // 2026-10-04 (BATCH_1003_PUBLIC)
   ...[...BATCH_1003_GENERATORS, ...BATCH_1003_TOOLS].filter(id => !BATCH_1003_PUBLIC.has(id)),
-  // The 2026-10-07 batch (Vidu Q4, H3 Max Relight) while under test
+  // The 2026-10-07 batch while under test - all five public 2026-10-08
+  // (BATCH_1007_PUBLIC), so this spreads nothing until the next batch
   ...[...BATCH_1007_GENERATORS, ...BATCH_1007_TOOLS].filter(id => !BATCH_1007_PUBLIC.has(id)),
   // Pixelcut video: looping public 2026-10-01, background removal 2026-10-02
   // (priced per measured frame)

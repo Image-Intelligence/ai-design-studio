@@ -5,6 +5,7 @@ import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Term
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
+import { IdVerificationHost } from "@/components/id-verification/IdVerificationGate"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
 import { FEATURED_MODELS, TALL_CARDS } from "@/components/home/featured"
 import { CatalogCard, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
@@ -586,6 +587,8 @@ export default function DashboardPage() {
     </div>
 
     <ChatWidget />
+    {/* The guide's picture attachments need an ID-verified account (CCBill) */}
+    <IdVerificationHost />
 
     {/* Change Password Modal */}
     {showPasswordModal && (
