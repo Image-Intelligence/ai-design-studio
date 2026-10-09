@@ -7,7 +7,8 @@
  */
 
 import { useEffect, useRef, useState } from "react"
-import { Sparkles, Undo2, Loader2 } from "lucide-react"
+import { Sparkles, Undo2, Loader2, Ticket } from "lucide-react"
+import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
 
 export type EnhanceAllowance = { used: number; limit: number | null; plan: string; planLabel: string; isAdmin: boolean }
 export type EnhanceRequest = {
@@ -123,17 +124,19 @@ export function EnhanceButton({ text, onReplace, target, modelName, signedIn = t
       <button
         onClick={run}
         disabled={busy}
-        title={`Rewrite what you typed into a full ${target} prompt${modelName ? ` for ${modelName}` : ""}${left !== null ? ` · ${left} left today` : ""}`}
+        title={`Rewrite what you typed into a full ${target} prompt${modelName ? ` for ${modelName}` : ""}${allowance?.isAdmin ? "" : ` · ${ENHANCE_TICKETS} ticket`}${left !== null ? ` · ${left} left today` : ""}`}
         className="h-7 px-2 rounded-lg border border-violet-400/30 bg-violet-500/10 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/20 hover:border-violet-400/50 transition-colors flex items-center gap-1 disabled:opacity-60"
       >
         {busy ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
         <span>Enhance</span>
-        {left !== null && <span className="text-violet-300/70 font-mono">{left}</span>}
+        {/* Its price (lib/ai-text-pricing) - admins aren't charged */}
+        {!allowance?.isAdmin && <span className="flex items-center gap-0.5 text-violet-300/70 font-mono"><Ticket size={9} />{ENHANCE_TICKETS}</span>}
       </button>
       {err && (
         <div className="absolute bottom-full right-0 mb-1.5 w-60 rounded-lg border border-white/10 bg-[#0b0f19] px-2.5 py-1.5 text-[10px] leading-snug text-slate-300 shadow-xl z-50">
           {err}
           {/used today/i.test(err) && <a href="/prompting-studio/subscribe" className="block mt-1 text-violet-300 hover:text-violet-200">See Dev Tier plans →</a>}
+          {/ticket/i.test(err) && <a href="/buy-tickets" className="block mt-1 text-violet-300 hover:text-violet-200">Buy tickets →</a>}
         </div>
       )}
     </div>

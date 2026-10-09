@@ -1,3 +1,4 @@
+import { fitRefsForModel } from '@/lib/fal-image-fit'
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
@@ -168,7 +169,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // GPT Image takes a pixel size rather than a ratio
   const aspect = spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[frame] ?? '1024x1024') : frame
   // The model's other settings, kept to the values it offers (stillSettings)
-  const call = buildFalCall(spec.id, fullPrompt, refs, { aspect, quality }, stillBuildOptions(spec.id, body.options))
+  // Sized for the model where it limits uploads (Ideogram); the record keeps the originals
+  const callRefs = await fitRefsForModel(spec.id, refs)
+  const call = buildFalCall(spec.id, fullPrompt, callRefs, { aspect, quality }, stillBuildOptions(spec.id, body.options))
   if ('error' in call) return jsonPrivate({ error: call.error }, { status: 400 })
   // A non-admin's still runs at the site's public moderation
   publicStillSafety(spec.id, call.input as Record<string, unknown>, user.isAdmin)

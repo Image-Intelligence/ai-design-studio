@@ -1087,6 +1087,7 @@ export default function MyGenerationsPage() {
           onUpdate={async o => { await assetsApi.update({ id: openAsset.id, ...o }) }}
           onDelete={async () => { await assetsApi.remove(openAsset.id); setOpenAssetId(null); flash(`Deleted ${openAsset.name}`) }}
           onAddPictures={() => startPickingFor(openAsset)}
+          onAutoCaption={async () => { await assetsApi.autoCaption(openAsset.id); flash(`Described ${openAsset.refs.length} pictures of ${openAsset.name}`) }}
         />
       )}
       {addToAssetOpen && (

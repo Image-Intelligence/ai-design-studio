@@ -12,11 +12,16 @@ import { useSyncExternalStore } from "react"
 export type StudioOpenRequest = { url: string; refId?: string; title?: string }
 
 let handler: ((r: StudioOpenRequest) => void) | null = null
+// Whether the account is an admin (the editor then offers the site's admin-only
+// image models). Separate from "available" since the studio went public
+// (2026-10-08): the popup used to read availability as admin.
+let adminAccount = false
 const subs = new Set<() => void>()
 
-/** The portal: what opening does (null = the studio is not available to this account). */
-export function registerImageStudio(h: ((r: StudioOpenRequest) => void) | null) {
+/** The portal: what opening does (null = the studio is not available to this account), and whether it's an admin. */
+export function registerImageStudio(h: ((r: StudioOpenRequest) => void) | null, admin = false) {
   handler = h
+  adminAccount = !!h && admin
   subs.forEach(f => f())
 }
 export function openInImageStudio(r: StudioOpenRequest) {
@@ -27,6 +32,14 @@ export function useImageStudioAvailable(): boolean {
   return useSyncExternalStore(
     cb => { subs.add(cb); return () => { subs.delete(cb) } },
     () => handler !== null,
+    () => false,
+  )
+}
+/** Whether the studio was registered for an admin account. */
+export function useImageStudioAdmin(): boolean {
+  return useSyncExternalStore(
+    cb => { subs.add(cb); return () => { subs.delete(cb) } },
+    () => adminAccount,
     () => false,
   )
 }

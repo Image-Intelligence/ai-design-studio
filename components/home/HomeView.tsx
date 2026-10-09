@@ -1,13 +1,13 @@
 "use client"
 
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react"
-import { Image as ImageIcon, Video, Shield, Wand2, Star, Music, Clapperboard, Film, Sparkles, ArrowRight, ArrowLeft, ScanSearch, Images, Search, X, LayoutGrid } from "lucide-react"
+import { Image as ImageIcon, Video, Shield, Wand2, Star, Music, Clapperboard, Film, Sparkles, ArrowRight, ArrowLeft, ScanSearch, Images, Search, X, LayoutGrid, Layers, Brush } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { AudioCardArt } from "./AudioCardArt"
 import { GenerationsCarousel } from "./GenerationsCarousel"
 import { FEATURED_MODELS, TALL_CARDS, FEATURED_COLUMNS, featuredSize, packFeatured, type FeaturedCell } from "./featured"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
-import { SITE_EMPLOYEES, AdminModelBadge, isLabStudio } from "@/components/employees/EmployeesView"
+import { SITE_EMPLOYEES, AdminModelBadge, isLabStudio, STUDIO_MEDIA } from "@/components/employees/EmployeesView"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
 import { STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, BOARD_MODES } from "@/lib/storyboard"
 
@@ -593,8 +593,12 @@ export function HomeView({
   // The Frame Extractor is public (2026-10-07): it has its own panel in the
   // Studios section, for everyone
   const frameTool = SITE_EMPLOYEES.find(e => e.id === "frames" && employeeVisibleTo(e.id, isAdmin))
+  // Image Studio is public too (its panel since 2026-10-08 - it sat in Admin
+  // Tools). Until a card picture is uploaded it shows the Studios page's art.
+  const imageStudio = SITE_EMPLOYEES.find(e => e.id === "image-studio" && employeeVisibleTo(e.id, isAdmin))
+  const imageStudioArt = STUDIO_MEDIA["image-studio"]
   // The Lab's studios (Movie Studio, Face Swap, Character Design) are not listed here
-  const otherStudios = SITE_EMPLOYEES.filter(e => e.id !== "storyboard" && e.id !== "frames" && !isLabStudio(e.id) && employeeVisibleTo(e.id, isAdmin))
+  const otherStudios = SITE_EMPLOYEES.filter(e => e.id !== "storyboard" && e.id !== "frames" && e.id !== "image-studio" && !isLabStudio(e.id) && employeeVisibleTo(e.id, isAdmin))
 
   const audioModels = audioGroups.flatMap(g => g.items.map(name => ({ name, accent: g.accent, group: g.label, admin: false })))
 
@@ -763,7 +767,7 @@ export function HomeView({
         page-wide cycle) beside what it does in three steps. Shows for
         everyone once released; admins only (badged) until then.
       */}
-      {(featuredStudio || frameTool) && (
+      {(featuredStudio || frameTool || imageStudio) && (
         <Section icon={<Wand2 size={17} />} title="Studios" subtitle="Guided workspaces">
           {featuredStudio && (
           <div className="relative isolate overflow-hidden rounded-3xl border border-sky-400/20 bg-gradient-to-br from-sky-500/[0.07] via-white/[0.02] to-amber-400/[0.05] p-3 sm:p-4 lg:p-5">
@@ -867,6 +871,58 @@ export function HomeView({
                   onMediaChange={onCardMediaChange}
                   className="order-1 lg:order-2 w-full max-w-[1000px] justify-self-center"
                 />
+              </div>
+            </div>
+          )}
+
+          {/*
+            IMAGE STUDIO - public (2026-10-08). Layered editing in the browser:
+            its card beside three steps and one button, card on the left so
+            the three panels alternate.
+          */}
+          {imageStudio && (
+            <div className={`relative isolate overflow-hidden rounded-3xl border border-rose-300/20 bg-gradient-to-br from-rose-400/[0.06] via-white/[0.02] to-slate-400/[0.05] p-3 sm:p-4 lg:p-5 ${featuredStudio || frameTool ? "mt-4 sm:mt-5" : ""}`}>
+              <div className="grid gap-4 lg:gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] items-center">
+                <HomeMediaCard
+                  cardKey={`studio:${imageStudio.id}`}
+                  title={imageStudio.name}
+                  subtitle={imageStudio.tagline}
+                  media={cards[`studio:${imageStudio.id}`] ?? (imageStudioArt ? { mediaUrl: imageStudioArt.poster, mediaType: "image" } : undefined)}
+                  altMedia={cards[`studio:${imageStudio.id}::alt`]}
+                  isAdmin={isAdmin}
+                  badge={EMPLOYEE_ADMIN_ONLY[imageStudio.id] ? <AdminModelBadge /> : undefined}
+                  onClick={() => onGoEmployee(imageStudio.id)}
+                  onMediaChange={onCardMediaChange}
+                  className="w-full max-w-[1000px] justify-self-center"
+                />
+                <div className="flex flex-col gap-4 2xl:gap-5 px-1 sm:px-2 lg:py-2 max-w-[720px]">
+                  <div>
+                    <p className="text-[10px] font-mono uppercase tracking-[0.28em] text-rose-200/90">Layers · Masks · AI select</p>
+                    <h3 className="mt-1.5 text-2xl sm:text-3xl xl:text-4xl font-black tracking-tight text-white">{imageStudio.name}</h3>
+                    <p className="mt-2 text-sm xl:text-base leading-relaxed text-slate-300">{imageStudio.blurb}</p>
+                  </div>
+                  <ol className="grid gap-2.5 sm:grid-cols-3 lg:grid-cols-1 2xl:grid-cols-3">
+                    {[
+                      { icon: <Images size={15} />, title: "Start anywhere", text: "A blank canvas, a file from your device, or a picture from your Refs." },
+                      { icon: <Layers size={15} />, title: "Edit in layers", text: "Blend modes, masks, brushes, text, shapes and adjustments you can undo." },
+                      { icon: <Brush size={15} />, title: "Let AI help", text: "Cut anything out in one click, fill a selection, extend or upscale." },
+                    ].map((st, i) => (
+                      <li key={st.title} className="flex gap-3 rounded-xl border border-white/[0.07] bg-black/25 px-3 py-2.5">
+                        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-rose-300/15 text-rose-100">{st.icon}</span>
+                        <span className="min-w-0">
+                          <span className="block text-[13px] font-bold text-white"><span className="text-rose-200/80 font-mono mr-1.5">{i + 1}</span>{st.title}</span>
+                          <span className="block text-[12px] leading-snug text-slate-400">{st.text}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                  <button
+                    onClick={() => onGoEmployee(imageStudio.id)}
+                    className="self-start inline-flex items-center gap-2 rounded-xl bg-rose-300 px-4 py-2.5 text-sm font-bold text-slate-950 shadow-[0_0_24px_-6px_rgba(253,164,175,0.6)] transition-colors hover:bg-rose-200"
+                  >
+                    Open {imageStudio.name} <ArrowRight size={15} />
+                  </button>
+                </div>
               </div>
             </div>
           )}

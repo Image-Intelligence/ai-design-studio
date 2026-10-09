@@ -1,3 +1,4 @@
+import { fitRefsForModel } from '@/lib/fal-image-fit'
 import { generateText, jsonSchema, tool, createGateway, type LanguageModel, type ModelMessage, type ToolSet } from 'ai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
@@ -969,7 +970,7 @@ export async function executeCreateMedia(
         note: `Image generated with ${spec.label} (${out.ticketCost || ticketCost} tickets). It is shown to the user automatically — do not print the raw URL; describe what was created. MANDATORY: evaluate the attached image in your reply (subject, composition, artifacts, prompt adherence) BEFORE any dependent next step.`,
       }
     } else {
-      const call = buildFalCall(spec.id, input.prompt, refs, settings)
+      const call = buildFalCall(spec.id, input.prompt, await fitRefsForModel(spec.id, refs), settings)
       if ('error' in call) {
         await refundGenerationTickets(ctx.user.id, ctx.user.email, ticketCost)
         return { error: call.error }

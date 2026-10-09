@@ -959,7 +959,9 @@ export async function POST(request: Request) {
           // px a side, so a bigger source is shrunk to fit the same way
           // Vectorize takes < 5 MB / 4096 px (2048 re-encoded fits); Multi-Angle
           // bills per output megapixel and takes the source's size (1536 caps it)
-          const maxRefEdge = model.startsWith('qwen-image-3') || model === 'marigold-v2' || model === 'recraft-vectorize' ? 2048
+          // Ideogram refuses a request whose uploads are too big (2026-10-08,
+          // five 2K-4K references): 2048px, and always re-encoded (below)
+          const maxRefEdge = model.startsWith('qwen-image-3') || model === 'marigold-v2' || model === 'recraft-vectorize' || model.startsWith('ideogram') ? 2048
             : model === 'qwen-multi-angle' ? 1536 : 0
           // FLUX 3 Image's edit takes references of at most 4 megapixels (a 2K
           // storyboard still is 4.23); those are scaled down to fit
@@ -972,7 +974,8 @@ export async function POST(request: Request) {
               // run — four Virtual Try-Ons of one outfit pushed the same two
               // photos to fal eight times. fal's storage URLs are stable, so
               // remember them per source URL.
-              const hit = isHttpRef ? falUploadCache.get(ref) : undefined
+              // (Ideogram skips the cache: a cached original may be too heavy for it)
+              const hit = isHttpRef && !model.startsWith('ideogram') ? falUploadCache.get(ref) : undefined
               const hitTooBig = !!(hit?.dims && ((maxRefEdge && Math.max(hit.dims.width, hit.dims.height) > maxRefEdge)
                 || (maxRefPixels && hit.dims.width * hit.dims.height > maxRefPixels)))
               if (hit && !hitTooBig && Date.now() - hit.at < FAL_UPLOAD_TTL_MS) {
@@ -1018,7 +1021,7 @@ export async function POST(request: Request) {
                       + 'appear, and try again.',
                   }, { status: 400 })
                 }
-                if (maxRefEdge && dims && Math.max(dims.width, dims.height) > maxRefEdge) {
+                if (maxRefEdge && dims && (Math.max(dims.width, dims.height) > maxRefEdge || (model.startsWith('ideogram') && imageBuffer.length > 4 * 1024 * 1024))) {
                   uploadBuffer = await sharp(imageBuffer)
                     .resize({ width: maxRefEdge, height: maxRefEdge, fit: 'inside' })
                     .jpeg({ quality: 92 }).toBuffer()

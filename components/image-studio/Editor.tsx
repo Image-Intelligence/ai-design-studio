@@ -87,6 +87,8 @@ export type EditorProps = {
   extraActions?: React.ReactNode
   /** An admin account (the site's admin-only image models are offered) */
   admin?: boolean
+  /** Seeded layers whose pixels are already stored (layer id -> URL under the user's /u/ prefix) - not uploaded again */
+  seedSrc?: Map<string, string>
   /** pixels for layers that have no src yet (a fresh upload), by layer id */
   seed?: Map<string, HTMLCanvasElement>
   refLibrary: { id: string; url: string }[]
@@ -97,7 +99,7 @@ export type EditorProps = {
   onBalanceChange?: (n: number) => void
 }
 
-export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraActions, admin = true, seed, refLibrary, onExit, onSaveToRefs, onReplaceRef, onBalanceChange }: EditorProps) {
+export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraActions, admin = true, seed, seedSrc, refLibrary, onExit, onSaveToRefs, onReplaceRef, onBalanceChange }: EditorProps) {
   // The generative tools' route: the canvas, or "edit" for the popup (lib: [id]/ai)
   const id: number | "edit" = inline ? "edit" : canvasId ?? 0
   // ── document, pixels, selection ──
@@ -262,7 +264,13 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         try {
           if (l.kind === "raster") {
             if (l.src) { rt.pix = await loadToCanvas(l.src, MAX_CANVAS_SIDE * 2); if (!inline || l.src.includes("/u/")) uploaded.current.set(rt.pix, l.src) }
-            else if (seed?.get(l.id)) rt.pix = seed.get(l.id)
+            else if (seed?.get(l.id)) {
+              rt.pix = seed.get(l.id)
+              // Already stored (the popup's picture): Apply points at it rather than
+              // re-uploading it as a 20-30MB PNG - a crop only moves the layer
+              const src = seedSrc?.get(l.id)
+              if (src && rt.pix) uploaded.current.set(rt.pix, src)
+            }
             else rt.pix = newCanvas(l.pw ?? l.w, l.ph ?? l.h)
           }
           if (l.mask) {
@@ -301,13 +309,23 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => { void save() }, 2500)
   }
+  /*
+   * Straight to R2 (a layer can be tens of MB), else through the server. The
+   * bucket only takes browser uploads from localhost:3000 and the live site,
+   * so the studio opened on a LAN / Tailscale address (an iPad or phone on the
+   * dev server) failed every save - "not saved" after a crop, 2026-10-09. The
+   * server route carries the same file (up to the ~4.5MB function cap on Vercel).
+   */
   const putBlob = async (kind: string, blob: Blob): Promise<string> => {
     const r = await fetch("/api/employees/image-studio/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, type: blob.type }) })
     const j = await r.json().catch(() => ({}))
     if (!r.ok || !j.uploadUrl) throw new Error(j.error || "Upload failed")
-    const put = await fetch(j.uploadUrl, { method: "PUT", headers: { "Content-Type": blob.type }, body: blob })
-    if (!put.ok) throw new Error(`Upload failed (${put.status})`)
-    return j.url as string
+    const put = await fetch(j.uploadUrl, { method: "PUT", headers: { "Content-Type": blob.type }, body: blob }).catch(() => null)
+    if (put?.ok) return j.url as string
+    const via = await fetch(`/api/employees/image-studio/upload?kind=${encodeURIComponent(kind)}`, { method: "POST", headers: { "Content-Type": blob.type || "image/png" }, body: blob }).catch(() => null)
+    const vj = via ? await via.json().catch(() => ({})) : {}
+    if (via?.ok && vj.url) return vj.url as string
+    throw new Error(via?.status === 413 ? "This layer is too big to save from here" : vj.error || `Upload failed (${put?.status ?? via?.status ?? "network"})`)
   }
   const urlFor = async (c: HTMLCanvasElement, kind: string) => {
     const have = uploaded.current.get(c)
@@ -1686,7 +1704,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         const content = cur ? layerContent(cur, rtOf(cur.id)) : null
         if (!cur || !content) throw new Error("Pick a layer to edit")
         const image = await putBlob("ai", await toBlob(fitWithin(content, 4096), "image/png"))
-        const j = await postGen({ op: "edit", image, prompt: req.prompt, model: req.model, quality: req.quality, aspect: editAspect(req.model, cur.w, cur.h) })
+        const j = await postGen({ op: "edit", image, prompt: req.prompt, model: req.model, quality: req.quality, aspect: editAspect(req.model, cur.w, cur.h), options: req.options })
         let pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
         // The edit takes the original's exact place. A model that returned another shape (some
         // have no size for a 21:9 frame, or follow the reference's own) is cropped to it, centred
@@ -1719,7 +1737,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
           const c = cur ? layerContent(cur, rtOf(cur.id)) : null
           if (c) image = await putBlob("ai", await toBlob(fitWithin(c, 4096), "image/png"))
         }
-        const j = await postGen({ op: "generate", prompt: req.prompt, model: req.model, quality: req.quality, aspect: req.aspect, ...(image ? { image } : {}) })
+        const j = await postGen({ op: "generate", prompt: req.prompt, model: req.model, quality: req.quality, aspect: req.aspect, options: req.options, ...(image ? { image } : {}) })
         const pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
         uploaded.current.set(pix, j.url)
         // Fitted to the canvas, centred

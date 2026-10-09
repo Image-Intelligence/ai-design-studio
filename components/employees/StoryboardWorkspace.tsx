@@ -7,8 +7,11 @@ import {
   Download, CircleDashed, CircleCheck, CircleX, MinusCircle, Ticket, SquareCheck, Square,
   Megaphone, Package, UserRound, Shirt, Music, Smartphone, MapPin, Lightbulb, ChevronDown, Search, Minus,
   ShoppingBag, Layers, ChevronUp, Scissors, ScanFace, Wand2, GalleryHorizontalEnd, Upload, Globe,
-  type LucideIcon,
+  Pencil, type LucideIcon,
 } from "lucide-react"
+import { storyboardDraftTickets } from "@/lib/ai-text-pricing"
+import { BoardToAsset } from "@/components/employees/BoardToAsset"
+import { SceneRefs } from "@/components/employees/SceneRefs"
 import { StillThumbs, AddStillThumbs, thumbFrom, useThumb, mergeThumbs } from "@/components/employees/still-thumbs"
 import { videoTicketCost } from "@/lib/ticket-pricing"
 import { Dropdown } from "@/components/employees/Dropdown"
@@ -171,6 +174,9 @@ export function StoryboardWorkspace({
   const [, setTick] = useState(0) // re-renders the "shooting 0:42" timers
   const [finalCut, setFinalCut] = useState<FinalCutState>({ job: null, versions: [] })
   const [fcOpen, setFcOpen] = useState(false)
+  // "Make an asset" from the board's stills (components/employees/BoardToAsset)
+  const [assetFromBoard, setAssetFromBoard] = useState(false)
+  const [boardNote, setBoardNote] = useState<string | null>(null)
   // The Stills cut panel (null = closed; "" = the whole board, else a scene id)
   const [stillsCut, setStillsCut] = useState<string | null>(null)
   // The shot whose still is open in the Image Studio popup
@@ -336,6 +342,25 @@ export function StoryboardWorkspace({
     shots.splice(i + 1, 0, newShot({ ...b.shots[i], id: undefined }))
     return { ...b, shots }
   })
+  /**
+   * A blank shot right before or after shot i - in the same scene, carrying its
+   * models (the board's list is in scene order, so a neighbour's place is the
+   * right place). It flashes so it's easy to find.
+   */
+  const insertShot = (i: number, side: "before" | "after") => {
+    const b = boardRef.current
+    if (!b || b.shots.length >= MAX_SHOTS) return
+    const at = b.shots[i]
+    const fresh = newShot({ imageModel: at?.imageModel, videoModel: at?.videoModel, sceneId: at?.sceneId })
+    update(cur => {
+      const shots = [...cur.shots]
+      const k = cur.shots.findIndex(s => s.id === at?.id)
+      shots.splice(k < 0 ? shots.length : side === "before" ? k : k + 1, 0, fresh)
+      return { ...cur, shots }
+    })
+    setFlashIds([fresh.id])
+    setTimeout(() => setFlashIds([]), 3000)
+  }
   const removeShot = (id: string) => update(b => ({ ...b, shots: b.shots.filter(s => s.id !== id) }))
 
   // ── stills ──
@@ -790,8 +815,18 @@ export function StoryboardWorkspace({
 
   const seconds = board ? totalSeconds(board.shots) : 0
   const stillCount = board ? board.shots.filter(s => s.stillUrl).length : 0
-  const missing = board ? board.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim()).length : 0
-  const toShoot = board ? board.shots.filter(s => shootable(s) && s.video?.status !== "done") : []
+  /*
+   * What the bulk buttons count leaves out the work already under way: a
+   * still being made one at a time (or queued, here or on the server), a shot
+   * whose shoot request is still starting. They counted it before - "Make 10"
+   * with 2 already making - and Shoot / the Final Cut estimate could send a
+   * starting shot a second time.
+   */
+  const stillBusy = (s: StoryboardShot) => !!busy[s.id] || makingRef.current.has(s.id) || queuedRef.current.has(s.id) || !!liveStillJob(s.stillJob)
+  const needsStill = (s: StoryboardShot) => !s.stillUrl && !!(s.imagePrompt || s.description).trim()
+  const missing = board ? board.shots.filter(s => needsStill(s) && !stillBusy(s)).length : 0
+  const stillsMaking = board ? board.shots.filter(s => needsStill(s) && stillBusy(s)).length : 0
+  const toShoot = board ? board.shots.filter(s => shootable(s) && s.video?.status !== "done" && !busy[s.id]) : []
   const shootTickets = toShoot.reduce((a, s) => a + shotTickets(s, shootRes), 0)
   const shotCountDone = board ? board.shots.filter(s => s.video?.status === "done").length : 0
   // The Final Cut's own cost on top of any shots it has to shoot: the edit plan
@@ -800,7 +835,7 @@ export function StoryboardWorkspace({
   const fcSceneDoc = board && fcScene ? board.scenes.find(c => c.id === fcScene) ?? null : null
   const fcShots = board ? (fcSceneDoc ? sceneShots(board.shots, fcSceneDoc.id) : board.shots) : []
   const fcSeconds = totalSeconds(fcShots)
-  const fcShootUsd = fcShots.filter(s => !(s.video?.status === "done" && s.video.url) && s.video?.status !== "rendering").reduce((a, s) => a + shotTickets(s, shootRes), 0) * 0.04
+  const fcShootUsd = fcShots.filter(s => !(s.video?.status === "done" && s.video.url) && s.video?.status !== "rendering" && !busy[s.id]).reduce((a, s) => a + shotTickets(s, shootRes), 0) * 0.04
 
   // The same in tickets: shots at their ticket price, the rest at the $0.04 of
   // fal cost a ticket covers (lib/ticket-pricing's margin rule)
@@ -817,7 +852,7 @@ export function StoryboardWorkspace({
   const aspectCss = ASPECT_CSS[board?.aspect ?? "16:9"] ?? "16/9"
   const portrait = board ? ["9:16", "3:4"].includes(board.aspect) : false
   // Stills: what making the missing ones costs (each at its own model + quality)
-  const missingShots = board ? board.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim()) : []
+  const missingShots = board ? board.shots.filter(s => needsStill(s) && !stillBusy(s)) : []
   // What one still costs: its model, quality and frame, with the refs its scene sends
   const stillPrice = (s: StoryboardShot) => board ? stillTickets(s.imageModel, s.imageQuality, s.aspect || board.aspect, s.imageOptions, stillRefUrls(board, s, stillModelSpec(s.imageModel).maxRefs).length) : 0
   const missingTickets = missingShots.reduce((t, s) => t + stillPrice(s), 0)
@@ -857,8 +892,11 @@ export function StoryboardWorkspace({
       <span className="truncate">{o.label}</span>
     </BrandButton>
   )
+  // What a Draft-with-AI job costs (lib/ai-text-pricing - the route charges the same)
+  const pickedN = board ? (selected.filter(id => board.shots.some(s => s.id === id)).length || board.shots.length) : 0
+  const draftPrice = (mode: DraftMode) => mode === "extend" ? storyboardDraftTickets("extend", Number(extendCount) || 2) : storyboardDraftTickets(mode, pickedN)
   const draftBtn = (mode: DraftMode, label: string, title: string) =>
-    brandBtn({ onClick: () => draft(mode), disabled: !!drafting, busy: drafting === mode, label, title, className: "flex-1 min-w-0" })
+    brandBtn({ onClick: () => draft(mode), disabled: !!drafting, busy: drafting === mode, label: <>{label}<TicketChip n={draftPrice(mode)} /></>, title: `${title} - ${draftPrice(mode)} ticket${draftPrice(mode) === 1 ? "" : "s"}`, className: "flex-1 min-w-0" })
   const shotsN = Number(shotCount) || 1
   const lenRange = runtimeRange(shotsN)
   const targetN = Number(targetLen) || 0
@@ -913,7 +951,7 @@ export function StoryboardWorkspace({
         primary: true,
         className: "w-full",
         size: "md",
-        label: confirmReplace ? `Replace ${board.shots.length} shots?` : board.shots.length ? "Draft new board" : "Draft the board",
+        label: <>{confirmReplace ? `Replace ${board.shots.length} shots?` : board.shots.length ? "Draft new board" : "Draft the board"}<TicketChip n={storyboardDraftTickets("replace", outfitMode ? Math.min(36, shotsN * Math.max(1, outfitAssets.length)) : shotsN, { withImages: outfitMode && outfitAssets.length > 0 })} /></>,
       })}
     </div>
   )
@@ -1127,7 +1165,7 @@ export function StoryboardWorkspace({
             <div className="flex items-stretch gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden -mx-3 px-3 sm:mx-0 sm:px-0 pb-0.5">
               <Step n={1} label="Stills" value={`${stillCount}/${n}`} done={stillsDone} next={nextStep === "stills"}>
                 <BrandButton onClick={() => generateMissing()} disabled={batch || missing === 0} busy={batch} primary={nextStep === "stills"} size="xs">
-                  {missing ? `Make ${missing}` : "All made"}
+                  {missing ? `Make ${missing}` : stillsMaking ? `Making ${stillsMaking}` : "All made"}
                   {missing > 0 && <Tix n={missingTickets} className="text-slate-300" />}
                 </BrandButton>
               </Step>
@@ -1178,8 +1216,27 @@ export function StoryboardWorkspace({
                 <GalleryHorizontalEnd size={14} />
                 <span className="text-[9.5px] font-semibold whitespace-nowrap">Stills cut</span>
               </button>
+              <button
+                onClick={() => setAssetFromBoard(true)}
+                disabled={stillCount === 0}
+                title="Turn the board's stills into a saved asset (My Assets) - pick the shots scene by scene; each picture is described from its shot"
+                className="silver-edge shrink-0 flex flex-col items-center justify-center gap-0.5 px-3 rounded-xl text-slate-200 hover:text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <Package size={14} />
+                <span className="text-[9.5px] font-semibold whitespace-nowrap">Make asset</span>
+              </button>
             </div>
           </div>
+
+          {boardNote && (
+            <div className="mx-3 sm:mx-4 mt-2 flex items-center gap-2 rounded-lg border border-emerald-400/25 bg-emerald-400/[0.06] px-3 py-1.5 text-[11.5px] text-emerald-100">
+              <span className="flex-1">{boardNote}</span>
+              <button onClick={() => setBoardNote(null)} className="text-emerald-200/60 hover:text-white" aria-label="Dismiss"><X size={12} /></button>
+            </div>
+          )}
+          {assetFromBoard && board && (
+            <BoardToAsset board={board} onClose={() => setAssetFromBoard(false)} onSaved={msg => { setBoardNote(msg); setTimeout(() => setBoardNote(n => (n === msg ? null : n)), 8000) }} />
+          )}
 
           {/* Phones and tablets: ONE scroll - the story panel, then the whole
               board. Two stacked scroll panes inside a fixed-height page left the
@@ -1224,6 +1281,8 @@ export function StoryboardWorkspace({
                 refLibrary={refLibrary}
                 boardStills={boardStills}
               />
+              {/* the board's own scenes, switchable as references for the AI draft */}
+              <SceneRefs scenes={board.scenes} shots={board.shots} onChange={fn => update(b => ({ ...b, scenes: fn(b.scenes) }))} />
               </section>
 
               {n > 0 && draftBox}
@@ -1273,6 +1332,8 @@ export function StoryboardWorkspace({
                       shootTickets={shotTickets(shot, shootRes)}
                       onMove={d => moveShot(i, i + d)}
                       onDuplicate={() => duplicateShot(i)}
+                      onInsert={side => insertShot(i, side)}
+                      canInsert={board.shots.length < MAX_SHOTS}
                       onRemove={() => removeShot(shot.id)}
                       onPlay={() => setAnimatic(i)}
                       stillCost={stillPrice(shot)}
@@ -1416,8 +1477,8 @@ export function StoryboardWorkspace({
                       if (paged && k !== pageIdx) return null
                       const own = sceneShots(board.shots, c.id)
                       const folded = collapsed.includes(c.id)
-                      const missingHere = own.filter(x => !x.stillUrl && (x.imagePrompt || x.description).trim())
-                      const shootHere = own.filter(x => shootable(x) && x.video?.status !== "done")
+                      const missingHere = own.filter(x => needsStill(x) && !stillBusy(x))
+                      const shootHere = own.filter(x => shootable(x) && x.video?.status !== "done" && !busy[x.id])
                       return (
                         <section key={c.id} className="mb-6">
                           <SceneHeader
@@ -1988,7 +2049,7 @@ function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction }: 
  */
 function ShotCard({
   index, label, nextLabel, shot, aspectCss, busy, queued = false, error, last, dragging, shootTickets,
-  onChange, onGenerate, onShoot, onMove, onDuplicate, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef,
+  onChange, onGenerate, onShoot, onMove, onDuplicate, onInsert, canInsert, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef,
   stillCost, refsInfo, assets, onAddToAsset, selecting, picked, onPick, flash, onFocus, onOpen, opening, onAiEdit, onPickVideo,
   refList, refsAuto, onRefsChange, refLibrary, boardStills, editChoices, editFrom, boardAspect, onEditInStudio, isAdmin,
 }: {
@@ -2014,6 +2075,9 @@ function ShotCard({
   shootTickets: number
   onMove: (d: -1 | 1) => void
   onDuplicate: () => void
+  /** A new blank shot right before / after this one, in its scene */
+  onInsert: (side: "before" | "after") => void
+  canInsert: boolean
   onRemove: () => void
   onPlay: () => void
   onDragStart: () => void
@@ -2296,6 +2360,15 @@ function ShotCard({
                 <span>{refState === "added" ? "Added" : refState === "full" ? "Refs full" : refState === "failed" ? "Failed" : inRefs ? "In refs" : "Ref"}</span>
               </button>
             )}
+            {/* Edit the still itself in the Image Studio editor (the same popup as
+                editing a reference in the portal) - the result comes back as this
+                shot's new still. Clicking the picture still opens it full size. */}
+            {shot.stillUrl && (
+              <button onClick={onEditInStudio} title="Edit this still in the Image Studio editor - crop, paint, AI fill, layers..."
+                className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/70 border border-white/20 text-[10px] font-semibold text-slate-100 hover:bg-white/15 hover:border-white/40">
+                <Pencil size={10} /><span>Edit</span>
+              </button>
+            )}
             {shot.stillUrl && (
               <button onClick={onPlay} title="Play the animatic from here" className="ml-auto w-6 h-6 rounded-full bg-black/70 border border-white/15 flex items-center justify-center text-white">
                 <Play size={10} />
@@ -2343,6 +2416,9 @@ function ShotCard({
             <span className="truncate">{shot.videoModel}</span>
           </span>
           <span className="ml-auto" />
+          <IconBtn title="Add a new shot before this one" onClick={() => onInsert("before")} disabled={!canInsert}><span className="flex items-center"><Plus size={11} /><ChevronLeft size={10} className="-ml-0.5" /></span></IconBtn>
+          <IconBtn title="Add a new shot after this one" onClick={() => onInsert("after")} disabled={!canInsert}><span className="flex items-center"><ChevronRight size={10} className="-mr-0.5" /><Plus size={11} /></span></IconBtn>
+          <span className="mx-0.5 h-4 w-px bg-white/10" />
           <IconBtn title="Move earlier" onClick={() => onMove(-1)} disabled={index === 0}><ChevronLeft size={13} /></IconBtn>
           <IconBtn title="Move later" onClick={() => onMove(1)} disabled={last}><ChevronRight size={13} /></IconBtn>
           <IconBtn title="Duplicate" onClick={onDuplicate}><Copy size={12} /></IconBtn>
@@ -2361,6 +2437,17 @@ function ShotCard({
               max={refsInfo.max}
               model={imageModelLabel(shot.imageModel)}
               onChange={onRefsChange}
+              // The pictures stillRefUrls sends ahead of the list - shown first, numbered
+              lead={[
+                ...(shot.beforeUrl ? [{ url: shot.beforeUrl, label: "Before", hint: "The before picture - goes first (set in Edit & frame)", kind: "before" as const }] : []),
+                ...(editFrom?.stillUrl ? [{
+                  url: editFrom.stillUrl,
+                  label: `Edits ${editChoices.find(o => o.value === editFrom.id)?.label.split(" · ")[0] ?? "a shot"}`,
+                  hint: `The still of "${editFrom.title || "an earlier shot"}" - this shot is an edit of it, so it goes first (set in Edit & frame)`,
+                  kind: "edit" as const,
+                }] : []),
+              ]}
+              onClearLead={k => onChange(k === "edit" ? { editOf: undefined } : { beforeUrl: null })}
             />
             {/* Edit from an earlier still, the still's own frame, a before picture, the Stills cut caption */}
             <div className="silver-edge rounded-xl p-2 space-y-2">
@@ -2748,7 +2835,7 @@ function SceneHeader({
               <div className="flex items-center gap-1.5">
                 <NumberStepper value={Math.min(count, Math.max(1, room))} min={1} max={Math.max(1, Math.min(MAX_DRAFT_SHOTS, room))} prefix="+" onChange={setCount} className="w-[104px] shrink-0" />
                 <BrandButton onClick={runDraft} disabled={draftLocked || (!direction.trim() && !scene.summary && !shots.length)} busy={drafting} primary size="xs" className="flex-1">
-                  {drafting ? "Drafting…" : `Draft ${Math.min(count, Math.max(1, room))} shot${count === 1 ? "" : "s"}`}
+                  {drafting ? "Drafting…" : <>{`Draft ${Math.min(count, Math.max(1, room))} shot${count === 1 ? "" : "s"}`}<TicketChip n={storyboardDraftTickets("scene", Math.min(count, Math.max(1, room)))} /></>}
                 </BrandButton>
               </div>
               <p className="text-[9.5px] text-slate-500 leading-snug">Written for this scene - its summary, its cast and the shots around it. Free (no tickets).</p>
@@ -2880,5 +2967,14 @@ function Animatic({ board, start, aspectCss, onClose }: { board: StoryboardDoc; 
         </div>
       </div>
     </div>
+  )
+}
+
+/** A Draft-with-AI button's ticket price, after its label. */
+function TicketChip({ n }: { n: number }) {
+  return (
+    <span className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-md bg-black/25 px-1 py-px align-middle font-mono text-[10px] opacity-80">
+      <Ticket size={9} />{n}
+    </span>
   )
 }

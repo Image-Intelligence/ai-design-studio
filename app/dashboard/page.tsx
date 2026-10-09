@@ -11,6 +11,7 @@ import { FEATURED_MODELS, TALL_CARDS } from "@/components/home/featured"
 import { CatalogCard, type CatalogMedia } from "@/components/dashboard/CatalogStrip"
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { GenerationsCarousel } from "@/components/home/GenerationsCarousel"
+import { StudioLaunchers } from "@/components/dashboard/StudioLaunchers"
 
 interface UserData {
   id: number
@@ -307,9 +308,10 @@ export default function DashboardPage() {
           Your library - the home page's living masonry wall (drifting columns,
           new work flowing in, hover to hide or start a slideshow). It replaces
           a fixed strip of thumbnails that wrapped 12 into rows of 10 and 2. On
-          wide screens it takes all the height the page has left over.
+          wide screens it shares the column's height with the launchers and the
+          studios (2026-10-08: it used to take all of it, and dwarfed them).
         */}
-        <section className="xl:flex-1 xl:min-h-[320px] flex flex-col gap-2 min-w-0">
+        <section className="xl:flex-[0.8] xl:min-h-[200px] flex flex-col gap-2 min-w-0">
           {/* Heading, with a proper button into the full library (it was a small text link). */}
           <div className="shrink-0 flex items-center justify-between gap-3 px-0.5">
             <div className="flex items-center gap-2 xl:gap-2.5 min-w-0">
@@ -350,8 +352,10 @@ export default function DashboardPage() {
             side from md up, stacked on phones. The Studio card never gets
             narrower than 420px: at a third of the column (~300px on an iPad in
             landscape) its title broke over three lines and its tags stacked,
-            stretching the row well past its 200px. */}
-        <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(420px,1fr)] xl:h-[200px] 2xl:h-[220px] gap-2.5 sm:gap-3 xl:gap-4">
+            stretching the row well past its 200px. From xl the row takes the
+            biggest share of the column's height (the Catalog's frames grow
+            with it), no less than 210px. */}
+        <div className="shrink-0 xl:shrink grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(420px,1fr)] xl:flex-1 xl:min-h-[210px] gap-2.5 sm:gap-3 xl:gap-4">
 
         {/* Catalog — opens the studio's Home page: every model and studio in one place. */}
         <Link href="/" onClick={() => openStudioAt("home")} className="block group">
@@ -378,10 +382,10 @@ export default function DashboardPage() {
               {/* Synced site logo */}
               <SiteLogoBox size={48} rounded={14} />
               <div className="flex-1 min-w-0">
-                <p className="text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">
+                <p className="text-base xl:text-xl 2xl:text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">
                   AI Design Studio
                 </p>
-                <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
+                <p className="text-[11px] sm:text-xs 2xl:text-sm text-slate-400 leading-snug line-clamp-2 xl:line-clamp-3 mt-0.5 xl:mt-1 [@media(max-height:460px)]:hidden">
                   Your full creative workspace — generate images and videos with 20+ AI models, guided by your reference images.
                 </p>
                 {/* The tags only where the card is wide enough to hold them -
@@ -406,6 +410,10 @@ export default function DashboardPage() {
           </div>
         </Link>
         </div>
+
+        {/* The live studios - Image Studio, Storyboard Studio, Frame Extractor -
+            as on the home page, each opening straight on that studio. */}
+        <StudioLaunchers isAdmin={isAdmin} className="shrink-0 xl:shrink xl:flex-[0.85] xl:min-h-[170px]" />
 
         {/* Content policy notice (CCBill) - the same one as on the Home page.
             Here below the launchers on narrower screens; on wide ones it sits

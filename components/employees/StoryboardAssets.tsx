@@ -4,9 +4,11 @@ import { useCallback, useContext, useEffect, useRef, useState } from "react"
 import {
   Plus, X, Check, Loader2, Upload, Images, Trash2, ChevronDown, ChevronRight,
   UserRound, PawPrint, Car, Box, Shirt, MapPin, Landmark, Mountain, Palette, Shapes, Film,
-  BookmarkPlus, BookmarkCheck, Library,
+  BookmarkPlus, BookmarkCheck, Library, MessageSquareText, Sparkles, Ticket,
   type LucideIcon,
 } from "lucide-react"
+import { createPortal } from "react-dom"
+import { assetCaptionTickets } from "@/lib/ai-text-pricing"
 import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
@@ -16,6 +18,7 @@ import {
   type AssetKind, type StoryAsset, type ShotRef,
 } from "@/lib/storyboard"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
+import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 
 /**
  * Storyboard Studio - the board's assets.
@@ -50,7 +53,7 @@ export async function uploadImage(file: File): Promise<string> {
 }
 
 /** An asset saved to the account (My Generations' Assets) - GET /api/user/assets. */
-export type LibraryAsset = { id: number; kind: AssetKind; name: string; notes: string; refs: { id: string; url: string; thumb?: string | null }[] }
+export type LibraryAsset = { id: number; kind: AssetKind; name: string; notes: string; refs: { id: string; url: string; thumb?: string | null; caption?: string; tags?: string[] }[] }
 
 /** The account's saved assets, loaded once per panel and refreshed after a save. */
 function useLibrary() {
@@ -102,6 +105,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
   const library = useLibrary()
   const [libOpen, setLibOpen] = useState(false)
   const [saving, setSaving] = useState<string | null>(null) // board asset id
+  const [describing, setDescribing] = useState<string | null>(null) // board asset id
 
   const refCount = assets.reduce((n, a) => n + a.refs.length, 0)
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(n => (n === msg ? null : n)), 3500) }
@@ -126,9 +130,11 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
     setSaving(a.id)
     try {
       const urls = a.refs.map(r => r.url)
-      const fresh = () => fetch("/api/user/assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: a.kind, name: a.name, notes: a.notes, urls }) })
+      // Each picture with its description + tags (they go with it into My Assets)
+      const refs = a.refs.map(r => ({ url: r.url, caption: r.caption, tags: r.tags }))
+      const fresh = () => fetch("/api/user/assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: a.kind, name: a.name, notes: a.notes, refs }) })
       let r = a.libraryId
-        ? await fetch("/api/user/assets", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.libraryId, kind: a.kind, name: a.name, notes: a.notes, refs: urls.map(url => ({ url })) }) })
+        ? await fetch("/api/user/assets", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.libraryId, kind: a.kind, name: a.name, notes: a.notes, refs }) })
         : await fresh()
       // Deleted from My Generations since: save it as a new one
       if (r.status === 404 && a.libraryId) r = await fresh()
@@ -155,7 +161,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
       ...newAsset(l.kind, l.name),
       notes: l.notes,
       libraryId: l.id,
-      refs: l.refs.slice(0, MAX_ASSET_REFS).map(r => newAssetRef(r.url, false)),
+      refs: l.refs.slice(0, MAX_ASSET_REFS).map(r => ({ ...newAssetRef(r.url, false), ...(r.caption ? { caption: r.caption } : {}), ...(r.tags?.length ? { tags: r.tags } : {}) })),
     }))
     if (!fresh.length) return
     learnThumbs(picked.flatMap(l => l.refs))
@@ -199,6 +205,10 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
       </p>
       {notice && <p className="text-[10.5px] text-amber-300 leading-snug">{notice}</p>}
 
+      {describing && (() => {
+        const a = assets.find(x => x.id === describing)
+        return a ? <DescribeAsset asset={a} thumb={thumb} onClose={() => setDescribing(null)} onChange={next => patch(a.id, () => next)} /> : null
+      })()}
       {assets.map(a => {
         const Icon = ASSET_ICONS[a.kind]
         const isOpen = open[a.id] ?? true
@@ -224,6 +234,13 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
               >
                 {saving === a.id ? <Loader2 size={11} className="animate-spin" /> : a.libraryId ? <BookmarkCheck size={11} /> : <BookmarkPlus size={11} />}
               </button>
+              {a.refs.length > 0 && (
+                <button onClick={() => setDescribing(a.id)}
+                  title={`Describe each picture so the AI draft picks the right ones per shot (${a.refs.filter(r => r.caption).length}/${a.refs.length} described)`}
+                  className={`shrink-0 ${a.refs.some(r => r.caption) ? "text-emerald-300/80 hover:text-emerald-200" : "text-slate-500 hover:text-white"}`}>
+                  <MessageSquareText size={11} />
+                </button>
+              )}
               <button onClick={() => onChange(list => list.filter(x => x.id !== a.id))} title="Delete this asset (the images stay in your library)" className="text-slate-600 hover:text-red-400 shrink-0"><Trash2 size={11} /></button>
             </div>
             {isOpen && (
@@ -235,7 +252,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
                         href={r.url}
                         target="_blank"
                         rel="noopener"
-                        title={`${a.name} - reference ${k + 1}`}
+                        title={`${a.name} #${k + 1}${r.caption ? ` - ${r.caption}` : ""}`}
                         className="relative block w-full aspect-square rounded-md overflow-hidden border border-white/10 hover:border-white/40 transition-colors"
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -525,9 +542,17 @@ export function AddToAssetMenu({ assets, onPick, onNew, onLibrary, onClose }: {
  * (the AI draft's pick, else the scene's cast, else the board's switched-on
  * refs); any change here makes it the shot's own, and "Reset" hands it back.
  */
-export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max, model, onChange }: {
+export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max, model, onChange, lead = [], onClearLead }: {
   /** The list shown: the shot's own, or the automatic one (all on). */
   refs: ShotRef[]
+  /**
+   * What goes AHEAD of the list (2026-10-09): the before picture and the
+   * still this shot edits - lib/storyboard stillRefUrls sends them as Image 1
+   * (and 2). They were sent but never shown here, so a shot "used references
+   * it didn't list". Set in Edit & frame; the x here clears them.
+   */
+  lead?: { url: string; label: string; hint: string; kind: "before" | "edit" }[]
+  onClearLead?: (kind: "before" | "edit") => void
   /** True when the shot has no list of its own (it follows its scene / the board). */
   auto: boolean
   assets: StoryAsset[]
@@ -541,11 +566,36 @@ export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max
 }) {
   const [adding, setAdding] = useState(false)
   const [picker, setPicker] = useState(false)
+  // The board-asset picture picker, opened on this asset (or the first)
+  const [assetPick, setAssetPick] = useState<string | null>(null)
+  const [dragId, setDragId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const sent = new Set(pickRefs(refs.filter(r => r.on), max).map(r => r.id))
+  const thumb = useThumb()
+  /*
+   * Exactly what stillRefUrls sends, in its order: the lead pictures, then the
+   * switched-on refs (not repeating a lead one) up to what the model takes
+   * after them. Each sent picture shows its number - "Image 3" is the one a
+   * prompt calls "the third reference image".
+   */
+  const leadShown = max > 0 ? lead.slice(0, max) : []
+  const leadKeys = new Set(leadShown.map(l => stillKey(l.url)))
+  const sentList = pickRefs(refs.filter(r => r.on && !leadKeys.has(stillKey(r.url))), Math.max(0, max - leadShown.length))
+  const imageNo = new Map(sentList.map((r, i) => [r.id, leadShown.length + i + 1]))
+  const sent = new Set(sentList.map(r => r.id))
   const onCount = refs.filter(r => r.on).length
+  const goingCount = leadShown.length + sentList.length
+  /** Drag a tile onto another to put it there (the order is the order the model sees them). */
+  const dropOn = (targetId: string) => {
+    if (!dragId || dragId === targetId) return
+    const from = refs.findIndex(r => r.id === dragId), to = refs.findIndex(r => r.id === targetId)
+    if (from < 0 || to < 0) return
+    const next = [...refs]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    onChange(next)
+  }
   const have = new Set(refs.map(r => stillKey(r.url)))
   const rid = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `r${Date.now()}${Math.random().toString(36).slice(2, 8)}`)
   const add = (items: { url: string; assetId?: string }[]) => {
@@ -584,22 +634,50 @@ export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max
       <p className="text-[9.5px] leading-snug text-slate-500">
         {max === 0
           ? `${model} takes no references - none will be sent.`
-          : `${Math.min(onCount, max)} of ${onCount} switched on will be sent · ${model} takes ${max}. Tap one to switch it.`}
+          : `${goingCount} picture${goingCount === 1 ? "" : "s"} go with this still, numbered in the order ${model} sees them (it takes ${max}). Tap one to switch it, drag to reorder.`}
       </p>
       <div className="flex flex-wrap gap-1.5">
+        {/* The before picture / the still it edits - always first */}
+        {leadShown.map((l, i) => (
+          <div key={`lead-${l.kind}`} className="relative group/ref">
+            <div title={l.hint} className="relative block w-14 h-14 rounded-lg overflow-hidden border-2 border-amber-300/80">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={thumb(l.url) || l.url} alt="" className="w-full h-full object-cover" />
+              <span className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-0.5 rounded-full bg-amber-300 text-[8.5px] font-bold leading-[14px] text-center text-black">{i + 1}</span>
+              <span className="absolute inset-x-0 bottom-0 px-0.5 bg-black/75 text-[8px] font-semibold text-amber-100 truncate">{l.label}</span>
+            </div>
+            {onClearLead && (
+              <button
+                onClick={() => onClearLead(l.kind)}
+                title={l.kind === "edit" ? "Stop making this shot as an edit of that still" : "Take the before picture off"}
+                className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-black border border-white/20 text-slate-300 hover:text-white items-center justify-center hidden group-hover/ref:flex"
+              >
+                <X size={9} />
+              </button>
+            )}
+          </div>
+        ))}
         {refs.map(r => {
           const goes = sent.has(r.id)
+          const repeat = r.on && leadKeys.has(stillKey(r.url))
           const name = nameOf(r.assetId)
+          const n = imageNo.get(r.id)
           return (
-            <div key={r.id} className="relative group/ref">
+            <div key={r.id} className={`relative group/ref ${dragId === r.id ? "opacity-40" : ""}`}
+              draggable={!auto || refs.length > 1}
+              onDragStart={e => { setDragId(r.id); e.dataTransfer.effectAllowed = "move" }}
+              onDragEnd={() => setDragId(null)}
+              onDragOver={e => { if (dragId) e.preventDefault() }}
+              onDrop={e => { e.preventDefault(); dropOn(r.id); setDragId(null) }}
+            >
               <button
                 onClick={() => onChange(refs.map(x => (x.id === r.id ? { ...x, on: !x.on } : x)))}
-                title={`${name ? `${name} · ` : ""}${!r.on ? "Off - tap to switch on" : goes ? "Sent with this still" : `On, but ${model} takes only ${max}`}`}
+                title={`${name ? `${name} · ` : ""}${!r.on ? "Off - tap to switch on" : repeat ? "Already goes first (the still this shot edits / its before picture)" : goes ? `Sent as image ${n}` : `On, but ${model} takes only ${max}`}`}
                 className={`relative block w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${!r.on ? "border-transparent opacity-35 grayscale" : goes ? "border-sky-400/80" : "border-amber-400/60 opacity-70"}`}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={r.url} alt="" className="w-full h-full object-cover" />
-                {r.on && goes && <span className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-sky-500 flex items-center justify-center"><Check size={9} className="text-white" /></span>}
+                <img src={thumb(r.url) || r.url} alt="" draggable={false} className="w-full h-full object-cover" />
+                {goes && n && <span className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-0.5 rounded-full bg-sky-500 text-[8.5px] font-bold leading-[14px] text-center text-white">{n}</span>}
                 {name && <span className="absolute inset-x-0 bottom-0 px-0.5 bg-black/70 text-[8px] text-slate-200 truncate">{name}</span>}
               </button>
               <button
@@ -620,17 +698,33 @@ export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max
           {uploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add
         </button>
       </div>
-      {refs.length === 0 && <p className="text-[9.5px] text-slate-500">No references - the still is made from the prompt alone.</p>}
+      {refs.length === 0 && !leadShown.length && <p className="text-[9.5px] text-slate-500">No references - the still is made from the prompt alone.</p>}
       {adding && (
         <div className="rounded-lg border border-white/10 bg-black/30 p-1.5 space-y-1">
+          {/* An asset opens its pictures to choose from; "all" still adds every one */}
           {assets.filter(a => a.refs.length).map(a => (
-            <button key={a.id} onClick={() => add(a.refs.map(r => ({ url: r.url, assetId: a.id })))} className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-200 hover:bg-white/5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={a.refs[0].url} alt="" className="w-6 h-6 rounded object-cover" />
-              <span className="truncate">{a.name}</span>
-              <span className="ml-auto text-[9.5px] text-slate-500">all {a.refs.length}</span>
-            </button>
+            <div key={a.id} className="flex items-center gap-1">
+              <button onClick={() => { setAssetPick(a.id); setAdding(false) }} title={`Choose pictures of ${a.name}`} className="flex-1 min-w-0 flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-200 hover:bg-white/5">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={thumb(a.refs[0].url) || a.refs[0].url} alt="" className="w-6 h-6 rounded object-cover" />
+                <span className="truncate">{a.name}</span>
+                <span className="ml-auto text-[9.5px] text-slate-500">choose…</span>
+              </button>
+              <button onClick={() => add(a.refs.map(r => ({ url: r.url, assetId: a.id })))} title={`Add every picture of ${a.name}`} className="shrink-0 px-1.5 py-1 rounded-md border border-white/10 text-[9.5px] text-slate-400 hover:text-white hover:border-white/30">
+                all {a.refs.length}
+              </button>
+            </div>
           ))}
+          <button
+            onClick={async () => {
+              setAdding(false)
+              const urls = await openLibraryPicker({ max: Math.max(1, MAX_SHOT_REFS - refs.length), title: "This shot's references" })
+              if (urls.length) add(urls.map(url => ({ url })))
+            }}
+            className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-300 hover:bg-white/5"
+          >
+            <Library size={13} className="text-slate-500" /> From My Generations &amp; My Assets…
+          </button>
           <button onClick={() => { setPicker(true); setAdding(false) }} className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-[10.5px] text-slate-300 hover:bg-white/5">
             <Images size={13} className="text-slate-500" /> From my Refs or this board&apos;s stills…
           </button>
@@ -641,6 +735,15 @@ export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max
       )}
       {err && <p className="text-[10px] text-red-400">{err}</p>}
       <input ref={fileRef} type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
+      {assetPick && (
+        <AssetPicturePicker
+          assets={assets.filter(a => a.refs.length)}
+          focus={assetPick}
+          have={have}
+          onAdd={items => { add(items); setAssetPick(null) }}
+          onClose={() => setAssetPick(null)}
+        />
+      )}
       {picker && (
         <RefPicker
           title="This shot's references"
@@ -653,5 +756,169 @@ export function ShotRefsPanel({ refs, auto, assets, refLibrary, boardStills, max
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Choose single pictures from the board's assets for one shot (2026-10-09):
+ * every asset is a section (the one clicked first, scrolled to), each picture
+ * with its description; picks are numbered in the order they are tapped -
+ * the order they are added, so the order the model sees them. "All" / "None"
+ * per asset. It replaced adding a whole asset as the only option.
+ */
+function AssetPicturePicker({ assets, focus, have, onAdd, onClose }: {
+  assets: StoryAsset[]
+  focus: string
+  have: Set<string>
+  onAdd: (items: { url: string; assetId: string }[]) => void
+  onClose: () => void
+}) {
+  const thumb = useThumb()
+  const [picked, setPicked] = useState<{ url: string; assetId: string }[]>([])
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({})
+  useEffect(() => { sectionRefs.current[focus]?.scrollIntoView({ block: "start" }) }, [focus])
+  const isOn = (u: string) => picked.some(p => p.url === u)
+  const flip = (url: string, assetId: string) => setPicked(p => (p.some(x => x.url === url) ? p.filter(x => x.url !== url) : p.length >= MAX_SHOT_REFS ? p : [...p, { url, assetId }]))
+  const setAll = (a: StoryAsset, on: boolean) => setPicked(p => {
+    const mine = a.refs.filter(r => !have.has(stillKey(r.url))).map(r => ({ url: r.url, assetId: a.id }))
+    if (!on) return p.filter(x => x.assetId !== a.id)
+    return [...p, ...mine.filter(m => !p.some(x => x.url === m.url))].slice(0, MAX_SHOT_REFS)
+  })
+  if (typeof document === "undefined") return null
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="relative isolate overflow-hidden w-full max-w-3xl max-h-[88dvh] flex flex-col rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14]">
+        <SilverRimOverlay />
+        <div className="relative px-4 pt-4 pb-3 border-b border-white/[0.06]">
+          <BrandTitle title="Choose pictures" eyebrow="From this board's assets · numbered in the order you pick" logo={26}
+            right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={15} /></button>} />
+        </div>
+        <div className="relative flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4">
+          {assets.map(a => {
+            const Icon = ASSET_ICONS[a.kind]
+            const onHere = a.refs.filter(r => isOn(r.url)).length
+            return (
+              <section key={a.id} ref={el => { sectionRefs.current[a.id] = el }}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Icon size={13} className="text-slate-300" />
+                  <h3 className="text-[12px] font-bold text-slate-100 truncate">{a.name}</h3>
+                  <span className="font-mono text-[10px] text-slate-500">{onHere}/{a.refs.length}</span>
+                  <button onClick={() => setAll(a, onHere === 0)} className="ml-auto rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] text-slate-300 hover:bg-white/[0.06]">
+                    {onHere === 0 ? "All" : "None"}
+                  </button>
+                </div>
+                <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5">
+                  {a.refs.map(r => {
+                    const already = have.has(stillKey(r.url))
+                    const n = picked.findIndex(p => p.url === r.url)
+                    return (
+                      <button key={r.id} disabled={already} onClick={() => flip(r.url, a.id)}
+                        title={already ? "Already on this shot" : r.caption || `${a.name} #${a.refs.indexOf(r) + 1}`}
+                        className={`relative aspect-square rounded-md overflow-hidden border-2 ${n >= 0 ? "border-white" : "border-white/10 hover:border-white/30"} ${already ? "opacity-30" : ""}`}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={thumb(r.url) || r.url} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+                        {n >= 0 && <span className="absolute top-1 right-1 min-w-4 h-4 px-1 rounded-full bg-white text-[9px] font-bold leading-4 text-center text-black">{n + 1}</span>}
+                        {r.caption && <span className="absolute inset-x-0 bottom-0 bg-black/70 px-1 text-[8px] leading-tight text-slate-200 line-clamp-2">{r.caption}</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+            )
+          })}
+        </div>
+        <div className="relative flex items-center gap-2 px-4 py-3 border-t border-white/[0.06]">
+          <span className="text-[11px] text-slate-500">{picked.length} picked - added in this order</span>
+          <BrandButton onClick={() => onAdd(picked)} disabled={!picked.length} primary size="sm" className="ml-auto">
+            Add {picked.length || ""}
+          </BrandButton>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/**
+ * Describe an asset's pictures (2026-10-08): what each one shows - the angle,
+ * pose, outfit - so the AI draft picks the right pictures for each shot
+ * rather than sending all of them. By hand, or Auto caption (Gemini describes,
+ * tags and sorts them by view; priced in lib/ai-text-pricing).
+ */
+function DescribeAsset({ asset, thumb, onClose, onChange }: {
+  asset: StoryAsset
+  thumb: (url: string) => string | undefined
+  onClose: () => void
+  onChange: (a: StoryAsset) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const setCaption = (id: string, caption: string) =>
+    onChange({ ...asset, refs: asset.refs.map(r => (r.id === id ? { ...r, caption: caption.slice(0, 300) } : r)) })
+  const auto = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const r = await fetch("/api/user/assets/caption", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls: asset.refs.map(x => x.url), name: asset.name, kind: asset.kind, notes: asset.notes }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !Array.isArray(j.items)) throw new Error(j.error || `Captioning failed (${r.status})`)
+      // The captions, in the sorted order the model grouped them by view
+      const byUrl = new Map((j.items as { url: string; caption: string; tags: string[] }[]).map((it, i) => [stillKey(it.url), { ...it, i }]))
+      const refs = asset.refs
+        .map(x => { const it = byUrl.get(stillKey(x.url)); return it ? { ...x, caption: it.caption || x.caption, tags: it.tags?.length ? it.tags : x.tags, _i: it.i } : { ...x, _i: 1e6 } })
+        .sort((p, q) => p._i - q._i)
+        .map(({ _i, ...x }) => x)
+      onChange({ ...asset, refs })
+    } catch (e) {
+      setErr(String((e as Error).message || e))
+    } finally { setBusy(false) }
+  }
+  if (typeof document === "undefined") return null
+  return createPortal(
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="relative isolate flex max-h-[88dvh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] shadow-2xl">
+        <SilverRimOverlay />
+        <div className="relative space-y-2 border-b border-white/[0.06] px-5 pb-3 pt-5">
+          <BrandTitle title={`Describe ${asset.name}`} eyebrow={`${asset.refs.filter(r => r.caption).length}/${asset.refs.length} pictures described`} logo={26}
+            right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={16} /></button>} />
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="min-w-[12rem] flex-1 text-[11px] leading-snug text-slate-500">
+              Say what each picture shows - the angle, pose, expression, outfit. The AI draft reads these to give each shot the right pictures, from any asset.
+            </p>
+            <BrandButton onClick={auto} busy={busy} disabled={busy} size="sm" icon={<Sparkles size={13} />} title="Gemini describes and tags every picture, then sorts them by view">
+              Auto caption
+              <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-black/25 px-1 font-mono text-[10px] opacity-80"><Ticket size={9} />{assetCaptionTickets(asset.refs.length)}</span>
+            </BrandButton>
+          </div>
+          {err && <p className="text-[11px] text-red-300">{err}</p>}
+        </div>
+        <div className="relative grid flex-1 min-h-0 grid-cols-2 gap-2.5 overflow-y-auto px-5 py-4 sm:grid-cols-4">
+          {asset.refs.map((r, k) => (
+            <div key={r.id} className="flex flex-col gap-1">
+              <div className="relative aspect-square overflow-hidden rounded-lg border border-white/10">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={thumb(r.url)} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
+                <span className="absolute bottom-0 left-0 bg-black/70 px-1.5 py-0.5 font-mono text-[9px] text-slate-200">#{k + 1}</span>
+              </div>
+              <textarea
+                value={r.caption ?? ""}
+                onChange={e => setCaption(r.id, e.target.value)}
+                rows={2}
+                maxLength={300}
+                placeholder="What this one shows"
+                className="w-full resize-none rounded-md border border-white/10 bg-black/40 px-2 py-1 text-[10.5px] leading-snug text-slate-200 placeholder:text-slate-600 focus:border-white/35 focus:outline-none"
+              />
+              {!!r.tags?.length && <p className="truncate font-mono text-[9px] text-slate-500" title={r.tags.join(", ")}>{r.tags.join(" · ")}</p>}
+            </div>
+          ))}
+        </div>
+        <div className="relative flex justify-end border-t border-white/[0.06] px-5 py-3">
+          <BrandButton onClick={onClose} primary size="sm">Done</BrandButton>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }

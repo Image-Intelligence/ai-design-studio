@@ -1,3 +1,4 @@
+import { fitRefsForModel } from '@/lib/fal-image-fit'
 import { NextResponse } from 'next/server'
 import { fal } from '@/lib/fal-client'
 import prisma from '@/lib/prisma'
@@ -48,7 +49,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         .slice(0, Math.min(10, spec.maxRefs))
     : []
 
-  const call = spec.geminiApi ? null : buildFalCall(createModelId, prompt, refs, settings)
+  const call = spec.geminiApi ? null : buildFalCall(createModelId, prompt, await fitRefsForModel(createModelId, refs), settings)
   if (call && 'error' in call) return jsonPrivate({ error: call.error }, { status: 400 })
 
   const chat = await prisma.chat.findFirst({

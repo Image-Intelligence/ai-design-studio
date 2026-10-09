@@ -93,7 +93,8 @@ const NOT_EDITORS = new Set(['z-image-turbo'])
 export const STUDIO_EDIT_MODELS = STORYBOARD_IMAGE_MODELS.filter(m => m.refs && !NOT_EDITORS.has(m.id))
 export const canEdit = (id: string) => STUDIO_EDIT_MODELS.some(m => m.id === id)
 export const STUDIO_ASPECTS = STORYBOARD_ASPECTS
-export const DEFAULT_GEN_MODEL = 'nano-banana-pro-2'
+// NanoBanana 2.1 for everyone (2026-10-09 - admins had NanoBanana Pro 2, the rest Pro)
+export const DEFAULT_GEN_MODEL = 'nano-banana-2.1'
 /**
  * What an account may pick: the Edit Image popup is for everyone, so the
  * site's admin-only image models (the same set /api/generate refuses -
@@ -101,7 +102,7 @@ export const DEFAULT_GEN_MODEL = 'nano-banana-pro-2'
  */
 export const studioModelsFor = <T extends { id: string }>(list: readonly T[], admin: boolean) => list.filter(m => admin || !ADMIN_ONLY_IMAGE_MODELS.has(m.id))
 export const isAdminOnlyModel = (id: string) => ADMIN_ONLY_IMAGE_MODELS.has(id)
-export const defaultGenModel = (admin: boolean) => (admin ? DEFAULT_GEN_MODEL : 'nano-banana-pro')
+export const defaultGenModel = (admin: boolean) => (admin || !ADMIN_ONLY_IMAGE_MODELS.has(DEFAULT_GEN_MODEL) ? DEFAULT_GEN_MODEL : 'nano-banana-pro')
 
 /** The frame of `list` (STUDIO_ASPECTS by default) closest to a w x h box. */
 export function nearestAspect(w: number, h: number, list: readonly string[] = STUDIO_ASPECTS): string {
@@ -154,8 +155,10 @@ export const validAspect = (id: string, aspect: unknown, w = 1, h = 1) =>
   typeof aspect === 'string' && modelAspects(id).includes(aspect) ? aspect : defaultAspect(id, w, h)
 
 /** Tickets for a generate / edit run: the portal's price for that model, quality, frame and reference count. */
-export const genTickets = (model: string, quality: string | undefined, aspect: string, refs: number) =>
-  stillTickets(model, quality, aspect, undefined, refs)
+// `options`: the model's own settings - NanoBanana 2.1's High thinking and web
+// search cost more (the portal charged them; this didn't until 2026-10-09)
+export const genTickets = (model: string, quality: string | undefined, aspect: string, refs: number, options?: Record<string, string>) =>
+  stillTickets(model, quality, aspect, options, refs)
 
 /**
  * The area a fill / erase sends: the selection's box with room around it (the

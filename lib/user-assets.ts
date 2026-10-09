@@ -1,6 +1,6 @@
 import prisma from '@/lib/prisma'
 import { canonicalMediaUrl } from '@/lib/media-url'
-import { ASSET_KINDS, MAX_ASSET_REFS, type AssetKind } from '@/lib/storyboard'
+import { ASSET_KINDS, MAX_ASSET_REFS, cleanCaption, cleanTags, type AssetKind } from '@/lib/storyboard'
 
 /*
  * The account's saved assets (UserAsset): a character, vehicle, prop, place,
@@ -16,7 +16,8 @@ import { ASSET_KINDS, MAX_ASSET_REFS, type AssetKind } from '@/lib/storyboard'
  */
 
 export const MAX_USER_ASSETS = 200
-export type UserAssetRef = { id: string; url: string; thumb?: string | null }
+/** `caption` / `tags`: what this picture shows (hand-written or Auto caption) - see lib/storyboard AssetRef. */
+export type UserAssetRef = { id: string; url: string; thumb?: string | null; caption?: string; tags?: string[] }
 export type UserAssetOut = { id: number; kind: AssetKind; name: string; notes: string; refs: UserAssetRef[]; updatedAt: Date }
 
 const KIND_IDS = new Set<string>(ASSET_KINDS.map(k => k.id))
@@ -34,7 +35,8 @@ export function storedRefs(raw: unknown): UserAssetRef[] {
   for (const r of raw) {
     const url = typeof r?.url === 'string' ? r.url : ''
     if (!/^https:\/\//.test(url)) continue
-    out.push({ id: typeof r?.id === 'string' && r.id ? r.id.slice(0, 40) : refId(), url })
+    const caption = cleanCaption(r?.caption), tags = cleanTags(r?.tags)
+    out.push({ id: typeof r?.id === 'string' && r.id ? r.id.slice(0, 40) : refId(), url, ...(caption ? { caption } : {}), ...(tags.length ? { tags } : {}) })
     if (out.length >= MAX_ASSET_REFS) break
   }
   return out
@@ -78,16 +80,38 @@ export async function ownedGenerationUrls(userId: number, ids: unknown[]): Promi
 }
 
 /** New refs appended (deduped by URL), capped. */
-export function withRefs(current: UserAssetRef[], urls: string[]): UserAssetRef[] {
+export function withRefs(current: UserAssetRef[], urls: string[], captions?: Map<string, string>): UserAssetRef[] {
   const have = new Set(current.map(r => r.url))
   const next = [...current]
   for (const url of urls) {
     if (next.length >= MAX_ASSET_REFS) break
     if (have.has(url)) continue
     have.add(url)
-    next.push({ id: refId(), url })
+    const caption = cleanCaption(captions?.get(url))
+    next.push({ id: refId(), url, ...(caption ? { caption } : {}) })
   }
   return next
+}
+
+/**
+ * Captions / tags / order applied to an asset's pictures by id (the editors'
+ * edits and Auto caption). Unknown ids are ignored; `order` puts the listed
+ * ids first in that order, the rest after.
+ */
+export function withCaptions(refs: UserAssetRef[], o: { captions?: unknown; tags?: unknown; order?: unknown }): UserAssetRef[] {
+  const caps = o.captions && typeof o.captions === 'object' ? o.captions as Record<string, unknown> : {}
+  const tags = o.tags && typeof o.tags === 'object' ? o.tags as Record<string, unknown> : {}
+  let out = refs.map(r => {
+    const next = { ...r }
+    if (r.id in caps) { const c = cleanCaption(caps[r.id]); if (c) next.caption = c; else delete next.caption }
+    if (r.id in tags) { const t = cleanTags(tags[r.id]); if (t.length) next.tags = t; else delete next.tags }
+    return next
+  })
+  if (Array.isArray(o.order)) {
+    const pos = new Map((o.order as unknown[]).filter((x): x is string => typeof x === 'string').map((id, i) => [id, i]))
+    out = [...out].sort((a, b) => (pos.get(a.id) ?? 1e6) - (pos.get(b.id) ?? 1e6))
+  }
+  return out
 }
 
 /**

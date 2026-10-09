@@ -32,7 +32,7 @@ import { type StudioDoc, type StudioLayer, MAX_CANVAS_SIDE, MAX_LAYERS, normaliz
 import { Editor } from "./Editor"
 import { loadToCanvas, newCanvas, ctx2d, toBlob } from "./engine"
 import { holdCardVideos } from "@/components/home/card-video-scheduler"
-import { openInImageStudio, useImageStudioAvailable } from "./bridge"
+import { openInImageStudio, useImageStudioAvailable, useImageStudioAdmin } from "./bridge"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { sha256Hex } from "@/lib/sha256"
 import { useIdVerified, IdLockedPanel } from "@/components/id-verification/IdVerificationGate"
@@ -54,6 +54,32 @@ const uid = (p: string) => `${p}${Date.now().toString(36)}${Math.random().toStri
 // crypto.subtle is missing over plain http on the LAN (an iPad on the dev server) - lib/sha256 falls back to JS
 const sha256 = sha256Hex
 const frames = (n: number) => new Promise<void>(res => { const step = (k: number) => (k <= 0 ? setTimeout(res, 30) : requestAnimationFrame(() => step(k - 1))); step(n) })
+
+/**
+ * The applied picture as a JPEG that fits an upload (2026-10-09): the parent
+ * sends it through a function capped at ~4.5MB on Vercel, and a 12MP edit at
+ * quality 0.94 could pass that - the save failed. Lower quality first, then a
+ * smaller size, until it is under 3.8MB. Transparent parts on white, like the
+ * old editor's. The layered doc is stored under the hash of exactly this file.
+ */
+const MAX_APPLY_BYTES = 3.8 * 1024 * 1024
+async function fitJpeg(flat: HTMLCanvasElement): Promise<Blob> {
+  let src = flat
+  for (let round = 0; round < 6; round++) {
+    const out = newCanvas(src.width, src.height), x = ctx2d(out)
+    x.fillStyle = "#ffffff"; x.fillRect(0, 0, out.width, out.height); x.drawImage(src, 0, 0)
+    for (const q of [0.94, 0.88, 0.82]) {
+      const blob = await toBlob(out, "image/jpeg", q)
+      if (blob.size <= MAX_APPLY_BYTES) return blob
+    }
+    // Still too big at 0.82: about 80% of the size each round
+    const k = 0.8
+    const smaller = newCanvas(Math.max(1, Math.round(src.width * k)), Math.max(1, Math.round(src.height * k)))
+    const sx = ctx2d(smaller); sx.imageSmoothingQuality = "high"; sx.drawImage(src, 0, 0, smaller.width, smaller.height)
+    src = smaller
+  }
+  return toBlob(src, "image/jpeg", 0.8)
+}
 
 function rasterLayer(name: string, pix: HTMLCanvasElement, box: { x: number; y: number; w: number; h: number }, extra: Partial<StudioLayer> = {}): StudioLayer {
   return { id: uid("l"), name, kind: "raster", visible: true, locked: false, opacity: 1, blend: "normal", ...box, rotation: 0, flipX: false, flipY: false, src: null, pw: pix.width, ph: pix.height, ...extra }
@@ -87,8 +113,17 @@ async function importOldLayers(layers: OldLayer[], W: number, H: number, seed: M
 }
 
 export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, layerStack = null, onLayerStackChange }: EditImagePopupProps) {
-  const [state, setState] = useState<{ doc: StudioDoc; seed: Map<string, HTMLCanvasElement>; key: string; restored: boolean } | { error: string } | null>(null)
+  const [state, setState] = useState<{ doc: StudioDoc; seed: Map<string, HTMLCanvasElement>; seedSrc: Map<string, string>; key: string; restored: boolean } | { error: string } | null>(null)
+  // The parent could not save the applied edit (portal handleEditRef): said here
+  const [saveError, setSaveError] = useState<string | null>(null)
+  useEffect(() => {
+    const on = (e: Event) => setSaveError(String((e as CustomEvent).detail || "Could not save the edit"))
+    window.addEventListener("ref-edit-save-failed", on)
+    return () => window.removeEventListener("ref-edit-save-failed", on)
+  }, [])
   const studioOK = useImageStudioAvailable()
+  // Admin-only image models in the AI tools: an admin account only (not "the studio is available")
+  const studioAdmin = useImageStudioAdmin()
   // The editor saves pixels the browser uploads (the studio routes refuse
   // unverified accounts), so it asks for the ID check before it opens
   const idVerified = useIdVerified()
@@ -138,12 +173,17 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
             restored = layers.length > 1
           }
         }
+        // The picture's own stored file stands in for an untouched Background
+        // layer (Editor seedSrc) - only the user's uploads (/u/), as the
+        // layered-doc route requires
+        const seedSrc = new Map<string, string>()
         if (!doc) {
           const base = rasterLayer("Background", pix, { x: 0, y: 0, w: W, h: H })
           seed.set(base.id, pix)
+          if (/^https:\/\//.test(image.url) && image.url.includes("/u/")) seedSrc.set(base.id, image.url)
           doc = { v: 1, width: W, height: H, background: null, layers: [base] }
         }
-        if (!dead) setState({ doc, seed, key: `${image.id}|${image.url}`, restored })
+        if (!dead) setState({ doc, seed, seedSrc, key: `${image.id}|${image.url}`, restored })
       } catch {
         if (!dead) setState({ error: "This picture could not be opened for editing." })
       }
@@ -155,9 +195,8 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
   // ── Apply ──
   const apply = async (flat: HTMLCanvasElement, serialize: () => Promise<StudioDoc>) => {
     // A JPEG like the old editor's: transparent parts on white
-    const out = newCanvas(flat.width, flat.height), x = ctx2d(out)
-    x.fillStyle = "#ffffff"; x.fillRect(0, 0, out.width, out.height); x.drawImage(flat, 0, 0)
-    const blob = await toBlob(out, "image/jpeg", 0.94)
+    setSaveError(null)
+    const blob = await fitJpeg(flat)
     if (canUseLayers) {
       // The layered version, under the fingerprint of the picture handed over
       const [hash, doc] = await Promise.all([blob.arrayBuffer().then(sha256), serialize()])
@@ -188,6 +227,12 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/90 p-0 sm:p-3 lg:p-5" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
       <div className="relative w-full h-full max-w-[2400px] sm:rounded-2xl overflow-hidden border border-white/10 bg-[#060910] shadow-2xl">
+        {saveError && (
+          <div className="absolute left-1/2 top-12 z-50 -translate-x-1/2 flex max-w-[92%] items-start gap-2 rounded-xl border border-red-400/40 bg-[#1a0b0f]/95 px-3 py-2 text-[11.5px] text-red-100 shadow-2xl">
+            <span><b>Your edit wasn&apos;t saved</b> ({saveError}). The original is still in your Refs - press Apply to try again.</span>
+            <button onClick={() => setSaveError(null)} className="shrink-0 text-red-300 hover:text-white">×</button>
+          </div>
+        )}
         {!state ? (
           <div className="h-full flex flex-col items-center justify-center gap-3 text-[12px] text-slate-400">
             <SiteLogoBox size={40} rounded={11} />
@@ -203,8 +248,9 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
             key={state.key}
             inline={{ doc: state.doc, title: state.restored ? "Edit image · layers restored" : "Edit image" }}
             seed={state.seed}
+            seedSrc={state.seedSrc}
             canUseLayers={canUseLayers}
-            admin={studioOK}
+            admin={studioAdmin}
             refLibrary={[]}
             onExit={onClose}
             onSaveToRefs={async () => {}}

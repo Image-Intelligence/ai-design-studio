@@ -349,7 +349,7 @@ function useBigScreen() {
   }, [])
   return big
 }
-const STUDIO_MEDIA: Partial<Record<EmployeeId, { poster: string; video?: string }>> = {
+export const STUDIO_MEDIA: Partial<Record<EmployeeId, { poster: string; video?: string }>> = {
   "movie-studio": { poster: `${STUDIO_MEDIA_BASE}/movie-studio-a4f9f422-c928-4948-ba11-82c7405589ca.webp`, video: `${STUDIO_MEDIA_BASE}/movie-studio-loop-5eefcea9-c562-4a3e-a87f-e1713161d9f7.mp4` },
   "face-swap": { poster: `${STUDIO_MEDIA_BASE}/face-swap-ae37324d-f8a9-482b-99c8-747e52d66e0c.webp`, video: `${STUDIO_MEDIA_BASE}/face-swap-loop-b8e65672-84f8-49b4-9edd-6746a35d9f38.mp4` },
   "character-design": { poster: `${STUDIO_MEDIA_BASE}/character-design-3f089e44-4507-4ded-a592-5d33955f9763.webp`, video: `${STUDIO_MEDIA_BASE}/character-design-loop-0cf98d66-ead7-45c5-bdee-1349b2f34e25.mp4` },
@@ -438,7 +438,7 @@ function StudiosHero({ logo, count, featured, onOpen }: {
  * few clips decode at once, on screen only) its loop crossfading over it.
  */
 const MEDIA_FADE_MS = 600
-function StudioMedia({ poster, video, className = "" }: { poster?: string; video?: string; className?: string }) {
+export function StudioMedia({ poster, video, className = "" }: { poster?: string; video?: string; className?: string }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const vidRef = useRef<HTMLVideoElement>(null)
   const handleRef = useRef<CardVideoHandle | null>(null)

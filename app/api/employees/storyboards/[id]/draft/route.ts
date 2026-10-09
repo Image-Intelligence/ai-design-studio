@@ -5,9 +5,11 @@ import { requireStoryboardUser, ownRefs } from '@/lib/storyboard-gate'
 import { openShotModels } from '@/lib/storyboard-access'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { storyboardDraftTickets, geminiUsage } from '@/lib/ai-text-pricing'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
-import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, refsFromAssets, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
+import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/draft - plan the board with AI.
@@ -32,6 +34,11 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  *   scene       `extendCount` new shots at the end of scene `sceneId`, drafted
  *               from its summary, cast and neighbours (a scene with no title or
  *               summary yet gets one from the direction)
+ * Scenes switched on as references (StoryScene.asRef, set in the Assets
+ * panel) join every action as picture lists - "Scene 2 #3" is that scene's
+ * third chosen still - so new shots can be handed earlier shots' stills to
+ * carry the same faces, set, outfits and light forward (lib/storyboard
+ * sceneRefAssets).
  * A new board can be planned in scenes: `scenes` 2+ splits the `shots` across
  * that many scenes. An OUTFIT PACK always is: one scene per Wardrobe asset (or
  * per outfit the premise names), `shots` per outfit, each scene carrying its
@@ -46,8 +53,11 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  * One direct Gemini call in JSON mode, the same small-and-cheap approach as
  * the Movie Studio's brief autofill.
  *
- * Any signed-in account (free - one Gemini call); the direction goes through
- * the CCBill prompt filter first, as every generation's prompt does.
+ * Any signed-in account; priced in tickets by job size (lib/ai-text-pricing,
+ * 2026-10-08 - it used to be free), charged just before the Gemini call and
+ * refunded if anything after that fails (POST wraps the handler). The
+ * direction goes through the CCBill prompt filter first, as every
+ * generation's prompt does.
  */
 export const runtime = 'nodejs'
 // Gemini slows badly under load (2026-10-01: 55-70s for a four-line prompt),
@@ -68,6 +78,7 @@ async function inlineRef(url: string) {
 }
 
 type Ctx = { params: Promise<{ id: string }> }
+const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth']
 type Mode = 'replace' | 'polish' | 'regenerate' | 'extend' | 'scene' | 'refs'
 
 const shotLine = (s: StoryboardShot, n: number, all: StoryboardShot[] = []) => {
@@ -100,7 +111,10 @@ const SHOT_RULES = [
   '- "transition" is how this shot hands over to the next one (e.g. "Hard cut on the slam", "Match cut on the circular shape", "Dissolve - time passes"); the last shot\'s is how the film ends.',
   `- "duration" is whole seconds, one of: ${DURATIONS.join(', ')}.`,
   // Which reference photos go with each still - the page no longer needs them switched on by hand
-  '- "assets" lists the names of the board\'s assets (listed above, exactly as written) that appear in or style THIS frame - a character who is in it, the place it is set in, a prop, vehicle or outfit that is visible, a style or look asset. Their reference photos are sent with this still, so list only what the frame really shows (a wide landscape with nobody in it lists no character). An empty list when none apply, or when the board has no assets.',
+  '- "assets" lists the names of the board\'s assets (listed above, exactly as written) that appear in or style THIS frame - a character who is in it, the place it is set in, a prop, vehicle or outfit that is visible, a style or look asset. List only what the frame really shows (a wide landscape with nobody in it lists no character). An empty list when none apply, or when the board has no assets.',
+  // 2026-10-08: per-picture picks from the described photos (lib/storyboard refsFromPhotos)
+  '- "photos" picks the SPECIFIC reference pictures for this still by their labels ("Mara #2", "Red dress #1"), from the photo lists above and from as many assets as the frame needs - the angle, framing, outfit and expression that match THIS frame (a back view for a shot from behind, a face close-up for a close-up, the outfit this scene wears). HOW MANY depends on the image model of the still - the reference slots of every model are listed with it below: a character or creature in the frame gets as many of its pictures as that model takes, from different angles (face close-up, front, three-quarter, profile, full body) so the likeness holds - Ideogram, FLUX 2, Qwen, Grok, Luma and Wan have only 2-5 slots and need EVERY one filled for a person (Ideogram 4.5 = 5 pictures of the character); a model with 8+ slots needs 2-5 per character. Share the slots when several assets are in the frame (the main character first; a place or outfit needs 1-2); an "editOf" still takes one slot. Never list more than the model takes. An empty list sends all the photos of the "assets" instead - the only option for an asset that has no photo list.',
+  '- REFERENCE ORDER: the pictures reach the image model in the order "photos" lists them - Image 1, Image 2, Image 3... (when "editOf" is set, that earlier still is always Image 1 and these follow it). Write the "imagePrompt" so it names them in that same order in plain words - "the woman from the first reference image, wearing the jacket from the second, in the street from the third" - so the model knows what to take from which picture (her face, the jacket, the place), and list the photos in the order the prompt mentions them. NEVER write a label ("Mara #2", "Scene 1 #3") in the imagePrompt - the image model never sees the labels, only the pictures in order.',
   // The whole roster, each with what it is for - the plan casts a model per shot
   '- "imageModel" is the id of the image model that makes the still - pick the best tool for THAT frame from this list:',
   storyboardModelMenu().images,
@@ -109,7 +123,7 @@ const SHOT_RULES = [
   storyboardModelMenu().videos,
   '  SeeDance 2.5 suits most shots; close-ups of realistic faces need Kling 3.0 or Veo 3.1 (SeeDance refuses them); a title card needs only a gentle move (LTX 2.5 Fast or Kling V3 Turbo).',
 ]
-const SHOT_SHAPE = '{"title": string, "description": string, "imagePrompt": string, "imageModel": string, "assets": [string], "editOf": number, "videoPrompt": string, "videoModel": string, "duration": number, "transition": string}'
+const SHOT_SHAPE = '{"title": string, "description": string, "imagePrompt": string, "imageModel": string, "assets": [string], "photos": [string], "editOf": number, "videoPrompt": string, "videoModel": string, "duration": number, "transition": string}'
 /**
  * Chained edits: a shot that is an earlier shot's picture with a change names
  * that shot and is written as an edit of it - its still is then made from that
@@ -137,7 +151,9 @@ const MAX_OUTFIT_TOTAL = 36
 const plannedImageModel = (raw: any): string | null =>
   STORYBOARD_IMAGE_MODELS.find(m => m.id === raw?.imageModel || m.label === raw?.imageModel)?.id ?? null
 
-export async function POST(req: NextRequest, ctx: Ctx) {
+type Bill = { user: { id: number; email: string } | null; tickets: number; balance: number | null }
+
+async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   if (!GEMINI_API_KEY) return jsonPrivate({ error: 'GEMINI_API_KEY is not configured' }, { status: 500 })
@@ -146,7 +162,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!board) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
   // A non-admin's plan never names a model they cannot use (lib/storyboard-access)
-  const reply = (o: { shots: StoryboardShot[] } & Record<string, unknown>) => jsonPrivate({ ...o, shots: o.shots.map(x => openShotModels(x, user.isAdmin)) })
+  const reply = (o: { shots: StoryboardShot[] } & Record<string, unknown>) => jsonPrivate({ ...o, shots: o.shots.map(x => openShotModels(x, user.isAdmin)), tickets: bill.tickets, ...(bill.balance !== null && bill.balance >= 0 ? { balance: bill.balance } : {}) })
   const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
   const premise = typeof body.premise === 'string' ? body.premise.trim().slice(0, 4000) : ''
   {
@@ -165,6 +181,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // What kind of video this is, and what it is made of
   const kind = boardMode(isBoardMode(body.boardMode) ? body.boardMode : board.mode)
   const assets = sanitizeAssets(board.assets)
+  // The scenes the director switched on as references, as picture lists
+  const sceneAssets = sceneRefAssets({ scenes: boardScenes, shots: current })
+  // Every picture list "photos" may pick from: the board's assets, then the scenes
+  const pool = [...assets, ...sceneAssets]
   const outfitPack = kind.id === 'outfit'
   // An outfit pack: one scene per Wardrobe asset (none = the outfits the premise names)
   const outfits = outfitPack ? assets.filter(a => a.kind === 'wardrobe').slice(0, 8) : []
@@ -186,7 +206,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (mode === 'replace' && !premise && !(outfitPack && outfits.length)) return jsonPrivate({ error: outfitPack ? 'Add the outfits as Wardrobe assets, or describe them' : 'Describe the video you want first' }, { status: 400 })
   if (mode === 'scene' && !target) return jsonPrivate({ error: 'That scene is gone - reload the board' }, { status: 400 })
   if (mode !== 'replace' && mode !== 'scene' && current.length === 0) return jsonPrivate({ error: 'There are no shots yet - draft a board first' }, { status: 400 })
-  if (mode === 'refs' && !sanitizeAssets(board.assets).some(a => a.refs.length)) return jsonPrivate({ error: 'Add assets with reference photos first' }, { status: 400 })
+  if (mode === 'refs' && !assets.some(a => a.refs.length) && !sceneAssets.length) return jsonPrivate({ error: 'Add assets with reference photos (or switch a scene on as a reference) first' }, { status: 400 })
   if ((mode === 'extend' || mode === 'scene') && current.length + extendCount > MAX_SHOTS) return jsonPrivate({ error: `A board holds up to ${MAX_SHOTS} shots - there is room for ${Math.max(0, MAX_SHOTS - current.length)} more` }, { status: 400 })
 
   /*
@@ -209,13 +229,28 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       const got = await inlineRef(a.refs[0].url)
       if (got) parts.push({ text: `ASSET "${a.name}" (${ASSET_KINDS.find(k => k.id === a.kind)?.label ?? a.kind}):` }, got)
     }
-  } else {
+  } else if (!sceneAssets.length) {
     const refs = await ownRefs(user, Array.isArray(body.refs) ? (body.refs as unknown[]).filter((u): u is string => typeof u === 'string').slice(0, 4) : [])
     parts.push(...(await Promise.all(refs.map(inlineRef))).filter(Boolean) as { inlineData: { mimeType: string; data: string } }[])
   }
+  // A still from each referenced scene (its first chosen one), so the planner
+  // sees what those scenes look like - the rest go by their descriptions
+  const sceneImages = (await Promise.all(sceneAssets.slice(0, 6).map(async a => ({ a, got: await inlineRef(a.refs[0].url) })))).filter(x => x.got)
+  for (const { a, got } of sceneImages) parts.push({ text: `${photoLabel(a, 0)} (a still from ${a.name}):` }, got!)
   const imageCount = parts.filter(p => 'inlineData' in p).length
   const nums = picked.map(i => i + 1)
-  const assetLines = assets.map(a => `- ${ASSET_KINDS.find(k => k.id === a.kind)?.label ?? a.kind}: ${a.name}${a.notes ? ` (${a.notes})` : ''}${a.refs.length ? ` [${a.refs.length} reference photo${a.refs.length === 1 ? '' : 's'}]` : ' [no photos]'}`)
+  // Each asset, and - when its pictures are described - every picture by its
+  // label with what it shows, so a shot can be given the right ones
+  const assetLines = assets.map(a => {
+    const line = `- ${ASSET_KINDS.find(k => k.id === a.kind)?.label ?? a.kind}: ${a.name}${a.notes ? ` (${a.notes})` : ''}${a.refs.length ? ` [${a.refs.length} reference photo${a.refs.length === 1 ? '' : 's'}]` : ' [no photos]'}`
+    if (!a.refs.some(r => r.caption)) return line
+    return [line, ...a.refs.map((r, k) => `    ${photoLabel(a, k)}: ${r.caption || '(not described)'}${r.tags?.length ? ` [${r.tags.join(', ')}]` : ''}`)].join('\n')
+  })
+  // The referenced scenes: each chosen still by its label, described from its shot
+  const sceneLines = sceneAssets.map(a => [
+    `- ${a.name}${a.notes ? ` (${a.notes})` : ''} [${a.refs.length} still${a.refs.length === 1 ? '' : 's'}]`,
+    ...a.refs.map((r, k) => `    ${photoLabel(a, k)}: ${r.caption}`),
+  ].join('\n'))
   /*
    * The shot's own references, from the assets the planner says it shows:
    * every photo of each (the still route sends what its model takes, a turn
@@ -230,9 +265,40 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       return a.refs.length > 0 && names.some(n => n === an || n.includes(an) || an.includes(n))
     }).map(a => a.id)
   }
-  const withRefs = <T extends StoryboardShot>(shot: T, raw: any): T => {
+  /** The shot's references from the plan: the pictures it named, else every photo of the assets it named, else null (keep). */
+  const refsFor = (raw: any) => {
+    // A scene's still carries no asset id (it is no board asset - Details shows it as a picture)
+    const picked = refsFromPhotos(pool, raw?.photos)?.map(r => (r.assetId?.startsWith(SCENE_REF_PREFIX) ? { id: r.id, url: r.url, on: r.on } : r))
+    if (picked?.length) return picked
     const ids = assetIdsFor(raw)
-    return ids === null ? shot : { ...shot, refs: refsFromAssets(assets, ids) }
+    return ids === null ? null : refsFromAssets(assets, ids)
+  }
+  /*
+   * The labels are for the planner only - the image model never sees "Scene 1
+   * #3" or "Mara #2". The first live test (2026-10-08) wrote "the griffin from
+   * Scene 1 #1" into a prompt despite the rule, so any label left in an image
+   * prompt becomes its place in the shot's pictures ("the first reference
+   * image"; an edit's source still is Image 1, so the picks count from 2).
+   */
+  const labelRe = pool.length ? new RegExp(`(${pool.map(a => a.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\s*#\\s*(\\d+)`, 'gi') : null
+  const unlabel = (prompt: string, raw: any): string => {
+    if (!labelRe || !prompt) return prompt
+    const named = (Array.isArray(raw?.photos) ? raw.photos : []).map((l: unknown) => String(l).trim().toLowerCase().replace(/\s*#\s*/, ' #'))
+    const offset = Number(raw?.editOf) > 0 ? 1 : 0
+    return prompt.replace(labelRe, (_m, name: string, n: string) => {
+      const k = named.indexOf(`${name.trim().toLowerCase()} #${n}`)
+      return k >= 0 && k + offset < ORDINALS.length ? `the ${ORDINALS[k + offset]} reference image` : 'the reference image'
+    })
+  }
+  /** The plan's picks, topped up to a ref-hungry model's slots with more of the characters in it (lib/storyboard fillCharacterSlots). */
+  const refsForModel = (raw: any, model: string) => {
+    const refs = refsFor(raw)
+    return refs === null ? null : fillCharacterSlots(assets, refs, model, Number(raw?.editOf) > 0)
+  }
+  const withRefs = <T extends StoryboardShot>(shot: T, raw: any): T => {
+    const refs = refsForModel(raw, plannedImageModel(raw) ?? shot.imageModel)
+    const imagePrompt = unlabel(shot.imagePrompt, raw)
+    return refs === null ? { ...shot, imagePrompt } : { ...shot, refs, imagePrompt }
   }
   const anchor = mode === 'extend' ? Math.max(...picked) : -1 // new shots go after this slot
 
@@ -248,6 +314,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     // Waist up / full body, for a kind with people in it (mix adds nothing)
     kind.framing && isFraming(body.framing) ? framingRule(body.framing) : '',
     assetLines.length ? `THE BOARD'S ASSETS (use these names and keep each one looking the same wherever it appears):\n${assetLines.join('\n')}` : '',
+    sceneLines.length ? [
+      `SCENES TO REFERENCE - the director chose these scenes' stills as references for new shots (${sceneImages.length ? 'one still of each is attached under its label' : 'described below'}):`,
+      ...sceneLines,
+      'A new shot that brings back a character, outfit, place or lighting from one of these scenes should list the matching stills in "photos" by their labels ("Scene 2 #3") - the still that shows that person, set or look most clearly and closest to the new frame - next to any asset pictures, and its "imagePrompt" names them in that order ("the man from the first reference image, in the same alley as the second"). Say what to take from each still (the face, the jacket, the set) - never copy its framing or action unless the shot is meant to repeat it.',
+    ].join('\n') : '',
   ]
   let task: string[]
   if (mode === 'replace' && inScenes) {
@@ -322,8 +393,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     } else if (mode === 'refs') {
       task = [
         board_, '',
-        `For shots ${nums.join(', ')}, decide which of the board's assets each frame shows or is styled by - a character who is in it, the place it is set in, a visible prop, vehicle or outfit, a style asset - judging by its image prompt and description. Their reference photos will be sent with that still. List only what the frame really shows; an empty list when none apply. Do not change anything else.`,
-        `Reply with JSON only: {"shots": [{"n": shot number, "assets": [string]}]}`,
+        `For shots ${nums.join(', ')}, decide which of the board's assets each frame shows or is styled by - a character who is in it, the place it is set in, a visible prop, vehicle or outfit, a style asset - judging by its image prompt and description. List only what the frame really shows; an empty list when none apply. Do not change anything else.`,
+        'Where an asset\'s pictures are described (the photo lists above), also pick the SPECIFIC pictures that match each frame in "photos" by their labels - the right angle, framing, outfit and expression, usually 1-4 per asset, at most 10 - listed in the order the shot\'s image prompt mentions what they show (they reach the model as Image 1, Image 2... in that order). An empty "photos" sends every photo of the listed assets.',
+        `Reply with JSON only: {"shots": [{"n": shot number, "assets": [string], "photos": [string]}]}`,
       ]
     } else if (mode === 'extend') {
       task = [
@@ -349,6 +421,14 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   }
   const instruction = [...head, ...task].filter(Boolean).join('\n')
 
+  // The job's price (by how many shots it writes), charged now - just before
+  // Gemini runs; any failure from here on is refunded by POST
+  const jobShots = mode === 'replace' ? count : mode === 'extend' || mode === 'scene' ? extendCount : picked.length
+  const tickets = storyboardDraftTickets(mode, jobShots, { withImages: outfitPack && mode === 'replace' && outfits.length > 0 })
+  const paid = await deductGenerationTickets(user.id, user.email, tickets)
+  if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
+  if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = tickets; bill.balance = paid.newBalance }
+
   const call = async (thinking: boolean) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -366,6 +446,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (res.status === 400) res = await call(false)
     if (!res.ok) return jsonPrivate({ error: `Drafting failed (${res.status})` }, { status: 502 })
     const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[] }
+    {
+      const u = geminiUsage(data)
+      console.log(`[ai-usage] storyboard-draft ${mode} shots=${jobShots} in=${u.in} out=${u.out} tickets=${tickets}`)
+    }
     const text = (data.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')
     let plan: any
     try { plan = JSON.parse(text) } catch {
@@ -460,7 +544,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       const changed: string[] = []
       const shots = current.map((s, i) => {
         const raw = got.get(i + 1)
-        if (raw === undefined || assetIdsFor(raw) === null) return s
+        if (raw === undefined || refsFor(raw) === null) return s
         changed.push(s.id)
         return withRefs(s, raw)
       })
@@ -485,14 +569,14 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       return {
         ...s,
         title: w.title || s.title, description: w.description || s.description,
-        imagePrompt: w.imagePrompt || s.imagePrompt, videoPrompt: w.videoPrompt || s.videoPrompt,
+        imagePrompt: unlabel(w.imagePrompt || s.imagePrompt, raw), videoPrompt: w.videoPrompt || s.videoPrompt,
         videoModel: w.videoModel || s.videoModel, duration: w.duration || s.duration, transition: w.transition || s.transition,
         imageModel: plannedImageModel(raw) ?? s.imageModel,
         // An edit of an earlier shot (or no longer one) - only when the planner said
         ...((raw as any)?.editOf !== undefined ? { editOf: editTarget(raw, i, n => current[n - 1]?.id) } : {}),
         // A re-imagined shot takes the planner's references; a polished one
         // keeps its own (it shows the same thing), unless it had none yet
-        ...((mode === 'regenerate' || !s.refs) && assetIdsFor(raw) !== null ? { refs: refsFromAssets(assets, assetIdsFor(raw)!) } : {}),
+        ...((mode === 'regenerate' || !s.refs) && refsFor(raw) !== null ? { refs: refsForModel(raw, plannedImageModel(raw) ?? s.imageModel)! } : {}),
         // A re-imagined slot shows something new: its old still stays a take
         // (the slot's versions) but is no longer the one shown
         ...(mode === 'regenerate' ? { stillUrl: null } : {}),
@@ -503,5 +587,18 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   } catch (err: any) {
     const msg = String(err?.message || err)
     return jsonPrivate({ error: msg.includes('timeout') || msg.includes('aborted') ? 'Drafting timed out - try fewer shots' : `Drafting failed: ${msg.slice(0, 200)}` }, { status: 502 })
+  }
+}
+
+/** The handler, with the refund: a priced job that ends in an error gives the tickets back. */
+export async function POST(req: NextRequest, ctx: Ctx) {
+  const bill: Bill = { user: null, tickets: 0, balance: null }
+  try {
+    const res = await handle(req, ctx, bill)
+    if (res.status >= 400 && bill.user && bill.tickets > 0) await refundGenerationTickets(bill.user.id, bill.user.email, bill.tickets)
+    return res
+  } catch (e) {
+    if (bill.user && bill.tickets > 0) await refundGenerationTickets(bill.user.id, bill.user.email, bill.tickets)
+    throw e
   }
 }

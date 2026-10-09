@@ -103,13 +103,15 @@ export function CatalogCard({ media, fillHeight = false }: { media: CatalogMedia
       className={stacked ? "flex items-center gap-3 px-3.5 py-3" : "shrink-0 flex flex-col justify-center gap-2.5 px-4 sm:px-5 py-3.5"}
       style={stacked || w === 0 ? undefined : { width: textWidth(w) }}
     >
-      <div className="flex items-center gap-3 min-w-0 flex-1">
+      {/* flex-1 only in the stacked band - beside the frames it pushed the
+          button to the foot of a tall card (the dashboard row grew 2026-10-08) */}
+      <div className={`flex items-center gap-3 min-w-0 ${stacked ? "flex-1" : ""}`}>
         <div className="w-11 h-11 shrink-0 rounded-[13px] border border-white/15 bg-white/[0.06] flex items-center justify-center">
           <LayoutGrid size={19} className="text-white" />
         </div>
         <div className="min-w-0">
           <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500 leading-none mb-1">Home</p>
-          <p className="text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Catalog</p>
+          <p className={`text-base font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight ${fillHeight && !stacked ? "xl:text-xl 2xl:text-2xl" : ""}`}>Catalog</p>
           <p className="text-[11px] sm:text-xs text-slate-400 leading-snug line-clamp-2 mt-0.5 [@media(max-height:460px)]:hidden">
             Browse every model and studio, and see what&apos;s featured.
           </p>

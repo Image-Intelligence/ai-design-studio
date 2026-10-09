@@ -1,3 +1,4 @@
+import { fitRefsForModel } from '@/lib/fal-image-fit'
 import { enforcePublicModeration } from '@/lib/public-moderation'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { NextRequest } from 'next/server'
@@ -199,9 +200,17 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       // One of the model's own frames ("auto" where it has it, as on the portal)
       const aspect = validAspect(spec.id, body.aspect, src?.w ?? 1, src?.h ?? 1)
       const refs = image && spec.refs ? [image] : []
-      const call = buildFalCall(spec.id, prompt, refs, { aspect: spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[aspect] ?? '1024x1024') : aspect, quality }, stillBuildOptions(spec.id, {}))
+      // Sized for the model where it limits uploads (Ideogram)
+      // The model's own settings from the panel (Thinking, Web search...), kept to
+      // the values it offers; an admin-only one (Safety) only from an admin
+      const asAdmin = await checkIsAdmin(user.email)
+      const sent = body.options && typeof body.options === 'object' ? body.options as Record<string, unknown> : {}
+      const allowed = Object.fromEntries(Object.entries(sent).filter(([k]) => asAdmin || !knobs.settings.find(s => s.key === k)?.admin))
+      const call = buildFalCall(spec.id, prompt, await fitRefsForModel(spec.id, refs), { aspect: spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[aspect] ?? '1024x1024') : aspect, quality }, stillBuildOptions(spec.id, allowed))
       if ('error' in call) return bad(call.error)
-      cost = genTickets(spec.id, quality, aspect, refs.length); model = spec.id
+      // Priced with the same settings the run uses (High thinking / web search cost more)
+      const priced = Object.fromEntries(Object.entries(stillBuildOptions(spec.id, allowed)).map(([k, v]) => [k, String(v)]))
+      cost = genTickets(spec.id, quality, aspect, refs.length, priced); model = spec.id
       endpoint = call.endpoint; input = call.input
       // The popup is open to everyone: a public model runs at the moderation
       // /api/generate gives non-admins (lib/public-moderation)

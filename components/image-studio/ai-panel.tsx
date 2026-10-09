@@ -26,8 +26,8 @@ export type GenRequest =
   | { op: "fill"; prompt: string }
   | { op: "erase" }
   | { op: "upscale"; target: "canvas" | "layer"; upscaler: UpscalerId; factor: number }
-  | { op: "edit"; prompt: string; model: string; quality?: string }
-  | { op: "generate"; prompt: string; model: string; quality?: string; aspect: string; ref: "none" | "canvas" | "layer" }
+  | { op: "edit"; prompt: string; model: string; quality?: string; options?: Record<string, string> }
+  | { op: "generate"; prompt: string; model: string; quality?: string; aspect: string; ref: "none" | "canvas" | "layer"; options?: Record<string, string> }
 
 export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, busy, focusFill, onRun, onCrop }: {
   /** an admin account: the site's admin-only image models are offered too */
@@ -55,6 +55,34 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, b
   const editList = useMemo(() => studioModelsFor(STUDIO_EDIT_MODELS, admin), [admin])
   const [genModel, setGenModel] = useState(() => defaultGenModel(admin))
   const [genQuality, setGenQuality] = useState<Record<string, string>>({})
+  /*
+   * Each model's own settings beyond quality (2026-10-09) - NanoBanana 2.1's
+   * Thinking and Web search, and its Safety for an admin (everyone else runs
+   * at the site's public level whatever is sent). Per model, shared by the
+   * Generate and Edit cards; sent as `options` (lib/storyboard stillBuildOptions).
+   */
+  const [modelOpts, setModelOpts] = useState<Record<string, Record<string, string>>>({})
+  const settingsOf = (id: string) => stillModelSpec(id).settings.filter(s => s.key !== "quality" && (admin || !s.admin))
+  const optsFor = (id: string) => Object.fromEntries(settingsOf(id).map(s => [s.key, modelOpts[id]?.[s.key] ?? s.def]))
+  const setOpt = (id: string, key: string, v: string) => setModelOpts(m => ({ ...m, [id]: { ...m[id], [key]: v } }))
+  // A plain function (not a component defined in render - that would remount every render)
+  const modelSettings = (id: string) => (
+    <>
+      {settingsOf(id).map(s => {
+        const v = modelOpts[id]?.[s.key] ?? s.def
+        const labels = Object.fromEntries(s.options.map(o => [o.value, o.label.replace(/ - .*$/, "")]))
+        return (
+          <Field key={s.key} label={s.label}>
+            {s.options.length <= 4
+              ? <Seg value={v} options={s.options.map(o => o.value)} labels={labels} onChange={nv => setOpt(id, s.key, nv)} />
+              : <select value={v} onChange={e => setOpt(id, s.key, e.target.value)} title={s.hint} className={select}>
+                  {s.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>}
+          </Field>
+        )
+      })}
+    </>
+  )
   // The frame picked; a model without it (e.g. "auto" on a model that has no auto) uses its own default
   const [genAspectPick, setGenAspect] = useState<string>(() => defaultAspect(defaultGenModel(admin), doc.width, doc.height))
   const aspectFor = (id: string) => (modelAspects(id).includes(genAspectPick) ? genAspectPick : defaultAspect(id, doc.width, doc.height))
@@ -63,7 +91,7 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, b
   const genSpec = useMemo(() => stillModelSpec(genModel), [genModel])
   const genQ = genQuality[genModel] ?? (genSpec.defQuality || undefined)
   const genRefs = STUDIO_IMAGE_MODELS.find(m => m.id === genModel)?.refs ? genRef : "none"
-  const genCost = genTickets(genModel, genQ, genAspect, genRefs === "none" ? 0 : 1)
+  const genCost = genTickets(genModel, genQ, genAspect, genRefs === "none" ? 0 : 1, optsFor(genModel))
 
   // ── edit ──
   const [editPrompt, setEditPrompt] = useState("")
@@ -73,7 +101,7 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, b
   const editSpec = useMemo(() => stillModelSpec(editModel), [editModel])
   const editQ = genQuality[editModel] ?? (editSpec.defQuality || undefined)
   const editAspect = layer ? editFrame(editModel, layer.w, layer.h) : "1:1"
-  const editCost = genTickets(editModel, editQ, editAspect, 1)
+  const editCost = genTickets(editModel, editQ, editAspect, 1, optsFor(editModel))
 
   // ── upscale ──
   const [upscaler, setUpscaler] = useState<UpscalerId>("seedvr2-upscale")
@@ -122,6 +150,7 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, b
         </Field>
         {genSpec.qualities.length > 1 && <Field label="Quality"><Seg value={genQ ?? ""} options={genSpec.qualities} onChange={v => setGenQuality(qq => ({ ...qq, [genModel]: v }))} /></Field>}
         <Field label="Frame"><Seg value={genAspect} options={modelAspects(genModel)} labels={{ auto: "Auto" }} onChange={setGenAspect} /></Field>
+        {modelSettings(genModel)}
         {STUDIO_IMAGE_MODELS.find(m => m.id === genModel)?.refs && (
           <Field label="Reference">
             <Seg value={genRef} options={["none", "canvas", ...(editable ? ["layer"] : [])]} labels={{ none: "None", canvas: "The canvas", layer: "This layer" }} onChange={v => setGenRef(v as any)} />
@@ -129,7 +158,7 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, b
         )}
         <AiButton primary className="w-full" size="md" busy={busy === "generate"} disabled={!!busy || !genPrompt.trim()} cost={genCost}
           model={[label(genModel), q(genQ), genAspect === "auto" ? "Auto frame" : genAspect].filter(Boolean).join(" · ")}
-          onClick={() => onRun({ op: "generate", prompt: genPrompt.trim(), model: genModel, quality: genQ, aspect: genAspect, ref: genRefs === "layer" && !editable ? "none" : genRefs })}>
+          onClick={() => onRun({ op: "generate", prompt: genPrompt.trim(), model: genModel, quality: genQ, aspect: genAspect, ref: genRefs === "layer" && !editable ? "none" : genRefs, options: optsFor(genModel) })}>
           Generate layer
         </AiButton>
       </Card>
@@ -145,9 +174,10 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, fillCost, b
               </select>
             </Field>
             {editSpec.qualities.length > 1 && <Field label="Quality"><Seg value={editQ ?? ""} options={editSpec.qualities} onChange={v => setGenQuality(qq => ({ ...qq, [editModel]: v }))} /></Field>}
+            {modelSettings(editModel)}
             <AiButton primary className="w-full" size="md" busy={busy === "edit"} disabled={!!busy || !editPrompt.trim()} cost={editCost}
               model={[label(editModel), q(editQ)].filter(Boolean).join(" · ")}
-              onClick={() => onRun({ op: "edit", prompt: editPrompt.trim(), model: editModel, quality: editQ })}>
+              onClick={() => onRun({ op: "edit", prompt: editPrompt.trim(), model: editModel, quality: editQ, options: optsFor(editModel) })}>
               <span className="truncate max-w-[150px]">Edit “{editable.name}”</span>
             </AiButton>
             <Hint>The edit comes back as a new layer in the same place, above it; the original is hidden, not deleted.</Hint>

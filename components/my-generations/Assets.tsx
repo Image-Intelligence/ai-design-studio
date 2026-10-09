@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Plus, X, Loader2, Trash2, ImagePlus, Check, Clapperboard } from "lucide-react"
+import { Plus, X, Loader2, Trash2, ImagePlus, Check, Clapperboard, Sparkles, Ticket } from "lucide-react"
+import { assetCaptionTickets } from "@/lib/ai-text-pricing"
 import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
@@ -20,7 +21,8 @@ export type UserAsset = {
   kind: AssetKind
   name: string
   notes: string
-  refs: { id: string; url: string; thumb?: string | null }[]
+  /** caption / tags: what each picture shows - read by the Storyboard's AI draft to pick pictures per shot */
+  refs: { id: string; url: string; thumb?: string | null; caption?: string; tags?: string[] }[]
   updatedAt?: string
 }
 
@@ -58,10 +60,18 @@ export function useUserAssets(enabled: boolean) {
       put(asset)
       return asset
     },
-    update: async (o: { id: number; kind?: AssetKind; name?: string; notes?: string; addImageIds?: number[]; addUrls?: string[]; removeRefIds?: string[] }) => {
+    update: async (o: { id: number; kind?: AssetKind; name?: string; notes?: string; addImageIds?: number[]; addUrls?: string[]; removeRefIds?: string[]; captions?: Record<string, string>; order?: string[] }) => {
       const { asset, added } = await call<{ asset: UserAsset; added: number }>("PATCH", o)
       put(asset)
       return { asset, added }
+    },
+    /** Auto caption (Gemini): captions + tags for every picture, sorted by view - saved on the asset */
+    autoCaption: async (id: number) => {
+      const r = await fetch("/api/user/assets/caption", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assetId: id }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !j.asset) throw new Error(j?.error || `Captioning failed (${r.status})`)
+      put(j.asset as UserAsset)
+      return j.asset as UserAsset
     },
     remove: async (id: number) => {
       await call("DELETE", undefined, `?id=${id}`)
@@ -212,10 +222,12 @@ export function NewAssetModal({ onCreate, onClose }: {
 }
 
 /** One asset: rename, change kind, notes, remove pictures, add more, delete. */
-export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures }: {
+export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures, onAutoCaption }: {
   asset: UserAsset
   onClose: () => void
-  onUpdate: (o: { kind?: AssetKind; name?: string; notes?: string; removeRefIds?: string[] }) => Promise<void>
+  onUpdate: (o: { kind?: AssetKind; name?: string; notes?: string; removeRefIds?: string[]; captions?: Record<string, string> }) => Promise<void>
+  /** Gemini captions + tags for every picture, sorted by view (priced: lib/ai-text-pricing) */
+  onAutoCaption?: () => Promise<void>
   onDelete: () => Promise<void>
   onAddPictures: () => void
 }) {
@@ -225,6 +237,14 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   useEffect(() => { setName(asset.name); setNotes(asset.notes) }, [asset.id, asset.name, asset.notes])
+  // Each picture's description, edited in place and saved on blur
+  const [caps, setCaps] = useState<Record<string, string>>({})
+  useEffect(() => { setCaps(Object.fromEntries(asset.refs.map(r => [r.id, r.caption ?? ""]))) }, [asset.refs])
+  const saveCaption = (id: string) => {
+    const now = (caps[id] ?? "").trim(), was = asset.refs.find(r => r.id === id)?.caption ?? ""
+    if (now !== was) void run(`cap-${id}`, () => onUpdate({ captions: { [id]: now } }))
+  }
+  const described = asset.refs.filter(r => r.caption).length
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key); setErr(null)
     try { await fn() } catch (e: any) { setErr(String(e?.message || e)) } finally { setBusy(null) }
@@ -271,19 +291,46 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures 
             <BrandButton onClick={onAddPictures} primary size="md" icon={<ImagePlus size={14} />}>Add pictures from my generations</BrandButton>
           </div>
         ) : (
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+          <>
+          {/* Descriptions: what each picture shows - the Storyboard's AI draft
+              reads them to pick the right pictures for each shot */}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <p className="flex-1 min-w-[12rem] text-[11px] leading-snug text-slate-500">
+              Describe each picture (angle, pose, outfit...) so Storyboard&apos;s AI picks the right ones for each shot. {described}/{asset.refs.length} described.
+            </p>
+            {onAutoCaption && (
+              <BrandButton onClick={() => void run("auto", onAutoCaption)} busy={busy === "auto"} disabled={!!busy} size="sm" icon={<Sparkles size={13} />}
+                title="Gemini describes and tags every picture, then sorts them by view">
+                Auto caption
+                <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-black/25 px-1 font-mono text-[10px] opacity-80"><Ticket size={9} />{assetCaptionTickets(asset.refs.length)}</span>
+              </BrandButton>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             {asset.refs.map((r, k) => (
-              <div key={r.id} className="relative group aspect-square rounded-lg overflow-hidden border border-white/10">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={r.thumb || r.url} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
-                <span className="absolute bottom-0 left-0 px-1.5 py-0.5 bg-black/70 text-[9px] font-mono text-slate-200">{k + 1}</span>
-                <button
-                  onClick={() => void run(r.id, () => onUpdate({ removeRefIds: [r.id] }))}
-                  title="Remove from this asset (the picture stays in your generations)"
-                  className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/75 border border-white/15 flex items-center justify-center text-slate-300 hover:text-red-300 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  {busy === r.id ? <Loader2 size={11} className="animate-spin" /> : <X size={12} />}
-                </button>
+              <div key={r.id} className="flex flex-col gap-1">
+                <div className="relative group aspect-square rounded-lg overflow-hidden border border-white/10">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={r.thumb || r.url} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+                  <span className="absolute bottom-0 left-0 px-1.5 py-0.5 bg-black/70 text-[9px] font-mono text-slate-200">{k + 1}</span>
+                  <button
+                    onClick={() => void run(r.id, () => onUpdate({ removeRefIds: [r.id] }))}
+                    title="Remove from this asset (the picture stays in your generations)"
+                    className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/75 border border-white/15 flex items-center justify-center text-slate-300 hover:text-red-300 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    {busy === r.id ? <Loader2 size={11} className="animate-spin" /> : <X size={12} />}
+                  </button>
+                </div>
+                <textarea
+                  value={caps[r.id] ?? ""}
+                  onChange={e => setCaps(c => ({ ...c, [r.id]: e.target.value }))}
+                  onBlur={() => saveCaption(r.id)}
+                  rows={2}
+                  maxLength={300}
+                  placeholder="What this one shows"
+                  className="w-full resize-none rounded-md border border-white/10 bg-black/40 px-2 py-1 text-[10.5px] leading-snug text-slate-200 placeholder:text-slate-600 focus:border-white/35 focus:outline-none"
+                />
+                {!!r.tags?.length && <p className="truncate text-[9px] font-mono text-slate-500" title={r.tags.join(", ")}>{r.tags.join(" · ")}</p>}
               </div>
             ))}
             {asset.refs.length < MAX_ASSET_REFS && (
@@ -293,6 +340,7 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures 
               </button>
             )}
           </div>
+          </>
         )}
         {err && <p className="mt-3 text-[11px] text-red-300">{err}</p>}
       </div>

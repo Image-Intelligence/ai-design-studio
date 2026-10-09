@@ -35,6 +35,7 @@ import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/
 import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
+import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -601,7 +602,7 @@ async function uploadRefBlob(blob: Blob): Promise<string> {
   if (!res.ok) {
     // The server's ID gate (CCBill) - open the verification popup
     if (res.status === 403 && isIdGateError(await res.clone().json().catch(() => null))) throw new Error("Verify your ID to upload pictures")
-    throw new Error(`Upload failed (${res.status})`)
+    throw new Error(res.status === 413 ? "The picture is too big to upload" : `Upload failed (${res.status})`)
   }
   const data = await res.json()
   if (!data?.url) throw new Error("Upload returned no URL")
@@ -7101,7 +7102,7 @@ function RefDropdown({
   const buttonRef = useRef<HTMLButtonElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // In the taskbar's (CSS-zoomed) space: every px is divided by z
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1, width: 384, maxHeight: 600, underDock: 0 })
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1, width: 384, maxHeight: 600, underDock: 0, sheet: false })
   const [selectMode, setSelectMode] = useState(false)
   const [downloadingRefs, setDownloadingRefs] = useState<"idle" | "zipping" | "done">("idle")
   // Batch-download the selected references at ORIGINAL quality as one ZIP —
@@ -7304,15 +7305,25 @@ function RefDropdown({
       // last row up into view. The dock's own top padding is gradient, not box
       const dock = [...document.querySelectorAll<HTMLElement>("[data-prompt-dock]")].find(d => d.offsetHeight > 0)
       const dockTop = dock ? dock.getBoundingClientRect().top + 12 : vh
-      const underDock = Math.max(0, top + maxH - dockTop)
-      setMenuPos({ top: top / z, left: left / z, z, width: w / z, maxHeight: maxH / z, underDock: underDock / z })
+      /*
+       * Only where there is room. On a phone the prompt box (model, settings,
+       * Generate) is two thirds of the screen: lifted over the panel it left
+       * the header visible and not one picture (iPhone, 2026-10-09). With
+       * less than 340px - or under 45% of the screen - between the panel's
+       * top and the dock, the panel is a sheet OVER the prompt box instead,
+       * using the full height; closing it brings the prompt box back.
+       */
+      const roomy = dockTop - top >= Math.max(340, vh * 0.45)
+      const underDock = roomy ? Math.max(0, top + maxH - dockTop) : 0
+      // While open (and roomy), globals.css lifts the prompt dock above the
+      // taskbar (whose layer this panel lives in) - for Refs only, so the
+      // model menus are never covered
+      if (roomy) document.documentElement.setAttribute("data-refs-open", "")
+      else document.documentElement.removeAttribute("data-refs-open")
+      setMenuPos({ top: top / z, left: left / z, z, width: w / z, maxHeight: maxH / z, underDock: underDock / z, sheet: !roomy })
     }
     place()
     window.addEventListener("resize", place)
-    // While open, the page knows: globals.css lifts the prompt dock above the
-    // taskbar (whose layer this panel lives in) - for Refs only, so the model
-    // menus are never covered
-    document.documentElement.setAttribute("data-refs-open", "")
     return () => {
       window.removeEventListener("resize", place)
       document.documentElement.removeAttribute("data-refs-open")
@@ -7426,7 +7437,8 @@ function RefDropdown({
       )}
       {open && idVerified !== false && (
         <div
-          className="fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border border-white/[0.09] bg-[#070b14]/96 shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)] backdrop-blur-xl"
+          // A sheet over the prompt box is solid - its white prompt text showed through the 96% glass
+          className={`fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border border-white/[0.09] shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)] ${menuPos.sheet ? "bg-[#070b14]" : "bg-[#070b14]/96 backdrop-blur-xl"}`}
           style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}
         >
           {/* ── Header: title + ID mark on the left, close on the right ── */}
@@ -8321,6 +8333,7 @@ function TextDropdown({
                 <p className="text-[10px] text-red-400 leading-snug">
                   {genError}
                   {limitHit && <a href="/prompting-studio/subscribe" className="ml-1 text-violet-300 hover:text-violet-200 underline">See plans</a>}
+                  {/ticket/i.test(genError) && <a href="/buy-tickets" className="ml-1 text-violet-300 hover:text-violet-200 underline">Buy tickets</a>}
                 </p>
               )}
               <button
@@ -8340,6 +8353,10 @@ function TextDropdown({
                 )}
                 {generating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                 {!signedIn ? "Sign in to enhance" : generating ? "Enhancing\u2026" : left === 0 ? "Daily limit reached" : "Enhance"}
+                {/* Its price (lib/ai-text-pricing) - admins aren't charged */}
+                {signedIn && !allowance?.isAdmin && !generating && left !== 0 && (
+                  <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-black/30 px-1 font-mono text-[10px] text-slate-300"><Ticket size={9} />{ENHANCE_TICKETS}</span>
+                )}
               </button>
 
               {/* Today's allowance */}
@@ -26408,19 +26425,21 @@ export default function PortalV2Page() {
   const [scannerMode, setScannerMode] = useState<"image" | "video" | "chat" | "home" | "employees" | "threed" | "audio">("home")
   // Which employee workspace is open inside the Employees section
   const [activeEmployee, setActiveEmployee] = useState<EmployeeId | null>(null)
-  // "Open in Image Studio" (Edit Reference popup, Refs library): the studio is
-  // admin-only, so the buttons only exist for an admin account
+  // "Open in Image Studio" (Edit Reference popup, Refs library): for every
+  // signed-in account the studio is open to (public 2026-10-08 - it was
+  // admin-only); the admin flag only adds the admin-only models to its AI tools
   const [studioOpenReq, setStudioOpenReq] = useState<(StudioOpenRequest & { nonce: number }) | null>(null)
+  const studioUser = !!user && employeeVisibleTo("image-studio", isAdminAccount)
   useEffect(() => {
-    if (!isAdminAccount) { registerImageStudio(null); return }
+    if (!studioUser) { registerImageStudio(null); return }
     registerImageStudio(r => {
       setStudioOpenReq({ ...r, nonce: Date.now() })
       setOpenDropdown(null)
       setActiveEmployee("image-studio")
       setScannerMode("employees")
-    })
+    }, isAdminAccount)
     return () => registerImageStudio(null)
-  }, [isAdminAccount])
+  }, [studioUser, isAdminAccount])
   const VALID_MODES = ["image", "video", "chat", "home", "employees", "threed", "audio"] as const
   type ScannerMode = (typeof VALID_MODES)[number]
   // Set when a mode change came from restore/popstate — those must not push a new entry.
@@ -29406,7 +29425,13 @@ export default function PortalV2Page() {
     setRefLibrary(prev => prev.map(r => r.id === id ? { ...r, url: newUrl } : r))
     if (!old) return null
     try {
-      if (/^\d+$/.test(id)) await fetch(`/api/user/references?ids=${id}`, { method: "DELETE" })
+      /*
+       * Upload and re-create FIRST, delete the old row only once the new one
+       * exists (2026-10-09). It used to delete first: when the upload then
+       * failed (a big edit through the ~4.5MB function cap, a dropped phone
+       * connection) the original was gone from the server and the edit lived
+       * only in this tab - "it isn't saving my edits".
+       */
       const blob = await (await fetch(newUrl)).blob()
       const url = await uploadRefBlob(blob)
       const res = await fetch("/api/user/references", {
@@ -29418,6 +29443,7 @@ export default function PortalV2Page() {
       const row = (await res.json()).references?.[0]
       if (!row) throw new Error("no row returned")
       const newId = String(row.id)
+      if (/^\d+$/.test(id)) await fetch(`/api/user/references?ids=${id}`, { method: "DELETE" }).catch(() => {})
       // Multi-layer stacks ride along to the re-created row. If the base lived
       // in Layer 1, Apply just flattened everything into the new image — reset
       // to a fresh base layer holding it, so nothing double-composites.
@@ -29441,6 +29467,9 @@ export default function PortalV2Page() {
       return { id: newId, url: row.url, folderId: row.folderId ?? null, layers: carriedStack }
     } catch (err) {
       console.error("Edited ref sync failed (kept locally):", err)
+      // The open Edit Image popup says so (components/image-studio/EditImagePopup) -
+      // the original is still saved; the edit stays on screen to Apply again
+      try { window.dispatchEvent(new CustomEvent("ref-edit-save-failed", { detail: String((err as Error)?.message || err) })) } catch {}
       // Row sync failed — editing continues locally against the data URL
       return { id, url: newUrl, folderId: old.folderId ?? null, layers: old.layers ?? null }
     }
@@ -29456,6 +29485,13 @@ export default function PortalV2Page() {
   const [genEditCanvas, setGenEditCanvas] = useState<{ ref: RefImage; stack: RefLayerStack } | null>(null)
   // Frame Extractor (taskbar "Frames" button)
   const [framesOpen, setFramesOpen] = useState(false)
+  // The dashboard's Frame Extractor card (2026-10-08) leaves a one-time
+  // "pv2-open-frames" note: the tool is a popup, not a restorable workspace
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("pv2-open-frames") === "1") { sessionStorage.removeItem("pv2-open-frames"); setFramesOpen(true) }
+    } catch {}
+  }, [])
   // ── Admin batch mode ──
   // Batches of REF IDS; each becomes its own generation sharing the prompt.
   // Admin-only: it intentionally bypasses the one-at-a-time rhythm normal

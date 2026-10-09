@@ -346,7 +346,17 @@ export const ASSET_KINDS = [
   { id: 'other', label: 'Other' },
 ] as const
 export type AssetKind = (typeof ASSET_KINDS)[number]['id']
-export type AssetRef = { id: string; url: string; active: boolean }
+/**
+ * One picture of an asset. `caption` (2026-10-08): what's distinct about THIS
+ * picture - the angle, pose, expression, outfit detail - written by hand or by
+ * Auto caption (Gemini), with short `tags`. The AI draft reads them to pick the
+ * right pictures for each shot instead of sending all of an asset's photos.
+ */
+export type AssetRef = { id: string; url: string; active: boolean; caption?: string; tags?: string[] }
+export const MAX_CAPTION = 300
+export const cleanCaption = (c: unknown) => (typeof c === 'string' ? c.trim().slice(0, MAX_CAPTION) : '')
+export const cleanTags = (t: unknown): string[] =>
+  Array.isArray(t) ? [...new Set(t.filter((x): x is string => typeof x === 'string').map(x => x.trim().toLowerCase().slice(0, 24)).filter(Boolean))].slice(0, 8) : []
 /**
  * `libraryId`: the account's saved asset (UserAsset, lib/user-assets) this
  * board copy came from or was saved to - "Save to My Assets" updates that one
@@ -372,7 +382,10 @@ export function sanitizeAssets(raw: unknown): StoryAsset[] {
     refs: (Array.isArray(a?.refs) ? a.refs : [])
       .filter((r: any) => /^https:\/\//.test(str(r?.url, 2000)))
       .slice(0, MAX_ASSET_REFS)
-      .map((r: any) => ({ id: str(r?.id, 64) || newId('r'), url: str(r?.url, 2000), active: r?.active === true })),
+      .map((r: any) => {
+        const caption = cleanCaption(r?.caption), tags = cleanTags(r?.tags)
+        return { id: str(r?.id, 64) || newId('r'), url: str(r?.url, 2000), active: r?.active === true, ...(caption ? { caption } : {}), ...(tags.length ? { tags } : {}) }
+      }),
   }))
 }
 
@@ -394,6 +407,15 @@ export type StoryScene = {
    * board-wide switched-on set - so scene 3's stills carry scene 3's cast.
    */
   assetIds: string[]
+  /**
+   * The scene as a reference for the AI draft (2026-10-08): `asRef` switches
+   * the whole scene on, and its stills become pictures the draft may hand to
+   * new shots ("Scene 2 #3") - the same faces, set and outfits carried into
+   * the scenes that follow. `refOff` = the shots of it left out. A still made
+   * later in a switched-on scene joins automatically. See sceneRefAssets.
+   */
+  asRef?: boolean
+  refOff?: string[]
 }
 export const MAX_SCENES = 30
 export const newScene = (partial: Partial<StoryScene> = {}): StoryScene => ({
@@ -414,9 +436,47 @@ export function sanitizeScenes(raw: unknown): StoryScene[] {
       setting: str(r?.setting, 160),
       summary: str(r?.summary, 2000),
       assetIds: (Array.isArray(r?.assetIds) ? r.assetIds : []).filter((x: unknown) => typeof x === 'string').slice(0, MAX_ASSETS).map((x: string) => x.slice(0, 64)),
+      ...(r?.asRef === true ? { asRef: true } : {}),
+      ...(r?.asRef === true && Array.isArray(r?.refOff) && r.refOff.length
+        ? { refOff: (r.refOff as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, MAX_SHOTS).map(x => x.slice(0, 64)) }
+        : {}),
     })
   }
   return out
+}
+
+/** A still's description, from its shot: the title and the plain-language "what we see". */
+export const shotCaption = (s: Pick<StoryboardShot, 'title' | 'description' | 'imagePrompt'>) => {
+  const what = (s.description || s.imagePrompt.split(/(?<=[.!?])\s/)[0] || '').trim()
+  return [s.title.trim(), what].filter(Boolean).join(': ').slice(0, MAX_CAPTION)
+}
+
+/** How the draft names a scene used as a reference: "Scene 2". */
+export const sceneRefName = (k: number) => `Scene ${k + 1}`
+/** The id a scene's pseudo-asset carries ("scene:<scene id>") - never a board asset's. */
+export const SCENE_REF_PREFIX = 'scene:'
+
+/** The shots of a scene that go into its reference set: those with a still, minus the ones left out. */
+export const sceneRefShots = (shots: StoryboardShot[], scene: StoryScene) =>
+  scene.asRef ? shots.filter(s => s.sceneId === scene.id && s.stillUrl && !scene.refOff?.includes(s.id)) : []
+
+/**
+ * The switched-on scenes as assets the AI draft can pick pictures from: one
+ * per scene, named "Scene N", each still described from its own shot (led by
+ * the scene's name, the same shape Auto caption writes). Not stored - built
+ * from the board each time, so a remade still is the one that goes.
+ */
+export function sceneRefAssets(board: { scenes: StoryScene[]; shots: StoryboardShot[] }): StoryAsset[] {
+  return board.scenes.flatMap((c, k) => {
+    const own = sceneRefShots(board.shots, c)
+    if (!own.length) return []
+    const name = sceneRefName(k)
+    const about = [c.title, c.setting, c.summary].filter(Boolean).join(' - ').slice(0, 1000)
+    return [{
+      id: `${SCENE_REF_PREFIX}${c.id}`, kind: 'other' as AssetKind, name, notes: about,
+      refs: own.map(s => ({ id: `s${s.id}`, url: s.stillUrl!, active: false, caption: `${name} - ${shotCaption(s)}`.slice(0, MAX_CAPTION) })),
+    }]
+  }).slice(0, MAX_SCENES)
 }
 
 /**
@@ -495,6 +555,72 @@ export function migrateActiveRefs<T extends Pick<StoryboardDoc, 'assets' | 'scen
     return { ...s, refs: on.map(r => ({ id: newId('r'), url: r.url, on: true, assetId: r.assetId })).slice(0, MAX_SHOT_REFS) }
   })
   return { ...b, shots, assets: b.assets.map(a => ({ ...a, refs: a.refs.map(r => ({ ...r, active: false })) })) }
+}
+
+/** How the AI draft names one picture: "<asset name> #<n>" (1-based). */
+export const photoLabel = (a: Pick<StoryAsset, 'name'>, k: number) => `${a.name} #${k + 1}`
+
+/**
+ * The pictures the AI draft named for a shot ("Mara #2", "Red dress #1"...),
+ * from any asset, as the shot's own list. Labels that don't match are dropped;
+ * none matching = null (the caller falls back to whole assets).
+ */
+export function refsFromPhotos(assets: StoryAsset[], labels: unknown): ShotRef[] | null {
+  if (!Array.isArray(labels)) return null
+  const out: ShotRef[] = []
+  const seen = new Set<string>()
+  for (const raw of labels) {
+    if (typeof raw !== 'string') continue
+    const m = raw.trim().match(/^(.*?)\s*#\s*(\d+)$/)
+    if (!m) continue
+    const name = m[1].trim().toLowerCase(), k = parseInt(m[2]) - 1
+    const a = assets.find(x => x.name.trim().toLowerCase() === name)
+    const r = a?.refs[k]
+    if (!a || !r || seen.has(r.url)) continue
+    seen.add(r.url)
+    out.push({ id: newId('r'), url: r.url, on: true, assetId: a.id })
+    if (out.length >= MAX_SHOT_REFS) break
+  }
+  return out.length ? out : null
+}
+
+/**
+ * Models that need EVERY reference slot filled to hold a character's likeness
+ * (2026-10-08). Their few slots (2-5: Ideogram 4.5, FLUX 2, Qwen, Grok, Luma
+ * Uni, Wan 2.7...) are all the identity they get, and the owner saw an
+ * Ideogram character board made from one picture each while the asset had
+ * eleven. Models with many slots (Nano Banana's 14) stay with the plan's own
+ * picks - more pictures there do not help.
+ */
+export const isRefHungryModel = (id: string) => {
+  const n = stillModelSpec(id).maxRefs
+  return n >= 2 && n <= 5
+}
+
+/**
+ * A shot's list topped up to its model's slots with more pictures of the
+ * characters / creatures already in it, for a ref-hungry model: those
+ * pictures go after the plan's picks (so "the first reference image" in the
+ * prompt still means the same one), a turn from each character at a time,
+ * in each asset's order (Auto caption sorts it best-first, then by view). An
+ * edit's source still takes one slot. Other models' lists come back as is.
+ */
+export function fillCharacterSlots(assets: StoryAsset[], refs: ShotRef[], model: string, editing: boolean): ShotRef[] {
+  if (!isRefHungryModel(model)) return refs
+  const room = stillModelSpec(model).maxRefs - (editing ? 1 : 0) - refs.length
+  if (room <= 0) return refs
+  const cast = [...new Set(refs.map(r => r.assetId).filter((x): x is string => !!x))]
+    .map(id => assets.find(a => a.id === id))
+    .filter((a): a is StoryAsset => !!a && (a.kind === 'character' || a.kind === 'creature'))
+  if (!cast.length) return refs
+  const have = new Set(refs.map(r => stillKey(r.url)))
+  const queues = cast.map(a => a.refs.filter(r => !have.has(stillKey(r.url))).map(r => ({ url: r.url, assetId: a.id })))
+  const extra: ShotRef[] = []
+  for (let k = 0; extra.length < room && queues.some(q => q.length); k = (k + 1) % queues.length) {
+    const next = queues[k].shift()
+    if (next) extra.push({ id: newId('r'), url: next.url, on: true, assetId: next.assetId })
+  }
+  return [...refs, ...extra]
 }
 
 /** Every ref of these assets, switched on - a shot's list as the AI draft sets it. */
@@ -898,8 +1024,14 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
 
 /** The planner's menu: one line per model, image ids and video labels. */
 export function storyboardModelMenu(): { images: string; videos: string } {
+  // Each model's reference slots, so the plan picks as many pictures as the
+  // model takes (2026-10-08: Ideogram's 5 slots got one picture of a character)
+  const slots = (id: string, refs: boolean) => {
+    const n = refs ? stillModelSpec(id).maxRefs : 0
+    return n ? `, takes up to ${n} reference image${n === 1 ? '' : 's'}` : ', no reference images'
+  }
   return {
-    images: STORYBOARD_IMAGE_MODELS.map(m => `- ${m.id} (${m.label}${m.refs ? '' : ', no reference images'}): ${STORYBOARD_MODEL_NOTES[m.id] ?? 'general image model'}`).join('\n'),
+    images: STORYBOARD_IMAGE_MODELS.map(m => `- ${m.id} (${m.label}${slots(m.id, !!m.refs)}): ${STORYBOARD_MODEL_NOTES[m.id] ?? 'general image model'}`).join('\n'),
     videos: STORYBOARD_VIDEO_MODELS.map(l => `- ${l}: ${STORYBOARD_MODEL_NOTES[l] ?? 'image-to-video'}`).join('\n'),
   }
 }

@@ -11,6 +11,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { enforceContentFilter } from '@/lib/content-filter'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { ENHANCE_TICKETS } from '@/lib/ai-text-pricing'
 import {
   ENHANCE_LIMITS, ENHANCE_PLAN_LABEL, enhancePlanFor, enhanceUsedToday,
   consumeEnhance, refundEnhance, runEnhance,
@@ -70,6 +72,16 @@ export async function POST(req: NextRequest) {
     }, { status: 429 })
   }
 
+  // Priced since 2026-10-08 (lib/ai-text-pricing); the daily cap above stays
+  // as an abuse limit. Refunded with the allowance whenever it fails.
+  const paid = await deductGenerationTickets(user.id, user.email ?? '', ENHANCE_TICKETS)
+  if (!paid.ok) {
+    await refundEnhance(user.id)
+    return NextResponse.json({ error: `Enhance needs ${paid.need} ticket - you have ${paid.have}`, needTickets: true }, { status: 402 })
+  }
+  const charged = paid.newBalance >= 0 ? ENHANCE_TICKETS : 0
+  const refundTickets = () => (charged ? refundGenerationTickets(user.id, user.email ?? '', charged) : Promise.resolve())
+
   try {
     const { prompt, model } = await runEnhance(
       { idea, existing, styles, target, modelName },
@@ -79,12 +91,14 @@ export async function POST(req: NextRequest) {
     const outCf = await enforceContentFilter(prompt, user.email)
     if (!outCf.ok) {
       await refundEnhance(user.id)
+      await refundTickets()
       return NextResponse.json({ error: outCf.reason }, { status: 400 })
     }
     console.log(`[enhance] user ${user.id} (${plan}) ${target} via ${model}`)
-    return NextResponse.json({ prompt, ...allowance(plan, Number.isFinite(limit) ? used : 0) })
+    return NextResponse.json({ prompt, tickets: charged, ...(charged ? { balance: paid.newBalance } : {}), ...allowance(plan, Number.isFinite(limit) ? used : 0) })
   } catch (e) {
     await refundEnhance(user.id)
+    await refundTickets()
     console.error('[enhance] failed:', e)
     return NextResponse.json({ error: 'Enhancement failed - try again in a moment.' }, { status: 502 })
   }

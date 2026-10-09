@@ -3,6 +3,8 @@ import prisma from '@/lib/prisma'
 import { requireStoryboardUser } from '@/lib/storyboard-gate'
 import { openShotModels } from '@/lib/storyboard-access'
 import { jsonPrivate } from '@/lib/api-json'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { SHOT_EDIT_TICKETS, geminiUsage } from '@/lib/ai-text-pricing'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import {
   STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, DURATIONS,
@@ -25,7 +27,8 @@ import {
  * good at, and the site's own prompting guide for the models in play - so a
  * prompt moved to a new model is rewritten the way THAT model wants it.
  *
- * Any signed-in account (free - one small Gemini call).
+ * Any signed-in account; SHOT_EDIT_TICKETS (lib/ai-text-pricing, 2026-10-08 -
+ * it used to be free), charged before the call and refunded if it fails.
  */
 export const runtime = 'nodejs'
 // Gemini slows badly under load (see the draft route)
@@ -40,7 +43,9 @@ type Scope = 'image' | 'video' | 'both'
 const clip = (s: string | undefined, n: number) => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
 const videoSpec = (label: string) => getCreateModel(STORYBOARD_VIDEO_IDS[label] ?? '')
 
-export async function POST(req: NextRequest, ctx: Ctx) {
+type Bill = { user: { id: number; email: string } | null; tickets: number; balance: number | null }
+
+async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const user = await requireStoryboardUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   if (!GEMINI_API_KEY) return jsonPrivate({ error: 'GEMINI_API_KEY is not configured' }, { status: 500 })
@@ -111,6 +116,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     'Leave a field "" (or duration null) when it does not change.',
   ].filter(Boolean).join('\n')
 
+  // One small job: charged now, refunded by POST if anything after this fails
+  const paid = await deductGenerationTickets(user.id, user.email, SHOT_EDIT_TICKETS)
+  if (!paid.ok) return jsonPrivate({ error: `Edit with AI needs ${paid.need} ticket - you have ${paid.have}`, needTickets: true }, { status: 402 })
+  if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = SHOT_EDIT_TICKETS; bill.balance = paid.newBalance }
+
   const call = async (thinking: boolean) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -125,6 +135,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (res.status === 400) res = await call(false)
     if (!res.ok) return jsonPrivate({ error: `The edit failed (${res.status})` }, { status: 502 })
     const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+    { const u = geminiUsage(data); console.log(`[ai-usage] storyboard-shot-edit in=${u.in} out=${u.out} tickets=${SHOT_EDIT_TICKETS}`) }
     const text = (data.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')
     let out: any
     try { out = JSON.parse(text) } catch { return jsonPrivate({ error: 'The model did not return a readable edit - try again' }, { status: 502 }) }
@@ -153,9 +164,22 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     }
     if (!Object.keys(patch).length) return jsonPrivate({ error: 'Nothing changed - try saying it differently' }, { status: 422 })
     // A non-admin is never switched to a model they cannot use
-    return jsonPrivate({ patch: openShotModels(patch as { imageModel?: string; videoModel?: string }, user.isAdmin), note: typeof out?.note === 'string' ? out.note.slice(0, 300) : '' })
+    return jsonPrivate({ patch: openShotModels(patch as { imageModel?: string; videoModel?: string }, user.isAdmin), note: typeof out?.note === 'string' ? out.note.slice(0, 300) : '', tickets: bill.tickets, ...(bill.balance !== null && bill.balance >= 0 ? { balance: bill.balance } : {}) })
   } catch (err: any) {
     const msg = String(err?.message || err)
     return jsonPrivate({ error: msg.includes('timeout') || msg.includes('aborted') ? 'The edit timed out - Gemini is slow right now, try again' : `The edit failed: ${msg.slice(0, 200)}` }, { status: 502 })
+  }
+}
+
+/** The handler, with the refund: a charged edit that ends in an error gives the ticket back. */
+export async function POST(req: NextRequest, ctx: Ctx) {
+  const bill: Bill = { user: null, tickets: 0, balance: null }
+  try {
+    const res = await handle(req, ctx, bill)
+    if (res.status >= 400 && bill.user && bill.tickets > 0) await refundGenerationTickets(bill.user.id, bill.user.email, bill.tickets)
+    return res
+  } catch (e) {
+    if (bill.user && bill.tickets > 0) await refundGenerationTickets(bill.user.id, bill.user.email, bill.tickets)
+    throw e
   }
 }

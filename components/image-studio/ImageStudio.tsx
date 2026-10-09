@@ -1,7 +1,7 @@
 "use client"
 
 /**
- * Image Studio (portal-v2 Studios, admin-only) - layered image editing.
+ * Image Studio (portal-v2 Studios, public 2026-10-07; on Home + the dashboard 2026-10-08) - layered image editing.
  *
  * The home screen lists the account's canvases and starts new ones: blank
  * (a size and a background), from a file on this device, or from the Refs
