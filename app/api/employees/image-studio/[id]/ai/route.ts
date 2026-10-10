@@ -15,6 +15,7 @@ import { buildFalCall } from '@/lib/chat-hub-create'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { stillModelSpec, stillBuildOptions, GPT_SIZE_FOR_ASPECT } from '@/lib/storyboard'
 import { requireIdVerified } from '@/lib/id-verification'
+import { mediaKeeper } from '@/lib/media-ownership'
 import {
   type StudioGenOp, FILL_MAX_PIXELS, EXPAND_MAX_PIXELS, UPSCALE_MAX_SIDE, ERASE_TICKETS, EXPAND_TICKETS,
   fillTickets, isUpscaler, upscaleFactor, upscaleTickets, UPSCALERS, STUDIO_IMAGE_MODELS, genTickets, canEdit, isAdminOnlyModel, validAspect,
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // Every tool that works on a picture (fill, erase, expand, upscale, edit,
   // generate from a reference) reads pixels the browser uploaded - verified
   // accounts only. Generating from words alone stays open.
-  if (body.op !== 'generate' || body.image || body.mask) {
+  if (body.op !== 'generate' || body.image || body.mask || (Array.isArray(body.refs) && body.refs.length)) {
     const gated = await requireIdVerified(user)
     if (gated) return gated
   }
@@ -106,6 +107,16 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return u.includes(`/u/${user.id}/image-studio/`) ? u : ''
   }
   const image = own(body.image), mask = own(body.mask)
+  /*
+   * References the user added in the panel (2026-10-09): from their Refs, My
+   * Generations or My Assets - the account's own pictures only (an admin's
+   * pass). They go AFTER the picture the tool sends itself (the canvas, the
+   * layer, the selection), up to what the model takes.
+   */
+  const sentRefs = (Array.isArray(body.refs) ? body.refs : []).filter((u: unknown): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 16).map((u: string) => canonicalMediaUrl(u))
+  const keepRef = sentRefs.length && !(await checkIsAdmin(user.email)) ? await mediaKeeper(user.id, sentRefs) : () => true
+  const extraRefs: string[] = [...new Set<string>(sentRefs.filter((u: string) => keepRef(u)))]
+  if (sentRefs.length && !extraRefs.length) return jsonPrivate({ error: 'References must be your own pictures' }, { status: 400 })
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 2000) : ''
   if (op !== 'generate' && !image) return bad('Upload the picture first')
   if ((op === 'fill' || op === 'erase') && !mask) return bad('Make a selection first')
@@ -199,7 +210,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       quality = typeof body.quality === 'string' && knobs.qualities.includes(body.quality) ? body.quality : (knobs.defQuality || '2k')
       // One of the model's own frames ("auto" where it has it, as on the portal)
       const aspect = validAspect(spec.id, body.aspect, src?.w ?? 1, src?.h ?? 1)
-      const refs = image && spec.refs ? [image] : []
+      // The tool's own picture first (the layer / canvas / selection), then the added ones
+      const refs = spec.refs ? [...(image ? [image] : []), ...extraRefs.filter(u => u !== image)].slice(0, Math.max(image ? 1 : 0, knobs.maxRefs)) : []
       // Sized for the model where it limits uploads (Ideogram)
       // The model's own settings from the panel (Thinking, Web search...), kept to
       // the values it offers; an admin-only one (Safety) only from an admin

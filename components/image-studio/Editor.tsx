@@ -46,6 +46,7 @@ import {
   fillRegion, fillTickets, editAspect, EXPAND_MAX_SIDE, EXPAND_MAX_PIXELS, EXPAND_TICKETS, UPSCALE_MAX_SIDE,
 } from "@/lib/image-studio-ai"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
+import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 
 type Tool = "move" | "marquee" | "lasso" | "ai" | "crop" | "brush" | "eraser" | "blur" | "fill" | "gradient" | "text" | "shape" | "eyedropper" | "hand"
 type SelMode = "new" | "add" | "subtract" | "intersect"
@@ -146,10 +147,21 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [expandPrompt, setExpandPrompt] = useState("")
   const [panelOpen, setPanelOpen] = useState(true)
-  const [refPicker, setRefPicker] = useState(false)
+  // The Refs picker: adding a layer, or replacing the selected layer's picture
+  const [refPicker, setRefPicker] = useState<false | "add" | "replace">(false)
+  // The Refs it lists: the portal's library, or (the Edit Image popup gets none) loaded here
+  const [ownRefs, setOwnRefs] = useState<{ id: string; url: string }[] | null>(null)
+  const openRefPicker = (mode: "add" | "replace") => {
+    if (!gateUpload()) return
+    setRefPicker(mode)
+    if (!refLibrary.length && !ownRefs) {
+      fetch("/api/user/references").then(r => (r.ok ? r.json() : null)).then(j => setOwnRefs(((j?.references ?? []) as { id: number | string; url: string }[]).map(r => ({ id: String(r.id), url: r.url })))).catch(() => setOwnRefs([]))
+    }
+  }
   const [exportOpen, setExportOpen] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const replaceFileRef = useRef<HTMLInputElement>(null)
 
   // ── view ──
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -669,12 +681,19 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     apply("Add layer", dd => insertLayer(dd, layer, { pix }))
     setSelectedId(layer.id); setMaskEdit(false)
   }
-  const addLayer = async (what: "empty" | "image" | "refs" | "text" | "shape" | "adjust") => {
+  const addLayer = async (what: "empty" | "image" | "refs" | "library" | "text" | "shape" | "adjust") => {
     const d = docRef.current
     if (!d) return
     if (what === "image") { fileRef.current?.click(); return }
     // Refs are the account's uploads - locked until it is ID-verified (CCBill)
-    if (what === "refs") { if (gateUpload()) setRefPicker(true); return }
+    if (what === "refs") { openRefPicker("add"); return }
+    // My Generations / My Assets (the site-wide picker), several at once
+    if (what === "library") {
+      if (!gateUpload()) return
+      const urls = await openLibraryPicker({ max: Math.max(1, Math.min(10, MAX_LAYERS - d.layers.length)), title: "Add as layers" })
+      for (const u of urls) { try { addPixelsAsLayer(await loadToCanvas(u, MAX_CANVAS_SIDE), "Image", u) } catch (e: any) { flash(String(e?.message || e), true) } }
+      return
+    }
     if (d.layers.length >= MAX_LAYERS) { flash(`Up to ${MAX_LAYERS} layers`, true); return }
     if (what === "adjust") {
       // Changes everything under it; with a selection, only there (its mask)
@@ -828,6 +847,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   }
   const movePaint = (p: { x: number; y: number }) => {
     const D = drag.current
+    if (!D?.layer) return
     const lp = toLocal(D.layer, p.x, p.y)
     const cur = { x: (lp.x * D.base.width) / D.layer.w, y: (lp.y * D.base.height) / D.layer.h }
     stampLine(D, D.last, cur)
@@ -836,8 +856,15 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     rtOf(D.layer.id).content = undefined
     render()
   }
-  const endPaint = () => {
-    const D = drag.current
+  /*
+   * The stroke is handed in: pointer-up clears drag.current BEFORE it gets
+   * here, so reading it threw "null is not an object (evaluating 'D.layer')"
+   * on every brush / eraser / blur stroke (2026-10-09) - the error overlay on
+   * the dev server, and on the live site a stroke with no undo step that was
+   * never marked as an edit (so not saved).
+   */
+  const endPaint = (D: any = drag.current) => {
+    if (!D?.layer) return
     const rt = rtOf(D.layer.id)
     rt.live = false
     rt.content = undefined
@@ -1017,7 +1044,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     drag.current = null
     if (!D) return
     const d = docRef.current!
-    if (D.kind === "paint") return endPaint()
+    if (D.kind === "paint") return endPaint(D)
     if (D.kind === "move" || D.kind === "scale" || D.kind === "rotate" || D.kind === "moveGroup") {
       if (D.changed) pushHistory(D.kind === "move" ? "Move" : D.kind === "moveGroup" ? "Move group" : D.kind === "scale" ? "Resize" : "Rotate")
       render(); return
@@ -1184,11 +1211,53 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     }
     setCrop({ x: x0, y: y0, w, h })
   }
+  /*
+   * "Delete cropped pixels" (2026-10-09, on by default, as Photoshop's): a
+   * crop used to only shrink the canvas and shift the layers, so a cropped
+   * photo's layer kept the whole original - the move box reached past the
+   * picture, and "This layer" / Edit sent the AI the part cropped away. With
+   * it on, each image layer (and its mask) is cut to the new canvas. A rotated
+   * layer, text and shapes are left as they are. Undo brings the pixels back
+   * (each history step keeps its own canvases).
+   */
+  const [trimOnCrop, setTrimOnCrop] = useState(() => { try { return localStorage.getItem("studio-crop-trim") !== "0" } catch { return true } })
+  // Read through a ref: Enter applies the crop from a key handler bound once
+  const trimOnCropRef = useRef(trimOnCrop); trimOnCropRef.current = trimOnCrop
+  const toggleTrimOnCrop = () => setTrimOnCrop(v => { try { localStorage.setItem("studio-crop-trim", v ? "0" : "1") } catch {} return !v })
+  /** One layer cut to a W x H canvas (its box already in the new canvas's coordinates). */
+  const trimToCanvas = (l: StudioLayer, W: number, H: number): StudioLayer => {
+    if (l.kind !== "raster" || Math.abs((l.rotation ?? 0) % 360) > 0.01) return l
+    const rt = rts.current.get(l.id)
+    if (!rt?.pix || l.w <= 0 || l.h <= 0) return l
+    const ix0 = Math.max(0, l.x), iy0 = Math.max(0, l.y), ix1 = Math.min(W, l.x + l.w), iy1 = Math.min(H, l.y + l.h)
+    if (ix1 - ix0 < 1 || iy1 - iy0 < 1) return l // wholly outside: kept, it may be moved back in
+    if (ix0 <= l.x + 0.5 && iy0 <= l.y + 0.5 && ix1 >= l.x + l.w - 0.5 && iy1 >= l.y + l.h - 0.5) return l // already inside
+    // The kept part in the layer's own box, mirrored back for a flipped layer
+    let lx0 = ix0 - l.x, lx1 = ix1 - l.x, ly0 = iy0 - l.y, ly1 = iy1 - l.y
+    if (l.flipX) [lx0, lx1] = [l.w - lx1, l.w - lx0]
+    if (l.flipY) [ly0, ly1] = [l.h - ly1, l.h - ly0]
+    const cut = (src: HTMLCanvasElement) => {
+      const sx = src.width / l.w, sy = src.height / l.h
+      const out = newCanvas(Math.max(1, Math.round((lx1 - lx0) * sx)), Math.max(1, Math.round((ly1 - ly0) * sy)))
+      ctx2d(out).drawImage(src, lx0 * sx, ly0 * sy, (lx1 - lx0) * sx, (ly1 - ly0) * sy, 0, 0, out.width, out.height)
+      return out
+    }
+    const pix = cut(rt.pix)
+    const mask = rt.mask ? cut(rt.mask) : undefined
+    rt.pix = pix; rt.mask = mask; rt.content = undefined
+    return {
+      ...l, x: ix0, y: iy0, w: ix1 - ix0, h: iy1 - iy0, src: null, pw: pix.width, ph: pix.height,
+      ...(l.mask && mask ? { mask: { ...l.mask, src: null, mw: mask.width, mh: mask.height } } : {}),
+    }
+  }
   const applyCrop = () => {
     const c = cropRef.current
     if (!c) return
     const w = Math.round(Math.min(MAX_CANVAS_SIDE, c.w)), h = Math.round(Math.min(MAX_CANVAS_SIDE, c.h))
-    apply("Crop", d => ({ ...d, width: w, height: h, layers: d.layers.map(l => ({ ...l, x: l.x - c.x, y: l.y - c.y })) }))
+    apply("Crop", d => {
+      const moved = d.layers.map(l => ({ ...l, x: l.x - c.x, y: l.y - c.y }))
+      return { ...d, width: w, height: h, layers: trimOnCropRef.current ? moved.map(l => trimToCanvas(l, w, h)) : moved }
+    })
     setSelection(null)
     setCrop({ x: 0, y: 0, w, h })
     requestAnimationFrame(() => fitView())
@@ -1671,6 +1740,40 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         apply(req.op === "fill" ? "Generative fill" : "Remove object", dd => addOnTop(dd, layer, { pix, mask: m }))
         setSelectedId(layer.id); setMaskEdit(false)
         flash(`${req.op === "fill" ? "Filled" : "Removed"} - a new layer, masked to the selection${paidNote(j.tickets)}`)
+      } else if (req.op === "regen") {
+        // Exactly the selected box (no margin) of the picture as it looks, as an
+        // edit at the frame that fits it; back in the same box, masked to the selection
+        const S = sel.current.canvas
+        const b = S ? selectionBounds(S) : null
+        if (!S || !b) throw new Error("Make a selection first")
+        const bx = Math.max(0, Math.floor(b.x)), by = Math.max(0, Math.floor(b.y))
+        const bw = Math.min(d.width, Math.ceil(b.x + b.w)) - bx, bh = Math.min(d.height, Math.ceil(b.y + b.h)) - by
+        if (bw < 16 || bh < 16) throw new Error("The selection is too small to re-generate")
+        const part = newCanvas(bw, bh), px = ctx2d(part)
+        px.fillStyle = "#fff"; px.fillRect(0, 0, bw, bh)
+        px.drawImage(flatten(d, rts.current, true), bx, by, bw, bh, 0, 0, bw, bh)
+        const image = await putBlob("ai", await toBlob(fitWithin(part, 4096), "image/jpeg", 0.95))
+        const j = await postGen({ op: "edit", image, prompt: req.prompt, model: req.model, quality: req.quality, aspect: editAspect(req.model, bw, bh), options: req.options, refs: req.refs })
+        let pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
+        // A model that returned another shape is cropped to the box's, centred (as an AI edit)
+        const ar = pix.width / pix.height, boxAr = bw / bh
+        if (Math.abs(Math.log(ar / boxAr)) > 0.02) {
+          const cw = ar > boxAr ? Math.round(pix.height * boxAr) : pix.width, ch = ar > boxAr ? pix.height : Math.round(pix.width / boxAr)
+          const crop = newCanvas(cw, ch)
+          ctx2d(crop).drawImage(pix, (pix.width - cw) / 2, (pix.height - ch) / 2, cw, ch, 0, 0, cw, ch)
+          pix = crop
+        } else uploaded.current.set(pix, j.url)
+        // Masked to the selection's own shape (a lasso changes only what it encloses), edge softened a touch
+        const regionSel = newCanvas(bw, bh); ctx2d(regionSel).drawImage(S, -bx, -by)
+        const m = newCanvas(pix.width, pix.height)
+        ctx2d(m).drawImage(featherSelection(regionSel, Math.max(1, Math.round(Math.max(bw, bh) * 0.003))), 0, 0, pix.width, pix.height)
+        const layer: StudioLayer = {
+          ...rasterLayer(`Re-generated: ${req.prompt.slice(0, 24)}`, pix, { x: bx, y: by, w: bw, h: bh }),
+          mask: { src: null, enabled: true, mw: pix.width, mh: pix.height },
+        }
+        apply("Re-generate selection", dd => addOnTop(dd, layer, { pix, mask: m }))
+        setSelectedId(layer.id); setMaskEdit(false)
+        flash(`Re-generated - a new layer over the selection${paidNote(j.tickets)}`)
       } else if (req.op === "upscale") {
         const cur = d.layers.find(l => l.id === selectedIdRef.current)
         const src = req.target === "canvas" ? flatten(d, rts.current, true) : cur?.kind === "raster" ? rtOf(cur.id).pix : undefined
@@ -1704,7 +1807,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         const content = cur ? layerContent(cur, rtOf(cur.id)) : null
         if (!cur || !content) throw new Error("Pick a layer to edit")
         const image = await putBlob("ai", await toBlob(fitWithin(content, 4096), "image/png"))
-        const j = await postGen({ op: "edit", image, prompt: req.prompt, model: req.model, quality: req.quality, aspect: editAspect(req.model, cur.w, cur.h), options: req.options })
+        const j = await postGen({ op: "edit", image, prompt: req.prompt, model: req.model, quality: req.quality, aspect: editAspect(req.model, cur.w, cur.h), options: req.options, refs: req.refs })
         let pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
         // The edit takes the original's exact place. A model that returned another shape (some
         // have no size for a 21:9 frame, or follow the reference's own) is cropped to it, centred
@@ -1737,7 +1840,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
           const c = cur ? layerContent(cur, rtOf(cur.id)) : null
           if (c) image = await putBlob("ai", await toBlob(fitWithin(c, 4096), "image/png"))
         }
-        const j = await postGen({ op: "generate", prompt: req.prompt, model: req.model, quality: req.quality, aspect: req.aspect, options: req.options, ...(image ? { image } : {}) })
+        const j = await postGen({ op: "generate", prompt: req.prompt, model: req.model, quality: req.quality, aspect: req.aspect, options: req.options, refs: req.refs, ...(image ? { image } : {}) })
         const pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
         uploaded.current.set(pix, j.url)
         // Fitted to the canvas, centred
@@ -1870,8 +1973,39 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     if (fileRef.current) fileRef.current.value = ""
   }
   const addRef = async (u: string) => {
+    const mode = refPicker
     setRefPicker(false)
-    try { addPixelsAsLayer(await loadToCanvas(u, MAX_CANVAS_SIDE), "Reference", u) } catch (e: any) { flash(String(e?.message || e), true) }
+    try {
+      const pix = await loadToCanvas(u, MAX_CANVAS_SIDE)
+      if (mode === "replace") replacePicture(pix, u); else addPixelsAsLayer(pix, "Reference", u)
+    } catch (e: any) { flash(String(e?.message || e), true) }
+  }
+  /*
+   * Replace the selected image layer's picture (2026-10-09): same place, the
+   * new picture fitted inside the layer's box (its own shape kept, centred).
+   * One undo step - the old pixels are kept by the history.
+   */
+  const replacePicture = (pix: HTMLCanvasElement, src?: string) => {
+    const d = docRef.current
+    const cur = d?.layers.find(l => l.id === selectedIdRef.current)
+    if (!d || !cur || cur.kind !== "raster") { flash("Pick an image layer first", true); return }
+    if (cur.locked) { flash("This layer is locked", true); return }
+    const k = Math.min(cur.w / pix.width, cur.h / pix.height)
+    const w = pix.width * k, h = pix.height * k
+    if (src) uploaded.current.set(pix, src)
+    apply("Replace picture", dd => {
+      const rt = rtOf(cur.id); rt.pix = pix; rt.content = undefined
+      return { ...dd, layers: dd.layers.map(l => (l.id === cur.id ? { ...l, x: cur.x + (cur.w - w) / 2, y: cur.y + (cur.h - h) / 2, w, h, src: src ?? null, pw: pix.width, ph: pix.height } : l)) }
+    })
+    flash("Picture replaced - undo brings the old one back")
+  }
+  const replaceFrom = async (from: "upload" | "refs" | "library") => {
+    if (from === "upload") { replaceFileRef.current?.click(); return }
+    if (from === "refs") { openRefPicker("replace"); return }
+    if (!gateUpload()) return
+    const [u] = await openLibraryPicker({ max: 1, title: "Replace the picture with…" })
+    if (!u) return
+    try { replacePicture(await loadToCanvas(u, MAX_CANVAS_SIDE), u) } catch (e: any) { flash(String(e?.message || e), true) }
   }
   // Paste an image from the clipboard as a new layer
   useEffect(() => {
@@ -1949,6 +2083,39 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   const openAiPanel = () => { setPanel("ai"); setPanelOpen(true) }
   const cursorCss = spaceDown || tool === "hand" ? "grab" : tool === "move" ? "default" : tool === "text" ? "text" : ["brush", "eraser", "blur"].includes(tool) ? "none" : "crosshair"
   const selLayer = L
+  /*
+   * What the AI tools send as their own reference, as small previews for the
+   * panel's reference strips (2026-10-09): the canvas as it looks, the selected
+   * layer, the selection's box. Made only while the AI tab is open, a moment
+   * after the picture stops changing.
+   */
+  const [refPreviews, setRefPreviews] = useState<{ canvas?: string; layer?: string; selection?: string }>({})
+  useEffect(() => {
+    if (panel !== "ai" || !panelOpen) return
+    const t = setTimeout(() => {
+      try {
+        const d = docRef.current
+        if (!d) return
+        const flat = flatten(d, rts.current, true)
+        const out: { canvas?: string; layer?: string; selection?: string } = { canvas: fitWithin(onWhite(flat), 192).toDataURL("image/jpeg", 0.8) }
+        const cur = d.layers.find(l => l.id === selectedIdRef.current)
+        const content = cur ? layerContent(cur, rtOf(cur.id)) : null
+        if (content) out.layer = fitWithin(content, 192).toDataURL("image/png")
+        const S = sel.current.canvas, b = S ? selectionBounds(S) : null
+        if (b && b.w >= 4 && b.h >= 4) {
+          const bx = Math.max(0, Math.floor(b.x)), by = Math.max(0, Math.floor(b.y))
+          const bw = Math.min(d.width, Math.ceil(b.x + b.w)) - bx, bh = Math.min(d.height, Math.ceil(b.y + b.h)) - by
+          if (bw > 0 && bh > 0) {
+            const part = newCanvas(bw, bh), px = ctx2d(part)
+            px.fillStyle = "#fff"; px.fillRect(0, 0, bw, bh); px.drawImage(flat, bx, by, bw, bh, 0, 0, bw, bh)
+            out.selection = fitWithin(part, 192).toDataURL("image/jpeg", 0.8)
+          }
+        }
+        setRefPreviews(out)
+      } catch { /* a preview is a nicety */ }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [panel, panelOpen, doc, pixVersion, selVersion, selectedId])  // eslint-disable-line react-hooks/exhaustive-deps
   const painting = ["brush", "eraser", "blur", "fill", "gradient"].includes(tool)
 
   if (loadError) return <div className="flex-1 flex flex-col items-center justify-center gap-3 text-sm text-slate-300"><p>{loadError}</p><button onClick={onExit} className="px-3 py-1.5 rounded-lg border border-white/15 hover:bg-white/5">Back</button></div>
@@ -2000,6 +2167,9 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         <>
           <Seg value={cropAspect} options={CROP_ASPECTS as any} onChange={setCropAspect} />
           <button onClick={applyCrop} className="shrink-0 flex items-center gap-1 rounded-md bg-white/15 border border-white/30 px-2 py-1 font-semibold text-white hover:bg-white/20"><Check size={12} /> Apply (Enter)</button>
+          <label className="shrink-0 flex items-center gap-1 text-slate-300 cursor-pointer" title="On: the layers are cut to the new canvas, so the picture is really cropped (what the AI tools get, the move box). Off: the cropped-away parts are kept, hidden, to move back in later.">
+            <input type="checkbox" checked={trimOnCrop} onChange={toggleTrimOnCrop} className="accent-white" /> Delete cropped pixels
+          </label>
           <button onClick={() => setCrop(doc ? { x: 0, y: 0, w: doc.width, h: doc.height } : null)} className="shrink-0 text-slate-400 hover:text-white">Reset</button>
           {cropOutside(crop, doc) ? (
             <>
@@ -2171,7 +2341,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
                       flip: axis => layerPatch(axis === "x" ? "Flip horizontally" : "Flip vertically", l => (axis === "x" ? { flipX: !l.flipX } : { flipY: !l.flipY })),
                       rotate90: dir => layerPatch("Rotate 90°", l => ({ rotation: l.rotation + 90 * dir })),
                       fit: fitLayer, center: () => layerPatch("Centre", (l, d) => ({ x: (d.width - l.w) / 2, y: (d.height - l.h) / 2 })),
-                      addMask, applyMask, deleteMask, toggleMask, rasterize, hasSelection: hasSel,
+                      addMask, applyMask, deleteMask, toggleMask, rasterize, hasSelection: hasSel, replace: from => void replaceFrom(from),
                     }}
                   />
                   {selLayer?.kind === "text" && <TextPanel layer={selLayer} onText={setText} onCommit={pushHistory} focusKey={textFocus} />}
@@ -2190,7 +2360,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
               <div className={panel === "ai" ? "" : "hidden"}>
                 <AiPanel
                   admin={admin}
-                  doc={doc} layer={selLayer} hasSel={hasSel} fillCost={fillCost} busy={aiBusy} focusFill={fillFocus}
+                  doc={doc} layer={selLayer} hasSel={hasSel} selBox={selBox} fillCost={fillCost} busy={aiBusy} focusFill={fillFocus} refPreviews={refPreviews}
                   layerPx={selLayer?.kind === "raster" && rts.current.get(selLayer.id)?.pix ? { w: rts.current.get(selLayer.id)!.pix!.width, h: rts.current.get(selLayer.id)!.pix!.height } : null}
                   onRun={r => void runGen(r)} onCrop={() => setTool("crop")}
                 />
@@ -2214,7 +2384,9 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       </div>
 
       <input ref={fileRef} type="file" onClick={gateFileInput} accept="image/*" multiple className="hidden" onChange={e => onFiles(e.target.files)} />
-      {refPicker && <RefPicker refs={refLibrary} onPick={addRef} onClose={() => setRefPicker(false)} />}
+      <input ref={replaceFileRef} type="file" onClick={gateFileInput} accept="image/*" className="hidden"
+        onChange={async e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) { try { replacePicture(await fileToCanvas(f)) } catch (er: any) { flash(String(er?.message || er), true) } } }} />
+      {refPicker && <RefPicker refs={refLibrary.length ? refLibrary : ownRefs ?? []} loading={!refLibrary.length && !ownRefs} onPick={addRef} onClose={() => setRefPicker(false)} />}
     </div>
   )
 }
@@ -2240,10 +2412,11 @@ function IconBtn({ title, onClick, disabled, children }: { title: string; onClic
 function MenuItem({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return <button onClick={onClick} className="w-full text-left px-2.5 py-1.5 rounded-md text-[11.5px] text-slate-200 hover:bg-white/10">{children}</button>
 }
-function RefPicker({ refs, onPick, onClose }: { refs: { id: string; url: string }[]; onPick: (url: string) => void; onClose: () => void }) {
+function RefPicker({ refs, onPick, onClose, loading = false }: { refs: { id: string; url: string }[]; onPick: (url: string) => void; onClose: () => void; loading?: boolean }) {
   const images = refs.filter(r => !/\.(mp4|mov|webm|glb|fbx)(\?|$)/i.test(r.url))
   return (
-    <div className="fixed inset-0 z-[10000] bg-black/75 flex items-center justify-center p-4" onClick={onClose}>
+    // Above the Edit Image popup (z 10000) it can open from
+    <div className="fixed inset-0 z-[10050] bg-black/75 flex items-center justify-center p-4" onClick={onClose}>
       <div className="w-full max-w-3xl max-h-[85dvh] flex flex-col rounded-2xl border border-white/10 bg-[#0b0f19]" onClick={e => e.stopPropagation()}>
         <div className="flex items-center px-4 py-3 border-b border-white/10">
           <span className="text-[13px] font-bold text-white">Your Refs</span>
@@ -2251,7 +2424,8 @@ function RefPicker({ refs, onPick, onClose }: { refs: { id: string; url: string 
           <button onClick={onClose} className="ml-auto text-slate-400 hover:text-white"><X size={16} /></button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-3 grid grid-cols-3 sm:grid-cols-5 gap-2">
-          {images.length === 0 && <p className="col-span-full py-10 text-center text-[12px] text-slate-500">Your Refs library is empty.</p>}
+          {loading ? <Loader2 className="col-span-full mx-auto my-10 animate-spin text-slate-500" size={18} />
+            : images.length === 0 && <p className="col-span-full py-10 text-center text-[12px] text-slate-500">Your Refs library is empty.</p>}
           {images.map(r => (
             <button key={r.id} onClick={() => onPick(r.url)} className="aspect-square rounded-lg overflow-hidden border border-white/10 hover:border-white/50">
               {/* eslint-disable-next-line @next/next/no-img-element */}

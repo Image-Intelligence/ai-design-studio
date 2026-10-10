@@ -13,7 +13,8 @@
  * becomes a new canvas at once, the same as "Open one of my Refs".
  */
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Plus, Upload, Images, Trash2, Loader2, Layers } from "lucide-react"
+import { Plus, Upload, Images, Trash2, Loader2, Layers, Library } from "lucide-react"
+import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { CANVAS_PRESETS, MAX_CANVAS_SIDE, type StudioDoc } from "@/lib/image-studio"
 import { fileToCanvas, loadToCanvas } from "./engine"
 import { Editor, RefPicker } from "./Editor"
@@ -91,6 +92,18 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
     const ref = refLibrary.find(r => r.url === url)
     const refId = ref && /^\d+$/.test(ref.id) ? Number(ref.id) : undefined
     return run("ref", async () => fromPixels(await loadToCanvas(url, MAX_CANVAS_SIDE), "Reference edit", url, refId))
+  }
+  /*
+   * From My Generations / My Assets (2026-10-09): the site-wide picture picker
+   * (components/feed/LibraryPicker, mounted once on the portal) - the same one
+   * the Refs dropdown, the video slots and Storyboard use. Its links are the
+   * account's own pictures; the base layer points at it (no re-upload).
+   */
+  const fromLibrary = async () => {
+    if (!gateUpload()) return
+    const [url] = await openLibraryPicker({ max: 1, title: "Start a canvas from…" })
+    if (!url) return
+    return run("library", async () => fromPixels(await loadToCanvas(url, MAX_CANVAS_SIDE), "Image", url))
   }
   // A picture sent from the popup or the Refs library: a canvas of its own, opened
   const handled = useRef(0)
@@ -179,7 +192,10 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
             <button onClick={() => { if (gateUpload()) setPicker(true) }} disabled={!!busy} className="flex items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-4 text-[12px] text-slate-200 hover:border-white/40 hover:bg-white/[0.03] disabled:opacity-50">
               {busy === "ref" ? <Loader2 size={14} className="animate-spin" /> : <Images size={14} />} Open one of my Refs
             </button>
-            <p className="text-[10.5px] text-slate-500">The image becomes the base layer of a canvas its own size. A reference opened here can be updated in place when you export.</p>
+            <button onClick={() => void fromLibrary()} disabled={!!busy} className="flex items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-4 text-[12px] text-slate-200 hover:border-white/40 hover:bg-white/[0.03] disabled:opacity-50">
+              {busy === "library" ? <Loader2 size={14} className="animate-spin" /> : <Library size={14} />} From My Generations &amp; My Assets
+            </button>
+            <p className="text-[10.5px] text-slate-500">The image becomes the base layer of a canvas its own size. A reference opened here can be updated in place when you export; a generation or asset picture stays as it is (export to save the result).</p>
           </div>
         </div>
         {err && <p className="text-[12px] text-red-400">{err}</p>}

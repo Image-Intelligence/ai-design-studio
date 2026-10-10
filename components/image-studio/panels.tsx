@@ -7,10 +7,11 @@
  * own the document and its history.
  */
 import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Trash2, Copy, ArrowDownToLine, ChevronUp, ChevronDown, FlipHorizontal2, FlipVertical2,
   RotateCw, RotateCcw, Maximize, Crosshair, Type, Square, Image as ImageIcon, Layers, SlidersHorizontal, Frame, Paintbrush,
-  Combine, Wand2, EyeClosed, Folder, FolderOpen, FolderPlus, FolderMinus, ChevronRight, LogOut,
+  Combine, Wand2, EyeClosed, Folder, FolderOpen, FolderPlus, FolderMinus, ChevronRight, LogOut, Upload, Images, Library, Replace,
 } from "lucide-react"
 import {
   BLEND_MODES, ADJUST_FIELDS, ADJUST_PRESETS, FONTS, TEXT_STYLES, type StudioLayer, type StudioDoc, type Adjust, type TextProps, type ShapeProps, type BlendMode,
@@ -100,6 +101,52 @@ function PixelThumb({ layer, rt, version }: { layer: StudioLayer; rt?: Runtime; 
 
 // ── layers ───────────────────────────────────────────────────────────────────
 
+/** Where a picture for a layer comes from. */
+export type PictureSource = "upload" | "refs" | "library"
+
+/**
+ * A layer button that opens the three picture sources (2026-10-09): upload,
+ * the Refs library, My Generations / My Assets. The menu is portalled to
+ * <body> so the panel's scroll box never clips it.
+ */
+function SourceMenu({ title, onPick, children }: { title: string; onPick: (s: PictureSource) => void; children: React.ReactNode }) {
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null)
+  useEffect(() => {
+    if (!pos) return
+    const close = () => setPos(null)
+    const onDown = (e: PointerEvent) => { if (!(e.target as HTMLElement)?.closest?.("[data-source-menu]")) close() }
+    window.addEventListener("pointerdown", onDown, true)
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("resize", close)
+    return () => { window.removeEventListener("pointerdown", onDown, true); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close) }
+  }, [pos])
+  const open = (btn: HTMLElement) => {
+    if (pos) { setPos(null); return }
+    const r = btn.getBoundingClientRect(), W = 228, H = 112
+    const left = Math.max(8, Math.min(r.right - W, window.innerWidth - W - 8))
+    setPos(window.innerHeight - r.bottom > H + 12 ? { left, top: r.bottom + 4 } : { left, bottom: window.innerHeight - r.top + 4 })
+  }
+  const item = "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-[11px] text-slate-200 hover:bg-white/5"
+  const pick = (s: PictureSource) => { setPos(null); onPick(s) }
+  return (
+    <>
+      <button data-source-menu title={title} onClick={e => open(e.currentTarget)}
+        className="flex items-center justify-center gap-1 px-1.5 h-6 min-w-6 rounded-md border border-white/10 text-slate-300 hover:text-white hover:border-white/30 text-[10px]">
+        {children}
+      </button>
+      {pos && typeof document !== "undefined" && createPortal(
+        <div data-source-menu className="fixed z-[10060] w-[228px] rounded-lg border border-white/15 bg-[#0b0f19] p-1 shadow-2xl"
+          style={{ left: pos.left, ...(pos.top !== undefined ? { top: pos.top } : { bottom: pos.bottom }) }}>
+          <button className={item} onClick={() => pick("upload")}><Upload size={12} /> Upload from this device</button>
+          <button className={item} onClick={() => pick("refs")}><Images size={12} /> From my Refs</button>
+          <button className={item} onClick={() => pick("library")}><Library size={12} /> From My Generations &amp; My Assets</button>
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
 export function LayersPanel({ basic = false, doc, rts, version, selectedId, picked, maskEdit, onSelect, onPick, onPatch, onCommit, onReorder, onDropOn, onStep, onAdd, actions }: {
   /**
    * No layer management (the Edit Image popup without Dev Tier): the list
@@ -128,13 +175,15 @@ export function LayersPanel({ basic = false, doc, rts, version, selectedId, pick
   /** the change is done: one history step */
   onCommit: (label: string) => void
   onReorder?: (id: string, toIndex: number) => void
-  onAdd: (what: "empty" | "image" | "refs" | "text" | "shape" | "adjust") => void
+  onAdd: (what: "empty" | "image" | "refs" | "library" | "text" | "shape" | "adjust") => void
   actions: {
     group: () => void; ungroup: () => void; moveOut: () => void; toggleCollapse: (id: string) => void
     duplicate: () => void; remove: () => void; mergeDown: () => void; flatten: () => void
     flip: (axis: "x" | "y") => void; rotate90: (dir: 1 | -1) => void; fit: (mode: "fit" | "fill") => void; center: () => void
     addMask: (from: "reveal" | "hide" | "selection") => void; applyMask: () => void; deleteMask: () => void; toggleMask: () => void
     rasterize: () => void; hasSelection: boolean
+    /** Swap the selected image layer's picture for one from this source (same place, fitted to its box) */
+    replace: (from: PictureSource) => void
   }
 }) {
   const [rename, setRename] = useState<string | null>(null)
@@ -161,8 +210,8 @@ export function LayersPanel({ basic = false, doc, rts, version, selectedId, pick
             <Btn title={nPicked > 1 ? `Group the ${nPicked} picked layers (Ctrl+G)` : "New group (Ctrl+G groups the selected layer; Ctrl/Shift-click to pick more)"} onClick={actions.group}><FolderPlus size={12} /></Btn>
             <Btn title="New adjustment layer - changes everything under it (only the selection, if there is one)" onClick={() => onAdd("adjust")}><SlidersHorizontal size={12} /></Btn>
             <Btn title="New empty layer" onClick={() => onAdd("empty")}><Plus size={12} /></Btn>
-            <Btn title="Image from this device as a new layer" onClick={() => onAdd("image")}><ImageIcon size={12} /></Btn>
-            <Btn title="From your Refs as a new layer" onClick={() => onAdd("refs")}><Combine size={12} /></Btn>
+            <SourceMenu title="Add a picture as a new layer - upload, your Refs, My Generations or My Assets"
+              onPick={src => onAdd(src === "upload" ? "image" : src)}><ImageIcon size={12} /></SourceMenu>
           </>}
           <Btn title="Text layer" onClick={() => onAdd("text")}><Type size={12} /></Btn>
           <Btn title="Shape layer" onClick={() => onAdd("shape")}><Square size={12} /></Btn>
@@ -260,6 +309,7 @@ export function LayersPanel({ basic = false, doc, rts, version, selectedId, pick
               <Btn title="Fit inside the canvas" onClick={() => actions.fit("fit")}><Maximize size={12} /></Btn>
               <Btn title="Fill the canvas" onClick={() => actions.fit("fill")}><Frame size={12} /></Btn>
               <Btn title="Centre on the canvas" onClick={actions.center}><Crosshair size={12} /></Btn>
+              {L.kind === "raster" && !basic && <SourceMenu title="Replace the picture - keeps the layer's place (upload, your Refs, My Generations or My Assets)" onPick={actions.replace}><Replace size={12} /></SourceMenu>}
             </>}
             {(L.kind === "text" || L.kind === "shape") && <Btn title="Turn into pixels (to paint on it)" onClick={actions.rasterize}><Paintbrush size={12} /> Rasterize</Btn>}
             {L.parent && !basic && <Btn title="Take it out of its group" onClick={actions.moveOut}><LogOut size={12} /></Btn>}
