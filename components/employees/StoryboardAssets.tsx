@@ -455,6 +455,17 @@ function RefPicker({ title, refLibrary, boardStills, have, onAdd, onUpload, onCl
           <button onClick={() => setTab("stills")} className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold ${tab === "stills" ? "bg-white/15 text-white border border-white/40" : "border border-white/10 text-slate-400 hover:text-white"}`}>
             <Film size={12} /> This board&apos;s stills ({boardStills.length})
           </button>
+          {/* My Generations (folders) and My Assets - the site-wide picker (2026-10-11) */}
+          <button
+            onClick={async () => {
+              const urls = await openLibraryPicker({ max: Math.max(1, MAX_ASSET_REFS - have.size), title: title })
+              const fresh = urls.filter(u => !have.has(stillKey(u)))
+              if (fresh.length) onAdd(fresh)
+            }}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white"
+          >
+            <Library size={12} /> My Generations &amp; Assets
+          </button>
           <button onClick={onUpload} className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white">
             <Upload size={12} /> Upload
           </button>

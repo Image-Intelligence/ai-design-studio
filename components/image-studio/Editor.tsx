@@ -577,6 +577,32 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       x.fillStyle = "rgba(0,0,0,0.7)"; x.fillRect(a.x, a.y - 22, 96, 20)
       x.fillStyle = "#fff"; x.font = "11px ui-monospace, monospace"; x.fillText(`${Math.round(c.w)} × ${Math.round(c.h)}`, a.x + 6, a.y - 8)
     }
+    /*
+     * The brush size preview (2026-10-11): while Size / Hardness change (the
+     * slider, [ and ]) and the pointer is off the canvas - on the slider - the
+     * brush is drawn in the middle of the view at its real on-screen size,
+     * its soft edge shaded by Hardness, with its size in pixels. It fades out
+     * a moment after the last change. Over the canvas the outline below shows it.
+     */
+    const previewLeft = sizePreviewUntil.current - Date.now()
+    if (previewLeft > 0 && !cursor.current && ["brush", "eraser", "blur"].includes(toolRef.current)) {
+      const cx = r.width / 2, cy = r.height / 2
+      const rad = Math.max(1.5, (sizeRef.current / 2) * v.s)
+      const a = Math.min(1, previewLeft / 250)
+      const hard = Math.max(0, Math.min(1, hardnessRef.current))
+      const g = x.createRadialGradient(cx, cy, rad * hard * 0.999, cx, cy, rad)
+      // Slate, so the soft edge shows on a white canvas as on a dark photo
+      g.addColorStop(0, `rgba(100,116,139,${0.45 * a})`); g.addColorStop(1, "rgba(100,116,139,0)")
+      x.fillStyle = `rgba(100,116,139,${0.45 * a})`; x.beginPath(); x.arc(cx, cy, rad * hard, 0, Math.PI * 2); x.fill()
+      x.fillStyle = g; x.beginPath(); x.arc(cx, cy, rad, 0, Math.PI * 2); x.fill()
+      x.strokeStyle = `rgba(0,0,0,${0.6 * a})`; x.lineWidth = 3; x.beginPath(); x.arc(cx, cy, rad, 0, Math.PI * 2); x.stroke()
+      x.strokeStyle = `rgba(255,255,255,${a})`; x.lineWidth = 1; x.beginPath(); x.arc(cx, cy, rad, 0, Math.PI * 2); x.stroke()
+      const label = `${sizeRef.current} px`
+      x.font = "600 11px ui-monospace, monospace"
+      const tw = x.measureText(label).width
+      x.fillStyle = `rgba(0,0,0,${0.7 * a})`; x.fillRect(cx - tw / 2 - 6, cy + rad + 8, tw + 12, 18)
+      x.fillStyle = `rgba(255,255,255,${a})`; x.fillText(label, cx - tw / 2, cy + rad + 21)
+    }
     // the brush outline
     const cur = cursor.current
     if (cur && ["brush", "eraser", "blur"].includes(toolRef.current) && !spaceRef.current) {
@@ -590,6 +616,19 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   const selectedIdRef = useRef(selectedId); selectedIdRef.current = selectedId
   const toolRef = useRef(tool); toolRef.current = tool
   const sizeRef = useRef(size); sizeRef.current = size
+  // Shown while the brush size / hardness changes (drawOverlay), then faded out
+  const sizePreviewUntil = useRef(0)
+  const sizePreviewFirst = useRef(true)
+  useEffect(() => {
+    if (sizePreviewFirst.current) { sizePreviewFirst.current = false; return }
+    if (!["brush", "eraser", "blur"].includes(toolRef.current)) return
+    sizePreviewUntil.current = Date.now() + 900
+    let raf = 0
+    const tick = () => { drawOverlay(); if (Date.now() < sizePreviewUntil.current + 50) raf = requestAnimationFrame(tick) }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size, hardness])
   const marqueeRef = useRef(marquee); marqueeRef.current = marquee
   const shapeKindRef = useRef(shapeKind); shapeKindRef.current = shapeKind
   const cropRef = useRef(crop); cropRef.current = crop

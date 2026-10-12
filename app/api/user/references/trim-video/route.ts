@@ -8,7 +8,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import ffmpegPath from 'ffmpeg-static'
 import { getUserFromSession } from '@/lib/auth'
-import { uploadToR2 } from '@/lib/r2'
+import { uploadToR2, userKey } from '@/lib/r2'
+import { canonicalMediaUrl, signMediaUrl } from '@/lib/media-url'
+import { mediaKeeper } from '@/lib/media-ownership'
+import { checkIsAdmin } from '@/lib/admin-check'
 import { requireIdVerified } from '@/lib/id-verification'
 
 // POST /api/user/references/trim-video — cut a hosted reference video down to
@@ -50,15 +53,24 @@ export async function POST(req: Request) {
   if (!ffmpegPath) return NextResponse.json({ error: 'Trimming unavailable' }, { status: 500 })
 
   const body = await req.json().catch(() => ({})) as { url?: string; startSec?: number; endSec?: number; maxSec?: number }
-  const { url } = body
+  // The page sends the SIGNED link it plays (uploads come back signed): the
+  // stored form is what is checked, and a fresh signature fetches it (the
+  // bucket is private - the raw link answers 401) - 2026-10-11
+  const url = typeof body.url === 'string' ? canonicalMediaUrl(body.url) : ''
   const startSec = Number(body.startSec)
   const endSec = Number(body.endSec)
-  const maxSec = Math.min(35, Math.max(1, Number(body.maxSec) || 35))
+  // Up to 120s: Insert Shot takes 60s clips (it was 35)
+  const maxSec = Math.min(120, Math.max(1, Number(body.maxSec) || 35))
 
   // Only OUR hosted media — this endpoint must not be a proxy for arbitrary URLs
   const publicBase = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
-  if (typeof url !== 'string' || !publicBase || !url.startsWith(`${publicBase}/`)) {
+  if (!url || !publicBase || !url.startsWith(`${publicBase}/`)) {
     return NextResponse.json({ error: 'Invalid source URL' }, { status: 400 })
+  }
+  // ...and only this account's own clips (an admin's pass)
+  if (!(await checkIsAdmin(user.email))) {
+    const keep = await mediaKeeper(user.id, [url])
+    if (!keep(url)) return NextResponse.json({ error: 'You can only trim your own clips' }, { status: 403 })
   }
   if (!isFinite(startSec) || !isFinite(endSec) || startSec < 0 || endSec <= startSec || endSec - startSec > maxSec + 0.5) {
     return NextResponse.json({ error: 'Invalid trim range' }, { status: 400 })
@@ -67,7 +79,7 @@ export async function POST(req: Request) {
   const dir = await mkdtemp(path.join(tmpdir(), 'reftrim-'))
   try {
     // Fetch the source
-    const srcRes = await fetch(url)
+    const srcRes = await fetch(signMediaUrl(url, 600))
     if (!srcRes.ok) return NextResponse.json({ error: `Source fetch failed (${srcRes.status})` }, { status: 502 })
     const srcBytes = Buffer.from(await srcRes.arrayBuffer())
     if (srcBytes.length > 150 * 1024 * 1024) return NextResponse.json({ error: 'Source too large' }, { status: 413 })
@@ -109,16 +121,15 @@ export async function POST(req: Request) {
         ], { timeout: 110_000 })
         outDur = await probeDuration(path.join(dir, 'out.mp4'))
         const bytes = await readFile(path.join(dir, 'out.mp4'))
-        const key = `references/trims/${user.id}-${randomUUID()}.mp4`
-        const outUrl = await uploadToR2(key, bytes, 'video/mp4')
-        return NextResponse.json({ url: outUrl, duration: outDur ?? Math.min(wanted, maxSec) })
+        const outUrl = await uploadToR2(userKey(user.id, `trims/${randomUUID()}.mp4`), bytes, 'video/mp4')
+        return NextResponse.json({ url: signMediaUrl(outUrl), duration: outDur ?? Math.min(wanted, maxSec) })
       }
     }
 
     const bytes = await readFile(outFile)
-    const key = `references/trims/${user.id}-${randomUUID()}.${outExt}`
-    const outUrl = await uploadToR2(key, bytes, outExt === 'webm' ? 'video/webm' : 'video/mp4')
-    return NextResponse.json({ url: outUrl, duration: outDur ?? wanted })
+    // Under the account's own prefix (it counts as theirs everywhere), handed back signed to play
+    const outUrl = await uploadToR2(userKey(user.id, `trims/${randomUUID()}.${outExt}`), bytes, outExt === 'webm' ? 'video/webm' : 'video/mp4')
+    return NextResponse.json({ url: signMediaUrl(outUrl), duration: outDur ?? wanted })
   } catch (err) {
     console.error('trim-video error:', err)
     return NextResponse.json({ error: 'Trim failed — the source format may not support stream cutting' }, { status: 500 })

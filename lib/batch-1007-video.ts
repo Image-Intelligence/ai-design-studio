@@ -134,12 +134,14 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
         resolution: '720p', enhance_prompt: true, sync_mode: false,
       }
     case 'minimax-h3-max-relight':
-      // The lighting comes from the first reference image (a lit sphere); the
-      // output keeps the source's shape (the nearest ratio fal offers)
+      // The lighting comes from the first reference image (a lit sphere -
+      // uploaded, or built in the Lighting studio). The frame: the one picked
+      // (2026-10-11, fal's list), or "auto" = the source's shape (the nearest
+      // ratio fal offers - fal's own 'adaptive' did not keep it)
       return {
         video_url: p.editVideoUrl, reference_image_url: refs[0] || p.imageUrl,
         resolution: pick(['480P', '768P', '1080P', '2K'], res.toUpperCase(), '768P'),
-        aspect_ratio: nearestRatio(p.sourceWidth, p.sourceHeight),
+        aspect_ratio: RELIGHT_RATIOS.some(([r]) => r === p.aspectRatio) ? p.aspectRatio : nearestRatio(p.sourceWidth, p.sourceHeight),
       }
     default:
       throw new Error(`Not a 2026-10-07 video model: ${model}`)
@@ -157,7 +159,10 @@ export function batch1007TicketCost(model: string, o: { duration?: string | numb
     case 'minimax-h3-max-relight': {
       // Billed per second of output = the source's length (10s when unknown)
       const src = o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10
-      usd = Math.ceil(Math.min(RELIGHT_MAX_SEC, Math.max(RELIGHT_MIN_SEC, src))) * (RELIGHT_USD[res] ?? RELIGHT_USD['768p'])
+      // Whole seconds, with a tenth of a second's grace: a "5 s" Kling clip is
+      // 5.04 s (121 frames at 24 fps) and was priced as 6 s - 20% over fal's own
+      // "a 5-second video at 768p costs $0.40" (2026-10-11)
+      usd = Math.ceil(Math.min(RELIGHT_MAX_SEC, Math.max(RELIGHT_MIN_SEC, src)) - 0.1) * (RELIGHT_USD[res] ?? RELIGHT_USD['768p'])
       break
     }
     case 'wan-2.2-animate-replace': {

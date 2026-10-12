@@ -75,7 +75,7 @@ const ASPECT_OPTIONS = STORYBOARD_ASPECTS.map(a => ({ value: a, label: a }))
 const RES_OPTIONS = SHOOT_RESOLUTIONS.map(r => ({ value: r, label: r }))
 const pad2 = (n: number) => String(n).padStart(2, "0")
 const MODE_ICONS: Record<BoardModeId, LucideIcon> = {
-  story: Clapperboard, trailer: Film, ad: Megaphone, product: Package, character: UserRound, face: ScanFace,
+  general: Wand2, story: Clapperboard, trailer: Film, ad: Megaphone, product: Package, character: UserRound, face: ScanFace,
   lookbook: Shirt, outfit: ShoppingBag, music: Music, social: Smartphone, location: MapPin, explainer: Lightbulb,
 }
 /** A ticket count, as it sits on a button. */

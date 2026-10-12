@@ -199,6 +199,20 @@ export type StoryboardDoc = {
 
 export const BOARD_MODES = [
   {
+    /*
+     * General (2026-10-11): no preset structure - the plan follows the
+     * director's description (its kind of video, its moments in its order, its
+     * style and pacing) instead of a story arc, trailer beats or an ad's shape.
+     * The default (2026-10-11): new boards start on it, and an unknown mode
+     * falls back to it. Boards made before keep their stored mode (Story).
+     */
+    id: 'general', label: 'General', shots: 8, framing: true,
+    blurb: 'No preset - the plan follows your description, whatever kind of video it is.',
+    placeholder: 'Describe exactly what you want - the video, the moments or shots, the style, the pacing…',
+    brief: 'No preset format: follow the description the director gives as THE brief. Make the kind of video it describes, with the moments, order, style, pacing, framing and tone it asks for - and nothing it does not ask for: do not impose a story arc, trailer beats, an ad structure or any other template on it. Where it names specific shots or moments, plan exactly those, in that order. Where it leaves something open, choose what best serves the description.',
+    edit: 'Edit to suit the description: cut where it asks; otherwise clean, motivated cuts at a pace that fits the piece.',
+  },
+  {
     id: 'story', label: 'Story', shots: 8, framing: true,
     blurb: 'A short film - beginning, middle and end, shots that cut together.',
     placeholder: 'Describe the video: who, where, what happens, the feeling…',
@@ -323,7 +337,9 @@ export function framingRule(f: FramingId): string {
   return ''
 }
 export type BoardMode = (typeof BOARD_MODES)[number]
-export const boardMode = (id: string | null | undefined): BoardMode => BOARD_MODES.find(m => m.id === id) ?? BOARD_MODES[0]
+// An unknown or missing mode is General, the default
+export const DEFAULT_BOARD_MODE = 'general'
+export const boardMode = (id: string | null | undefined): BoardMode => BOARD_MODES.find(m => m.id === id) ?? BOARD_MODES.find(m => m.id === DEFAULT_BOARD_MODE)!
 export const isBoardMode = (id: unknown): id is BoardModeId => BOARD_MODES.some(m => m.id === id)
 
 // ── Assets ───────────────────────────────────────────────────────────────────

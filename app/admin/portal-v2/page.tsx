@@ -29,6 +29,7 @@ import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { registerImageStudio, openInImageStudio, useImageStudioAvailable, type StudioOpenRequest } from "@/components/image-studio/bridge"
 import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
+import { LightingStudio } from "@/components/video/LightingStudio"
 import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
@@ -713,7 +714,7 @@ interface VideoModelConfig {
    * for Wan Animate / DreamActor, Relight's lit sphere). Without it a
    * single-clip tool shows only the clip - Recast had no way to add its faces.
    */
-  sourceClipImages?: { max: number; label: string; hint: string; required?: boolean }
+  sourceClipImages?: { max: number; label: string; hint: string; required?: boolean; lighting?: boolean }
   /**
    * What the refs panel offers, as the model's fal endpoint takes it (the
    * panel used to hard-code SeeDance's 9 images / 3 videos / 3 audio for every
@@ -1344,8 +1345,9 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // Vidu Q4: one image = the start frame (native audio always on); more = references (up to 12; audio is the toggle)
   { id: "vidu-q4", name: "Vidu Q4", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["540p","720p","1080p","2k","4k"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: false, audioType: "toggle", supportsReferenceVideo: true, refImagesOnly: true },
   // H3 Max Relight: the clip (up to 15s) and a picture of a lit sphere in the refs panel
-  { id: "minimax-h3-max-relight", name: "H3 Max Relight", durations: [], resolutions: ["480p","768p","1080p","2k"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
-    sourceClipImages: { max: 1, label: "Lighting picture", hint: "A lit sphere (a grey or chrome ball) in the light you want - the clip is re-lit to match.", required: true } },
+  { id: "minimax-h3-max-relight", name: "H3 Max Relight", durations: [], resolutions: ["480p","768p","1080p","2k"], aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    // lighting: the Lighting studio builds the picture from lights (components/video/LightingStudio)
+    sourceClipImages: { max: 1, label: "Lighting picture", hint: "A lit sphere (a grey or chrome ball) in the light you want - the clip is re-lit to match. Build it in the Lighting studio, or upload one.", required: true, lighting: true } },
   // Character swap: the person in the clip becomes the one in the picture; the footage stays
   { id: "wan-2.2-animate-replace", name: "Wan 2.2 Animate Replace", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
     sourceClipImages: { max: 1, label: "Character", hint: "Who to put in the clip - one clear picture, framed like the person in it (full body for a full-body shot).", required: true } },
@@ -22309,7 +22311,7 @@ function FrameUploadArea({
 // SeeDance 2.0 Reference-to-Video multi-asset panel
 function SD20RefPanel({
   videoRefImagePreviews, onAddRefImage, onRemoveRefImage,
-  videoRefVideoFilenames, videoRefVideoUrls, onAddRefVideo, onRemoveRefVideo,
+  videoRefVideoFilenames, videoRefVideoUrls, onAddRefVideo, onRemoveRefVideo, onTrimNeeded, onTrimClip,
   videoRefAudioFilenames, onAddRefAudio, onRemoveRefAudio,
   videoRefVideoDuration = 0,
   maxVideos = 3,
@@ -22332,6 +22334,10 @@ function SD20RefPanel({
   videoRefVideoFilenames: string[]
   videoRefVideoUrls: (string | null)[]
   onAddRefVideo: (f: File, duration: number, width?: number, height?: number) => void
+  /** A clip longer than the model takes: the page uploads it and opens the trimmer (2026-10-11) */
+  onTrimNeeded?: (f: File, duration: number, width: number, height: number) => void
+  /** Trim a clip already in (its Trim button) */
+  onTrimClip?: (i: number) => void
   onRemoveRefVideo: (i: number, duration: number) => void
   videoRefAudioFilenames: string[]
   onAddRefAudio: (f: File) => void
@@ -22345,7 +22351,7 @@ function SD20RefPanel({
   /** Single-clip tools: one "Source clip" slot, no images/audio, this cap */
   sourceClipMaxSec?: number
   /** ...plus this many pictures alongside the clip (VideoModelConfig.sourceClipImages) */
-  clipImages?: { max: number; label: string; hint: string; required?: boolean }
+  clipImages?: { max: number; label: string; hint: string; required?: boolean; lighting?: boolean }
   /** Pictures chosen from My Generations / Assets instead of uploaded */
   onAddRefImageUrls?: (urls: string[]) => void
   refTagHint?: string
@@ -22360,6 +22366,8 @@ function SD20RefPanel({
 }) {
   const imgInputRef  = useRef<HTMLInputElement>(null)
   const vidInputRef  = useRef<HTMLInputElement>(null)
+  // Relight's lighting picture: built in the Lighting studio (default) or uploaded
+  const [lightingTab, setLightingTab] = useState<"studio" | "upload">("studio")
   const audInputRef  = useRef<HTMLInputElement>(null)
   const { request: requestConsent, modal: consentModal } = useRefConsent()
   // Store per-video duration so we can subtract it on remove
@@ -22393,11 +22401,14 @@ function SD20RefPanel({
         setRefError(`"${shortName}" can't be used as a reference — its shape (${w}×${h}, ${(w / h).toFixed(2)}:1) is outside SeeDance's supported range. Clips must be no wider than 2.5:1 and no taller than 1:2.5; crop it closer to a standard shape and re-upload.`)
         return
       }
+      // Longer than the model takes: straight into the trimmer, cut to what fits
       if (sourceOnly && dur > SD20_MAX_VIDEO_SEC + 0.25) {
+        if (onTrimNeeded) { setRefError(null); onTrimNeeded(file, dur, w, h); return }
         setRefError(`"${shortName}" is ${dur.toFixed(1)}s — this tool takes clips up to ${SD20_MAX_VIDEO_SEC}s. Trim it and re-upload.`)
         return
       }
       if (!sourceOnly && videoRefVideoDuration + dur > SD20_MAX_VIDEO_SEC + 0.25) {
+        if (onTrimNeeded && SD20_MAX_VIDEO_SEC - videoRefVideoDuration >= 2) { setRefError(null); onTrimNeeded(file, dur, w, h); return }
         setRefError(`Reference videos are capped at ${SD20_MAX_VIDEO_SEC}s combined — this clip (${dur.toFixed(1)}s) would make ${(videoRefVideoDuration + dur).toFixed(1)}s. Trim it or remove another video.`)
         return
       }
@@ -22417,6 +22428,26 @@ function SD20RefPanel({
       {/* Reference Images (a clip tool's own pictures when it takes some) */}
       {(!sourceOnly || !!clipImages) && (
       <div className="space-y-1.5">
+        {/* Relight: build the lighting picture from lights, or bring one (2026-10-11) */}
+        {clipImages?.lighting && (
+          <div className="flex rounded-lg border border-white/10 bg-black/30 p-0.5">
+            {([["studio", "Lighting studio"], ["upload", "Upload image"]] as const).map(([v, t]) => (
+              <button key={v} onClick={() => setLightingTab(v)}
+                className={`flex-1 rounded-md py-1.5 text-[11px] font-semibold transition-colors ${lightingTab === v ? "bg-white/15 text-white" : "text-slate-400 hover:text-white"}`}>{t}</button>
+            ))}
+          </div>
+        )}
+        {clipImages?.lighting && lightingTab === "studio" ? (
+          <LightingStudio
+            current={videoRefImagePreviews[0] ?? null}
+            onUse={url => {
+              // One lighting picture: it replaces whatever is in the slot (pictures carried over
+              // from another model too - Relight takes exactly one), last first so indexes hold
+              for (let i = videoRefImagePreviews.length - 1; i >= 0; i--) onRemoveRefImage(i)
+              onAddRefImageUrls?.([url])
+            }}
+          />
+        ) : (<>
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
             {clipImages
@@ -22495,6 +22526,7 @@ function SD20RefPanel({
             </button>
           </div>
         )}
+        </>)}
       </div>
       )}
 
@@ -22524,6 +22556,12 @@ function SD20RefPanel({
                   ? <Check size={11} className="text-green-400 shrink-0" />
                   : <div className="w-3 h-3 rounded-full border-2 border-white/25 border-t-white animate-spin shrink-0" />}
                 <span className="truncate flex-1">{name.length > 22 ? name.slice(0, 20) + "…" : name}</span>
+                {videoRefVideoUrls[i] && onTrimClip && (
+                  <button onClick={() => onTrimClip(i)} title="Trim this clip - a shorter part of it, within what this model takes"
+                    className="shrink-0 flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors">
+                    <Scissors size={10} />Trim
+                  </button>
+                )}
                 <button onClick={() => { const dur = videoDurations.current[i] || 0; onRemoveRefVideo(i, dur) }}
                   className="shrink-0 text-slate-600 hover:text-red-400 transition-colors"><X size={11} /></button>
               </div>
@@ -22595,7 +22633,7 @@ function VideoCustomizationPanel({
   characterOrientation, onCharacterOrientationChange,
   keepOriginalSound, onKeepOriginalSoundToggle,
   videoRefImagePreviews = [], onAddRefImage, onRemoveRefImage,
-  videoRefVideoFilenames = [], videoRefVideoUrls = [], onAddRefVideo, onRemoveRefVideo,
+  videoRefVideoFilenames = [], videoRefVideoUrls = [], onAddRefVideo, onRemoveRefVideo, onTrimNeeded, onTrimClip,
   videoRefAudioFilenames = [], onAddRefAudio, onRemoveRefAudio,
   videoRefVideoDuration = 0,
   refStartIdx = null, refEndIdx = null, onTagRefStart, onTagRefEnd,
@@ -22661,6 +22699,8 @@ function VideoCustomizationPanel({
   videoRefVideoFilenames?: string[]
   videoRefVideoUrls?: (string | null)[]
   onAddRefVideo?: (f: File, duration: number, width?: number, height?: number) => void
+  onTrimNeeded?: (f: File, duration: number, width: number, height: number) => void
+  onTrimClip?: (i: number) => void
   onRemoveRefVideo?: (i: number, duration: number) => void
   videoRefAudioFilenames?: string[]
   onAddRefAudio?: (f: File) => void
@@ -23118,6 +23158,8 @@ function VideoCustomizationPanel({
               videoRefVideoFilenames={videoRefVideoFilenames}
               videoRefVideoUrls={videoRefVideoUrls}
               onAddRefVideo={onAddRefVideo!}
+              onTrimNeeded={onTrimNeeded}
+              onTrimClip={onTrimClip}
               onRemoveRefVideo={onRemoveRefVideo!}
               videoRefAudioFilenames={videoRefAudioFilenames}
               onAddRefAudio={onAddRefAudio!}
@@ -23252,7 +23294,8 @@ function VideoCustomizationPanel({
                   <select value={aspectRatio} onChange={e => onAspectRatioChange(e.target.value)} className={selectCls}>
                     {model.aspectRatios?.map(r => {
                       const dims = PIXEL_DIM_RATIO[r]
-                      return <option key={r} value={r} className="bg-[#0a101d]">{dims ? `${r}  ·  ${dims}` : r}</option>
+                      // A clip tool's "auto" keeps the clip's own shape (Relight)
+                      return <option key={r} value={r} className="bg-[#0a101d]">{r === "auto" && model.isVideoTool ? "Match the clip" : dims ? `${r}  ·  ${dims}` : r}</option>
                     })}
                   </select>
                   <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
@@ -27546,6 +27589,15 @@ export default function PortalV2Page() {
     }
   }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec, videoInsertTimes])
 
+  // Whatever filled it (a restored draft, a Ref switched on), a clip tool's
+  // picture slot never holds more than the model takes
+  useEffect(() => {
+    const max = selectedVideoModel.sourceClipImages?.max
+    if (max === undefined || videoRefImageUrls.length <= max) return
+    setVideoRefImagePreviews(p => p.slice(0, max))
+    setVideoRefImageUrls(u => u.slice(0, max))
+  }, [selectedVideoModel, videoRefImageUrls.length])
+
   const applyVideoModel = useCallback((model: VideoModelConfig) => {
     setSelectedVideoModel(model)
     setScannerMode("video")
@@ -27591,6 +27643,22 @@ export default function PortalV2Page() {
     // Mode-switched models (Omni) only show the frame slot in Image mode — land
     // there when carrying a frame over so it stays visible
     setVideoSD20Mode(keepStartFrame && model.videoModes?.includes("i2v") && videoStartFramePreview ? "i2v" : "t2v")
+    /*
+     * A clip tool that takes its own pictures (sourceClipImages) gets no more
+     * than it takes (2026-10-11: two active Refs showed as "2/1" in Relight's
+     * slot). Relight's slot is the lighting picture - the Refs are not lights,
+     * so it starts empty. The clip itself stays either way.
+     */
+    if (keepRefs && model.sourceClipImages?.lighting) {
+      setVideoRefImagePreviews([])
+      setVideoRefImageUrls([])
+      setVideoRefStartIdx(null)
+      setVideoRefEndIdx(null)
+    } else if (keepRefs && model.sourceClipImages) {
+      const max = model.sourceClipImages.max
+      setVideoRefImagePreviews(p => p.slice(0, max))
+      setVideoRefImageUrls(u => u.slice(0, max))
+    }
     if (!keepRefs) {
       setVideoRefImagePreviews([])
       setVideoRefImageUrls([])
@@ -29309,7 +29377,8 @@ export default function PortalV2Page() {
   )
   // Library video → model input, enforcing each model's duration window.
   // Too long → the trim popup opens with that model's min/max window.
-  const [refTrim, setRefTrim] = useState<{ url: string; minSec: number; maxSec: number; target: "sd20" | "motion" } | null>(null)
+  // replaceIdx: trimming a clip already in the panel (its Trim button) - the cut replaces it
+  const [refTrim, setRefTrim] = useState<{ url: string; minSec: number; maxSec: number; target: "sd20" | "motion"; replaceIdx?: number; oldDur?: number } | null>(null)
   const [refVideoNotice, setRefVideoNotice] = useState<string | null>(null)
   const SD20_REF_MIN_SEC = 2, SD20_REF_MAX_SEC = 15
   const addLibraryVideoToSD20 = useCallback((url: string, duration: number) => {
@@ -29321,6 +29390,17 @@ export default function PortalV2Page() {
   const activateLibraryVideo = useCallback(async (url: string) => {
     try {
       const meta = await measureVideoRef(url)
+      // A clip tool takes ONE clip up to its own cap (Insert Shot 60s, Relight 15s...) - not SeeDance's 15s / 3 refs
+      const toolMax = selectedVideoModel.sourceClipMaxSec
+      if (videoRefsEnabled && toolMax) {
+        if (videoRefVideoUrls.filter(Boolean).length >= 1) {
+          setRefVideoNotice(`${selectedVideoModel.name} takes one clip - remove the one in it first.`)
+          return
+        }
+        if (meta.duration <= toolMax + 0.25) addLibraryVideoToSD20(url, meta.duration)
+        else setRefTrim({ url, minSec: SD20_REF_MIN_SEC, maxSec: toolMax, target: "sd20" })
+        return
+      }
       if (videoRefsEnabled) {
         if (meta.w > 0 && meta.h > 0 && Math.max(meta.w, meta.h) / Math.min(meta.w, meta.h) > 2.5) {
           setRefVideoNotice(`This clip's shape (${meta.w}×${meta.h}) is outside SeeDance's supported range — clips must be no wider than 2.5:1 and no taller than 1:2.5.`)
@@ -29350,18 +29430,50 @@ export default function PortalV2Page() {
     } catch {
       setRefVideoNotice("Couldn't read that video's metadata — try re-uploading it.")
     }
-  }, [videoRefsEnabled, motionRefsEnabled, videoRefVideoUrls, videoRefVideoDuration, videoCharacterOrientation, addLibraryVideoToSD20])
+  }, [videoRefsEnabled, motionRefsEnabled, videoRefVideoUrls, videoRefVideoDuration, videoCharacterOrientation, addLibraryVideoToSD20, selectedVideoModel])
+  /*
+   * The window a clip may fill for the selected model (2026-10-11): a clip
+   * tool's own cap (Relight 15s, Insert Shot 60s...); SeeDance's references
+   * share 15s - less the other clips (`excludeSec` = the one being re-trimmed).
+   */
+  const clipWindow = useCallback((excludeSec = 0) => {
+    const m = selectedVideoModel
+    if (m.sourceClipMaxSec) return { minSec: SD20_REF_MIN_SEC, maxSec: m.sourceClipMaxSec }
+    return { minSec: SD20_REF_MIN_SEC, maxSec: Math.floor((SD20_REF_MAX_SEC - Math.max(0, videoRefVideoDuration - excludeSec)) * 10) / 10 }
+  }, [selectedVideoModel, videoRefVideoDuration])
+  // An upload longer than the model takes: up it goes, then the trimmer opens on it
+  const handleTrimNeeded = useCallback(async (file: File, _dur: number, width: number, height: number) => {
+    const win = clipWindow()
+    if (win.maxSec < win.minSec) { setRefVideoNotice(`There is no room for another clip - remove one first.`); return }
+    setRefVideoNotice(`"${file.name}" is longer than ${selectedVideoModel.name} takes - opening the trimmer…`)
+    const url = await uploadVideoFrame(file)
+    if (!url) { setRefVideoNotice(`Couldn't upload "${file.name}" - check your connection and try again.`); return }
+    setRefVideoNotice(null)
+    if (width > 0 && height > 0) setVideoRefVideoDims({ w: width, h: height })
+    setRefTrim({ url, ...win, target: "sd20" })
+  }, [clipWindow, selectedVideoModel.name, uploadVideoFrame])
+  // A clip already in: trim it again (any length the model takes)
+  const handleTrimClip = useCallback(async (i: number) => {
+    const url = videoRefVideoUrls[i]
+    if (!url) return
+    let dur = 0
+    try { dur = (await measureVideoRef(url)).duration } catch { /* the trimmer measures it too */ }
+    setRefTrim({ url, ...clipWindow(dur), target: "sd20", replaceIdx: i, oldDur: dur })
+  }, [videoRefVideoUrls, clipWindow])
   // Trim finished: route the shortened clip to whichever model asked for it
   const handleTrimmed = useCallback((url: string, duration: number) => {
     const target = refTrim?.target
+    const replaceIdx = refTrim?.replaceIdx
     setRefTrim(null)
+    // A re-trim replaces the clip it was cut from
+    if (target === "sd20" && replaceIdx !== undefined) handleRemoveRefVideo(replaceIdx, refTrim?.oldDur ?? 0)
     if (target === "sd20") addLibraryVideoToSD20(url, duration)
     else if (target === "motion") {
       setVideoMotionVideoPreview(url)
       setVideoMotionVideoUrl(url)
       setVideoMotionVideoDuration(duration)
     }
-  }, [refTrim, addLibraryVideoToSD20])
+  }, [refTrim, addLibraryVideoToSD20, handleRemoveRefVideo])
   const handleActivateRefVideo = useCallback((id: string) => {
     const img = refLibrary.find(r => r.id === id)
     if (!img) return
@@ -29369,9 +29481,14 @@ export default function PortalV2Page() {
     if (isVideoRefUrl(img.url)) { void activateLibraryVideo(img.url); return }
     if (videoRefImageUrls.includes(img.url)) return
     if (videoRefImageUrls.filter(Boolean).length >= 9) return
+    // A clip tool's own pictures: Relight's lighting picture is not a Ref (made
+    // in its Lighting studio or uploaded there); others take only so many
+    const clipImgs = selectedVideoModel.sourceClipImages
+    if (clipImgs?.lighting) return
+    if (clipImgs && videoRefImageUrls.length >= clipImgs.max) return
     setVideoRefImagePreviews(p => [...p, img.url])
     setVideoRefImageUrls(u => [...u, img.url])
-  }, [refLibrary, videoRefImageUrls, activateLibraryVideo])
+  }, [refLibrary, videoRefImageUrls, activateLibraryVideo, selectedVideoModel])
   const handleDeactivateRefVideo = useCallback((id: string) => {
     const img = refLibrary.find(r => r.id === id)
     if (!img) return
@@ -31267,6 +31384,8 @@ function employeePending(
               videoRefVideoFilenames={videoRefVideoFilenames}
               videoRefVideoUrls={videoRefVideoUrls}
               onAddRefVideo={handleAddRefVideo}
+              onTrimNeeded={handleTrimNeeded}
+              onTrimClip={handleTrimClip}
               onRemoveRefVideo={handleRemoveRefVideo}
               videoRefAudioFilenames={videoRefAudioFilenames}
               onAddRefAudio={handleAddRefAudio}
@@ -31455,6 +31574,8 @@ function employeePending(
                   videoRefVideoFilenames={videoRefVideoFilenames}
                   videoRefVideoUrls={videoRefVideoUrls}
                   onAddRefVideo={handleAddRefVideo}
+                  onTrimNeeded={handleTrimNeeded}
+                  onTrimClip={handleTrimClip}
                   onRemoveRefVideo={handleRemoveRefVideo}
                   videoRefAudioFilenames={videoRefAudioFilenames}
                   onAddRefAudio={handleAddRefAudio}

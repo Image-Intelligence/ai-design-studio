@@ -3,7 +3,7 @@ import prisma from '@/lib/prisma'
 import { requireStoryboardUser, scrubBoardMedia } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
-import { STORYBOARD_ASPECTS, sanitizeShots } from '@/lib/storyboard'
+import { STORYBOARD_ASPECTS, sanitizeShots, isBoardMode, DEFAULT_BOARD_MODE } from '@/lib/storyboard'
 
 /**
  * Storyboard Studio - the account's storyboards (the workspace's tab strip).
@@ -74,6 +74,8 @@ export async function POST(req: NextRequest) {
       look: typeof body.look === 'string' ? body.look.slice(0, 2000) : '',
       aspect,
       shots: sanitizeShots(body.shots) as object[],
+      // General is the default kind of video (the column's own default is still 'story')
+      mode: isBoardMode(body.mode) ? body.mode : DEFAULT_BOARD_MODE,
     },
   })
   return jsonPrivate({ storyboard: { ...row, shots: row.shots } })
