@@ -7,6 +7,7 @@
  * when a generation completes or fails.
  */
 
+import { HIGGSFIELD_MODEL_IDS } from '@/lib/higgsfield-models'
 import prisma from '@/lib/prisma'
 import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
 
@@ -30,8 +31,9 @@ export async function syncAndClaimFalSlot(): Promise<{ claimed: boolean; maxConc
 
   // Sync counter to ground truth AND check for waiting jobs in one pass.
   const [actualProcessing, queuedCount] = await Promise.all([
-    prisma.generationQueue.count({ where: { status: 'processing' } }),
-    prisma.generationQueue.count({ where: { status: 'queued' } }),
+    // fal's own jobs only: Higgsfield's run on their own queue (lib/higgsfield)
+    prisma.generationQueue.count({ where: { status: 'processing', modelId: { notIn: HIGGSFIELD_MODEL_IDS } } }),
+    prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: HIGGSFIELD_MODEL_IDS } } }),
   ])
 
   if (actualProcessing !== globalLimit.currentActive) {

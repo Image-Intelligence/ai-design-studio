@@ -1,6 +1,7 @@
 // /api/prompt/enhance - turn a short idea (or a rough prompt) into a full,
-// model-ready one. Free with a daily allowance per plan (lib/prompt-enhance):
-// Free 5, Creator 25, Pro 60, Studio 150, Max 300, admins unmetered.
+// model-ready one. Free within the daily AI allowance (lib/prompt-enhance:
+// Free 5, Creator 25, Pro 75, Max 200 - shared with every AI text feature),
+// then 1 ticket each. Admins unmetered.
 //
 // GET  -> { used, limit, plan, planLabel, isAdmin }   today's allowance
 // POST { idea?, existing?, styles?, target: 'image'|'video', modelName?, promptModel? }
@@ -11,11 +12,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { enforceContentFilter } from '@/lib/content-filter'
-import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { refundGenerationTickets } from '@/lib/ticket-gate'
 import { ENHANCE_TICKETS } from '@/lib/ai-text-pricing'
 import {
   ENHANCE_LIMITS, ENHANCE_PLAN_LABEL, enhancePlanFor, enhanceUsedToday,
-  consumeEnhance, refundEnhance, runEnhance,
+  refundEnhance, runEnhance, chargeAiText,
 } from '@/lib/prompt-enhance'
 
 export const dynamic = 'force-dynamic'
@@ -61,26 +62,18 @@ export async function POST(req: NextRequest) {
 
   const plan = await enhancePlanFor(user)
   const limit = ENHANCE_LIMITS[plan]
-  const used = await consumeEnhance(user.id, limit)
-  if (used === null) {
-    return NextResponse.json({
-      error: plan === 'free'
-        ? `You've used today's ${limit} free enhancements. Dev Tier plans include up to 300 a day.`
-        : `You've used today's ${limit} enhancements on the ${ENHANCE_PLAN_LABEL[plan]} plan - more tomorrow.`,
-      limitReached: true,
-      ...allowance(plan, limit),
-    }, { status: 429 })
-  }
-
-  // Priced since 2026-10-08 (lib/ai-text-pricing); the daily cap above stays
-  // as an abuse limit. Refunded with the allowance whenever it fails.
-  const paid = await deductGenerationTickets(user.id, user.email ?? '', ENHANCE_TICKETS)
+  // Today's free AI actions first, then 1 ticket (lib/prompt-enhance)
+  const paid = await chargeAiText(user, ENHANCE_TICKETS)
   if (!paid.ok) {
-    await refundEnhance(user.id)
-    return NextResponse.json({ error: `Enhance needs ${paid.need} ticket - you have ${paid.have}`, needTickets: true }, { status: 402 })
+    return NextResponse.json({
+      error: `You've used today's ${limit} free AI actions - Enhance needs ${paid.need} ticket and you have ${paid.have}.`,
+      needTickets: true,
+    }, { status: 402 })
   }
-  const charged = paid.newBalance >= 0 ? ENHANCE_TICKETS : 0
-  const refundTickets = () => (charged ? refundGenerationTickets(user.id, user.email ?? '', charged) : Promise.resolve())
+  const charged = !paid.free && paid.newBalance >= 0 ? ENHANCE_TICKETS : 0
+  // A failure gives back what it took: the free action, or the ticket
+  const refundTickets = () => (charged ? refundGenerationTickets(user.id, user.email ?? '', charged) : paid.free ? refundEnhance(user.id) : Promise.resolve())
+  const used = await enhanceUsedToday(user.id)
 
   try {
     const { prompt, model } = await runEnhance(
@@ -90,14 +83,12 @@ export async function POST(req: NextRequest) {
     // The result must pass the filter too before it is handed back
     const outCf = await enforceContentFilter(prompt, user.email)
     if (!outCf.ok) {
-      await refundEnhance(user.id)
       await refundTickets()
       return NextResponse.json({ error: outCf.reason }, { status: 400 })
     }
     console.log(`[enhance] user ${user.id} (${plan}) ${target} via ${model}`)
     return NextResponse.json({ prompt, tickets: charged, ...(charged ? { balance: paid.newBalance } : {}), ...allowance(plan, Number.isFinite(limit) ? used : 0) })
   } catch (e) {
-    await refundEnhance(user.id)
     await refundTickets()
     console.error('[enhance] failed:', e)
     return NextResponse.json({ error: 'Enhancement failed - try again in a moment.' }, { status: 502 })

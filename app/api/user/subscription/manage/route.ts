@@ -8,6 +8,7 @@ import {
 } from '@/lib/ccbill'
 import { findDevTierSubscription, DEV_TIER_PERKS } from '@/lib/dev-tier'
 import { ENHANCE_LIMITS } from '@/lib/prompt-enhance'
+import { checkIsAdmin } from '@/lib/admin-check'
 
 /**
  * /subscriptions (Manage subscription) - 2026-10-08.
@@ -74,8 +75,34 @@ export async function GET() {
     }),
   ])
 
+  /*
+   * Admin accounts are on Max, automatically (2026-10-12): whatever grant row
+   * they have (promptandprotocol@ showed "Pro" from an old admin grant) or
+   * none at all. Nothing to bill, renew or cancel - the page shows the plan.
+   */
+  const isAdmin = !!u.email && await checkIsAdmin(u.email)
   let current = null
-  if (sub) {
+  if (isAdmin) {
+    const max = getCcbillPlan('max')!
+    current = {
+      id: sub?.id ?? 0,
+      kind: 'manual' as Kind,
+      planId: max.id,
+      planName: max.name,
+      price: 0,
+      ticketsPerCycle: max.tickets,
+      status: 'active',
+      renewing: false,
+      startDate: (sub?.startDate ?? new Date()).toISOString(),
+      nextBillingDate: null,
+      endDate: null,
+      cancelledAt: null,
+      cancelRequestedAt: null,
+      scheduledPlanId: null,
+      // Admins are unmetered (lib/prompt-enhance); the page shows Max's figure
+      enhancePerDay: ENHANCE_LIMITS.max,
+    }
+  } else if (sub) {
     const meta = metaOf(sub.metadata)
     const plan = planOf(sub)
     const kind = kindOf(sub)
@@ -101,6 +128,7 @@ export async function GET() {
   const endedScheduled = !sub && lastEnded ? getCcbillPlan(metaOf(lastEnded.metadata).scheduledPlanId)?.id ?? null : null
 
   return jsonPrivate({
+    admin: isAdmin,
     checkoutAvailable: ccbillConfigured(),
     cancelFromHere: ccbillDatalinkConfigured(),
     supportUrl: CCBILL_SUPPORT_URL,
@@ -122,6 +150,8 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({})) as { action?: string; planId?: string; reason?: string; note?: string }
   const sub = await findDevTierSubscription(u.id)
   const bad = (error: string, status = 400) => jsonPrivate({ error }, { status })
+  // Admin accounts are always on Max (see GET) - nothing here applies to them
+  if (u.email && await checkIsAdmin(u.email)) return bad('Admin accounts are always on Max - there is nothing to change.')
 
   // ── change plan ──
   if (body.action === 'change') {

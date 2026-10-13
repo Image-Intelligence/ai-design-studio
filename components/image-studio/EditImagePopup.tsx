@@ -55,6 +55,53 @@ const uid = (p: string) => `${p}${Date.now().toString(36)}${Math.random().toStri
 const sha256 = sha256Hex
 const frames = (n: number) => new Promise<void>(res => { const step = (k: number) => (k <= 0 ? setTimeout(res, 30) : requestAnimationFrame(() => step(k - 1))); step(n) })
 
+/*
+ * Opening fast (2026-10-12). Finding a picture's saved layers needs the
+ * SHA-256 of its file. Opening used to download the picture twice, one after
+ * the other (once to show it, once to hash it), then ask for the doc - on a
+ * phone over the LAN, where the hash runs in plain JS, that was most of the
+ * wait. Now: one download feeds both, the doc lookup runs while the picture
+ * decodes, and a file's hash is remembered by its address (an uploaded file
+ * never changes), so the lookup can start before the download even ends.
+ */
+const HASHES_KEY = "pv2-edit-hashes"
+const fileKey = (url: string) => {
+  if (!/^https:\/\//.test(url)) return null
+  try { const u = new URL(url); return u.origin + u.pathname } catch { return null }
+}
+function cachedHash(url: string): string | null {
+  const k = fileKey(url)
+  if (!k) return null
+  try { return (JSON.parse(localStorage.getItem(HASHES_KEY) || "{}") as Record<string, string>)[k] ?? null } catch { return null }
+}
+function rememberHash(url: string, hash: string) {
+  const k = fileKey(url)
+  if (!k) return
+  try {
+    const m = JSON.parse(localStorage.getItem(HASHES_KEY) || "{}") as Record<string, string>
+    delete m[k]; m[k] = hash
+    const keys = Object.keys(m)
+    for (const old of keys.slice(0, Math.max(0, keys.length - 400))) delete m[old]
+    localStorage.setItem(HASHES_KEY, JSON.stringify(m))
+  } catch {}
+}
+/** A downloaded picture into a canvas (the long side at most maxSide). */
+async function blobToCanvas(blob: Blob, maxSide: number): Promise<HTMLCanvasElement> {
+  const bmp = await createImageBitmap(blob)
+  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height))
+  const c = newCanvas(bmp.width * k, bmp.height * k), x = ctx2d(c)
+  x.imageSmoothingQuality = "high"
+  x.drawImage(bmp, 0, 0, c.width, c.height)
+  bmp.close()
+  return c
+}
+/**
+ * Layered docs still being stored after an Apply (they are stored in the
+ * background - see apply). Opening a picture waits for them first, so a quick
+ * re-open still finds its layers.
+ */
+const pendingDocSaves = new Set<Promise<unknown>>()
+
 /**
  * The applied picture as a JPEG that fits an upload (2026-10-09): the parent
  * sends it through a function capped at ~4.5MB on Vercel, and a 12MP edit at
@@ -139,26 +186,48 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
   const stackRef = useRef(layerStack)
   stackRef.current = layerStack
 
+  // Set by our own Apply: the parent then swaps the saved picture in, and the
+  // editor - already showing exactly that - carries on instead of re-opening
+  const applied = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
+  // The edit went in, but its layers could not be stored (background save)
+  const [layersNote, setLayersNote] = useState<string | null>(null)
+
   // ── the document to edit ──
   useEffect(() => {
+    if (applied.current) return
     let dead = false
     setState(null)
     ;(async () => {
       try {
-        const pix = await loadToCanvas(image.url, MAX_CANVAS_SIDE)
-        const W = pix.width, H = pix.height
-        const seed = new Map<string, HTMLCanvasElement>()
-        let doc: StudioDoc | null = null
-        let restored = false
+        let found: StudioDoc | null = null
+        let pix: HTMLCanvasElement
         if (canUseLayers) {
           // The layered version this picture came from, if Apply made it
-          try {
-            const buf = await (await fetch(image.url)).arrayBuffer()
-            const hash = await sha256(buf)
+          const docFor = async (hash: string): Promise<StudioDoc | null> => {
+            if (pendingDocSaves.size) await Promise.allSettled([...pendingDocSaves])
             const r = await fetch(`/api/user/image-edit-doc?hash=${hash}`)
             const j = r.ok ? await r.json() : null
-            if (j?.doc?.layers?.length) { doc = j.doc as StudioDoc; restored = true }
-          } catch { /* no saved layers - start from the picture */ }
+            return j?.doc?.layers?.length ? j.doc as StudioDoc : null
+          }
+          const known = cachedHash(image.url)
+          const early = known ? docFor(known).catch(() => null) : null
+          const bytes = await fetch(image.url).then(r => (r.ok ? r.blob() : null)).catch(() => null)
+          ;[pix, found] = await Promise.all([
+            bytes ? blobToCanvas(bytes, MAX_CANVAS_SIDE).catch(() => loadToCanvas(image.url, MAX_CANVAS_SIDE)) : loadToCanvas(image.url, MAX_CANVAS_SIDE),
+            early ?? (bytes
+              ? bytes.arrayBuffer().then(sha256).then(h => { rememberHash(image.url, h); return docFor(h) }).catch(() => null)
+              : Promise.resolve(null)),
+          ])
+        } else {
+          pix = await loadToCanvas(image.url, MAX_CANVAS_SIDE)
+        }
+        const W = pix.width, H = pix.height
+        const seed = new Map<string, HTMLCanvasElement>()
+        let doc: StudioDoc | null = found
+        let restored = !!found
+        if (canUseLayers) {
           const st = stackRef.current
           if (doc && st?.enabled) {
             // Generations appended to the ref since then (Dev Tier auto-append) come in on top
@@ -196,18 +265,34 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
   const apply = async (flat: HTMLCanvasElement, serialize: () => Promise<StudioDoc>) => {
     // A JPEG like the old editor's: transparent parts on white
     setSaveError(null)
+    setLayersNote(null)
     const blob = await fitJpeg(flat)
     if (canUseLayers) {
-      // The layered version, under the fingerprint of the picture handed over
-      const [hash, doc] = await Promise.all([blob.arrayBuffer().then(sha256), serialize()])
-      const r = await fetch("/api/user/image-edit-doc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash, doc }) })
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Could not keep the layers")
+      /*
+       * The layered version, under the fingerprint of the picture handed over
+       * - stored in the BACKGROUND (2026-10-12). Apply used to wait for every
+       * edited layer to upload as a full-size PNG before the picture was
+       * handed over; now the picture goes at once and the layers follow.
+       * serialize() is started here, so it is this moment's document.
+       */
+      const docNow = serialize()
+      const save = (async () => {
+        const [hash, doc] = await Promise.all([blob.arrayBuffer().then(sha256), docNow])
+        const r = await fetch("/api/user/image-edit-doc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash, doc }) })
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Could not keep the layers")
+      })()
+      pendingDocSaves.add(save)
+      save.catch(e => {
+        console.error("Layered doc not stored:", e)
+        if (mounted.current) setLayersNote(String(e?.message || e || "Could not keep the layers"))
+      }).finally(() => pendingDocSaves.delete(save))
       // The old stack: "base in layer", so the parent resets it to one layer holding the new
       // picture (generation reads exactly that, nothing composited twice). Let that state land
       // in the parent before Apply reads it.
       if (onLayerStackChange) { onLayerStackChange({ enabled: true, baseInLayer: true, layers: [] }); await frames(2) }
     }
     const dataUrl = await new Promise<string>((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result)); fr.onerror = () => rej(new Error("Could not read the picture")); fr.readAsDataURL(blob) })
+    applied.current = true
     onApply(dataUrl)
   }
 
@@ -231,6 +316,12 @@ export function EditImagePopup({ image, onApply, onClose, canUseLayers = false, 
           <div className="absolute left-1/2 top-12 z-50 -translate-x-1/2 flex max-w-[92%] items-start gap-2 rounded-xl border border-red-400/40 bg-[#1a0b0f]/95 px-3 py-2 text-[11.5px] text-red-100 shadow-2xl">
             <span><b>Your edit wasn&apos;t saved</b> ({saveError}). The original is still in your Refs - press Apply to try again.</span>
             <button onClick={() => setSaveError(null)} className="shrink-0 text-red-300 hover:text-white">×</button>
+          </div>
+        )}
+        {layersNote && (
+          <div className="absolute left-1/2 top-12 z-50 -translate-x-1/2 flex max-w-[92%] items-start gap-2 rounded-xl border border-amber-400/40 bg-[#1a140b]/95 px-3 py-2 text-[11.5px] text-amber-100 shadow-2xl">
+            <span>Your edit was applied, but its layers weren&apos;t kept ({layersNote}) - press Apply again to keep them.</span>
+            <button onClick={() => setLayersNote(null)} className="shrink-0 text-amber-300 hover:text-white">×</button>
           </div>
         )}
         {!state ? (

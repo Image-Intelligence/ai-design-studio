@@ -28,26 +28,49 @@ export async function GET() {
     const user = await requireUser()
     if (!user) return jsonPrivate({ error: 'Not authenticated' }, { status: 401 })
 
-    const rows = await prisma.$queryRaw<
-      {
-        id: number
-        prompt: string
-        modelId: string
-        modelType: string
-        errorMessage: string | null
-        falRequestId: string | null
-        parameters: any
-        createdAt: Date
-      }[]
-    >`
-      SELECT id, prompt, "modelId", "modelType", "errorMessage", "falRequestId", parameters, "createdAt"
-      FROM "GenerationQueue"
-      WHERE "userId" = ${user.id} AND status = 'failed' AND "dismissedAt" IS NULL
-      ORDER BY "createdAt" DESC
-      LIMIT 200`
+    /*
+     * Up to MAX_FAILS (2026-10-12 - it was 200, so the Feed menu's count
+     * stopped at 200 and Clear errors only cleared the newest 200). A card
+     * costs almost nothing: the feed only draws the ones inside the stretch
+     * it has loaded, and each row carries just the settings the card shows -
+     * picked out in SQL, not the whole fal payload. `total` is the true count.
+     */
+    const MAX_FAILS = 5000
+    const [rows, totalRows] = await Promise.all([
+      prisma.$queryRaw<
+        {
+          id: number
+          prompt: string
+          modelId: string
+          modelType: string
+          errorMessage: string | null
+          falRequestId: string | null
+          aspectRatio: string | null
+          quality: string | null
+          refs: unknown
+          createdAt: Date
+        }[]
+      >`
+        SELECT id, prompt, "modelId", "modelType", "errorMessage", "falRequestId", "createdAt",
+          COALESCE(NULLIF(parameters->>'aspectRatio', ''), NULLIF(parameters->>'size', ''), parameters->'falInput'->>'aspect_ratio') AS "aspectRatio",
+          COALESCE(NULLIF(parameters->>'quality', ''), parameters->'falInput'->>'resolution') AS quality,
+          CASE
+            WHEN jsonb_typeof(parameters->'referenceImageUrls') = 'array' THEN parameters->'referenceImageUrls'
+            WHEN jsonb_typeof(parameters->'permanentReferenceUrls') = 'array' THEN parameters->'permanentReferenceUrls'
+            ELSE '[]'::jsonb
+          END AS refs
+        FROM "GenerationQueue"
+        WHERE "userId" = ${user.id} AND status = 'failed' AND "dismissedAt" IS NULL
+        ORDER BY "createdAt" DESC
+        LIMIT ${MAX_FAILS}`,
+      prisma.$queryRaw<{ n: number }[]>`
+        SELECT COUNT(*)::int AS n FROM "GenerationQueue"
+        WHERE "userId" = ${user.id} AND status = 'failed' AND "dismissedAt" IS NULL`,
+    ])
 
     return jsonPrivate({
       success: true,
+      total: totalRows[0]?.n ?? rows.length,
       fails: rows.map(r => ({
         id: r.id,
         prompt: r.prompt,
@@ -60,14 +83,9 @@ export async function GET() {
         // Two row shapes exist: client-failure rows store settings top-level;
         // submit-claim rows nest the raw fal payload under parameters.falInput
         // (aspect_ratio / resolution) — fall back to that or the panel is empty.
-        aspectRatio: r.parameters?.aspectRatio || r.parameters?.size
-          || r.parameters?.falInput?.aspect_ratio || null,
-        quality: r.parameters?.quality || r.parameters?.falInput?.resolution || null,
-        referenceImageUrls: Array.isArray(r.parameters?.referenceImageUrls)
-          ? r.parameters.referenceImageUrls
-          : Array.isArray(r.parameters?.permanentReferenceUrls)
-            ? r.parameters.permanentReferenceUrls
-            : [],
+        aspectRatio: r.aspectRatio || null,
+        quality: r.quality || null,
+        referenceImageUrls: Array.isArray(r.refs) ? r.refs : [],
         createdAt: r.createdAt,
       })),
     })
@@ -84,6 +102,16 @@ export async function PATCH(request: NextRequest) {
     if (!user) return jsonPrivate({ error: 'Not authenticated' }, { status: 401 })
 
     const body = await request.json()
+    /*
+     * { all: true } - Clear errors: EVERY failure on the account, not only the
+     * ones the page has loaded (2026-10-12)
+     */
+    if (body?.all === true) {
+      const dismissed = await prisma.$executeRaw`
+        UPDATE "GenerationQueue" SET "dismissedAt" = NOW()
+        WHERE "userId" = ${user.id} AND status = 'failed' AND "dismissedAt" IS NULL`
+      return jsonPrivate({ success: true, dismissed })
+    }
     const ids: number[] = Array.isArray(body.ids) ? body.ids.filter((n: any) => Number.isInteger(n)) : []
     const falIds: string[] = Array.isArray(body.falRequestIds) ? body.falRequestIds.filter((s: any) => typeof s === 'string' && s.length < 200) : []
     if (ids.length === 0 && falIds.length === 0) {

@@ -1,15 +1,16 @@
+import { chargeAiText } from '@/lib/prompt-enhance'
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
 import { requireStoryboardUser, ownRefs } from '@/lib/storyboard-gate'
-import { openShotModels } from '@/lib/storyboard-access'
+import { openShotModels, imageModelOpen, videoModelOpen } from '@/lib/storyboard-access'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { storyboardDraftTickets, geminiUsage } from '@/lib/ai-text-pricing'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
-import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
+import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/draft - plan the board with AI.
@@ -144,6 +145,19 @@ const SCENE_RULES = [
   '- "assets" lists the names of the board\'s assets that appear in that scene (characters, the location, props), exactly as written above - an empty list if there are none.',
   '- Shots cut together within a scene; the last shot of a scene hands over to the next scene (its "transition" says how).',
 ]
+/**
+ * Cast & sets (2026-10-11): the plan also names the recurring things it relies
+ * on that are not assets yet, each with a description to draw it from - the
+ * page offers them as suggested assets (and can make their pictures). Asked in
+ * the same call, so it costs nothing extra.
+ */
+const SUGGEST_KINDS = ['character', 'creature', 'location', 'landmark', 'scenery', 'wardrobe', 'object', 'vehicle'] as const
+const NEW_ASSETS_RULE = [
+  'ALSO return a top-level "newAssets" list in the same JSON object: the recurring characters, creatures, places, outfits, props and vehicles this plan relies on that are NOT already among THE BOARD\'S ASSETS (the same thing under another name counts as already there) - things that appear in two or more shots or carry the story. Each item:',
+  '  {"kind": one of ' + SUGGEST_KINDS.join(', ') + ', "name": a short unique name - the SAME words the image prompts use for it, "description": a full visual description to draw it identically every time (a character: apparent age, build, face, hair, skin, the exact outfit; a place: layout, materials, colours, era, time of day and weather; an outfit: every garment, colour and fabric; a prop or vehicle: shape, materials, colours, marks)}',
+  '  Invented people only - never a real, named person. At most 6; an empty list when nothing new recurs.',
+].join('\n')
+
 /** Outfit packs: shots per outfit, and the most the whole pack may hold. */
 const MAX_OUTFIT_SHOTS = 12
 const MAX_OUTFIT_TOTAL = 36
@@ -161,16 +175,48 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const board = Number.isFinite(id) ? await prisma.storyboard.findFirst({ where: { id, userId: user.id } }) : null
   if (!board) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
-  // A non-admin's plan never names a model they cannot use (lib/storyboard-access)
-  const reply = (o: { shots: StoryboardShot[] } & Record<string, unknown>) => jsonPrivate({ ...o, shots: o.shots.map(x => openShotModels(x, user.isAdmin)), tickets: bill.tickets, ...(bill.balance !== null && bill.balance >= 0 ? { balance: bill.balance } : {}) })
+  // A non-admin's plan never names a model they cannot use (lib/storyboard-access);
+  // a preferred model holds on the shots this action wrote, unless the direction
+  // names the one the planner chose instead
+  // Filled once the plan is read (Cast & sets) - every reply carries them
+  const suggested: { kind: string; name: string; description: string }[] = []
+  const reply = (o: { shots: StoryboardShot[] } & Record<string, unknown>) => {
+    const changed = new Set(Array.isArray(o.changed) ? o.changed as string[] : [])
+    const keepsModels = mode === 'polish' || mode === 'refs'
+    const shots = o.shots.map(x => {
+      let s = x
+      if (!keepsModels && changed.has(s.id)) {
+        if (prefImage && s.imageModel !== prefImage && !directionNames(s.imageModel, imageModelLabel(s.imageModel))) s = { ...s, imageModel: prefImage }
+        if (prefVideo && s.videoModel !== prefVideo && !directionNames(s.videoModel, s.videoModel)) s = { ...s, videoModel: prefVideo }
+      }
+      return openShotModels(s, user.isAdmin)
+    })
+    return jsonPrivate({ ...o, shots, ...(suggested.length ? { suggestedAssets: suggested } : {}), tickets: bill.tickets, ...(bill.balance !== null && bill.balance >= 0 ? { balance: bill.balance } : {}) })
+  }
   const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, unknown>
   const premise = typeof body.premise === 'string' ? body.premise.trim().slice(0, 4000) : ''
+  /** Whether the direction names this model ("the title card on Ideogram", "use Kling") - then the planner's choice stands over a preference. */
+  const directionNames = (id: string, label: string) => {
+    const p = premise.toLowerCase()
+    if (!p) return false
+    const words = [id, label, id.split('-')[0], label.split(' ')[0]].map(w => w.toLowerCase()).filter(w => w.length >= 3)
+    return words.some(w => p.includes(w))
+  }
   {
     const cf = await enforceContentFilter(premise, user.email)
     if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
   }
   const mode: Mode = body.mode === 'rewrite' ? 'polish'
     : (['replace', 'polish', 'regenerate', 'extend', 'scene', 'refs'] as const).includes(body.mode as Mode) ? body.mode as Mode : 'replace'
+  /*
+   * Preferred models (2026-10-11, the Draft panel's two menus): every shot this
+   * action writes uses them, unless the direction names another model for a
+   * shot. Only models this account can use; anything else = no preference.
+   */
+  const prefImage = typeof body.preferredImageModel === 'string' && STORYBOARD_IMAGE_MODELS.some(m => m.id === body.preferredImageModel) && imageModelOpen(body.preferredImageModel, user.isAdmin)
+    ? body.preferredImageModel : null
+  const prefVideo = typeof body.preferredVideoModel === 'string' && (STORYBOARD_VIDEO_MODELS as readonly string[]).includes(body.preferredVideoModel) && videoModelOpen(body.preferredVideoModel, user.isAdmin)
+    ? body.preferredVideoModel : null
   const boardScenes = sanitizeScenes(board.scenes)
   const current = orderByScenes(sanitizeShots(board.shots), boardScenes)
   const wantIds = Array.isArray(body.shotIds) ? (body.shotIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
@@ -180,7 +226,9 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const extendCount = Math.min(MAX_DRAFT_SHOTS, Math.max(1, Math.round(Number(body.extendCount) || 2)))
   // What kind of video this is, and what it is made of
   const kind = boardMode(isBoardMode(body.boardMode) ? body.boardMode : board.mode)
-  const assets = sanitizeAssets(board.assets)
+  // Suggested-but-not-accepted assets are not the board's yet (no pictures) - but they are not suggested twice
+  const allAssets = sanitizeAssets(board.assets)
+  const assets = allAssets.filter(a => !a.suggested)
   // The scenes the director switched on as references, as picture lists
   const sceneAssets = sceneRefAssets({ scenes: boardScenes, shots: current })
   // Every picture list "photos" may pick from: the board's assets, then the scenes
@@ -314,6 +362,9 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     // Waist up / full body, for a kind with people in it (mix adds nothing)
     kind.framing && isFraming(body.framing) ? framingRule(body.framing) : '',
     assetLines.length ? `THE BOARD'S ASSETS (use these names and keep each one looking the same wherever it appears):\n${assetLines.join('\n')}` : '',
+    prefImage || prefVideo
+      ? `THE DIRECTOR'S PREFERRED MODELS - these override the default model guidance below: ${[prefImage && `every still on "${prefImage}" (imageModel)`, prefVideo && `every shot animated with "${prefVideo}" (videoModel)`].filter(Boolean).join(', and ')}. Use a different model for a shot ONLY where the direction above explicitly asks for one.`
+      : '',
     sceneLines.length ? [
       `SCENES TO REFERENCE - the director chose these scenes' stills as references for new shots (${sceneImages.length ? 'one still of each is attached under its label' : 'described below'}):`,
       ...sceneLines,
@@ -419,13 +470,15 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
       ]
     }
   }
-  const instruction = [...head, ...task].filter(Boolean).join('\n')
+  // Suggested assets in every action that writes shots (not Match references, not an outfit pack's fixed outfits)
+  const instruction = [...head, ...task, mode !== 'refs' && !outfitPack ? NEW_ASSETS_RULE : ''].filter(Boolean).join('\n')
 
   // The job's price (by how many shots it writes), charged now - just before
   // Gemini runs; any failure from here on is refunded by POST
   const jobShots = mode === 'replace' ? count : mode === 'extend' || mode === 'scene' ? extendCount : picked.length
   const tickets = storyboardDraftTickets(mode, jobShots, { withImages: outfitPack && mode === 'replace' && outfits.length > 0 })
-  const paid = await deductGenerationTickets(user.id, user.email, tickets)
+  // Today's free AI actions first, then tickets (lib/prompt-enhance)
+  const paid = await chargeAiText(user, tickets)
   if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
   if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = tickets; bill.balance = paid.newBalance }
 
@@ -454,6 +507,21 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     let plan: any
     try { plan = JSON.parse(text) } catch {
       return jsonPrivate({ error: data.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? 'The plan was too long - try fewer shots' : 'The model did not return a readable plan - try again' }, { status: 502 })
+    }
+    // The suggested assets: known kinds, new names only, and (for everyone but
+    // an admin) past the prompt filter - no real people
+    if (Array.isArray(plan?.newAssets)) {
+      const have = new Set(allAssets.map(a => a.name.trim().toLowerCase()))
+      for (const raw of plan.newAssets.slice(0, 8)) {
+        const kind = SUGGEST_KINDS.find(k => k === String(raw?.kind ?? '').toLowerCase())
+        const name = String(raw?.name ?? '').trim().slice(0, 60)
+        const description = String(raw?.description ?? '').trim().slice(0, 800)
+        if (!kind || !name || !description || have.has(name.toLowerCase())) continue
+        if (!user.isAdmin) { const cf = await enforceContentFilter(`${name}. ${description}`, user.email); if (!cf.ok) continue }
+        have.add(name.toLowerCase())
+        suggested.push({ kind, name, description })
+        if (suggested.length >= 6) break
+      }
     }
     const story = typeof plan?.story === 'string' && plan.story.trim() ? plan.story.slice(0, 8000) : board.story
     const look = typeof plan?.look === 'string' && plan.look.trim() ? plan.look.slice(0, 2000) : board.look

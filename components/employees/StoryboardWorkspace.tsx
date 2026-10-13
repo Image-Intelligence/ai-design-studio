@@ -16,7 +16,7 @@ import { StillThumbs, AddStillThumbs, thumbFrom, useThumb, mergeThumbs } from "@
 import { videoTicketCost } from "@/lib/ticket-pricing"
 import { Dropdown } from "@/components/employees/Dropdown"
 import {
-  STORYBOARD_ASPECTS, STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, SHOOT_RESOLUTIONS, DURATIONS, MAX_SHOTS,
+  addSuggestedAssets, assetPicturesTickets, STORYBOARD_ASPECTS, STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, SHOOT_RESOLUTIONS, DURATIONS, MAX_SHOTS,
   newShot, totalSeconds, fmtRuntime, imageModelLabel, stillKey, MAX_STILL_VERSIONS, type StoryboardDoc, type StoryboardShot, type ShotVideo,
   stillModelSpec, stillTickets, stillSettingValue, newAsset, newAssetRef, MAX_ASSET_REFS, type StoryAsset, type AssetKind,
   BOARD_MODES, boardMode, frameLabel, type BoardModeId, MAX_DRAFT_SHOTS, TARGET_LENGTHS, runtimeRange, lengthLabel,
@@ -26,7 +26,7 @@ import {
   FRAMINGS, isFraming, type FramingId, liveStillJob, mergeStills, pickRefs, autoShotRefs, type ShotRef,
   stillRefUrls, editSource, SHOT_ASPECTS, finalCutExtraTickets,
 } from "@/lib/storyboard"
-import { AssetsPanel, AddToAssetMenu, ShotRefsPanel, uploadImage } from "@/components/employees/StoryboardAssets"
+import { AssetsPanel, AddToAssetMenu, ShotRefsPanel, uploadImage, requestAssetPictures } from "@/components/employees/StoryboardAssets"
 import { StillsCutPanel } from "@/components/employees/StillsCutPanel"
 import { imageModelOpen, videoModelOpen } from "@/lib/storyboard-access"
 import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
@@ -152,6 +152,25 @@ export function StoryboardWorkspace({
   const [shotError, setShotError] = useState<Record<string, string>>({})
   const [premise, setPremise] = useState("")
   const [shotCount, setShotCount] = useState("8")
+  /*
+   * Preferred models for the AI draft (2026-10-11): "" = no preference (the
+   * draft picks per shot). With one set, every shot it writes uses it unless
+   * the direction asks otherwise for a shot. Remembered on this device.
+   */
+  const [prefImage, setPrefImageState] = useState<string>(() => { try { return localStorage.getItem("pv2-storyboard-pref-image") || "" } catch { return "" } })
+  const [prefVideo, setPrefVideoState] = useState<string>(() => { try { return localStorage.getItem("pv2-storyboard-pref-video") || "" } catch { return "" } })
+  const setPrefImage = (v: string) => { setPrefImageState(v); try { localStorage.setItem("pv2-storyboard-pref-image", v) } catch {} }
+  const setPrefVideo = (v: string) => { setPrefVideoState(v); try { localStorage.setItem("pv2-storyboard-pref-video", v) } catch {} }
+  /*
+   * Cast & sets, "Build the cast first" (2026-10-11): after a draft that names
+   * new recurring characters / places / things, offer to make them as assets
+   * with their pictures (one price, one click), then match every shot's
+   * references to them - so the stills that follow keep them consistent.
+   */
+  const [castFirst, setCastFirstState] = useState<boolean>(() => { try { return localStorage.getItem("pv2-storyboard-cast-first") === "1" } catch { return false } })
+  const setCastFirst = (v: boolean) => { setCastFirstState(v); try { localStorage.setItem("pv2-storyboard-cast-first", v ? "1" : "0") } catch {} }
+  const [castOffer, setCastOffer] = useState<string[] | null>(null) // the suggested assets' names
+  const [castBuilding, setCastBuilding] = useState<string | null>(null)
   const [drafting, setDrafting] = useState<false | DraftMode>(false)
   // Drafting on part of the board: pick shots on the cards, then act on them
   const [selecting, setSelecting] = useState(false)
@@ -700,6 +719,7 @@ export function StoryboardWorkspace({
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode, boardMode: b.mode, framing, premise: sc ? sc.direction : premise, shots: Number(shotCount), targetSeconds: Number(targetLen), shotIds,
+          ...(prefImage ? { preferredImageModel: prefImage } : {}), ...(prefVideo ? { preferredVideoModel: prefVideo } : {}),
           extendCount: sc ? sc.count : Number(extendCount), scenes: Number(sceneCount), sceneId: sc?.sceneId,
           // A scene draft sees its cast; otherwise the server shows the planner every asset
           refs: sc ? shotRefs(b, { sceneId: sc.sceneId }).slice(0, 4).map(x => x.url) : [],
@@ -715,7 +735,13 @@ export function StoryboardWorkspace({
         look: j.look || cur.look,
         shots: Array.isArray(j.shots) && j.shots.length ? j.shots : cur.shots,
         scenes: Array.isArray(j.scenes) ? j.scenes : cur.scenes,
+        // Cast & sets: what the plan relies on that is not an asset yet, offered in the Assets panel
+        assets: addSuggestedAssets(cur.assets, j.suggestedAssets),
       }))
+      // Cast first: offer to build what the plan relies on
+      if (castFirst && mode !== "refs" && Array.isArray(j.suggestedAssets) && j.suggestedAssets.length) {
+        setCastOffer((j.suggestedAssets as { name: string }[]).map(x => x.name))
+      }
       // Show what changed for a moment; extended shots become the selection
       const changed: string[] = Array.isArray(j.changed) ? j.changed : []
       setFlashIds(changed)
@@ -894,6 +920,45 @@ export function StoryboardWorkspace({
   )
   // What a Draft-with-AI job costs (lib/ai-text-pricing - the route charges the same)
   const pickedN = board ? (selected.filter(id => board.shots.some(s => s.id === id)).length || board.shots.length) : 0
+  /** The suggested assets the offer is about (by name, as they are on the board now). */
+  const offerAssets = (names: string[] | null) => (board?.assets ?? []).filter(a => a.suggested && names?.some(n => n.toLowerCase() === a.name.toLowerCase()))
+  const castPrice = (names: string[] | null) => offerAssets(names).reduce((n, a) => n + assetPicturesTickets(a.kind, { boardAspect: board?.aspect }), 0)
+    + storyboardDraftTickets("refs", board?.shots.length ?? 0)
+  /** Build the cast: accept, make every asset's pictures (in parallel), then match each shot's references. */
+  const buildCast = async () => {
+    const b = boardRef.current
+    if (!b || castBuilding) return
+    const list = (b.assets ?? []).filter(a => a.suggested && castOffer?.some(n => n.toLowerCase() === a.name.toLowerCase()))
+    if (!list.length) { setCastOffer(null); return }
+    setCastOffer(null)
+    const ids = new Set(list.map(a => a.id))
+    update(cur => ({ ...cur, assets: cur.assets.map(a => (ids.has(a.id) ? { ...a, suggested: undefined } : a)) }))
+    setCastBuilding(`Making pictures for ${list.length} asset${list.length === 1 ? "" : "s"}…`)
+    const results = await Promise.all(list.map(async a => ({ a, j: await requestAssetPictures(b.id, { ...a, suggested: undefined }) })))
+    if (boardRef.current?.id !== b.id) { setCastBuilding(null); return }
+    update(cur => ({
+      ...cur,
+      assets: cur.assets.map(x => {
+        const hit = results.find(r => r.a.id === x.id)
+        if (!hit?.j.refs) return x
+        return { ...x, refs: [...x.refs, ...hit.j.refs.filter(r => !x.refs.some(y => y.url === r.url)).map(r => ({ id: r.id, url: r.url, active: false, ...(r.caption ? { caption: r.caption } : {}), ...(r.tags?.length ? { tags: r.tags } : {}) }))] }
+      }),
+    }))
+    const failed = results.filter(r => r.j.error)
+    const made = results.length - failed.length
+    if (made > 0) {
+      setCastBuilding("Matching each shot's references…")
+      // Saved first (the draft reads the board on the server), then every shot
+      await new Promise(r => setTimeout(r, 50))
+      setSelected([])
+      const err = await draft("refs")
+      setCastBuilding(null)
+      setDraftError(failed.length || err ? [failed.length ? `${failed.map(f => f.a.name).join(", ")}: ${failed[0].j.error}` : "", err ?? ""].filter(Boolean).join(" · ") : null)
+    } else {
+      setCastBuilding(null)
+      setDraftError(failed[0]?.j.error || "The pictures could not be made")
+    }
+  }
   const draftPrice = (mode: DraftMode) => mode === "extend" ? storyboardDraftTickets("extend", Number(extendCount) || 2) : storyboardDraftTickets(mode, pickedN)
   const draftBtn = (mode: DraftMode, label: string, title: string) =>
     brandBtn({ onClick: () => draft(mode), disabled: !!drafting, busy: drafting === mode, label: <>{label}<TicketChip n={draftPrice(mode)} /></>, title: `${title} - ${draftPrice(mode)} ticket${draftPrice(mode) === 1 ? "" : "s"}`, className: "flex-1 min-w-0" })
@@ -1012,6 +1077,28 @@ export function StoryboardWorkspace({
               {m.framing && framing !== "mix" && (
                 <p className="-mt-0.5 pl-[58px] text-[9.5px] leading-snug text-slate-500">{FRAMINGS.find(f => f.id === framing)?.hint}</p>
               )}
+              {/* preferred models - the draft uses them unless the direction says otherwise for a shot */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <div className="min-w-0">
+                  <span className="block text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-0.5">Image model</span>
+                  <Dropdown value={prefImage} onChange={setPrefImage} className="w-full"
+                    options={[{ value: "", label: "No preference" }, ...imageOptions(isAdmin)]} />
+                </div>
+                <div className="min-w-0">
+                  <span className="block text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-0.5">Video model</span>
+                  <Dropdown value={prefVideo} onChange={setPrefVideo} className="w-full"
+                    options={[{ value: "", label: "No preference" }, ...videoOptions(isAdmin)]} />
+                </div>
+              </div>
+              <label className="flex items-start gap-2 text-[10px] leading-snug text-slate-400 cursor-pointer" title="After a draft, offer to make the new characters, places and things it uses as assets with pictures - then every still keeps them consistent">
+                <input type="checkbox" checked={castFirst} onChange={e => setCastFirst(e.target.checked)} className="mt-0.5 accent-violet-400" />
+                <span><span className="font-semibold text-slate-200">Build the cast first</span> - make the plan&apos;s characters, places and outfits as assets with pictures, then match every shot to them</span>
+              </label>
+              {(prefImage || prefVideo) && (
+                <p className="-mt-0.5 text-[9.5px] leading-snug text-slate-500">
+                  Every shot the draft writes uses {[prefImage && imageModelLabel(prefImage), prefVideo].filter(Boolean).join(" and ")} - name another model in your direction to switch a shot (&ldquo;the title card on Ideogram&rdquo;).
+                </p>
+              )}
               {modeOpen && (
                 <div className="grid grid-cols-2 gap-1">
                   {BOARD_MODES.map(x => {
@@ -1091,6 +1178,22 @@ export function StoryboardWorkspace({
             </details>
           </>
         ) : newBoardRow}
+        {castOffer && offerAssets(castOffer).length > 0 && (
+          <div className="rounded-lg border border-violet-300/30 bg-violet-500/10 p-2 space-y-1.5">
+            <p className="text-[10.5px] leading-snug text-violet-100">
+              The plan uses {offerAssets(castOffer).length} new asset{offerAssets(castOffer).length === 1 ? "" : "s"}: {offerAssets(castOffer).map(a => `${a.name} (${a.kind})`).join(", ")}.
+              Build them first - pictures for each, then every shot matched to them.
+            </p>
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => void buildCast()} disabled={!!castBuilding || !!drafting}
+                className="flex items-center gap-1 rounded-md bg-violet-500/30 border border-violet-300/40 px-2.5 py-1 text-[10.5px] font-bold text-white hover:bg-violet-500/40 disabled:opacity-50">
+                <Sparkles size={11} /> Build cast <TicketChip n={castPrice(castOffer)} />
+              </button>
+              <button onClick={() => setCastOffer(null)} className="text-[10px] text-slate-400 hover:text-white">Not now - they stay in Assets</button>
+            </div>
+          </div>
+        )}
+        {castBuilding && <p className="flex items-center gap-1.5 text-[10.5px] text-violet-200"><Loader2 size={11} className="animate-spin" />{castBuilding}</p>}
         {draftError && <p className="text-[10px] text-red-400">{draftError}</p>}
       </div>
     </div>
@@ -1276,6 +1379,8 @@ export function StoryboardWorkspace({
               {/* the cut's assets: characters, vehicles, props, places - each a set of refs */}
               <section className="silver-edge rounded-2xl p-3">
               <AssetsPanel
+                boardId={board.id}
+                boardAspect={board.aspect}
                 assets={board.assets}
                 onChange={fn => update(b => ({ ...b, assets: fn(b.assets) }))}
                 refLibrary={refLibrary}

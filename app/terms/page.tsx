@@ -17,7 +17,7 @@ export default function TermsPage() {
         <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Terms of Service
         </h1>
-        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: July 27, 2026 | Version 4.3</p>
+        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: October 13, 2026 | Version 5.0</p>
 
         <div className="space-y-8 text-slate-300">
           <section>
@@ -35,43 +35,42 @@ export default function TermsPage() {
           <section>
             <h2 className="text-2xl font-bold mb-4 text-white">2. Service Description</h2>
             <p className="mb-4">
-              AI Design Studio is a unified AI creative platform that provides access to multiple state-of-the-art AI image and video
-              generation models through a single interface. The platform is accessed via the AI Design Studio web application and
-              is powered by third-party AI providers including fal.ai, OpenAI, Google, and ByteDance.
+              AI Design Studio is a unified AI creative platform that provides access to more than 160 image and video generation
+              models, plus audio tools and creative studios, through a single web application and a single ticket balance. The
+              models are made by third-party AI developers - including Google, OpenAI, ByteDance, Kuaishou (Kling), Higgsfield,
+              Alibaba, Black Forest Labs, xAI, Meta, Lightricks, Ideogram and others - and are accessed through the third-party
+              infrastructure providers listed in Section 3.
             </p>
 
-            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.1 Image Generation</h3>
-            <p className="mb-2">The following image generation models are currently available to users:</p>
-            <ul className="list-disc list-inside space-y-1 ml-4 mb-4">
-              <li><strong>NanoBanana Pro 2</strong> (Google Gemini) — High-quality image generation up to 4K</li>
-              <li><strong>SeeDream 4.5</strong> (ByteDance) — Photorealistic and stylized image generation</li>
-              <li><strong>FLUX.1 Dev</strong> (Black Forest Labs) — High-fidelity text-to-image generation</li>
-              <li><strong>Wan 2.7 Pro</strong> — Advanced image generation with reference support</li>
-              <li><strong>ChatGPT Images 2.0</strong> (OpenAI) — Instruction-following image generation</li>
-              <li><strong>Z-Image Base / Z-Image Turbo</strong> — Fast and versatile image generation</li>
-            </ul>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.1 Image and Video Generation</h3>
+            <p className="mb-4">
+              You can create images and videos from a text prompt and, where a model supports it, from reference images, start and
+              end frames or source clips. The current list of models, the settings each offers and the ticket cost of each run are
+              shown in the application before you generate. Models are added, updated and retired regularly; the list in the
+              application is the authoritative one.
+            </p>
 
-            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.2 Video Generation</h3>
-            <p className="mb-2">The following video generation models are currently available to users:</p>
-            <ul className="list-disc list-inside space-y-1 ml-4 mb-4">
-              <li><strong>WAN 2.5</strong> — Text-to-video and image-to-video generation</li>
-              <li><strong>SeeDance 1.5</strong> — High-quality video generation with audio support</li>
-              <li><strong>SeeDance 2.0 / SeeDance 2.0 Fast</strong> — Advanced video generation in multiple resolutions</li>
-              <li><strong>Kling 3.0</strong> (Kuaishou) — Text-to-video with optional AI audio, 3–15 seconds</li>
-              <li><strong>Kling v3 Motion</strong> — Motion-controlled video generation</li>
-              <li><strong>Happy Horse</strong> — Stylized video generation</li>
-              <li><strong>Lipsync v3</strong> — AI-powered lip sync for existing video</li>
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">2.2 Studios</h3>
+            <p className="mb-2">The Service includes guided creative workspaces (&quot;Studios&quot;) built on the same models:</p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
+              <li><strong>Image Studio</strong> - edit pictures with layers, crops, brushes and AI tools (re-generate a selection, extend, relight, remove objects)</li>
+              <li><strong>Storyboard Studio</strong> - plan a story shot by shot, generate stills and video shots for it, and assemble a cut</li>
+              <li><strong>Frame Extractor</strong> - pull still frames and short clips out of your own videos</li>
+              <li><strong>Audio Studio</strong> - music, speech, sound effects and voice tools</li>
             </ul>
+            <p className="mb-4">
+              Studios are subject to exactly the same rules as the rest of the Service: the Prohibited Use Policy (Section 6), the
+              content filters, the moderation of each model provider, and the upload rules in Section 4.2. Voice tools may only be
+              used with your own voice or a voice you have documented permission to use; cloning or imitating any other real
+              person&apos;s voice is prohibited.
+            </p>
 
             <h3 className="text-xl font-semibold mb-3 text-slate-300">2.3 Platform Features</h3>
-            <p className="mb-2">The AI Design Studio interface provides the following capabilities:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
-              <li><strong>Unified Generation Feed</strong> — All generated images and videos appear in a live session feed with real-time status updates</li>
-              <li><strong>Reference Image Support</strong> — Upload reference images to guide and influence generation output</li>
-              <li><strong>Multi-Queue Generation</strong> — Submit multiple generation jobs concurrently across different models</li>
-              <li><strong>My Images Gallery</strong> — Persistent cloud storage of all your past generations, accessible at any time</li>
-              <li><strong>Prompt Controls</strong> — Per-model configuration including resolution, aspect ratio, duration, quality, and model-specific parameters</li>
-              <li><strong>Content Safety Controls</strong> — Built-in content safety filtering on applicable models to maintain platform compliance</li>
+              <li><strong>Generation Feed and My Generations</strong> - your images, videos and audio, saved to your account with folders</li>
+              <li><strong>Reference Library</strong> - saved reference pictures you can reuse across models (uploads require ID verification, Section 4.2)</li>
+              <li><strong>Background Queue</strong> - generations keep running on our servers if you close or refresh the page</li>
+              <li><strong>Content Safety Controls</strong> - automated prompt filtering plus each provider&apos;s own moderation, which cannot be disabled</li>
             </ul>
 
             <p className="mt-4 font-semibold text-amber-300">
@@ -85,38 +84,64 @@ export default function TermsPage() {
               <li>Generated content may contain invisible digital watermarks or metadata identifying its AI origin</li>
               <li>Model availability, features, and pricing are subject to change</li>
               <li>AI models have inherent limitations, biases, and may produce inconsistent results</li>
-              <li>Certain models apply content safety filtering which cannot be disabled by standard users</li>
+              <li>Model providers apply their own content moderation, which may refuse a request</li>
             </ul>
           </section>
 
           <section>
             <h2 className="text-2xl font-bold mb-4 text-white">3. Third-Party Services & Compliance</h2>
             <p className="mb-4">
-              Our Service utilizes third-party AI providers. By using our Service, you acknowledge and agree that:
+              Our Service relies on third-party providers. Your prompts, any reference media you upload and the resulting outputs
+              are sent to the provider that runs the model you choose:
             </p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
+              <li><strong>fal.ai</strong> - runs most image, video and audio models (including those made by Google, OpenAI, ByteDance, Kling, Alibaba, Black Forest Labs, xAI, Meta, Lightricks and others)</li>
+              <li><strong>Higgsfield</strong> - runs the Higgsfield models (Soul, Soul 2, Marketing Studio Image, Genjutsu Motion Transfer, Genjutsu Object Swap, Cinema Studio)</li>
+              <li><strong>Google Gemini API</strong> - powers text features such as prompt enhancement, captions and storyboard drafting</li>
+              <li><strong>Didit</strong> - performs identity and age verification (Section 4.2)</li>
+              <li><strong>CCBill</strong> - processes all payments (Section 5.4)</li>
+            </ul>
+            <p className="mb-4">By using our Service, you acknowledge and agree that:</p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Your use of the Service is also subject to the terms and policies of these third-party providers</li>
               <li>We do not control these third-party services and are not responsible for their availability, functionality, or content</li>
-              <li>These providers may have their own data collection and usage policies</li>
+              <li>These providers have their own moderation, data collection and usage policies</li>
               <li>Service availability may be affected by third-party service interruptions or limitations</li>
-              <li>We may share your prompts and generated content with these providers as necessary to provide the Service</li>
+              <li>We share your prompts, uploaded references and generated content with these providers only as necessary to provide the Service</li>
             </ul>
             <p className="mt-4">You can review the terms of our third-party providers:</p>
             <ul className="list-disc list-inside space-y-2 ml-4 mt-2">
-              <li><a href="https://fal.ai/terms" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">fal.ai Terms of Service</a></li>
+              <li><a href="https://fal.ai/terms" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">fal.ai Terms of Service</a> · <a href="https://fal.ai/privacy" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">fal.ai Privacy Policy</a></li>
+              <li><a href="https://higgsfield.ai" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Higgsfield (terms and privacy policy linked on their site)</a></li>
               <li><a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Google Gemini API Terms of Service</a></li>
-              <li><a href="https://fal.ai/privacy" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">fal.ai Privacy Policy</a></li>
+              <li><a href="https://didit.me" target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600">Didit (terms and privacy policy linked on their site)</a></li>
             </ul>
           </section>
 
           <section>
             <h2 className="text-2xl font-bold mb-4 text-white">4. User Account and Access</h2>
-            <p className="mb-4">To access the Service, you must create an account using Clerk authentication. You are responsible for:</p>
-            <ul className="list-disc list-inside space-y-2 ml-4">
+            <h3 className="text-xl font-semibold mb-3 text-slate-300">4.1 Your Account</h3>
+            <p className="mb-4">To access the Service, you must create an account with your email address and a password and confirm that you are 18 or older. You are responsible for:</p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
               <li>Maintaining the confidentiality of your account credentials</li>
               <li>All activities that occur under your account</li>
               <li>Notifying us immediately of any unauthorized use of your account</li>
               <li>Ensuring your account information is accurate and current</li>
+            </ul>
+
+            <h3 id="id-verification" className="text-xl font-semibold mb-3 text-slate-300 scroll-mt-24">4.2 Identity Verification for Uploads</h3>
+            <p className="mb-4">
+              Uploading your own media - reference pictures, start or end frames, source video clips, voice or audio samples, and
+              files used in any Studio - is <strong>only available to accounts that have passed identity verification</strong>.
+              Until an account is verified, every upload is blocked; prompting, text-to-image, text-to-video and re-using your own
+              previous generations remain available.
+            </p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
+              <li>Verification is carried out by our provider, <strong>Didit</strong>, using a government-issued photo ID, a live selfie (liveness check) and a face match</li>
+              <li>Only adults aged 18 or over are approved; any other result leaves uploads locked</li>
+              <li>Each account verifies once. Before verifying you must also accept the Content Provider Agreement (Section 21)</li>
+              <li>We receive and keep only the outcome (approved or not, the date, and Didit&apos;s session reference). Your name, date of birth and ID images stay with Didit and are never stored by us</li>
+              <li>Verification does not permit uploading images of any other real person without their documented consent (Sections 6 and 21)</li>
             </ul>
           </section>
 
@@ -125,67 +150,48 @@ export default function TermsPage() {
 
             <h3 className="text-xl font-semibold mb-3 text-slate-300">5.1 Ticket System</h3>
             <p className="mb-4">
-              The Service operates on a ticket-based system. Each generation request consumes tickets based on the model, quality
-              setting, resolution, and duration selected. Costs below reflect standard settings; higher quality or resolution
-              options increase the ticket cost accordingly.
+              The Service runs on a single ticket balance. Each generation consumes tickets based on the model and the settings
+              selected (quality, resolution, duration, audio, number of references). The exact ticket cost is shown in the
+              application before you start a generation. Some text features (such as prompt enhancement and captions) include a
+              free daily allowance and then cost tickets.
+            </p>
+            <p className="mb-4 text-sm text-amber-300">
+              Tickets are deducted when a generation starts. If a generation fails, or is refused by a provider&apos;s moderation, the
+              tickets it used are automatically returned to your balance. Tickets consumed by completed generations are non-refundable.
+              Pricing is subject to change with notice.
             </p>
 
-            <p className="mb-2 font-semibold text-slate-200">Image Generation Models:</p>
-            <ul className="list-disc list-inside space-y-1 ml-4 text-sm mb-4">
-              <li><strong>NanoBanana Pro:</strong> 7 tickets (2K) · 14 tickets (4K)</li>
-              <li><strong>NanoBanana Pro 2:</strong> 7 tickets (2K) · 12 tickets (4K) per image</li>
-              <li><strong>SeeDream 4.5:</strong> 2 tickets (2K) · 4 tickets (4K)</li>
-              <li><strong>FLUX.1 Dev:</strong> 2–8 tickets (varies by quality and use of reference images)</li>
-              <li><strong>Wan 2.7 Pro:</strong> 4 tickets per generation</li>
-              <li><strong>ChatGPT Images 2.0:</strong> 1–15 tickets (varies by quality and resolution)</li>
-              <li><strong>Z-Image Base:</strong> 1 ticket (1K) · 4 tickets (2K) · 15 tickets (4K)</li>
-              <li><strong>Z-Image Turbo:</strong> 1–17 tickets (varies by quality and LoRA usage)</li>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.2 Ticket Packs</h3>
+            <p className="mb-4">
+              Tickets can be bought in one-time packs, with or without a subscription. Packs range from 25 to 825 tickets; the current
+              packs and prices are listed on the Buy Tickets page. Subscribers receive 20% off every ticket pack.
+            </p>
+
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.3 Subscription Plans</h3>
+            <p className="mb-4">We offer three monthly subscription plans (&quot;Dev Tier&quot;):</p>
+            <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
+              <li><strong>Creator:</strong> $19.99 USD per month - 250 tickets per month</li>
+              <li><strong>Pro:</strong> $49.99 USD per month - 650 tickets per month</li>
+              <li><strong>Max:</strong> $99.99 USD per month - 1,350 tickets per month</li>
             </ul>
-
-            <p className="mb-2 font-semibold text-slate-200">Video Generation Models:</p>
-            <ul className="list-disc list-inside space-y-1 ml-4 text-sm mb-4">
-              <li><strong>WAN 2.5:</strong> 7–40 tickets (varies by resolution and duration)
-                <ul className="list-disc list-inside ml-6 mt-1 space-y-0.5">
-                  <li>480p: 7 tickets (5s) · 14 tickets (10s)</li>
-                  <li>720p: 13 tickets (5s) · 26 tickets (10s)</li>
-                  <li>1080p: 20 tickets (5s) · 40 tickets (10s)</li>
-                </ul>
-              </li>
-              <li><strong>SeeDance 1.5:</strong> Varies by duration, resolution, and audio — approximately 1–45 tickets</li>
-              <li><strong>SeeDance 2.0:</strong> Approximately 15 tickets/second × resolution multiplier (0.5–2.25×)</li>
-              <li><strong>SeeDance 2.0 Fast:</strong> Approximately 12 tickets/second × resolution multiplier (0.5–2.25×)</li>
-              <li><strong>Kling 3.0:</strong> 6 tickets/second without audio · 8 tickets/second with audio (3–15 seconds)</li>
-              <li><strong>Kling v3 Motion:</strong> 6 tickets/second, up to 30 seconds</li>
-              <li><strong>Happy Horse:</strong> 7 tickets/second (720p) · 12 tickets/second (1080p)</li>
-              <li><strong>Lipsync v3:</strong> Minimum 10 tickets · 6 tickets/second of source video</li>
-            </ul>
-
-            <p className="mt-2 text-sm text-amber-300">Ticket costs are deducted at the time of a successful generation and are non-refundable once consumed. Pricing is subject to change with notice.</p>
-
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.2 Dev Tier Subscriptions</h3>
-            <p className="mb-4">We offer recurring subscription plans ("Dev Tier") that provide periodic ticket allocations and a discount on one-time ticket purchases:</p>
+            <p className="mb-4">
+              Every plan includes access to every model and every Studio, 20% off ticket packs, more generations at once and a larger
+              reference library. Plans differ in their monthly tickets and their free daily allowance of AI text actions.
+            </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
-              <li><strong>Biweekly Plan:</strong> $20 USD every 2 weeks — 250 tickets per cycle</li>
-              <li><strong>Monthly Plan:</strong> $40 USD per month — 500 tickets per cycle</li>
-              <li><strong>Yearly Plan:</strong> $480 USD per year — 500 tickets per month (6,000 tickets annually, allocated upfront)</li>
-            </ul>
-
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.3 Subscription Terms</h3>
-            <ul className="list-disc list-inside space-y-2 ml-4">
-              <li>Subscriptions automatically renew unless canceled before the next billing cycle</li>
-              <li>Tickets are allocated at the start of each billing cycle</li>
-              <li>Unused tickets do not roll over to the next billing cycle</li>
-              <li>You may cancel your subscription at any time through your account settings</li>
-              <li>Cancellation takes effect at the end of the current billing period</li>
-              <li><strong>No refunds are provided for partial billing periods or unused tickets</strong></li>
-              <li>We reserve the right to modify subscription pricing with 30 days advance notice</li>
+              <li>Subscriptions renew automatically every 30 days unless canceled before the next billing date</li>
+              <li>Tickets are credited each time a renewal payment succeeds</li>
+              <li>Tickets do not expire - unused subscription and pack tickets stay in your balance, including after you cancel</li>
+              <li>You may cancel at any time from your account&apos;s Subscriptions page; cancellation takes effect at the end of the current billing period</li>
+              <li><strong>No refunds are provided for partial billing periods or unused tickets</strong> (see the Refund Policy)</li>
+              <li>We will give at least 30 days&apos; notice of any change to subscription pricing or to the ticket expiry policy</li>
             </ul>
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.4 Payment Processing</h3>
             <p className="mb-4">
               All payments are processed through <strong>CCBill</strong>, a third-party payment processing service. CCBill manages
               payment authorization, billing, and transaction security on our behalf. By completing a purchase, you agree to
-              CCBill's applicable terms and privacy policy. We are not responsible for any issues arising from CCBill's payment
+              CCBill&apos;s applicable terms and privacy policy. We are not responsible for any issues arising from CCBill&apos;s payment
               processing services, including but not limited to payment failures, security incidents, or unauthorized transactions.
             </p>
             <p className="mb-4">
@@ -199,14 +205,10 @@ export default function TermsPage() {
               All one-time ticket purchases are <strong>final and non-refundable</strong> once the transaction is completed. This includes:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
-              <li>Unsuccessful generations due to prohibited content or safety filters</li>
               <li>User dissatisfaction with AI-generated results</li>
-              <li>Technical issues with third-party AI providers</li>
+              <li>Technical issues with third-party AI providers (failed generations are refunded in tickets, Section 5.1)</li>
               <li>Account suspension or termination for violations</li>
             </ul>
-            <p className="mt-4">
-              Tickets currently do not expire, but we reserve the right to modify this policy with 30 days' written notice.
-            </p>
           </section>
 
           <section className="border-2 border-red-500/30 bg-red-500/5 p-6 rounded-lg">
@@ -313,16 +315,17 @@ export default function TermsPage() {
               <li>Certain AI models may have restrictions on commercial use - you are responsible for compliance</li>
             </ul>
 
-            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">7.3 Image Storage & Deletion</h3>
+            <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">7.3 Storage & Deletion</h3>
             <div className="bg-amber-500/[0.06] border border-amber-500/25 p-4 rounded-lg mb-3">
               <p className="font-bold text-amber-300 mb-2">⚠️ IMPORTANT: Download Responsibility</p>
-              <p>You are <strong>solely responsible</strong> for downloading and backing up your generated images. We provide temporary storage only.</p>
+              <p>You are <strong>solely responsible</strong> for downloading and backing up your generated content. We do not guarantee that storage will be available indefinitely.</p>
             </div>
             <ul className="list-disc list-inside space-y-2 ml-4">
-              <li>Images are stored for <strong>30 days maximum</strong> on secure cloud servers (Vercel Blob Storage)</li>
-              <li>After 30 days, images are <strong>permanently and automatically deleted</strong></li>
-              <li>We do not offer image recovery services after deletion</li>
-              <li>Storage duration may be reduced with notice during periods of high storage costs</li>
+              <li>Your generations and uploaded references are kept in your account on private cloud storage (Cloudflare R2), reachable only through signed, expiring links</li>
+              <li>They remain until you delete them, your account is closed, or they are removed under Section 22</li>
+              <li>Deleting a generation permanently removes its file from our storage; a minimal record (prompt, model and date) is kept for compliance, abuse prevention and support</li>
+              <li>We do not offer recovery services after deletion</li>
+              <li>We may introduce storage limits or retention periods with at least 30 days&apos; notice</li>
             </ul>
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">7.4 Service Content</h3>
@@ -342,10 +345,10 @@ export default function TermsPage() {
               IMPORTANT DATA SHARING NOTICE:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
-              <li><strong>fal.ai:</strong> When using models through fal.ai, your prompts and generated content may be used by fal.ai to improve their services, subject to fal.ai's terms</li>
-              <li><strong>Google Gemini (Unpaid Services):</strong> When using unpaid Gemini services, Google uses submitted content and generated responses to improve their products and machine learning technologies</li>
-              <li><strong>Google Gemini (Paid Services):</strong> When using paid Gemini services, Google does not use prompts/responses for improvement but logs them for 30 days for violation detection</li>
-              <li><strong>Do not submit sensitive, confidential, or personal information to the Service</strong></li>
+              <li><strong>fal.ai and Higgsfield:</strong> your prompts, uploaded references and generated content are processed by the provider running the model you choose, subject to that provider&apos;s terms and moderation. Higgsfield keeps its own copy of outputs for a limited period (currently about 7 days)</li>
+              <li><strong>Google Gemini API:</strong> we use paid Gemini services for text features; Google does not use those prompts or responses to improve its products but may log them for a limited period for abuse detection</li>
+              <li><strong>Didit:</strong> handles your ID document, selfie and date of birth during verification under its own privacy policy; we receive only the outcome (Section 4.2)</li>
+              <li><strong>Do not submit sensitive, confidential, or personal information to the Service</strong> beyond what verification requires</li>
             </ul>
           </section>
 
@@ -408,9 +411,9 @@ export default function TermsPage() {
               <p className="mb-3">This includes but is not limited to damages arising from:</p>
               <ul className="list-disc list-inside space-y-2 ml-4 text-sm">
                 <li>Errors, mistakes, or inaccuracies in Generated Content</li>
-                <li>Loss of data, including generated images after the 30-day retention period</li>
+                <li>Loss of data, including generated content you or we have deleted</li>
                 <li>Unauthorized access to or alteration of your account or data</li>
-                <li>Third-party service interruptions or failures (fal.ai, Google Gemini, CCBill)</li>
+                <li>Third-party service interruptions or failures (fal.ai, Higgsfield, Google Gemini, Didit, CCBill)</li>
                 <li>Infringement claims related to Generated Content</li>
                 <li>Account suspension or termination</li>
               </ul>

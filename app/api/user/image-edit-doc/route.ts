@@ -2,11 +2,11 @@ import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
-import { requireStudioUser, hasDevAccess } from '@/lib/studio-auth'
+import { requireStudioUser } from '@/lib/studio-auth'
 import { sanitizeDoc } from '@/lib/image-studio'
 
 /**
- * The layered version of an Edit Image popup edit (Dev Tier).
+ * The layered version of an Edit Image popup edit (every account since 2026-10-13; it was Dev Tier).
  *
  *   GET  ?hash=<sha-256 hex>  -> { doc | null }
  *   POST { hash, doc }        -> { ok }   (one per picture, replaced on re-apply)
@@ -24,7 +24,6 @@ export async function GET(req: NextRequest) {
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
   const hash = req.nextUrl.searchParams.get('hash') ?? ''
   if (!HASH.test(hash)) return jsonPrivate({ error: 'Bad hash' }, { status: 400 })
-  if (!(await hasDevAccess(user.id, user.email))) return jsonPrivate({ doc: null })
   const row = await prisma.imageEditDoc.findUnique({ where: { userId_hash: { userId: user.id, hash } } })
   return jsonPrivate({ doc: row ? sanitizeDoc(row.doc, row) : null })
 }
@@ -32,7 +31,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const user = await requireStudioUser()
   if (!user) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
-  if (!(await hasDevAccess(user.id, user.email))) return jsonPrivate({ error: 'Keeping layers is a Dev Tier feature' }, { status: 403 })
+  // Every account keeps its layers (2026-10-13 - this was a Dev Tier feature)
   // Layer URLs arrive signed (that is how the page got them) and are stored canonical
   const body = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, any>
   const hash = typeof body.hash === 'string' ? body.hash : ''

@@ -1,3 +1,4 @@
+import { chargeAiText } from '@/lib/prompt-enhance'
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireStoryboardUser } from '@/lib/storyboard-gate'
@@ -117,7 +118,8 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   ].filter(Boolean).join('\n')
 
   // One small job: charged now, refunded by POST if anything after this fails
-  const paid = await deductGenerationTickets(user.id, user.email, SHOT_EDIT_TICKETS)
+  // Today's free AI actions first, then tickets (lib/prompt-enhance)
+  const paid = await chargeAiText(user, SHOT_EDIT_TICKETS)
   if (!paid.ok) return jsonPrivate({ error: `Edit with AI needs ${paid.need} ticket - you have ${paid.have}`, needTickets: true }, { status: 402 })
   if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = SHOT_EDIT_TICKETS; bill.balance = paid.newBalance }
 

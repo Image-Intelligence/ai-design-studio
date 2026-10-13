@@ -17,7 +17,7 @@ export default function PrivacyPage() {
         <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Privacy Policy
         </h1>
-        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: February 27, 2026 | Version 3.1</p>
+        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: October 13, 2026 | Version 4.0</p>
 
         <div className="space-y-8 text-slate-300">
           <section>
@@ -36,7 +36,8 @@ export default function PrivacyPage() {
               <div>
                 <h3 className="font-bold text-slate-300 mb-2">2.1 Account Information</h3>
                 <ul className="list-disc ml-6 space-y-1 text-sm">
-                  <li>Email address (required for account creation via Clerk authentication)</li>
+                  <li>Email address and a securely hashed password (required for account creation)</li>
+                  <li>Your 18+ age confirmation and the date you gave it</li>
                   <li>Display name and profile information (if provided)</li>
                   <li>Authentication tokens and session data</li>
                   <li>Account creation date and last login timestamp</li>
@@ -45,9 +46,9 @@ export default function PrivacyPage() {
               <div>
                 <h3 className="font-bold text-slate-300 mb-2">2.2 Usage Data</h3>
                 <ul className="list-disc ml-6 space-y-1 text-sm">
-                  <li>Text prompts submitted for image generation</li>
-                  <li>Reference images uploaded (if any)</li>
-                  <li>Model selection (NanoBanana Cluster, Pro, SeeDream, etc.)</li>
+                  <li>Text prompts submitted for image, video and audio generation</li>
+                  <li>Media you upload (reference pictures, frames, clips, voice or audio samples) - only possible after ID verification</li>
+                  <li>Model selection and the Studio used (if any)</li>
                   <li>Quality, aspect ratio, and other generation settings</li>
                   <li>Generation timestamps and ticket consumption records</li>
                   <li>IP address, browser type, and device information (for security and fraud prevention)</li>
@@ -58,7 +59,7 @@ export default function PrivacyPage() {
                 <h3 className="font-bold text-slate-300 mb-2">2.3 Payment and Subscription Information</h3>
                 <ul className="list-disc ml-6 space-y-1 text-sm">
                   <li>CCBill transaction IDs and payment amounts</li>
-                  <li>Subscription plan details (Dev Tier: biweekly, monthly, or yearly)</li>
+                  <li>Subscription plan details (Dev Tier: Creator, Pro or Max)</li>
                   <li>Ticket purchase history and balance</li>
                   <li>Subscription status (active, canceled, expired)</li>
                   <li><strong className="text-slate-200">We do NOT store credit card numbers, bank account details, or billing addresses</strong></li>
@@ -68,10 +69,18 @@ export default function PrivacyPage() {
               <div>
                 <h3 className="font-bold text-slate-300 mb-2">2.4 Generated Content</h3>
                 <ul className="list-disc ml-6 space-y-1 text-sm">
-                  <li>AI-generated images (stored for 30 days maximum)</li>
+                  <li>AI-generated images, videos and audio (kept in your account until you delete them)</li>
                   <li>Image metadata (creation date, model used, settings, user ID)</li>
                   <li>Download history and view counts</li>
                   <li>Image ratings and feedback (if provided)</li>
+                </ul>
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-300 mb-2">2.5 Identity Verification (only if you upload media)</h3>
+                <ul className="list-disc ml-6 space-y-1 text-sm">
+                  <li>Uploads are only available after a one-time identity and age check run by our provider, Didit (government photo ID, live selfie and face match)</li>
+                  <li><strong className="text-slate-200">We store only the outcome</strong>: whether you were approved, the date, Didit&apos;s session reference and status, and when you accepted the Content Provider Agreement</li>
+                  <li>We do NOT store your name, date of birth, ID document images or selfie - these are held by Didit under its own privacy policy. Your date of birth is read once during the check to confirm you are 18 or over and is never saved by us</li>
                 </ul>
               </div>
             </div>
@@ -85,7 +94,7 @@ export default function PrivacyPage() {
                 <span className="text-slate-200 mt-1 text-lg">•</span>
                 <div>
                   <p className="font-bold text-white">Service Delivery</p>
-                  <p className="text-sm">Processing your prompts through AI models (fal.ai, Google Gemini) to generate images</p>
+                  <p className="text-sm">Processing your prompts and uploads through AI models (via fal.ai, Higgsfield and the Google Gemini API) to generate images, videos, audio and text</p>
                 </div>
               </div>
               <div className="flex items-start gap-2">
@@ -172,6 +181,31 @@ export default function PrivacyPage() {
 
               <div className="p-5 bg-white/[0.03] rounded-lg border-2 border-white/10">
                 <div className="flex items-start gap-3">
+                  <div className="text-3xl">🎬</div>
+                  <div className="flex-1">
+                    <h3 className="font-bold text-white text-lg mb-2">Higgsfield (AI Model Provider)</h3>
+                    <p className="text-sm mb-2"><strong className="text-white">What they receive:</strong> Your prompt, any reference pictures or source clips, and generation settings - only when you use a Higgsfield model (Soul, Soul 2, Marketing Studio Image, Genjutsu, Cinema Studio)</p>
+                    <p className="text-sm mb-2"><strong className="text-white">Purpose:</strong> Running those models. Higgsfield applies its own content moderation and keeps outputs for a limited period (currently about 7 days); we copy the result into your account&apos;s storage</p>
+                    <p className="text-sm mb-3"><strong className="text-white">Privacy policy:</strong> <a href="https://higgsfield.ai" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600" target="_blank" rel="noopener noreferrer">higgsfield.ai</a> (linked on their site)</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-5 bg-white/[0.03] rounded-lg border-2 border-white/10">
+                <div className="flex items-start gap-3">
+                  <div className="text-3xl">🪪</div>
+                  <div className="flex-1">
+                    <h3 className="font-bold text-white text-lg mb-2">Didit (Identity Verification)</h3>
+                    <p className="text-sm mb-2"><strong className="text-white">What they receive:</strong> Your government photo ID, a live selfie and the data on your ID - collected directly by Didit in its hosted flow, only if you choose to verify</p>
+                    <p className="text-sm mb-2"><strong className="text-white">Purpose:</strong> Confirming your identity and that you are 18 or over before uploads are unlocked (a card-network requirement for user-supplied content)</p>
+                    <p className="text-sm mb-2"><strong className="text-white">What we receive back:</strong> Only the result and a session reference - never your name, date of birth or images</p>
+                    <p className="text-sm mb-3"><strong className="text-white">Privacy policy:</strong> <a href="https://didit.me" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600" target="_blank" rel="noopener noreferrer">didit.me</a> (linked on their site)</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-5 bg-white/[0.03] rounded-lg border-2 border-white/10">
+                <div className="flex items-start gap-3">
                   <div className="text-3xl">💳</div>
                   <div className="flex-1">
                     <h3 className="font-bold text-white text-lg mb-2">CCBill (Payment Processor)</h3>
@@ -188,11 +222,11 @@ export default function PrivacyPage() {
                 <div className="flex items-start gap-3">
                   <div className="text-3xl">☁️</div>
                   <div className="flex-1">
-                    <h3 className="font-bold text-white text-lg mb-2">Vercel (Hosting & Storage)</h3>
-                    <p className="text-sm mb-2"><strong className="text-white">What they store:</strong> Generated images (via Vercel Blob Storage), application code, and user session data</p>
-                    <p className="text-sm mb-2"><strong className="text-white">Purpose:</strong> Website hosting and temporary image storage (30 days maximum)</p>
-                    <p className="text-sm mb-2"><strong className="text-white">Security:</strong> SOC 2 Type II certified, encrypted at rest and in transit with TLS 1.3</p>
-                    <p className="text-sm mb-3"><strong className="text-white">Privacy policy:</strong> <a href="https://vercel.com/legal/privacy-policy" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600" target="_blank" rel="noopener noreferrer">vercel.com/legal/privacy-policy</a></p>
+                    <h3 className="font-bold text-white text-lg mb-2">Vercel and Cloudflare R2 (Hosting & Storage)</h3>
+                    <p className="text-sm mb-2"><strong className="text-white">What they store:</strong> Vercel hosts the application; your generations and uploads are stored in a private Cloudflare R2 bucket and served only through signed, expiring links</p>
+                    <p className="text-sm mb-2"><strong className="text-white">Purpose:</strong> Website hosting and storage of your content until you delete it</p>
+                    <p className="text-sm mb-2"><strong className="text-white">Security:</strong> Encrypted at rest and in transit (TLS)</p>
+                    <p className="text-sm mb-3"><strong className="text-white">Privacy policy:</strong> <a href="https://vercel.com/legal/privacy-policy" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600" target="_blank" rel="noopener noreferrer">vercel.com/legal/privacy-policy</a> · <a href="https://www.cloudflare.com/privacypolicy/" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600" target="_blank" rel="noopener noreferrer">cloudflare.com/privacypolicy</a></p>
                   </div>
                 </div>
               </div>
@@ -213,10 +247,9 @@ export default function PrivacyPage() {
                 <div className="flex items-start gap-3">
                   <div className="text-3xl">🔐</div>
                   <div className="flex-1">
-                    <h3 className="font-bold text-white text-lg mb-2">Clerk (Authentication Provider)</h3>
-                    <p className="text-sm mb-2"><strong className="text-white">What they receive:</strong> Email address, authentication tokens, login history, and security events</p>
-                    <p className="text-sm mb-2"><strong className="text-white">Purpose:</strong> User authentication, account management, and security monitoring</p>
-                    <p className="text-sm mb-3"><strong className="text-white">Privacy policy:</strong> <a href="https://clerk.com/legal/privacy" className="text-slate-300 hover:text-white underline underline-offset-2 decoration-slate-600" target="_blank" rel="noopener noreferrer">clerk.com/legal/privacy</a></p>
+                    <h3 className="font-bold text-white text-lg mb-2">Sign-in (operated by us)</h3>
+                    <p className="text-sm mb-2"><strong className="text-white">What we keep:</strong> Your email, a hashed password (never the password itself) and session cookies</p>
+                    <p className="text-sm mb-2"><strong className="text-white">Purpose:</strong> Signing you in, keeping your account secure and preventing abuse. No third-party authentication provider is used</p>
                   </div>
                 </div>
               </div>
@@ -225,7 +258,7 @@ export default function PrivacyPage() {
             <div className="mt-4 p-4 bg-red-500/10 border-2 border-red-500/30 rounded-lg">
               <p className="font-bold text-red-400 mb-2 text-lg">⚠️ Critical Privacy Notice</p>
               <p className="text-sm mb-2">
-                <strong className="text-white">We do NOT control how third-party AI providers use your data.</strong> While we use paid/enterprise services where possible to minimize data retention, the underlying AI model providers (Google, ByteDance) have their own data policies.
+                <strong className="text-white">We do NOT control how third-party AI providers use your data.</strong> While we use paid/enterprise services where possible to minimize data retention, the AI providers (fal.ai, Higgsfield, Google and the model makers behind them) have their own data policies.
               </p>
               <p className="text-sm font-semibold text-amber-300">
                 Do not submit sensitive, confidential, personal information, protected health information (PHI), or trade secrets to the Service.
@@ -234,20 +267,21 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-2xl font-bold text-white mb-3">5. Data Retention & Automatic Deletion</h2>
+            <h2 className="text-2xl font-bold text-white mb-3">5. Data Retention & Deletion</h2>
             <div className="bg-amber-500/[0.06] border-2 border-amber-500/25 p-5 rounded-lg mb-4">
-              <p className="font-bold text-amber-300 mb-3 text-lg">⏱️ Automatic Data Deletion Timeline</p>
+              <p className="font-bold text-amber-300 mb-3 text-lg">⏱️ How long we keep your data</p>
               <ul className="list-disc ml-6 space-y-2 text-sm">
-                <li><strong className="text-white">Generated Images:</strong> Automatically deleted after 30 days from creation date</li>
-                <li><strong className="text-white">Text Prompts & Metadata:</strong> Retained for 90 days for support and troubleshooting, then automatically deleted</li>
-                <li><strong className="text-white">Account Data:</strong> Retained until you request account deletion or account is inactive for 2 years</li>
-                <li><strong className="text-white">Subscription Data:</strong> Retained for duration of active subscription plus 90 days after cancellation</li>
+                <li><strong className="text-white">Generations and uploads:</strong> Kept in your account until you delete them or close your account. Deleting an item permanently removes its file from our storage</li>
+                <li><strong className="text-white">Prompts &amp; generation records:</strong> Kept while your account exists; when you delete an item, a minimal record (prompt, model, date) is kept for compliance, abuse prevention and support</li>
+                <li><strong className="text-white">Account Data:</strong> Retained until you request account deletion</li>
+                <li><strong className="text-white">ID verification outcome:</strong> Kept for the life of your account (Didit keeps its own records under its policy)</li>
+                <li><strong className="text-white">Content reports and moderation records:</strong> Kept as long as required by our payment processor and the law</li>
                 <li><strong className="text-white">Payment Records:</strong> Retained for 7 years (legal requirement for tax and financial compliance)</li>
-                <li><strong className="text-white">Logs & Security Data:</strong> Retained for 90 days for security monitoring and fraud prevention</li>
+                <li><strong className="text-white">Logs &amp; Security Data:</strong> Retained for a limited period (up to 90 days) for security monitoring and fraud prevention</li>
               </ul>
             </div>
             <p className="text-sm">
-              This retention policy ensures your creative work isn't stored indefinitely while maintaining records necessary for legal compliance, customer support, and service operation. You can request early deletion of your data at any time by contacting us.
+              You can delete any generation yourself at any time, and you can request deletion of your account and data by contacting us.
             </p>
           </section>
 
@@ -529,7 +563,7 @@ export default function PrivacyPage() {
                   <strong className="text-white">✓ Security:</strong> We implement industry-standard security measures to protect your information
                 </p>
                 <p className="text-sm">
-                  <strong className="text-white">✓ Minimal Retention:</strong> Images auto-delete after 30 days, prompts after 90 days
+                  <strong className="text-white">✓ Minimal Collection:</strong> Your content stays until you delete it, and we never store your ID documents
                 </p>
                 <p className="text-sm text-slate-400 mt-3 italic">
                   "Your creativity is yours. We're just the infrastructure that helps bring it to life."
@@ -540,8 +574,8 @@ export default function PrivacyPage() {
         </div>
 
         <div className="mt-6 text-center border-t border-slate-800 pt-6">
-          <p className="text-sm text-slate-500">Last Updated: February 27, 2026</p>
-          <p className="text-xs text-slate-600 mt-1">Version 3.1</p>
+          <p className="text-sm text-slate-500">Last Updated: October 13, 2026</p>
+          <p className="text-xs text-slate-600 mt-1">Version 4.0</p>
         </div>
       </div>
     </div>

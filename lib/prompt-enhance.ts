@@ -25,13 +25,19 @@ import { resolvePromptModel, DEFAULT_PROMPT_MODEL } from '@/lib/prompt-models'
 
 export type EnhancePlan = 'free' | 'creator' | 'pro' | 'studio' | 'max' | 'admin'
 
-/** Enhancements per UTC day. Admins are unmetered. */
+/**
+ * FREE AI text actions per UTC day (2026-10-13 - was Enhance's own cap). One
+ * allowance for every Gemini text feature: Prompt Enhance, Storyboard's Draft
+ * with AI and Edit with AI, asset captions. Past it each action costs its
+ * tickets (lib/ai-text-pricing) - chargeAiText below. Admins are unmetered.
+ * ('studio' is the retired plan, kept so an old subscription still resolves.)
+ */
 export const ENHANCE_LIMITS: Record<EnhancePlan, number> = {
   free: 5,
   creator: 25,
-  pro: 60,
-  studio: 150,
-  max: 300,
+  pro: 75,
+  studio: 75,
+  max: 200,
   admin: Infinity,
 }
 export const ENHANCE_PLAN_LABEL: Record<EnhancePlan, string> = {
@@ -62,7 +68,7 @@ export async function enhancePlanFor(user: { id: number; email: string | null })
   })
   if (!sub) return 'free'
   const planId = (sub.metadata as { planId?: string } | null)?.planId
-  if (planId === 'creator' || planId === 'pro' || planId === 'studio' || planId === 'max') return planId
+  if (planId === 'creator' || planId === 'pro' || planId === 'studio' || planId === 'max') return planId === 'studio' ? 'pro' : planId
   return sub.billingCycle === 'biweekly' ? 'creator' : 'pro'
 }
 
@@ -102,6 +108,23 @@ export async function consumeEnhance(userId: number, limit: number): Promise<num
            OR COALESCE(("portalPreferences"->'_enhance'->>'n')::int, 0) < ${limit})
     RETURNING ("portalPreferences"->'_enhance'->>'n')::int AS n`
   return rows.length ? rows[0].n : null
+}
+
+/**
+ * Pay for one AI text action: from today's free allowance while it lasts
+ * (counted on the same `_enhance` counter), then in tickets. Same answer shape
+ * as deductGenerationTickets, plus `free`; a free action reports newBalance -1
+ * so the routes neither show a charge nor refund tickets for it.
+ */
+export async function chargeAiText(user: { id: number; email: string | null }, tickets: number): Promise<
+  { ok: true; newBalance: number; free: boolean } | { ok: false; have: number; need: number }
+> {
+  const plan = await enhancePlanFor(user)
+  if (plan === 'admin') return { ok: true, newBalance: -1, free: true }
+  if ((await consumeEnhance(user.id, ENHANCE_LIMITS[plan])) !== null) return { ok: true, newBalance: -1, free: true }
+  const { deductGenerationTickets } = await import('@/lib/ticket-gate')
+  const paid = await deductGenerationTickets(user.id, user.email ?? '', tickets)
+  return paid.ok ? { ...paid, free: false } : paid
 }
 
 /** Give one back - the enhancement failed, so it should not count. */

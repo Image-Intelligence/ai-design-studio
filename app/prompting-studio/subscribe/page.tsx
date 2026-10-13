@@ -39,15 +39,13 @@ const HERO_VIDEO: string | null = `${SHOP_MEDIA}/sub/hero-loop-1fc997d8-9b8f-439
 const PLAN_ART: Record<CcbillPlanId, string> = {
   creator: `${SHOP_MEDIA}/sub/creator-01e97508-07a2-477d-861a-83d9e52d1023.webp`,
   pro:     `${SHOP_MEDIA}/sub/pro-ce1f8eb8-cfeb-499d-a7a1-72978292a443.webp`,
-  studio:  `${SHOP_MEDIA}/sub/studio-a2589590-9079-4b86-80d7-ca0fa98159c4.webp`,
   max:     `${SHOP_MEDIA}/sub/max-5bbe0716-dff8-4551-899b-7d53762eefa6.webp`,
 };
 // Display-only extras per plan (the catalog itself is shared with the server)
 const PLAN_META: Record<CcbillPlanId, { blurb: string; badge?: string }> = {
   creator: { blurb: 'For steady weekly creating.' },
-  pro:     { blurb: 'Room for daily images and the odd video.', badge: 'MOST POPULAR' },
-  studio:  { blurb: 'For video-heavy projects and big batches.' },
-  max:     { blurb: 'The most tickets one monthly charge allows.', badge: 'MOST TICKETS' },
+  pro:     { blurb: 'Daily images, regular video and the studios.', badge: 'MOST POPULAR' },
+  max:     { blurb: 'Video-heavy work and big batches - the most tickets a month.', badge: 'MOST TICKETS' },
 };
 const DEFAULT_PLAN: CcbillPlanId = 'pro';
 
@@ -60,28 +58,27 @@ const MAX_TICKETS = Math.max(...CCBILL_PLANS.map(p => p.tickets));
 // carries the same Dev Tier benefits; plans differ by tickets per month.
 const TIER_COMPARISON: { feature: string; free: string; dev: string; devWins: boolean }[] = [
   { feature: 'Monthly tickets',         free: '—',             dev: `${MIN_TICKETS.toLocaleString()}–${MAX_TICKETS.toLocaleString()} delivered every month`, devWins: true },
-  { feature: 'Ticket packs',            free: 'Standard price', dev: '10% off every pack',                devWins: true },
+  { feature: 'Ticket packs',            free: 'Standard price', dev: '20% off every pack',                devWins: true },
   { feature: 'Concurrent generations',  free: '2 at a time',    dev: '8 at a time (6 image + 2 video)',   devWins: true },
-  { feature: 'Reference library',       free: '50 slots',       dev: '250 slots + folders',               devWins: true },
-  { feature: 'AI prompt generation',    free: '—',              dev: 'Included',                          devWins: true },
-  { feature: 'Experimental features',   free: '—',              dev: 'Early access',                      devWins: true },
+  { feature: 'Reference library',       free: '50 slots',       dev: '500 slots',                         devWins: true },
+  { feature: 'Free AI actions a day',   free: '5',              dev: '25–200 by plan, then tickets',      devWins: true },
+  { feature: 'Every studio',            free: 'Included',       dev: 'Included',                          devWins: false },
   { feature: 'Image, video & audio models', free: 'Every model', dev: 'Every model',                      devWins: false },
   { feature: 'Tickets expire?',         free: 'Never',          dev: 'Never',                             devWins: false },
 ];
 
 const DEV_TIER_FEATURES = [
   { icon: CalendarClock, title: 'Tickets on autopilot', text: 'Fresh tickets land every month - and they never expire.' },
-  { icon: Ticket,        title: '10% off every pack',   text: 'Top up any time from the Ticket Dispenser for less.' },
+  { icon: Ticket,        title: '20% off every pack',   text: 'Top up any time from the Ticket Dispenser for less.' },
   { icon: Layers,        title: '4× the capacity',      text: '8 generations at once: 6 image + 2 video.' },
-  { icon: BookMarked,    title: '5× the references',    text: '250 reference slots, organised in folders.' },
-  { icon: Sparkles,      title: 'AI prompt generation', text: 'Turn a rough idea into a detailed prompt.' },
-  { icon: FlaskRound,    title: 'Early access',         text: 'Try experimental features before anyone else.' },
+  { icon: BookMarked,    title: '10× the references',   text: '500 reference slots for your characters, places and looks.' },
+  { icon: Sparkles,      title: 'Free AI actions',      text: 'Storyboard drafts and edits, captions and prompt enhance - 25 to 200 free a day.' },
 ];
 
 const FAQ = [
   {
     q: 'Which plan should I pick?',
-    a: 'Every plan has the same Dev Tier benefits and the same $0.08 a ticket - the only difference is how many tickets arrive each month. Pick the one closest to what you use; you can always top up with a pack at 10% off.',
+    a: 'Every plan has the same Dev Tier benefits - bigger plans bring more tickets each month (a little cheaper per ticket) and more free AI actions a day. Pick the one closest to what you use; you can always top up with a pack at 20% off.',
   },
   {
     q: 'How does billing work?',
@@ -387,9 +384,9 @@ export default function SubscribePage() {
           <section className="mt-8 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
             <div className="grid grid-cols-3 lg:grid-cols-1 gap-3">
               {[
-                { value: '10%', label: 'off every ticket pack' },
+                { value: '20%', label: 'off every ticket pack' },
                 { value: '8×', label: 'concurrent generations' },
-                { value: '5×', label: 'reference library slots' },
+                { value: '10×', label: 'reference library slots' },
               ].map(({ value, label }) => (
                 <div key={label} className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 text-center lg:text-left">
                   <div className="text-2xl sm:text-3xl font-black text-white">{value}</div>
@@ -432,7 +429,7 @@ export default function SubscribePage() {
       <main className="relative z-10 max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-10 pt-5 sm:pt-8 pb-28 lg:pb-16">
         <Hero eyebrow="Development Tier · monthly plans" title="Create on autopilot.">
           <p className="mt-3 sm:mt-4 text-sm sm:text-base text-slate-300 leading-relaxed max-w-xl">
-            Fresh tickets every month, 10% off every pack, four times the generations at once and a five times
+            Fresh tickets every month, 20% off every pack, four times the generations at once and a ten times
             bigger reference library. Cancel anytime.
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
@@ -459,7 +456,7 @@ export default function SubscribePage() {
           </div>
 
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px] items-start">
-            <div className="grid grid-cols-2 2xl:grid-cols-4 gap-3 sm:gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
               {CCBILL_PLANS.map(plan => (
                 <PlanCard key={plan.id} plan={plan} active={plan.id === selectedId} onSelect={() => setSelectedId(plan.id)} />
               ))}
@@ -495,7 +492,7 @@ export default function SubscribePage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] text-slate-400">
-                  {['10% off every pack', '8 generations at once', '250 reference slots', 'Cancel anytime'].map(t => (
+                  {['20% off every pack', '8 generations at once', '500 reference slots', 'Cancel anytime'].map(t => (
                     <div key={t} className="flex items-center gap-1.5">
                       <Check size={12} className="text-white shrink-0" />
                       <span>{t}</span>

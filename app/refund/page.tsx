@@ -17,7 +17,7 @@ export default function RefundPage() {
         <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Refund Policy
         </h1>
-        <p className="text-center text-sm text-slate-500 mb-2">Last Updated: February 27, 2026 | Version 1.0</p>
+        <p className="text-center text-sm text-slate-500 mb-2">Last Updated: October 13, 2026 | Version 2.0</p>
         <p className="text-center text-sm text-slate-500 mb-8">Prompt &amp; Protocol LLC — AI Design Studio</p>
 
         <div className="space-y-8 text-slate-300">
@@ -37,7 +37,7 @@ export default function RefundPage() {
             <h2 className="text-2xl font-bold mb-4 text-white">1. Why We Do Not Offer Refunds</h2>
             <p className="mb-4">
               AI Design Studio operates on a compute-cost model. Every image generation request dispatches a live call to
-              third-party AI infrastructure (fal.ai, Google Gemini API) that incurs real-time GPU and API costs the moment
+              third-party AI infrastructure (fal.ai, Higgsfield, Google Gemini API) that incurs real-time GPU and API costs the moment
               it is submitted — regardless of whether the output meets your expectations or whether you choose to keep the result.
             </p>
             <p className="mb-4">These costs are:</p>
@@ -75,12 +75,12 @@ export default function RefundPage() {
           <section>
             <h2 className="text-2xl font-bold mb-4 text-white">3. Subscription Fees — No Refunds</h2>
             <p className="mb-4">
-              All subscription payments (Dev Tier — Biweekly, Monthly, or Yearly) are <strong>non-refundable</strong>, including:
+              All subscription payments (Dev Tier — Creator, Pro or Max) are <strong>non-refundable</strong>, including:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Partial billing periods (if you cancel mid-cycle, your access continues until the end of the paid period — no prorated refund is issued)</li>
               <li>Billing cycles where you did not actively use the Service</li>
-              <li>Tickets allocated at the start of a billing cycle that were not used before the next cycle</li>
+              <li>Tickets credited by a billing cycle that you have not used yet (they stay in your balance - tickets do not expire)</li>
               <li>Automatic renewal charges — it is your responsibility to cancel before the renewal date</li>
               <li>Charges for billing cycles during which the Service experienced partial downtime due to third-party provider issues</li>
             </ul>
@@ -88,7 +88,7 @@ export default function RefundPage() {
             <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">3.1 How to Cancel Your Subscription</h3>
             <p className="mb-4">
               You may cancel your subscription at any time through your account settings. Cancellation stops future billing immediately.
-              Your subscription and any remaining ticket balance remain active through the end of the current paid period.
+              Your plan&apos;s benefits remain active through the end of the current paid period, and your ticket balance stays in your account afterwards (tickets do not expire).
               Cancellation does not trigger a refund of any amount already charged.
             </p>
             <p className="mb-4">
@@ -120,7 +120,7 @@ export default function RefundPage() {
               <li>Images generated successfully but disliked, unexpected, or not matching your creative intent</li>
               <li>Slow generation times or queue delays</li>
               <li>Browser crashes, tab closures, or connectivity issues on your end</li>
-              <li>Images that expired from our 30-day storage window</li>
+              <li>Content that you deleted from your account</li>
               <li>Model-specific limitations (aspect ratio restrictions, style limitations, etc.)</li>
             </ul>
 

@@ -1,3 +1,4 @@
+import { HIGGSFIELD_MODEL_IDS } from '@/lib/higgsfield-models'
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 
@@ -44,7 +45,8 @@ export async function syncActiveCounters() {
       where: { status: 'processing', modelType: { not: 'threed' } },
       _count: { id: true },
     }),
-    prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' } } }),
+    // fal's slots: Higgsfield's jobs run on their own queue (lib/higgsfield)
+    prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' }, modelId: { notIn: HIGGSFIELD_MODEL_IDS } } }),
   ]);
 
   const actualCounts: Record<string, number> = {};

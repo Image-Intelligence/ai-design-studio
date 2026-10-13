@@ -14,7 +14,13 @@ export const TALL_CARDS = new Set(["image:Virtual Try-On", "image:Pixelcut Produ
  * portrait cards (TALL_CARDS) tall (2x4, about 2:3 for their 3:4 art).
  */
 export const BIG_FEATURED = new Set(["image:NanoBanana 2.1", "video:SeeDance 2.5", "video:Gemini Omni Flash 1.1"])
-export const MEDIUM_FEATURED = new Set(["image:ChatGPT Images 2.5", "video:LTX 2.5 Pro", "image:SeeDream 5.0 Pro"])
+// The Higgsfield exclusives (2026-10-13) are medium: the Genjutsu cards are
+// showcase loops with labels that need the room, and the five together pack
+// every width with the fewest "All models" tiles (1 at sm, 1 at lg+, none else)
+export const MEDIUM_FEATURED = new Set([
+  "image:ChatGPT Images 2.5", "video:LTX 2.5 Pro", "image:SeeDream 5.0 Pro",
+  "video:Genjutsu Motion Transfer", "video:Genjutsu Object Swap", "image:Soul 2", "image:Marketing Studio Image", "video:Cinema Studio 4.0",
+])
 
 export type FeaturedSize = "small" | "medium" | "big" | "tall"
 export function featuredSize(key: string): FeaturedSize {
@@ -31,7 +37,14 @@ export function featuredSize(key: string): FeaturedSize {
 export const FEATURED_MODELS: { name: string; kind: "image" | "video" }[] = [
   { name: "NanoBanana 2.1", kind: "image" },          // big
   { name: "Virtual Try-On", kind: "image" },          // tall
+  // Higgsfield's exclusives, up top (2026-10-13 - Wan 3.0, Luma Ray 3.2 and
+  // PixVerse V6 made room); this order packs every width (see MEDIUM_FEATURED)
+  { name: "Genjutsu Motion Transfer", kind: "video" }, // medium
+  { name: "Genjutsu Object Swap", kind: "video" },    // medium
   { name: "ChatGPT Images 2.5", kind: "image" },      // medium
+  { name: "Soul 2", kind: "image" },                  // medium
+  { name: "Marketing Studio Image", kind: "image" },  // medium
+  { name: "Cinema Studio 4.0", kind: "video" },       // medium
   { name: "Ideogram v4.5", kind: "image" },
   { name: "Kling 3.0", kind: "video" },
   { name: "Kling O3", kind: "image" },
@@ -40,15 +53,12 @@ export const FEATURED_MODELS: { name: string; kind: "image" | "video" }[] = [
   { name: "FLUX 3", kind: "image" },
   { name: "Grok Imagine 2.0", kind: "image" },
   { name: "Kling V3 Motion", kind: "video" },         // tall
-  { name: "Wan 3.0", kind: "video" },
   { name: "SeeDream 5.0 Pro", kind: "image" },        // medium
   { name: "Qwen Image 3", kind: "image" },
   { name: "SeedVR2 Upscale", kind: "image" },
   { name: "Gemini Omni Flash 1.1", kind: "video" },   // big
   { name: "Pixelcut Product Photo", kind: "image" },  // tall
   { name: "Meta Muse", kind: "image" },
-  { name: "Luma Ray 3.2", kind: "video" },
-  { name: "PixVerse V6", kind: "video" },
 ]
 
 /** The Featured grid's width in units at each breakpoint: phone, sm, md, lg+. */

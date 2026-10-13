@@ -1,0 +1,138 @@
+import { cookies } from 'next/headers'
+import { getUserFromSession } from '@/lib/auth'
+import { checkIsAdmin } from '@/lib/admin-check'
+import { checkUserConcurrency } from '@/lib/user-concurrency'
+import { deductGenerationTickets } from '@/lib/ticket-gate'
+import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
+import { isGenerationBlocked } from '@/lib/generation-guard'
+import { enforceContentFilter } from '@/lib/content-filter'
+import { jsonPrivate } from '@/lib/api-json'
+import { canonicalisePayload } from '@/lib/media-url'
+import { queueHiggsfieldJob, higgsfieldConfigured } from '@/lib/higgsfield'
+import {
+  HIGGSFIELD_ENDPOINTS, HIGGSFIELD_VIDEO_MODELS, HF_ENDPOINT_PREFIX, genjutsuSeconds, higgsfieldVideoTicketCost, type HiggsfieldModelId,
+} from '@/lib/higgsfield-models'
+
+/**
+ * POST /api/admin/higgsfield/video-submit - one Higgsfield video job
+ * (2026-10-13: Genjutsu motion transfer / object swap, Cinema Studio 4.0 -
+ * PUBLIC since the same day; the /admin path is historical). Charged in
+ * tickets on the measured clip / chosen length (admins free); a failed job
+ * is refunded by lib/higgsfield. Takes the same body the portal sends /api/video/generate, and
+ * answers the same way ({ success, requestId, falEndpoint, ... }) - its
+ * falEndpoint is "higgsfield:<endpoint>", which /api/admin/video-status
+ * hands to lib/higgsfield.
+ */
+
+const CINEMA_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9']
+
+export async function POST(req: Request) {
+  try {
+    const token = (await cookies()).get('session')?.value
+    const user = token ? await getUserFromSession(token) : null
+    if (!user) return jsonPrivate({ success: false, error: 'Not authenticated' }, { status: 401 })
+    const isAdmin = await checkIsAdmin(user.email)
+    if (await isGenerationBlocked(user.email)) return jsonPrivate({ success: false, error: 'Generation is temporarily disabled for maintenance.' }, { status: 503 })
+    if (!higgsfieldConfigured()) return jsonPrivate({ success: false, error: 'Higgsfield is not set up yet - add HIGGSFIELD_KEY_ID and HIGGSFIELD_KEY_SECRET to the environment.' }, { status: 503 })
+
+    const b = canonicalisePayload(await req.json().catch(() => ({}))) as Record<string, any>
+    // Your own pictures and clips need a verified ID (CCBill; admins exempt)
+    {
+      const idGate = await requireOwnMediaUnlessVerified(user, [
+        b.imageUrl, b.editVideoUrl, b.audioUrl, b.referenceImageUrls, b.referenceVideoUrls, b.referenceAudioUrls,
+      ])
+      if (idGate) return idGate
+    }
+    if (!isAdmin) {
+      const c = await checkUserConcurrency(user.id)
+      if (!c.allowed) return jsonPrivate({ success: false, error: `Queue full (${c.activeCount}/${c.limit} active). Wait for a generation to finish.` }, { status: 429 })
+    }
+    const model = String(b.model || '') as HiggsfieldModelId
+    if (!HIGGSFIELD_VIDEO_MODELS.has(model)) return jsonPrivate({ success: false, error: 'Unknown Higgsfield model' }, { status: 400 })
+    const prompt = typeof b.prompt === 'string' ? b.prompt.trim() : ''
+    if (prompt) {
+      const cf = await enforceContentFilter(prompt, user.email)
+      if (!cf.ok) return jsonPrivate({ success: false, error: cf.reason }, { status: 400 })
+    }
+    // Stored canonical; lib/higgsfield signs the links when the job is sent
+    const sign = (u: string) => u
+    const images: string[] = [
+      ...(typeof b.imageUrl === 'string' && b.imageUrl ? [b.imageUrl] : []),
+      ...(Array.isArray(b.referenceImageUrls) ? b.referenceImageUrls.filter((u: unknown): u is string => typeof u === 'string') : []),
+    ]
+    const resolution = typeof b.resolution === 'string' ? b.resolution : '720p'
+    let input: Record<string, unknown>
+    let duration = '5'
+    let listTickets: number
+    const aspectRatio = typeof b.klingAspectRatio === 'string' && CINEMA_RATIOS.includes(b.klingAspectRatio) ? b.klingAspectRatio : '16:9'
+
+    if (model === 'higgsfield-genjutsu-motion' || model === 'higgsfield-genjutsu-swap') {
+      // The clip and 1-8 pictures (the characters / the objects to put in)
+      const clip = typeof b.editVideoUrl === 'string' ? b.editVideoUrl : (Array.isArray(b.referenceVideoUrls) ? b.referenceVideoUrls[0] : null)
+      if (!clip) return jsonPrivate({ success: false, error: 'Add the source clip (4-30 seconds).' }, { status: 400 })
+      if (!images.length) return jsonPrivate({ success: false, error: model === 'higgsfield-genjutsu-swap' ? 'Add a picture of what to swap in.' : 'Add a picture of each character.' }, { status: 400 })
+      // Billed on the clip's real length (rounded up, trimmed at 30s)
+      const probed = await (await import('@/lib/video-probe')).probeRemoteVideo(clip).catch(() => null)
+      const sec = probed?.seconds ?? (Number(b.editVideoDurationSec) || 0)
+      if (sec && sec < 3.95) return jsonPrivate({ success: false, error: 'Genjutsu needs a clip of at least 4 seconds.' }, { status: 400 })
+      if (model === 'higgsfield-genjutsu-swap' && probed && probed.width * probed.height < 409_600) {
+        return jsonPrivate({ success: false, error: 'Object swap needs at least ~640x640 worth of pixels per frame - use a larger clip.' }, { status: 400 })
+      }
+      duration = String(genjutsuSeconds(sec))
+      input = {
+        prompt, video_url: sign(clip), image_urls: images.slice(0, 8).map(sign),
+        resolution: ['480p', '720p', '1080p'].includes(resolution) ? resolution : '720p',
+      }
+      listTickets = higgsfieldVideoTicketCost(model, { resolution, sourceSec: sec })
+    } else {
+      // Cinema Studio 4.0: text to video, or references (images / videos / audio)
+      if (!prompt) return jsonPrivate({ success: false, error: 'Describe the shot.' }, { status: 400 })
+      const vids = Array.isArray(b.referenceVideoUrls) ? b.referenceVideoUrls.filter((u: unknown): u is string => typeof u === 'string') : []
+      const auds = [
+        ...(Array.isArray(b.referenceAudioUrls) ? b.referenceAudioUrls : []),
+        ...(typeof b.audioUrl === 'string' && b.audioUrl ? [b.audioUrl] : []),
+      ].filter((u: unknown): u is string => typeof u === 'string')
+      const sec = Math.min(30, Math.max(4, parseInt(String(b.duration)) || 5))
+      duration = String(sec)
+      input = {
+        prompt, duration: sec,
+        resolution: resolution === '480p' ? '480p' : '720p',
+        aspect_ratio: aspectRatio,
+        generate_audio: b.generateAudio !== false,
+        ...(images.length ? { image_urls: images.slice(0, 30).map(sign) } : {}),
+        ...(vids.length ? { video_urls: vids.slice(0, 10).map(sign) } : {}),
+        ...(auds.length ? { audio_urls: auds.slice(0, 10).map(sign) } : {}),
+      }
+      listTickets = higgsfieldVideoTicketCost(model, { resolution, duration, refVideoSec: Number(b.referenceVideoDurationSec) || 0 })
+    }
+
+    const endpoint = HIGGSFIELD_ENDPOINTS[model]
+    // Charged up front (admins free); a failed job refunds it (lib/higgsfield)
+    const charge = isAdmin ? 0 : listTickets
+    if (charge > 0) {
+      const paid = await deductGenerationTickets(user.id, user.email, charge)
+      if (!paid.ok) return jsonPrivate({ success: false, error: `Insufficient tickets - need ${paid.need}, have ${paid.have}` }, { status: 402 })
+    }
+    // Higgsfield's own queue (20 at once): sent now, or waits its turn.
+    // A waiting video answers { queued, queueId } - the page watches the row
+    // (queue-job-status) until it is sent, exactly as fal's queued videos.
+    const job = await queueHiggsfieldJob({
+      userId: user.id, modelId: model, modelType: 'video', prompt, endpoint, input,
+      parameters: {
+        resolution: (input.resolution as string) || resolution, duration, aspectRatio,
+        generateAudio: model === 'higgsfield-cinema-4' ? b.generateAudio !== false : true,
+        referenceImageUrls: images, listTickets,
+      },
+      ticketCost: charge,
+    })
+    return jsonPrivate({
+      success: true, queued: job.queued, queueId: job.queueId,
+      ...(job.requestId ? { requestId: job.requestId } : {}),
+      falEndpoint: `${HF_ENDPOINT_PREFIX}${endpoint}`,
+      ticketCost: charge, model, resolution: input.resolution, duration,
+    })
+  } catch (e: any) {
+    console.error('higgsfield video-submit error:', e)
+    return jsonPrivate({ success: false, error: e?.message || 'Submission failed' }, { status: 500 })
+  }
+}

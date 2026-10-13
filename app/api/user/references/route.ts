@@ -44,7 +44,18 @@ export async function GET(req: Request) {
       getUserRefLimit(user.id, user.email),
     ])
 
-    return jsonPrivate({ references, folders, limit, count: references.length })
+    /*
+     * Each reference's thumbnail address (2026-10-12), signed by jsonPrivate.
+     * A made thumbnail then loads straight from the media host - no session
+     * lookup, row lookup and bucket check per tile, sixty of them queued
+     * behind the browser's six connections to this server. One not made yet
+     * fails there and the tile falls back to the thumb route, which makes it.
+     */
+    const thumbBase = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
+    const withThumbs = thumbBase
+      ? references.map(r => ({ ...r, thumbUrl: `${thumbBase}/ref-thumb/${r.id}.webp` }))
+      : references
+    return jsonPrivate({ references: withThumbs, folders, limit, count: references.length })
   } catch (error) {
     console.error('references GET error:', error)
     return jsonPrivate({ error: 'Server error' }, { status: 500 })

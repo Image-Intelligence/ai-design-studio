@@ -74,7 +74,7 @@ const FAQ = [
   },
   {
     q: "Is there a cheaper way to get tickets?",
-    a: "Dev Tier plans include tickets every cycle at $0.08 each, and take 10% off every pack on this page.",
+    a: "Dev Tier plans include tickets every month from $0.074 each, and take 20% off every pack on this page.",
   },
 ]
 
@@ -478,7 +478,7 @@ export default function BuyTicketsPage() {
                 >
                   <p className="text-sm font-bold text-violet-200">Make tickets go further</p>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Dev Tier plans include tickets every cycle at $0.08 each - and take 10% off every pack here.
+                    Dev Tier plans include tickets every month from $0.074 each - and take 20% off every pack here.
                   </p>
                   <p className="text-xs font-bold text-violet-300 mt-2">See the plans →</p>
                 </Link>

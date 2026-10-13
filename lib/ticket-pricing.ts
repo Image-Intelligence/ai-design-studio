@@ -1,4 +1,5 @@
 import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, batch1007TicketCost } from '@/lib/batch-1007-video'
+import { HIGGSFIELD_VIDEO_MODELS, higgsfieldVideoTicketCost } from '@/lib/higgsfield-models'
 // ── Ticket pricing: ONE source of truth ──────────────────────────────────────
 // The per-generation video ticket cost used to live inline in
 // app/api/video/generate/route.ts. It is a BILLING path, so it now lives here
@@ -354,6 +355,9 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   } else if (model.startsWith('luma-ray-')) {
     // Before the generic tool branch: the Luma tools price by their own rates
     ticketCost = lumaTicketCost(model, duration, resolution, editVideoDurationSec, !!input.hasStartImage)
+  } else if (HIGGSFIELD_VIDEO_MODELS.has(model)) {
+    // Higgsfield exclusives (admin only, lib/higgsfield-models)
+    ticketCost = higgsfieldVideoTicketCost(model, { resolution, duration, sourceSec: editVideoDurationSec, refVideoSec: referenceVideoDurationSec })
   } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {
     // Ahead of the generic tool branch: Vidu Q4 by length x resolution, Relight by the source's length
     ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps })
@@ -558,16 +562,17 @@ export interface TicketPackage {
   bestValue?: boolean
 }
 
+// Dev Tier price = 20% off (2026-10-13; was 10%) - lib/dev-tier DEV_TIER_PERKS.packDiscountPct
 export const TICKET_PACKAGES: TicketPackage[] = [
-  { tickets: 25,  name: 'Single',    freeTierPrice: 5.00,  devTierPrice: 4.50  },
-  { tickets: 50,  name: 'Spark',     freeTierPrice: 9.00,  devTierPrice: 8.10  },
-  { tickets: 100, name: 'Stack',     freeTierPrice: 16.00, devTierPrice: 14.40 },
-  { tickets: 175, name: 'Reel',      freeTierPrice: 26.00, devTierPrice: 23.40 },
-  { tickets: 250, name: 'Tower',     freeTierPrice: 35.00, devTierPrice: 31.50, popular: true },
-  { tickets: 375, name: 'Case',      freeTierPrice: 50.00, devTierPrice: 45.00 },
-  { tickets: 500, name: 'Chest',     freeTierPrice: 65.00, devTierPrice: 58.50 },
-  { tickets: 650, name: 'Dispenser', freeTierPrice: 82.00, devTierPrice: 73.80 },
-  { tickets: 825, name: 'Vault',     freeTierPrice: 99.00, devTierPrice: 89.10, bestValue: true },
+  { tickets: 25,  name: 'Single',    freeTierPrice: 5.00, devTierPrice: 4.00  },
+  { tickets: 50,  name: 'Spark',     freeTierPrice: 9.00, devTierPrice: 7.20  },
+  { tickets: 100, name: 'Stack',     freeTierPrice: 16.00, devTierPrice: 12.80 },
+  { tickets: 175, name: 'Reel',      freeTierPrice: 26.00, devTierPrice: 20.80 },
+  { tickets: 250, name: 'Tower',     freeTierPrice: 35.00, devTierPrice: 28.00, popular: true },
+  { tickets: 375, name: 'Case',      freeTierPrice: 50.00, devTierPrice: 40.00 },
+  { tickets: 500, name: 'Chest',     freeTierPrice: 65.00, devTierPrice: 52.00 },
+  { tickets: 650, name: 'Dispenser', freeTierPrice: 82.00, devTierPrice: 65.60 },
+  { tickets: 825, name: 'Vault',     freeTierPrice: 99.00, devTierPrice: 79.20, bestValue: true },
 ]
 
 /** CCBill's ceiling for one charge - no pack may cost more. */

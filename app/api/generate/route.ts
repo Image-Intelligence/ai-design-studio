@@ -22,6 +22,7 @@ import {
 import { jsonPrivate } from '@/lib/api-json'
 import { fetchMedia } from '@/lib/media-fetch'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
+import { withDbRetry, bumpActiveCounters } from '@/lib/db-retry'
 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
@@ -30,6 +31,13 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 fal.config({
   credentials: process.env.FAL_KEY
 })
+
+/*
+ * Once fal has ACCEPTED a job, a momentary database drop (2026-10-12: six
+ * NanoBanana 2.1 tiles at once) must not turn a running image into a "FAL.ai
+ * submission failed" tile: the queue row is retried (the harvester / webhook
+ * finish the job from it) and the slot counters are best-effort (lib/db-retry).
+ */
 
 // A reference image arrives either as an https URL (library images — the client
 // sends the URL directly instead of base64-encoding megabytes into <img>+canvas
@@ -95,6 +103,12 @@ export async function POST(request: Request) {
 
     // Parse request body
     const body = canonicalisePayload(await request.json())
+    /*
+     * The tile that asked (2026-10-12). Stored on the queue row, so a page
+     * reloaded while this request was still being answered can put the job
+     * back into ITS tile (the submit is sent keepalive and outlives the page).
+     */
+    const clientSlotId = typeof body?.clientSlotId === 'string' ? body.clientSlotId.slice(0, 80) : null
     // Not ID-verified: reference / source pictures only from the account's OWN
     // generations (CCBill: uploads need a verified account; admins exempt -
     // lib/id-verification). Text-only requests carry no links and pass.
@@ -459,7 +473,7 @@ export async function POST(request: Request) {
             webhookUrl,
           })
 
-          const queueEntry = await prisma.generationQueue.create({
+          const queueEntry = await withDbRetry(() => prisma.generationQueue.create({
             data: {
               userId: user.id,
               modelId: model,
@@ -467,6 +481,7 @@ export async function POST(request: Request) {
               prompt: upscalePrompt,
               parameters: {
                 source: 'main-scanner',
+                clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
@@ -483,18 +498,10 @@ export async function POST(request: Request) {
               falRequestId: request_id,
               startedAt: new Date(),
             }
-          })
+          }))
 
-          await Promise.all([
-            prisma.modelConcurrencyLimit.updateMany({
-              where: { modelId: model },
-              data: { currentActive: { increment: 1 } },
-            }),
-            prisma.modelConcurrencyLimit.updateMany({
-              where: { modelId: FAL_GLOBAL_ID },
-              data: { currentActive: { increment: 1 } },
-            }),
-          ])
+          // Increment active counts — per-model AND global (best-effort, see bumpActiveCounters)
+          await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[clarity-upscaler] ${upscaleFactor}x submitted, request_id=${request_id}`)
           return jsonPrivate({
@@ -556,7 +563,7 @@ export async function POST(request: Request) {
             webhookUrl,
           })
 
-          const queueEntry = await prisma.generationQueue.create({
+          const queueEntry = await withDbRetry(() => prisma.generationQueue.create({
             data: {
               userId: user.id,
               modelId: model,
@@ -564,6 +571,7 @@ export async function POST(request: Request) {
               prompt: `${upscaleFactor}x AuraSR`,
               parameters: {
                 source: 'main-scanner',
+                clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
@@ -578,12 +586,9 @@ export async function POST(request: Request) {
               falRequestId: request_id,
               startedAt: new Date(),
             }
-          })
+          }))
 
-          await Promise.all([
-            prisma.modelConcurrencyLimit.updateMany({ where: { modelId: model }, data: { currentActive: { increment: 1 } } }),
-            prisma.modelConcurrencyLimit.updateMany({ where: { modelId: FAL_GLOBAL_ID }, data: { currentActive: { increment: 1 } } }),
-          ])
+          await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[aura-sr] ${upscaleFactor}x checkpoint=${auraSrCheckpoint} submitted, request_id=${request_id}`)
           return jsonPrivate({
@@ -646,7 +651,7 @@ export async function POST(request: Request) {
             webhookUrl,
           })
 
-          const queueEntry = await prisma.generationQueue.create({
+          const queueEntry = await withDbRetry(() => prisma.generationQueue.create({
             data: {
               userId: user.id,
               modelId: model,
@@ -654,6 +659,7 @@ export async function POST(request: Request) {
               prompt: `${upscaleFactor}x ESRGAN (${esrganModel})`,
               parameters: {
                 source: 'main-scanner',
+                clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
@@ -669,12 +675,9 @@ export async function POST(request: Request) {
               falRequestId: request_id,
               startedAt: new Date(),
             }
-          })
+          }))
 
-          await Promise.all([
-            prisma.modelConcurrencyLimit.updateMany({ where: { modelId: model }, data: { currentActive: { increment: 1 } } }),
-            prisma.modelConcurrencyLimit.updateMany({ where: { modelId: FAL_GLOBAL_ID }, data: { currentActive: { increment: 1 } } }),
-          ])
+          await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[esrgan] ${upscaleFactor}x model=${esrganModel} submitted, request_id=${request_id}`)
           return jsonPrivate({
@@ -744,7 +747,7 @@ export async function POST(request: Request) {
             webhookUrl,
           })
 
-          const queueEntry = await prisma.generationQueue.create({
+          const queueEntry = await withDbRetry(() => prisma.generationQueue.create({
             data: {
               userId: user.id,
               modelId: model,
@@ -752,6 +755,7 @@ export async function POST(request: Request) {
               prompt: `${upscaleFactor}x DRCT`,
               parameters: {
                 source: 'main-scanner',
+                clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
@@ -765,12 +769,9 @@ export async function POST(request: Request) {
               falRequestId: request_id,
               startedAt: new Date(),
             }
-          })
+          }))
 
-          await Promise.all([
-            prisma.modelConcurrencyLimit.updateMany({ where: { modelId: model }, data: { currentActive: { increment: 1 } } }),
-            prisma.modelConcurrencyLimit.updateMany({ where: { modelId: FAL_GLOBAL_ID }, data: { currentActive: { increment: 1 } } }),
-          ])
+          await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[drct] ${upscaleFactor}x submitted (${drctTicketCost} tickets), request_id=${request_id}`)
           return jsonPrivate({
@@ -1479,6 +1480,7 @@ export async function POST(request: Request) {
                 prompt: jobPrompt,
                 parameters: {
                   source: 'main-scanner',
+                clientSlotId,
                   quality,
                   aspectRatio,
                   model,
@@ -1545,7 +1547,7 @@ export async function POST(request: Request) {
           console.log(`FAL.ai accepted job, request_id: ${request_id}`)
 
           // Create queue entry
-          const queueEntry = await prisma.generationQueue.create({
+          const queueEntry = await withDbRetry(() => prisma.generationQueue.create({
             data: {
               userId: user.id,
               modelId: model,
@@ -1553,6 +1555,7 @@ export async function POST(request: Request) {
               prompt: jobPrompt,
               parameters: {
                 source: 'main-scanner',
+                clientSlotId,
                 quality,
                 aspectRatio,
                 model,
@@ -1600,19 +1603,10 @@ export async function POST(request: Request) {
               falRequestId: request_id,
               startedAt: new Date(),
             }
-          })
+          }))
 
-          // Increment active counts — per-model AND global
-          await Promise.all([
-            prisma.modelConcurrencyLimit.updateMany({
-              where: { modelId: model },
-              data: { currentActive: { increment: 1 } },
-            }),
-            prisma.modelConcurrencyLimit.updateMany({
-              where: { modelId: FAL_GLOBAL_ID },
-              data: { currentActive: { increment: 1 } },
-            }),
-          ])
+          // Increment active counts — per-model AND global (best-effort, see bumpActiveCounters)
+          await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`Queue entry created: #${queueEntry.id}`)
           console.log('=== FAL.AI JOB SUBMITTED — AWAITING WEBHOOK ===')

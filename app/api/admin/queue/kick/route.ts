@@ -1,3 +1,4 @@
+import { HIGGSFIELD_MODEL_IDS } from '@/lib/higgsfield-models'
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
@@ -15,7 +16,8 @@ export async function POST() {
     // 2. Read the corrected state
     const [globalLimit, queuedCount] = await Promise.all([
       prisma.modelConcurrencyLimit.findUnique({ where: { modelId: FAL_GLOBAL_ID } }),
-      prisma.generationQueue.count({ where: { status: 'queued' } }),
+      // fal's line only: Higgsfield's waits on its own (lib/higgsfield)
+      prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: HIGGSFIELD_MODEL_IDS } } }),
     ])
 
     if (!globalLimit) {

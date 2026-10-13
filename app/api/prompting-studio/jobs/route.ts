@@ -49,6 +49,9 @@ export async function GET(request: Request) {
       after(async () => {
         try { await harvestPollingJobs({ userId: user.id, minAgeMs: 30_000, graceMs: 30_000, limit: 3, budgetMs: 25_000 }) }
         catch (e) { console.error('[jobs] harvest failed:', e) }
+        // Higgsfield jobs (admin exclusives) are finished here and by the cron (lib/higgsfield)
+        try { await (await import('@/lib/higgsfield')).harvestHiggsfieldJobs({ userId: user.id, limit: 4, budgetMs: 20_000 }) }
+        catch (e) { console.error('[jobs] higgsfield harvest failed:', e) }
         finally { harvesting.delete(user.id) }
       })
     }
@@ -156,7 +159,7 @@ export async function GET(request: Request) {
     const KEEP = ['source', 'slotId', 'batch', 'falEndpoint', 'falQuality', 'falImageSize', 'quality', 'aspectRatio',
       'size', 'referenceImageUrls', 'permanentReferenceUrls', 'completedImageIds', 'completedImageUrls',
       'nb2AspectRatio', 'nb2Quality', 'nb2OutputFormat', 'nb2TicketCost', 'nb2StatusUrl', 'nb2FalEndpoint',
-      'model', 'loraUrl', 'loraName', 'loraScale', 'refStrength', 'renderSpeed', 'promptExpansion', 'videoMetadata']
+      'model', 'loraUrl', 'loraName', 'loraScale', 'refStrength', 'renderSpeed', 'promptExpansion', 'videoMetadata', 'clientSlotId']
     const slimParameters = (p: unknown) => {
       if (!p || typeof p !== 'object') return p
       const src = p as Record<string, unknown>

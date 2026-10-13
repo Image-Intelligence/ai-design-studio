@@ -41,7 +41,7 @@ import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerifi
 const ROUTING_LS_KEY = "chat-hub-routing"
 const ROUTING_EVENT = "chat-hub-routing-changed"
 
-// ── Chat layout preferences (width + text size), set in Profile → Chat Settings ──
+// ── Chat layout preferences (width + text size), set in Lab → Chat Hub settings ──
 const LAYOUT_LS_KEY = "chat-hub-layout"
 const LAYOUT_EVENT = "chat-hub-layout-changed"
 
@@ -843,7 +843,7 @@ export default function ChatHub({
     }
   }
 
-  // User-added custom gateway models (Profile → Chat Settings → Agent)
+  // User-added custom gateway models (Lab → Chat Hub settings → Agent)
   const [customModels, setCustomModels] = useState<CustomChatModel[]>([])
   // Locally-served Ollama models (synced in Chat Settings → Providers)
   const [ollamaModels, setOllamaModels] = useState<{ id: string; label: string }[]>([])
@@ -873,7 +873,7 @@ export default function ChatHub({
   }
 
   // Per-provider routing: Vercel AI Hub vs the provider's own API key.
-  // The controls live in the taskbar Profile dropdown (Chat Settings) —
+  // The controls live in the admin Lab (Studios → Chat Hub settings) —
   // changes arrive here via localStorage + a custom event.
   const [routing, setRouting] = useState<RoutingMap>(DEFAULT_ROUTING)
 
@@ -887,7 +887,7 @@ export default function ChatHub({
     return () => window.removeEventListener(ROUTING_EVENT, onChange)
   }, [])
 
-  // Layout preferences (width / text size) — set in Profile → Chat Settings
+  // Layout preferences (width / text size) — set in Lab → Chat Hub settings
   const [layout, setLayout] = useState<ChatLayout>(DEFAULT_LAYOUT)
   useEffect(() => {
     setLayout(readLayoutFromStorage())
@@ -4449,7 +4449,7 @@ export default function ChatHub({
             </div>
           </div>
 
-          {/* Providers routing moved to the taskbar Profile dropdown → Chat Settings */}
+          {/* Providers routing moved to the admin Lab → Studios → Chat Hub settings */}
           </div>
         </>
       )}
@@ -7113,10 +7113,10 @@ export default function ChatHub({
 }
 
 // ── Provider routing controls (Vercel AI Hub vs own API keys) ───────────────
-// Rendered inside the taskbar Profile dropdown → Settings → Chat Settings.
+// Rendered inside the admin Lab → Studios → Chat Hub settings.
 // Self-contained: persists to localStorage and broadcasts changes so a mounted
 // ChatHub picks them up immediately.
-// ── Desktop-app link: personal API keys (Profile → Chat Settings → API Keys) ──
+// ── Desktop-app link: personal API keys (Lab → Chat Hub settings → API Keys) ──
 
 type ApiKeyRow = {
   id: string
@@ -8359,7 +8359,7 @@ function InstagramConnector() {
 }
 
 // ── Chat layout controls (width + text size) ────────────────────────────────
-// Rendered inside the taskbar Profile dropdown → Settings → Chat Settings.
+// Rendered inside the admin Lab → Studios → Chat Hub settings.
 // Persists to localStorage and broadcasts so a mounted ChatHub updates live.
 export function ChatLayoutSettings() {
   const [layout, setLayoutState] = useState<ChatLayout>(DEFAULT_LAYOUT)
@@ -8414,7 +8414,7 @@ export function ChatLayoutSettings() {
 }
 
 // ── Agent settings (roster + custom models) ─────────────────────────────────
-// Rendered inside the taskbar Profile dropdown → Settings → Chat Settings.
+// Rendered inside the admin Lab → Studios → Chat Hub settings.
 // Persists to account preferences; broadcasts so a mounted ChatHub updates.
 export function ChatAgentSettings() {
   const [roster, setRoster] = useState<string[] | null>(null) // null = auto (all usable models)
@@ -8688,7 +8688,7 @@ export function ChatAgentSettings() {
 }
 
 // ── Agent tools & capabilities (read-only catalog) ──────────────────────────
-// Rendered inside the taskbar Profile dropdown → Settings → Chat Settings.
+// Rendered inside the admin Lab → Studios → Chat Hub settings.
 // Data lives in AGENT_CAPABILITIES (lib/chat-hub-models) — the single source
 // of truth, updated whenever the orchestrator gains or loses a tool.
 export function ChatAgentCapabilities() {

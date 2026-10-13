@@ -111,6 +111,9 @@ export async function POST(request: NextRequest) {
     // lib/id-verification). Checked on the links as sent, before
     // normalizeVideoRefs re-encodes the pictures into new files.
     const rawBody = canonicalisePayload(await request.json())
+    // The portal tile that asked (2026-10-12): stored on the queue row, so a page
+    // reloaded while this request was still answering puts the job back in it
+    const clientSlotId = typeof rawBody?.clientSlotId === 'string' ? rawBody.clientSlotId.slice(0, 80) : null
     if (_u) {
       const idGate = await requireOwnMediaUnlessVerified(_u, [
         rawBody?.imageUrl, rawBody?.endImageUrl, rawBody?.audioUrl, rawBody?.motionVideoUrl,
@@ -1151,7 +1154,7 @@ export async function POST(request: NextRequest) {
             modelId:    model,
             modelType:  'video',
             prompt:     (prompt || '').trim(),
-            parameters: { falEndpoint, falInput, usePolling: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+            parameters: { falEndpoint, falInput, usePolling: true, clientSlotId, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
             status:     'queued',
             ticketCost: ticketCost, // real cost — admin video is debited client-side; refunded server-side on failure
           },
@@ -1218,7 +1221,7 @@ export async function POST(request: NextRequest) {
           modelId:     model,
           modelType:   'video',
           prompt:      (prompt || '').trim(),
-          parameters:  { falEndpoint, falInput, usePolling: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+          parameters:  { falEndpoint, falInput, usePolling: true, clientSlotId, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
           status:      'processing',
           ticketCost:  ticketCost,
           falRequestId: requestId,
@@ -1233,7 +1236,7 @@ export async function POST(request: NextRequest) {
           modelId:      model,
           modelType:    'video',
           prompt:       (prompt || '').trim(),
-          parameters:   { falEndpoint, falInput, usePolling: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+          parameters:   { falEndpoint, falInput, usePolling: true, clientSlotId, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
           status:       'processing',
           ticketCost:   ticketCost,
           falRequestId: requestId,

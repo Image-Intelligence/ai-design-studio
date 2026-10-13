@@ -22,7 +22,6 @@ const HERO_VIDEO = `${SHOP_MEDIA}/sub/manage-loop-7bdb07a7-4514-47fb-ad05-4155a8
 const PLAN_ART: Record<string, string> = {
   creator: `${SHOP_MEDIA}/sub/creator-01e97508-07a2-477d-861a-83d9e52d1023.webp`,
   pro: `${SHOP_MEDIA}/sub/pro-ce1f8eb8-cfeb-499d-a7a1-72978292a443.webp`,
-  studio: `${SHOP_MEDIA}/sub/studio-a2589590-9079-4b86-80d7-ca0fa98159c4.webp`,
   max: `${SHOP_MEDIA}/sub/max-5bbe0716-dff8-4551-899b-7d53762eefa6.webp`,
 };
 
@@ -33,6 +32,8 @@ type Current = {
   cancelledAt: string | null; cancelRequestedAt: string | null; scheduledPlanId: string | null; enhancePerDay: number;
 };
 type Data = {
+  /** An admin account: always on Max (the API says so whatever the account's grant) */
+  admin?: boolean;
   checkoutAvailable: boolean; cancelFromHere: boolean; supportUrl: string;
   plans: Plan[]; perks: { packDiscountPct: number; concurrency: { free: number; dev: number }; refLibrary: { free: number; dev: number } };
   enhanceFree: number; current: Current | null; endedScheduledPlanId: string | null; lastEndedAt: string | null;
@@ -98,7 +99,9 @@ export default function ManageSubscriptionPage() {
   const ending = !!cur && (cur.status === 'cancelled' || !!cur.cancelRequestedAt);
   const statusLine = !cur
     ? (data.endedScheduledPlanId ? `Your plan ended ${day(data.lastEndedAt)}.` : "You don't have a plan right now.")
-    : cur.kind === 'manual'
+    : data.admin
+      ? 'Admin account · Max is included automatically · no billing'
+      : cur.kind === 'manual'
       ? (cur.endDate ? `Granted by an admin · ends ${day(cur.endDate)}` : 'Granted by an admin · no billing')
       : cur.status === 'cancelled'
         ? `Cancelled · everything stays until ${day(cur.endDate ?? cur.nextBillingDate)}`
@@ -179,8 +182,8 @@ export default function ManageSubscriptionPage() {
           <Perk icon={<Ticket size={15} />} title={`${data.perks.packDiscountPct}% off ticket packs`} sub="Every pack in the shop, every time" />
           <Perk icon={<Zap size={15} />} title={`${data.perks.concurrency.dev} generations at once`} sub={`Free accounts run ${data.perks.concurrency.free}`} />
           <Perk icon={<Images size={15} />} title={`${data.perks.refLibrary.dev}-picture reference library`} sub={`Free accounts keep ${data.perks.refLibrary.free}`} />
-          <Perk icon={<Layers size={15} />} title="Image Studio layers" sub="Layers, groups, masks - kept with your edits" />
-          <Perk icon={<Sparkles size={15} />} title={`${cur?.enhancePerDay ?? '25-300'} prompt enhances a day`} sub={`Free accounts get ${data.enhanceFree}`} />
+          <Perk icon={<Sparkles size={15} />} title={`${cur?.enhancePerDay ?? '25-200'} free AI actions a day`} sub={`Storyboard drafts & edits, captions, enhance - free accounts get ${data.enhanceFree}, then tickets`} />
+          <Perk icon={<CalendarClock size={15} />} title="Tickets never expire" sub="Unused tickets roll over, month after month" />
           <Perk icon={<Gauge size={15} />} title={`${(cur?.ticketsPerCycle ?? curPlan?.tickets ?? 250).toLocaleString()} tickets every month`} sub="Credited with each payment" />
         </div>
       </section>
@@ -190,12 +193,12 @@ export default function ManageSubscriptionPage() {
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
             <h2 className="text-xl font-bold text-white">{cur ? 'Change plan' : 'Choose a plan'}</h2>
-            <p className="text-[12px] text-slate-500">Every plan includes all Dev Tier perks - bigger plans add tickets and daily enhances.</p>
+            <p className="text-[12px] text-slate-500">Every plan has the same perks - bigger plans add tickets (a little cheaper each) and free AI actions.</p>
           </div>
         </div>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
           {data.plans.map(p => {
-            const isCurrent = !!cur && cur.planId === p.id && cur.kind === 'ccbill';
+            const isCurrent = !!cur && cur.planId === p.id && (cur.kind === 'ccbill' || !!data.admin);
             const curPrice = cur?.price ?? 0;
             const dir: 'current' | 'up' | 'down' | 'new' = isCurrent ? 'current' : !cur || cur.kind === 'manual' ? 'new' : p.price > curPrice ? 'up' : 'down';
             const scheduled = cur?.scheduledPlanId === p.id;
@@ -214,7 +217,7 @@ export default function ManageSubscriptionPage() {
                   <p className="mt-0.5"><span className="text-2xl font-black text-white">{money(p.price)}</span><span className="text-[12px] text-slate-500"> /month</span></p>
                   <ul className="mt-3 space-y-1.5 text-[12.5px] text-slate-300">
                     <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.tickets.toLocaleString()} tickets a month</li>
-                    <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.enhancePerDay} prompt enhances a day</li>
+                    <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.enhancePerDay} free AI actions a day</li>
                     <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />All Dev Tier perks</li>
                   </ul>
                   <div className="mt-auto pt-4">
@@ -223,7 +226,8 @@ export default function ManageSubscriptionPage() {
                     ) : (
                       <button
                         onClick={() => setConfirmPlan(p)}
-                        disabled={!data.checkoutAvailable || !!busy || scheduled}
+                        disabled={!data.checkoutAvailable || !!busy || scheduled || !!data.admin}
+                        title={data.admin ? 'Admin accounts are always on Max' : undefined}
                         className={cn('flex w-full items-center justify-center gap-1.5 rounded-lg py-2 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40',
                           dir === 'down' ? 'border border-white/15 bg-white/[0.04] text-slate-200 hover:bg-white/[0.09]' : 'bg-slate-100 text-slate-900 hover:bg-white')}
                       >
@@ -286,7 +290,8 @@ export default function ManageSubscriptionPage() {
             <a href="mailto:promptandprotocol@gmail.com" className="inline-flex items-center rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] text-slate-400 hover:text-white">Contact us</a>
           </div>
         </div>
-        {cur && !(cur.status === 'cancelled') && !cur.cancelRequestedAt && (
+        {/* (Admin accounts: always on Max - nothing to cancel) */}
+        {cur && !data.admin && !(cur.status === 'cancelled') && !cur.cancelRequestedAt && (
           <div className="flex flex-col justify-center rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 sm:p-6 lg:w-80">
             <p className="text-[13px] text-slate-400">{cur.kind === 'manual' ? 'This plan was granted by an admin.' : 'Cancel any time - you keep your plan until the end of the period you paid for.'}</p>
             <button onClick={() => setCancelOpen(true)} className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/[0.08] px-4 py-2 text-[13px] font-semibold text-rose-300 hover:bg-rose-500/15">

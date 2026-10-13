@@ -467,7 +467,6 @@ export function HomeView({
   cards,
   onSelectImageModel,
   onSelectVideoModel,
-  onGoChat,
   onGoEmployee,
   onGoThreeD,
   onOpenFrames,
@@ -498,7 +497,6 @@ export function HomeView({
   cards: Record<string, CardMedia>
   onSelectImageModel: (name: string) => void
   onSelectVideoModel: (name: string) => void
-  onGoChat: () => void
   onGoEmployee: (id: import("@/lib/employees").EmployeeId) => void
   onGoThreeD: () => void
   onOpenFrames: () => void
@@ -971,17 +969,6 @@ export function HomeView({
                 onMediaChange={onCardMediaChange}
               />
             ))}
-            <HomeMediaCard
-              cardKey="admin:chat"
-              title="AI Chat Hub"
-              subtitle="Multi-provider chat"
-              accent="text-violet-300"
-              media={cards["admin:chat"]}
-              isAdmin={isAdmin}
-              badge={<AdminModelBadge />}
-              onClick={onGoChat}
-              onMediaChange={onCardMediaChange}
-            />
           </div>
         </Section>
       )}

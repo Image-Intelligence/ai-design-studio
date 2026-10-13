@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { jsonPrivate } from '@/lib/api-json'
+import { withDbRetry } from '@/lib/db-retry'
 
 export async function GET(request: Request) {
   try {
@@ -12,7 +13,10 @@ export async function GET(request: Request) {
       return jsonPrivate({ authenticated: false }, { status: 401 })
     }
 
-    const user = await getUserFromSession(token)
+    // A momentary database drop is retried here, and if it persists the
+    // answer is "unknown" (503 below), never "signed out" - the portal showed
+    // the sign-in screen and dropped its generating tiles on a DB blip
+    const user = await withDbRetry(() => getUserFromSession(token), 3, 'session')
 
     if (!user) {
       return jsonPrivate({ authenticated: false }, { status: 401 })
@@ -52,9 +56,10 @@ export async function GET(request: Request) {
 
   } catch (error: any) {
     console.error('Session check error:', error)
+    // NOT "signed out": the session may be perfectly good - the page retries
     return jsonPrivate(
-      { authenticated: false, error: 'Internal server error' },
-      { status: 500 }
+      { authenticated: null, error: 'Could not check the session - try again' },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } }
     )
   }
 }

@@ -22,6 +22,7 @@
  * free slot — the retry loop inside handles concurrent races between calls.
  */
 
+import { HIGGSFIELD_MODEL_IDS } from '@/lib/higgsfield-models'
 import { fal } from '@/lib/fal-client'
 import prisma from '@/lib/prisma'
 
@@ -68,6 +69,8 @@ export async function promoteNextQueuedJob(): Promise<void> {
       const candidate = await prisma.generationQueue.findFirst({
         where: {
           status: 'queued',
+          // Higgsfield jobs wait on their own queue (lib/higgsfield)
+          modelId: { notIn: HIGGSFIELD_MODEL_IDS },
           ...(triedIds.length > 0 ? { id: { notIn: triedIds } } : {}),
         },
         orderBy: { createdAt: 'asc' },

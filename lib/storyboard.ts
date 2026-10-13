@@ -378,7 +378,12 @@ export const cleanTags = (t: unknown): string[] =>
  * board copy came from or was saved to - "Save to My Assets" updates that one
  * rather than making another. The board keeps its own copy either way.
  */
-export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[]; libraryId?: number }
+/**
+ * `suggested`: proposed by the AI draft (Cast & sets, 2026-10-11) and not yet
+ * accepted - shown in the Assets panel's "Suggested" strip, never sent with a
+ * still. `auto`: made by the draft (its pictures generated from the notes).
+ */
+export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[]; libraryId?: number; suggested?: boolean; auto?: boolean }
 export const MAX_ASSETS = 40
 export const MAX_ASSET_REFS = 24
 
@@ -395,6 +400,8 @@ export function sanitizeAssets(raw: unknown): StoryAsset[] {
     name: str(a?.name, 80) || 'Untitled',
     notes: str(a?.notes, 1000),
     ...(Number.isInteger(a?.libraryId) && a.libraryId > 0 ? { libraryId: a.libraryId as number } : {}),
+    ...(a?.suggested === true ? { suggested: true } : {}),
+    ...(a?.auto === true ? { auto: true } : {}),
     refs: (Array.isArray(a?.refs) ? a.refs : [])
       .filter((r: any) => /^https:\/\//.test(str(r?.url, 2000)))
       .slice(0, MAX_ASSET_REFS)
@@ -745,7 +752,7 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
   // both priced by nb21TicketCost
   'nano-banana-2.1': [
     RES(['1k', '2k', '4k'], '2k'),
-    { key: 'nb21Thinking', label: 'Thinking', options: o(['minimal', 'Minimal'], ['medium', 'Medium'], ['high', 'High']), def: 'medium', hint: 'High plans complex scenes, text and many references more carefully' },
+    { key: 'nb21Thinking', label: 'Thinking', options: o(['minimal', 'Minimal'], ['medium', 'Medium'], ['high', 'High']), def: 'high', hint: 'High plans complex scenes, text and many references more carefully' },
     { key: 'nb21WebSearch', label: 'Web search', options: o(['false', 'Off'], ['true', 'On']), def: 'false', as: 'bool', hint: 'Looks up real, current facts (an infographic, a landmark, today\'s news) before drawing' },
     // As the portal's admin picker (nb21Knobs reads it); everyone else is held at 4 by publicStillSafety
     { key: 'nb21SafetyTolerance', label: 'Safety', options: o(['1', '1 - strictest'], ['2', '2'], ['3', '3'], ['4', '4 - what users get'], ['5', '5'], ['6', '6 - most permissive']), def: '6', admin: true, hint: 'Safety tolerance (admins only). Everyone else runs at 4.' },
@@ -1309,3 +1316,66 @@ export type FinalCutState = {
  */
 export const FINAL_CUT_MAX_SHOTS = 14
 export const FINAL_CUT_MAX_SECONDS = 105
+
+// ── Cast & sets: asset pictures made from an asset's description (2026-10-11) ──
+//
+// The views a kind gets, and their frame. The first is made from the
+// description; every later one is an EDIT of the first (the same face, outfit,
+// place), so the set stays consistent. Characters / creatures: front,
+// three-quarter, back. A place: one wide view - another angle only as an edit
+// of the first. An outfit: 1-3 (front, back, detail), the garments alone. A
+// prop / vehicle: one, another angle as an edit. Used by the route and by the
+// prices the page shows, so they agree.
+
+export const ASSET_PICTURE_MODEL = 'nano-banana-2.1'
+export const ASSET_PICTURE_QUALITY = '2k'
+export type AssetView = { id: string; label: string; aspect: string }
+const PLACE_KINDS = new Set(['location', 'landmark', 'scenery'])
+const PERSON_KINDS = new Set(['character', 'creature'])
+export const isPlaceKind = (k: string) => PLACE_KINDS.has(k)
+export const isPersonKind = (k: string) => PERSON_KINDS.has(k)
+
+/**
+ * The views to make for an asset. `outfitViews` 1-3 (wardrobe only). `another`:
+ * one more angle of an asset that has pictures (a place, a prop) - an edit of its first.
+ */
+export function assetViewPlan(kind: string, o: { outfitViews?: number; another?: boolean; boardAspect?: string } = {}): AssetView[] {
+  const wide = o.boardAspect && ['16:9', '21:9', '4:3'].includes(o.boardAspect) ? o.boardAspect : '16:9'
+  if (o.another) {
+    if (PLACE_KINDS.has(kind)) return [{ id: 'angle', label: 'another angle', aspect: wide }]
+    return [{ id: 'angle', label: 'another angle', aspect: kind === 'wardrobe' || PERSON_KINDS.has(kind) ? '3:4' : '1:1' }]
+  }
+  if (PERSON_KINDS.has(kind)) return [
+    { id: 'front', label: 'front', aspect: '3:4' },
+    { id: 'three-quarter', label: 'three-quarter', aspect: '3:4' },
+    { id: 'back', label: 'back', aspect: '3:4' },
+  ]
+  if (kind === 'wardrobe') {
+    const n = Math.min(3, Math.max(1, Math.round(o.outfitViews ?? 1)))
+    return [{ id: 'front', label: 'front', aspect: '3:4' }, { id: 'back', label: 'back', aspect: '3:4' }, { id: 'detail', label: 'detail', aspect: '1:1' }].slice(0, n)
+  }
+  if (PLACE_KINDS.has(kind)) return [{ id: 'wide', label: 'wide', aspect: wide }]
+  return [{ id: 'hero', label: 'hero', aspect: '1:1' }]
+}
+
+/** Tickets for an asset's pictures: the first from words, the rest edits of it (one reference each). */
+export function assetPicturesTickets(kind: string, o: { outfitViews?: number; another?: boolean; boardAspect?: string } = {}): number {
+  return assetViewPlan(kind, o).reduce((n, v, i) =>
+    n + stillTickets(ASSET_PICTURE_MODEL, ASSET_PICTURE_QUALITY, v.aspect, undefined, o.another || i > 0 ? 1 : 0), 0)
+}
+
+/** The draft's suggested assets added to a board's (names it already has are skipped). */
+export function addSuggestedAssets(assets: StoryAsset[], list: unknown): StoryAsset[] {
+  if (!Array.isArray(list) || !list.length) return assets
+  const have = new Set(assets.map(a => a.name.trim().toLowerCase()))
+  const kinds = ASSET_KINDS.map(k => k.id) as string[]
+  const out = [...assets]
+  for (const raw of list as { kind?: string; name?: string; description?: string }[]) {
+    const name = String(raw?.name ?? '').trim().slice(0, 80)
+    if (!name || have.has(name.toLowerCase()) || out.length >= MAX_ASSETS) continue
+    const kind = (kinds.includes(String(raw?.kind)) ? raw!.kind : 'other') as AssetKind
+    have.add(name.toLowerCase())
+    out.push({ ...newAsset(kind, name), notes: String(raw?.description ?? '').slice(0, 1000), suggested: true, auto: true })
+  }
+  return out
+}

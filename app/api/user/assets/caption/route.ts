@@ -1,3 +1,4 @@
+import { chargeAiText } from '@/lib/prompt-enhance'
 import { cookies } from 'next/headers'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
@@ -108,7 +109,8 @@ export async function POST(req: Request) {
   const notes = (row?.notes ?? String(body.notes ?? '')).slice(0, 600)
 
   const tickets = assetCaptionTickets(urls.length)
-  const paid = await deductGenerationTickets(user.id, user.email ?? '', tickets)
+  // Today's free AI actions first, then tickets (lib/prompt-enhance)
+  const paid = await chargeAiText(user, tickets)
   if (!paid.ok) return jsonPrivate({ error: `Auto caption needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
   const charged = paid.newBalance >= 0 ? tickets : 0
   const fail = async (error: string, status = 502) => {

@@ -7,6 +7,7 @@ import { cookies } from 'next/headers'
 import { uploadToR2 } from '@/lib/r2'
 import { jsonPrivate } from '@/lib/api-json'
 import { fetchMedia } from '@/lib/media-fetch'
+import { isHiggsfieldEndpoint } from '@/lib/higgsfield-models'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -29,6 +30,22 @@ export async function POST(req: Request) {
     const { falEndpoint, prompt, model, duration, resolution, ticketCost, aspectRatio, audioEnabled, startFrameUrl, endFrameUrl, motionVideoUrl, keepOriginalSound, characterOrientation } = body
     if (!requestId || !falEndpoint) {
       return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
+    }
+
+    // A Higgsfield job (admin exclusives, 2026-10-13): lib/higgsfield settles it
+    if (isHiggsfieldEndpoint(falEndpoint)) {
+      const row = await prisma.generationQueue.findFirst({
+        where: { falRequestId: requestId },
+        select: { id: true, userId: true, modelId: true, modelType: true, prompt: true, ticketCost: true, createdAt: true, falRequestId: true, parameters: true, status: true, errorMessage: true },
+        orderBy: { id: 'desc' },
+      })
+      if (!row || row.userId !== sessionUser.id) return jsonPrivate({ status: 'failed', error: 'Unknown job' })
+      if (row.status === 'failed') return jsonPrivate({ status: 'failed', error: row.errorMessage || 'Generation failed' })
+      const { settleHiggsfieldRow } = await import('@/lib/higgsfield')
+      const out = await settleHiggsfieldRow(row)
+      if (out.status === 'completed') return jsonPrivate({ status: 'completed', videoUrl: out.urls[0], videoId: out.imageIds[0] ?? null })
+      if (out.status === 'failed') return jsonPrivate({ status: 'failed', error: out.error })
+      return jsonPrivate({ status: 'in_progress' })
     }
 
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })

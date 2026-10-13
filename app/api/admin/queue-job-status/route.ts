@@ -32,7 +32,8 @@ export async function GET(req: Request) {
     return NextResponse.json({
       status: job.status,          // 'queued' | 'processing' | 'completed' | 'failed'
       falRequestId: job.falRequestId,
-      falEndpoint: params?.falEndpoint,
+      // Higgsfield's queued videos carry their poller marker (lib/higgsfield-models)
+      falEndpoint: params?.falEndpoint ?? (params?.provider === 'higgsfield' && params?.hfEndpoint ? `higgsfield:${params.hfEndpoint}` : undefined),
       errorMessage: job.errorMessage,
     })
   } catch (err: any) {

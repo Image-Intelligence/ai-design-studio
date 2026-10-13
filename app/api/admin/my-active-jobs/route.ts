@@ -18,11 +18,51 @@ export const runtime = 'nodejs'
 /** A tab only needs enough to draw placeholders; this is not a queue console. */
 const MAX_JOBS = 200
 
-export async function GET() {
+export async function GET(req: Request) {
   const token = (await cookies()).get('session')?.value
   const user = token ? await getUserFromSession(token) : null
   if (!user) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  }
+
+  /*
+   * ?type=video (2026-10-12): the account's video jobs in flight, so the
+   * portal can put their tiles back after a refresh (or on another device).
+   * Videos older than 3 hours are not offered - a row stuck "processing" that
+   * long is a dead job, not a video on its way.
+   */
+  if (new URL(req.url).searchParams.get('type') === 'video') {
+    const rows = await prisma.generationQueue.findMany({
+      where: {
+        userId: user.id,
+        modelType: 'video',
+        status: { in: ['queued', 'processing'] },
+        createdAt: { gte: new Date(Date.now() - 3 * 3600 * 1000) },
+      },
+      select: { id: true, modelId: true, prompt: true, createdAt: true, parameters: true, falRequestId: true },
+      orderBy: { createdAt: 'asc' },
+      take: MAX_JOBS,
+    })
+    return NextResponse.json({
+      jobs: rows.map(j => {
+        const p = (j.parameters ?? {}) as Record<string, any>
+        const input = (p.falInput ?? {}) as Record<string, unknown>
+        return {
+          id: j.id,
+          falRequestId: j.falRequestId ?? null,
+          falEndpoint: typeof p.falEndpoint === 'string' ? p.falEndpoint
+            // Higgsfield jobs: the poller's marker (lib/higgsfield-models)
+            : p.provider === 'higgsfield' && typeof p.hfEndpoint === 'string' ? `higgsfield:${p.hfEndpoint}` : undefined,
+          clientSlotId: typeof p.clientSlotId === 'string' ? p.clientSlotId : null,
+          modelId: j.modelId,
+          prompt: j.prompt,
+          createdAt: j.createdAt.toISOString(),
+          duration: input.duration != null ? String(input.duration).replace(/s$/, '') : undefined,
+          resolution: typeof input.resolution === 'string' ? input.resolution : undefined,
+          aspectRatio: typeof input.aspect_ratio === 'string' ? input.aspect_ratio : undefined,
+        }
+      }),
+    }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
 
   const jobs = await prisma.generationQueue.findMany({

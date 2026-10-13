@@ -197,6 +197,8 @@ export const FAL_IMAGE_APPS_IN_USE: string[] = [
  * missing here shows up in the wrong feed. Add new video models here.
  */
 export const VIDEO_MODEL_IDS: string[] = [
+  // Higgsfield exclusives (admin, 2026-10-13 - not fal; lib/higgsfield-models)
+  'higgsfield-genjutsu-motion', 'higgsfield-genjutsu-swap', 'higgsfield-cinema-4',
   // Pixelcut video
   'pixelcut-looping-video', 'pixelcut-video-bg-removal',
   // generators

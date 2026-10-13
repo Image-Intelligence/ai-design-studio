@@ -2,7 +2,7 @@
 // lib/ccbill.ts (checkout + webhooks, authoritative) and the subscribe page
 // (display), so the two can never quote different plans.
 
-export type CcbillPlanId = 'creator' | 'pro' | 'studio' | 'max'
+export type CcbillPlanId = 'creator' | 'pro' | 'max'
 
 export type CcbillPlan = {
   id: CcbillPlanId
@@ -16,17 +16,17 @@ export type CcbillPlan = {
 // Server-authoritative plan catalog - only these plans can be purchased,
 // whatever the client sends.
 //
-// Re-cut 2026-10-04: four monthly plans up to CCBill's $99.99 ceiling for a
-// single charge (the biweekly $20 / monthly $40 pair is retired; yearly was
-// dropped 2026-07). Every plan sells tickets at the $0.08 floor the model
-// prices are built on (a ticket costs fal at most $0.04 -> 50% margin), so a
-// bigger plan buys more tickets, not cheaper ones: $19.99/250, $39.99/500,
-// $69.99/875, $99.99/1250 (each within 0.05% of $0.08 a ticket).
+// Re-cut 2026-10-13 to THREE plans (Studio retired - nobody was on it).
+// Every plan carries the same perks (20% off packs, 6 image + 2 video at once,
+// 500 refs, every studio, tickets that never expire); they differ by tickets
+// a month and the daily free AI text actions (lib/prompt-enhance). A bigger
+// plan now buys tickets a little cheaper - $0.080 / $0.077 / $0.074 - which
+// still clears ~30% after CCBill's cut against the $0.04 a ticket costs at
+// most to serve:  $19.99/250, $49.99/650, $99.99/1350 (CCBill's $99.99 cap).
 export const CCBILL_PLANS: CcbillPlan[] = [
   { id: 'creator', name: 'Creator', price: 19.99, periodDays: 30, cycle: 'monthly', tickets: 250 },
-  { id: 'pro',     name: 'Pro',     price: 39.99, periodDays: 30, cycle: 'monthly', tickets: 500 },
-  { id: 'studio',  name: 'Studio',  price: 69.99, periodDays: 30, cycle: 'monthly', tickets: 875 },
-  { id: 'max',     name: 'Max',     price: 99.99, periodDays: 30, cycle: 'monthly', tickets: 1250 },
+  { id: 'pro',     name: 'Pro',     price: 49.99, periodDays: 30, cycle: 'monthly', tickets: 650 },
+  { id: 'max',     name: 'Max',     price: 99.99, periodDays: 30, cycle: 'monthly', tickets: 1350 },
 ]
 
 /** USD per ticket a plan works out to. */

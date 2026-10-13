@@ -10,9 +10,8 @@ import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAll
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
-import ChatHub, { ChatProviderSettings, ChatLayoutSettings, ChatAgentSettings, ChatAgentCapabilities, ChatApiKeysSettings } from "@/components/chat-hub"
-import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, MessagesSquare, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes } from "lucide-react"
-import { AddToBucketModal, type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
+import ChatHub from "@/components/chat-hub"
+import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes } from "lucide-react"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
 import { AudioStudio } from "@/components/audio/AudioStudio"
@@ -26,6 +25,9 @@ import { StoryboardWorkspace } from "@/components/employees/StoryboardWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
 import { SiteBrandHero, SiteLogoBox } from "@/components/SitePageHeader"
+// Bucket types: the admin feed filters browse buckets (the select-mode "Add to Bucket" is gone)
+import { type Bucket, type BucketFolder } from "@/components/AddToBucketModal"
+import { BrandTitle, BrandButton } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { registerImageStudio, openInImageStudio, useImageStudioAvailable, type StudioOpenRequest } from "@/components/image-studio/bridge"
 import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
@@ -37,6 +39,7 @@ import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryP
 import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
 import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
+import { HIGGSFIELD_IMAGE_MODELS, isHiggsfieldModel, higgsfieldImageTicketCost } from "@/lib/higgsfield-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -223,6 +226,12 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "nano-banana-pro",      apiId: "nano-banana-pro",          name: "NanoBanana Pro",      aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: true,  maxImages: 4 },
   { id: "nano-banana-pro-2",    apiId: "nano-banana-pro-2",        name: "NanoBanana Pro 2",    aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9"], supportsQuality: true, supportsOutputFormat: true, maxReferenceImages: 14, isFal: false, maxImages: 4 },
   { id: "kling-v3-image",       apiId: "kling-v3-image",           name: "Kling V3",            aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: false, maxImages: 4 },
+  // ADMIN ONLY (2026-10-13): Higgsfield's exclusives (lib/higgsfield-models).
+  // Soul's 720p / 1080p ride the 1K / 2K picker; Soul takes one picture to
+  // guide its prompt enhancement, Marketing Studio edits up to 16.
+  { id: "higgsfield-soul-2",    apiId: "higgsfield-soul-2",        name: "Soul 2",              aspectRatios: ["1:1", "3:4", "4:3", "2:3", "3:2", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 0, isFal: false, maxImages: 4 },
+  { id: "higgsfield-soul",      apiId: "higgsfield-soul",          name: "Soul",                aspectRatios: ["4:3", "3:4", "1:1", "2:3", "3:2", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: false, maxImages: 4 },
+  { id: "higgsfield-marketing-image", apiId: "higgsfield-marketing-image", name: "Marketing Studio Image", aspectRatios: ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 16, isFal: false, maxImages: 4 },
   { id: "kling-o3-image",       apiId: "kling-o3-image",           name: "Kling O3",            aspectRatios: ["auto", "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: false, maxImages: 4 },
   { id: "seedream-4.5",         apiId: "seedream-4.5",             name: "SeeDream 4.5",        aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: true,  maxImages: 4 },
   { id: "seedream-5-lite",      apiId: "seedream-5-lite",          name: "SeeDream 5.0 Lite",   aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5"],                     supportsQuality: true,  qualityOptions: ["2k", "3k"], maxReferenceImages: 10, isFal: false, maxImages: 4 },
@@ -293,6 +302,7 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (modelId === "kling-o3-image")     return quality === "4k" ? 4 : 2
   if (modelId === "wan-2.7-pro")        return 4
   if (modelId === "wan-2.2-t2i-lora")   return 2
+  if (HIGGSFIELD_IMAGE_MODELS.has(modelId)) return higgsfieldImageTicketCost(modelId, quality)
   if (modelId === "pro-scanner-v3")     return quality === "4k" ? 15 : 7
   if (modelId === "flash-scanner-v2.5") return 1
   if (modelId === "gpt-image-2") {
@@ -593,10 +603,38 @@ async function prepareRefUpload(file: File): Promise<Blob> {
   return compressFileToBlob(file, 4096, 0.92)
 }
 
-// Upload a ref blob to R2 via the session-authed upload endpoint → permanent URL
+/*
+ * Straight to storage first (2026-10-12, /api/upload-reference/presign): one
+ * trip instead of two, and no ~4.5 MB request cap on Vercel. The bucket only
+ * takes browser uploads from localhost and production, so from anywhere else
+ * (the iPad on the dev server's LAN address) the first refused PUT switches
+ * this tab over to the server route for good - no failed try per file.
+ */
+let refDirectUploadOff = false
+async function uploadRefDirect(blob: Blob, type: string): Promise<string | null> {
+  if (refDirectUploadOff) return null
+  try {
+    const pr = await fetch("/api/upload-reference/presign", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentType: type, size: blob.size }),
+    })
+    if (!pr.ok) return null // the server route says why (the ID gate, the size)
+    const p = await pr.json()
+    if (!p?.uploadUrl || !p?.url) return null
+    const put = await fetch(p.uploadUrl, { method: "PUT", headers: { "Content-Type": p.contentType }, body: blob }).catch(() => null)
+    if (!put) { refDirectUploadOff = true; return null } // refused (CORS) - not this origin
+    return put.ok ? (p.url as string) : null
+  } catch {
+    return null
+  }
+}
+
+// Upload a ref blob to R2 (direct, else via the session-authed upload endpoint) → permanent URL
 async function uploadRefBlob(blob: Blob): Promise<string> {
   const type = blob.type === "image/png" ? "image/png" : blob.type === "image/webp" ? "image/webp" : "image/jpeg"
   const ext = type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg"
+  const direct = await uploadRefDirect(blob, type)
+  if (direct) return direct
   const fd = new FormData()
   fd.append("file", new File([blob], `reference.${ext}`, { type }))
   const res = await fetch("/api/upload-reference", { method: "POST", body: fd })
@@ -608,6 +646,32 @@ async function uploadRefBlob(blob: Blob): Promise<string> {
   const data = await res.json()
   if (!data?.url) throw new Error("Upload returned no URL")
   return data.url as string
+}
+
+/**
+ * A generation submit that OUTLIVES the page (2026-10-12).
+ *
+ * A refresh while /api/generate was still answering (the account checks, the
+ * references, the fal submit - several seconds) cancelled the request with
+ * the page: nothing was submitted, and the tile was gone. keepalive lets the
+ * browser finish sending it after the page has unloaded. Browsers allow that
+ * only for small bodies (64KB in all), so a request carrying pictures inline
+ * goes the ordinary way; references normally travel as links. clientSlotId
+ * rides along, so the reloaded page puts the job back into its own tile.
+ */
+/** When this page loaded: tiles queued before it were carried over from a previous page. */
+const PAGE_LOADED_AT = typeof window !== "undefined" ? Date.now() : 0
+
+function submitInit(payload: Record<string, unknown>): RequestInit {
+  const body = JSON.stringify(payload)
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    // keepalive requests cannot carry an abort timeout reliably on Safari; the
+    // timeout only guards a request this page is still waiting on
+    ...(body.length < 48_000 ? { keepalive: true } : { signal: AbortSignal.timeout(180_000) }),
+  }
 }
 
 // Run tasks with bounded concurrency (bulk ref uploads: 100+ files, 4 at a time)
@@ -825,6 +889,8 @@ interface VideoPendingSlot {
   queueJobId?: number    // GenerationQueue DB ID — set when the job was queued (capacity exceeded)
   /** The output's shape ("w:h") when it is known before the video finishes - the loading tile reserves it */
   expectedAspect?: string
+  /** The tile went up on the click; the route has not answered yet (no request id - nothing polls it, not persisted) */
+  submitting?: boolean
 }
 
 interface VideoDetailData {
@@ -950,6 +1016,29 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     supportsEndFrame: false,
     audioType: "none",
     textToVideo: true,
+  },
+  /*
+   * ADMIN ONLY (2026-10-13): Higgsfield's exclusives (lib/higgsfield-models,
+   * submitted by /api/admin/higgsfield/video-submit). Genjutsu keeps a clip's
+   * motion and swaps in the pictures (characters / objects); Cinema Studio 4.0
+   * directs a shot from words or references, with sound.
+   */
+  { id: "higgsfield-genjutsu-motion", name: "Genjutsu Motion Transfer", durations: [], resolutions: ["480p","720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
+    sourceClipImages: { max: 8, label: "Characters", hint: "Who takes over the clip's motion - 1 to 8 clear pictures. The clip must be 4-30 seconds.", required: true } },
+  { id: "higgsfield-genjutsu-swap", name: "Genjutsu Object Swap", durations: [], resolutions: ["480p","720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
+    sourceClipImages: { max: 8, label: "Swap in", hint: "What to put into the clip - 1 to 8 pictures. The clip must be 4-30 seconds and at least ~640x640.", required: true } },
+  {
+    id: "higgsfield-cinema-4",
+    name: "Cinema Studio 4.0",
+    durations: ["4","5","6","8","10","12","15","20","25","30"],
+    resolutions: ["480p","720p"],
+    aspectRatios: ["16:9","4:3","1:1","3:4","9:16","21:9"],
+    supportsEndFrame: false,
+    audioType: "toggle",
+    textToVideo: true,
+    supportsReferenceVideo: true,
+    refLimits: { images: 9, videos: 3, audios: 3 },
+    frameTags: "none",
   },
   {
     // ADMIN ONLY (testing) — minimax/h3-max/{image,text}-to-video.
@@ -1469,6 +1558,9 @@ async function asVideoFile(file: File): Promise<File | null> {
 
 // Cost tier indicators — $ cheap · $$ mid · $$$ expensive
 const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
+  "higgsfield-soul-2":   "$",
+  "higgsfield-soul":     "$$",
+  "higgsfield-marketing-image": "$$$",
   "ideogram-4.5":        "$$",
   "flash-scanner-v2.5": "$",
   "seedream-4.5":        "$",
@@ -1522,6 +1614,9 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "local-neosr":         "$",
 }
 const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
+  "higgsfield-genjutsu-motion": "$$$+",
+  "higgsfield-genjutsu-swap":   "$$$+",
+  "higgsfield-cinema-4":        "$$$",
   "gemini-omni-flash":  "$$",
   "lipsync-v3":         "$",
   "seedance-1.5":       "$$",
@@ -1765,6 +1860,8 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Clarity AI",        type: "creative upscale · adds detail", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Clarity Upscaler"] },
   { label: "fal",               type: "fast 4x upscale",           accent: "text-pink-300",    dot: "bg-pink-300",    items: ["AuraSR"] },
   { label: "Luma",              type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
+  // Public 2026-10-13: Higgsfield's own models (not on fal; lib/higgsfield, its own 20-slot queue)
+  { label: "Higgsfield",        type: "exclusive · portraits & fashion · campaign images", accent: "text-slate-200", dot: "bg-slate-300", items: ["Soul 2", "Soul", "Marketing Studio Image"] },
 ]
 
 /**
@@ -1842,6 +1939,8 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Hailuo", type: "MiniMax · text & image to video", accent: "text-rose-300", dot: "bg-rose-300", items: ["Hailuo 2.3 Pro", "Hailuo 2.3", "Hailuo 2.3 Fast Pro", "Hailuo 2.3 Fast"] },
   // Public 2026-10-06 (priced from fal's rates, tested end to end)
   { label: "Kandinsky", type: "text & image to video · with sound · video upscale", accent: "text-red-300", dot: "bg-red-300", items: ["Kandinsky 6 Pro", "Kandinsky 6 Lite", "Kandinsky 6 VSR", "Kandinsky 6 VSR Lite"] },
+  // Public 2026-10-13: Higgsfield's own models (not on fal; lib/higgsfield, its own 20-slot queue)
+  { label: "Higgsfield", type: "exclusive · motion transfer · object swap · directed shots", accent: "text-slate-200", dot: "bg-slate-300", items: ["Genjutsu Motion Transfer", "Genjutsu Object Swap", "Cinema Studio 4.0"] },
 ]
 const HOME_VIDEO_TOOL_NAMES = VIDEO_MODEL_CONFIGS.filter(m => m.isVideoTool).map(m => m.name)
 const ADMIN_VIDEO_MODEL_GROUPS = [
@@ -1869,6 +1968,9 @@ const SLOW_VIDEO_POLL_MIN: Record<string, number> = {
 }
 
 const VIDEO_PROMPT_HINTS: Record<string, string> = {
+  "higgsfield-genjutsu-motion": "Optional - how the new characters should look or act",
+  "higgsfield-genjutsu-swap": "Optional - what to swap and where",
+  "higgsfield-cinema-4": "Describe the shot - the director picks camera, light and pacing",
   "kandinsky6-vsr": "No prompt needed - upscales the first ~5 seconds (121 frames) of the clip",
   "kandinsky6-vsr-lite": "No prompt needed - upscales the first ~5 seconds (121 frames) of the clip",
   "kandinsky6-pro": "Describe the scene, the motion and the sound",
@@ -2285,6 +2387,21 @@ const TEXT_STATE_KEY = "pv2-text-state"
 // multiplied by the zoom when rendered, so we convert visual viewport coords
 // back to local ones (divide by z) when positioning them.
 const cssZoomOf = (el: HTMLElement) => (el.offsetWidth > 0 ? el.getBoundingClientRect().width / el.offsetWidth : 1)
+/*
+ * Taskbar panels at their OWN size (2026-10-12). Feed -> Taskbar Size zooms the
+ * taskbar 1.5x with CSS zoom, and every dropdown inside it was zoomed with it -
+ * too big for the screen. A panel now cancels the zoom (zoom: 1/z: its
+ * effective zoom is 1) and is placed in screen px: the panels work out top /
+ * left in the taskbar's local px (dividing by z), so they are scaled back here.
+ */
+function unzoomPanel(pos: { top?: number; left?: number; z?: number }): React.CSSProperties {
+  const k = pos.z || 1
+  return {
+    zoom: 1 / k,
+    ...(pos.top != null ? { top: pos.top * k } : {}),
+    ...(pos.left != null ? { left: pos.left * k } : {}),
+  }
+}
 
 // --- TASKBAR DROPDOWN ---
 function TaskbarDropdown({
@@ -2331,7 +2448,7 @@ function TaskbarDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const z = cssZoomOf(buttonRef.current)
-      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.min(rect.left, window.innerWidth - 216 * z) / z, z })
+      setMenuPos({ top: (rect.bottom + 8) / z, left: Math.min(rect.left, window.innerWidth - 216) / z, z })
     }
   }, [open])
 
@@ -2351,7 +2468,7 @@ function TaskbarDropdown({
       </button>
 
       {open && (
-        <div className="fixed w-52 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999]" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left }}>
+        <div className="fixed w-52 rounded-xl border border-white/10 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999]" style={{ ...unzoomPanel(menuPos), maxHeight: window.innerHeight - menuPos.top * (menuPos.z || 1) - 8 }}>
           {items.length === 0 ? (
             <div className="px-4 py-3 text-sm text-slate-500 italic">Coming soon</div>
           ) : (
@@ -3085,7 +3202,7 @@ function GroupedTaskbarDropdown({
       {open && (
         <div
           className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain"
-          style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: menuPos.width }}
+          style={{ ...unzoomPanel(menuPos), maxHeight: window.innerHeight - menuPos.top * (menuPos.z || 1) - 8, width: menuPos.width * (menuPos.z || 1) }}
         >
           <ModelMenuPanel
             label={label}
@@ -3099,7 +3216,7 @@ function GroupedTaskbarDropdown({
             menuDescription={menuDescription}
             cardMedia={cardMedia}
             cardPrefix={cardPrefix}
-            bodyMaxHeight={`${Math.max(160, window.innerHeight / (menuPos.z || 1) - menuPos.top - 110)}px`}
+            bodyMaxHeight={`${Math.max(160, window.innerHeight - menuPos.top * (menuPos.z || 1) - 110)}px`}
           />
         </div>
       )}
@@ -3141,6 +3258,12 @@ function SelectDropdown({
 // --- SELECT MODE FLOATING CONTROLS ---
 // Pinned below the taskbar at the top right while select mode is active, so
 // users can act on their selection without reopening the Select dropdown.
+/**
+ * The select-mode panel (2026-10-12: the site's silver and synced logo, like
+ * the Studios - its buttons were amber / cyan / violet). Adds Add to Assets
+ * and Edit in Image Studio (both for pictures, so the image feed only); the
+ * admin Add to Bucket is gone (the dataset pages keep buckets).
+ */
 function SelectModeOverlay({
   selectedCount,
   onDownloadAll,
@@ -3153,11 +3276,13 @@ function SelectModeOverlay({
   hiddenView = false,
   downloadProgress,
   downloadError,
-  isAdmin = false,
-  onAddToBucket,
   onAddToRefs,
   addingToRefs,
   addToRefsNote,
+  onAddToAssets,
+  addToAssetsNote,
+  onEditInStudio,
+  editing = false,
 }: {
   selectedCount: number
   onDownloadAll: () => void
@@ -3170,44 +3295,57 @@ function SelectModeOverlay({
   hiddenView?: boolean
   downloadProgress?: { done: number; total: number } | null
   downloadError?: string | null
-  isAdmin?: boolean
-  onAddToBucket?: () => void
   onAddToRefs?: () => void
   addingToRefs?: boolean
   addToRefsNote?: string | null
+  /** Image feed only: the selection into one of the account's assets */
+  onAddToAssets?: () => void
+  addToAssetsNote?: string | null
+  /** Image feed only: open the ONE selected picture in the Image Studio */
+  onEditInStudio?: () => void
+  editing?: boolean
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   // Reset confirmation when the selection changes
   useEffect(() => { setConfirmDelete(false) }, [selectedCount])
 
+  const none = selectedCount === 0
+  const spin = <span className="w-3 h-3 rounded-full border-2 border-white/25 border-t-slate-200 animate-spin shrink-0" />
+  // One silver row style for every action - the delete keeps its red (it's permanent)
+  const row = "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12.5px] font-semibold bg-white/[0.05] border border-white/15 text-slate-100 hover:bg-white/10 hover:border-white/30 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+
   return createPortal(
-    <div className="fixed right-3 top-[92px] sm:top-[60px] z-[9970] w-60 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl p-3 space-y-2">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono text-slate-300 font-semibold uppercase tracking-[0.2em]">Select Mode</span>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
-            {selectedCount === 0 ? "Tap images" : `${selectedCount} selected`}
-          </span>
-          <button
-            onClick={onExit}
-            title="Exit select mode"
-            className="w-5 h-5 rounded-md border border-white/10 bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all"
-          >
-            <X size={11} />
-          </button>
-        </div>
+    <div className="fixed right-3 top-[92px] sm:top-[60px] z-[9970] w-64 rounded-2xl silver-edge shadow-2xl p-3 space-y-2">
+      {/* Header - the synced logo and the silver title */}
+      <div className="flex items-center gap-2">
+        <BrandTitle title="Select Mode" eyebrow={none ? "Tap images" : `${selectedCount} selected`} logo={22} size="sm" />
+        <button
+          onClick={onExit}
+          title="Exit select mode"
+          className="ml-auto w-6 h-6 shrink-0 rounded-md border border-white/15 bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-all"
+        >
+          <X size={12} />
+        </button>
       </div>
 
-      <button
-        onClick={() => { if (selectedCount > 0) onDownloadAll() }}
-        disabled={selectedCount === 0 || downloading}
-        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        {downloading
-          ? <div className="w-3 h-3 rounded-full border-2 border-slate-500 border-t-slate-200 animate-spin shrink-0" />
-          : <Download size={13} className="shrink-0" />}
+      {/* Edit - the next move for one picture: the brand's primary button */}
+      {onEditInStudio && (
+        <BrandButton
+          primary
+          size="md"
+          className="w-full !justify-start"
+          disabled={selectedCount !== 1 || editing}
+          busy={editing}
+          onClick={() => { if (selectedCount === 1) onEditInStudio() }}
+          title={selectedCount === 1 ? "Open this picture in the Image Studio" : "Select one picture to edit it"}
+        >
+          {selectedCount > 1 ? "Edit (select one)" : "Edit in Image Studio"}
+        </BrandButton>
+      )}
+
+      <button onClick={() => { if (!none) onDownloadAll() }} disabled={none || downloading} className={row}>
+        {downloading ? spin : <Download size={13} className="shrink-0" />}
         <span className="flex-1 text-left">
           {downloading && downloadProgress
             ? downloadProgress.total > 1
@@ -3223,56 +3361,36 @@ function SelectModeOverlay({
           </span>
         )}
       </button>
-      {downloadError && (
-        <p className="text-[11px] text-red-400 px-1 leading-snug">{downloadError}</p>
+      {downloadError && <p className="text-[11px] text-red-400 px-1 leading-snug">{downloadError}</p>}
+
+      {/* Save the selection into the account's reference library */}
+      {onAddToRefs && (
+        <button onClick={() => { if (!none && !addingToRefs) onAddToRefs() }} disabled={none || !!addingToRefs} className={row}>
+          {addingToRefs ? spin : <ImagePlus size={13} className="shrink-0" />}
+          <span className="flex-1 text-left">{addingToRefs ? "Adding to Refs…" : "Add to Refs"}</span>
+        </button>
       )}
-      {/* Hide / Unhide — reversible, no confirm needed */}
+      {addToRefsNote && <p className="text-[11px] text-slate-400 leading-snug px-1 -mt-1">{addToRefsNote}</p>}
+
+      {/* ...or into one of the account's assets (My Generations' asset library) */}
+      {onAddToAssets && (
+        <button onClick={() => { if (!none) onAddToAssets() }} disabled={none} className={row}>
+          <Boxes size={13} className="shrink-0" />
+          <span className="flex-1 text-left">Add to Assets</span>
+        </button>
+      )}
+      {addToAssetsNote && <p className="text-[11px] text-slate-400 leading-snug px-1 -mt-1">{addToAssetsNote}</p>}
+
+      {/* Hide / Unhide - reversible, no confirm needed */}
       {onHideAll && (
-        <button
-          onClick={() => { if (selectedCount > 0) onHideAll() }}
-          disabled={selectedCount === 0 || hiding}
-          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${
-            hiddenView
-              ? "bg-white/10 border-white/25 text-white hover:bg-white/15"
-              : "bg-amber-500/10 border-amber-500/25 text-amber-300 hover:bg-amber-500/20"
-          }`}
-        >
-          {hiding
-            ? <div className="w-3 h-3 rounded-full border-2 border-slate-500 border-t-slate-200 animate-spin shrink-0" />
-            : hiddenView ? <Eye size={13} className="shrink-0" /> : <EyeOff size={13} className="shrink-0" />}
+        <button onClick={() => { if (!none) onHideAll() }} disabled={none || hiding} className={row}>
+          {hiding ? spin : hiddenView ? <Eye size={13} className="shrink-0" /> : <EyeOff size={13} className="shrink-0" />}
           <span className="flex-1 text-left">
             {hiding ? (hiddenView ? "Unhiding…" : "Hiding…") : hiddenView ? "Unhide Selected" : "Hide Selected"}
           </span>
         </button>
       )}
-      {/* Save the selection into the account's reference library */}
-      {onAddToRefs && (
-        <button
-          onClick={() => { if (selectedCount > 0 && !addingToRefs) onAddToRefs() }}
-          disabled={selectedCount === 0 || !!addingToRefs}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-cyan-500/10 border border-cyan-500/25 text-cyan-300 hover:bg-cyan-500/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          {addingToRefs
-            ? <div className="w-3 h-3 rounded-full border-2 border-cyan-500/30 border-t-cyan-300 animate-spin shrink-0" />
-            : <ImagePlus size={13} className="shrink-0" />}
-          <span className="flex-1 text-left">{addingToRefs ? "Adding to Refs…" : "Add to Refs"}</span>
-        </button>
-      )}
-      {addToRefsNote && (
-        <p className="text-[11px] text-slate-400 leading-snug px-1 -mt-1">{addToRefsNote}</p>
-      )}
 
-      {/* Admin only: add selection to a dataset bucket */}
-      {isAdmin && onAddToBucket && (
-        <button
-          onClick={() => { if (selectedCount > 0) onAddToBucket() }}
-          disabled={selectedCount === 0}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          <FolderPlus size={13} />
-          Add to Bucket
-        </button>
-      )}
       {confirmDelete ? (
         <div className="rounded-lg border border-red-500/40 bg-red-500/8 p-2.5 space-y-2">
           <p className="text-[11px] text-red-300 leading-snug">
@@ -3296,11 +3414,11 @@ function SelectModeOverlay({
         </div>
       ) : (
         <button
-          onClick={() => { if (selectedCount > 0) setConfirmDelete(true) }}
-          disabled={selectedCount === 0 || deleting}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/15 hover:text-red-300 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          onClick={() => { if (!none) setConfirmDelete(true) }}
+          disabled={none || deleting}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12.5px] font-semibold bg-red-500/[0.07] border border-red-500/20 text-red-300 hover:bg-red-500/15 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          <X size={13} />
+          <Trash2 size={13} />
           Delete Selected
         </button>
       )}
@@ -3545,6 +3663,12 @@ function refThumbSrc(img: { id: string; url: string }): string {
     ? `/api/user/references/thumb/${img.id}`
     : img.url
 }
+/**
+ * A made thumbnail's own signed address, by reference id (2026-10-12) - from
+ * the references list (/api/user/references thumbUrl). Tried first: it loads
+ * straight from the media host, not through a server route per tile.
+ */
+const refThumbDirect = new Map<string, string>()
 
 /**
  * A reference tile that admits when its image is gone.
@@ -3574,7 +3698,28 @@ function RefThumb({
    * after the server would happily produce it. Ask once more with a busting
    * param before giving up.
    */
-  const [thumbRetry, setThumbRetry] = useState(false)
+  const [thumbRetry, setThumbRetry] = useState(0)
+  /*
+   * And first the thumbnail's own address when it is known (made already:
+   * straight from the media host). Failing there only means "not made yet"
+   * (or the link expired) - the route makes it. The route is retried twice,
+   * after a pause, past the cache: a busy moment on the server is not a dead
+   * picture (2026-10-12 - active refs above the prompt showed "Unavailable").
+   */
+  const direct = refThumbDirect.get(img.id)
+  const [useDirect, setUseDirect] = useState(!!direct)
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (retryTimer.current) clearTimeout(retryTimer.current) }, [])
+  const onThumbError = () => {
+    if (useDirect) { setUseDirect(false); return }
+    if (thumbRetry >= 2) { setDead(true); return }
+    if (retryTimer.current) return
+    retryTimer.current = setTimeout(() => { retryTimer.current = null; setThumbRetry(n => n + 1) }, thumbRetry === 0 ? 1200 : 3500)
+  }
+  const route = refThumbSrc(img)
+  const src = useDirect && direct ? direct
+    : thumbRetry > 0 && route.startsWith("/api/") ? `${route}?r=${thumbRetry}`
+    : route
 
   if (dead) {
     return (
@@ -3599,7 +3744,7 @@ function RefThumb({
           compile to no class at all. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={thumbRetry ? `${refThumbSrc(img)}?r=1` : refThumbSrc(img)}
+        src={src}
         alt=""
         decoding="async"
         // A cached thumbnail can finish before React attaches onLoad (a tile
@@ -3607,7 +3752,7 @@ function RefThumb({
         // check on mount as well
         ref={el => { if (!loaded && el?.complete && el.naturalWidth > 0) setLoaded(true) }}
         onLoad={() => setLoaded(true)}
-        onError={() => { if (thumbRetry) setDead(true); else setThumbRetry(true) }}
+        onError={onThumbError}
         className={`relative h-full w-full ${fit === "contain" ? "object-contain" : "object-cover"} transition-opacity ${loaded ? "opacity-100" : "opacity-0"} ${className}`}
       />
     </span>
@@ -3958,7 +4103,7 @@ function FeedDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const z = cssZoomOf(buttonRef.current)
-      const panelW = Math.min(540 * z, window.innerWidth - 16)
+      const panelW = Math.min(540, window.innerWidth - 16)
       setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
   // taskbarScale in deps: changing the size FROM this open panel re-anchors it
@@ -4060,7 +4205,7 @@ function FeedDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(540, (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain" style={{ ...unzoomPanel(menuPos), maxHeight: window.innerHeight - menuPos.top * (menuPos.z || 1) - 8, width: Math.min(540, window.innerWidth - 16) }}>
           {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center gap-2.5 px-3 py-2.5 border-b border-white/[0.06]">
             <SiteLogoBox size={22} rounded={7} />
@@ -4198,42 +4343,12 @@ function FeedDropdown({
                   <ChevronDown size={12} className={`text-violet-400/70 transition-transform ${adminOpen ? "rotate-180" : ""}`} />
                 </button>
 
-                {/* Site-wide, not a feed filter - so it sits outside the
-                    collapsible filters and is always one tap away. */}
-                {onAiGuideChange && (
-                  <div className="space-y-1">
-                    <FeedToggleRow label="AI Guide" icon={<Sparkles size={11} />} on={aiGuideEnabled} onChange={onAiGuideChange} />
-                    <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">
-                      {aiGuideEnabled
-                        ? "Shown to every account."
-                        : "Off for every account — hidden everywhere, and its chat is refused."}
-                    </p>
-                  </div>
-                )}
-
                 {!adminOpen && (
                   <p className="text-[9px] text-slate-600 leading-relaxed">Filters the feed via the dataset system — models, buckets, tags, users and more.</p>
                 )}
 
                 {adminOpen && (
                   <div className="space-y-2.5">
-                    {/* Border STYLE stays admin-only — every user can switch
-                        borders on/off in the Display section above, but which
-                        style they get is a sitewide call */}
-                    <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-2">
-                      <FeedOptionRow label="Border Style">
-                        <FeedSeg value={borderMode} onChange={onBorderModeChange} options={[{ value: "slim", label: "Slim" }, { value: "fill", label: "Thick" }, { value: "smart", label: "Smart" }]} />
-                      </FeedOptionRow>
-                      <p className="text-[9.5px] text-slate-600 leading-relaxed">
-                        {borderMode === "smart"
-                          ? <><span className="text-white">Smart</span> fills the whole feed with flowing silver — no black space between or around generations.</>
-                          : borderMode === "fill"
-                          ? <><span className="text-white">Thick</span> frames each thumbnail with a wide animated silver border.</>
-                          : <><span className="text-white">Slim</span> hugs each thumbnail with a thin animated silver outline.</>}
-                        {!tileBorders && <span className="text-slate-500"> Borders are currently off — toggle them on under Display.</span>}
-                      </p>
-                    </div>
-
                     {loadError && <p className="text-[10px] text-red-400">{loadError}</p>}
 
                     {authNeeded ? (
@@ -4265,6 +4380,35 @@ function FeedDropdown({
                       </div>
                     ) : (
                       <>
+                        {/* Site-wide switches, behind the admin unlock with the filters
+                            (2026-10-12 - they sat above it, outside the lock) */}
+                        {onAiGuideChange && (
+                          <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-1">
+                            <FeedToggleRow label="AI Guide" icon={<Sparkles size={11} />} on={aiGuideEnabled} onChange={onAiGuideChange} />
+                            <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">
+                              {aiGuideEnabled
+                                ? "Shown to every account."
+                                : "Off for every account — hidden everywhere, and its chat is refused."}
+                            </p>
+                          </div>
+                        )}
+                        {/* Border STYLE stays admin-only — every user can switch
+                            borders on/off in the Display section above, but which
+                            style they get is a sitewide call */}
+                        <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-2">
+                          <FeedOptionRow label="Border Style">
+                            <FeedSeg value={borderMode} onChange={onBorderModeChange} options={[{ value: "slim", label: "Slim" }, { value: "fill", label: "Thick" }, { value: "smart", label: "Smart" }]} />
+                          </FeedOptionRow>
+                          <p className="text-[9.5px] text-slate-600 leading-relaxed">
+                            {borderMode === "smart"
+                              ? <><span className="text-white">Smart</span> fills the whole feed with flowing silver — no black space between or around generations.</>
+                              : borderMode === "fill"
+                              ? <><span className="text-white">Thick</span> frames each thumbnail with a wide animated silver border.</>
+                              : <><span className="text-white">Slim</span> hugs each thumbnail with a thin animated silver outline.</>}
+                            {!tileBorders && <span className="text-slate-500"> Borders are currently off — toggle them on under Display.</span>}
+                          </p>
+                        </div>
+
                         {/* Search + sort */}
                         <div className="grid grid-cols-2 gap-2">
                           <div>
@@ -5303,27 +5447,13 @@ function TaskbarScroller({ className, children }: { className: string; children:
   )
 }
 
-function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGoChat, size = 36, openUp = false }: {
-  logoUrl: string | null
-  isAdmin: boolean
-  onLogoChange?: (url: string | null) => void
-  onGoHome?: () => void
-  onGoFeed?: () => void
-  // Admin-only: opens the AI Chat Hub (rendered in the ADMIN section of the menu)
-  onGoChat?: () => void
-  size?: number
-  // Prompt-box placement: the bar sits at the bottom, so the menu opens upward
-  openUp?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [cropSrc, setCropSrc] = useState<string | null>(null)
-  /*
-   * Fullscreen: the browser hides its address bar and tabs. Offered only where
-   * the API exists (not iPhone Safari), and tracked from the browser's own
-   * event so Esc and F11 keep the label honest.
-   */
+/*
+ * Fullscreen: the browser hides its address bar and tabs. Offered only where
+ * the API exists (not iPhone Safari), and tracked from the browser's own
+ * event so Esc and F11 keep the label honest. Shared by the logo menu and the
+ * profile menu (2026-10-12).
+ */
+function useFullscreenToggle() {
   const [fsAvailable, setFsAvailable] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   useEffect(() => {
@@ -5349,6 +5479,24 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
       }
     } catch { /* refused - e.g. not from a click; nothing to undo */ }
   }
+  return { fsAvailable, isFullscreen, toggleFullscreen }
+}
+
+function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, size = 36, openUp = false }: {
+  logoUrl: string | null
+  isAdmin: boolean
+  onLogoChange?: (url: string | null) => void
+  onGoHome?: () => void
+  onGoFeed?: () => void
+  size?: number
+  // Prompt-box placement: the bar sits at the bottom, so the menu opens upward
+  openUp?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [cropSrc, setCropSrc] = useState<string | null>(null)
+  const { fsAvailable, isFullscreen, toggleFullscreen } = useFullscreenToggle()
   const [uploading, setUploading] = useState(false)
 
   useEffect(() => {
@@ -5431,7 +5579,9 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
       )}
 
       {open && (
-        <div className={`absolute left-0 w-52 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden ${openUp ? "bottom-full mb-2" : "top-full mt-2"}`}>
+        <div className={`absolute left-0 w-52 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden ${openUp ? "bottom-full mb-2" : "top-full mt-2"}`}
+          // Taskbar copy: its own size whatever the taskbar's zoom (unzoomPanel's note)
+          style={!openUp && ref.current ? { zoom: 1 / cssZoomOf(ref.current) } : undefined}>
           {/* Navigation — shown to everyone */}
           <button
             onClick={() => { onGoHome?.(); setOpen(false) }}
@@ -5447,6 +5597,14 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
             <Layers size={13} className="text-slate-300 shrink-0" />
             <span className="flex-1 text-left">Regular feed</span>
           </button>
+          <Link
+            href="/my-generations"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors border-t border-white/5"
+          >
+            <Images size={13} className="text-slate-300 shrink-0" />
+            <span className="flex-1 text-left">My Generations</span>
+          </Link>
           {fsAvailable && (
             <button
               onClick={() => { void toggleFullscreen(); setOpen(false) }}
@@ -5463,17 +5621,10 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
             </button>
           )}
 
-          {/* Admin-only section: chat hub + site logo management */}
+          {/* Admin-only section: site logo management. (The AI Chat Hub
+              entry moved to the admin Lab -> Studios, 2026-10-12.) */}
           {isAdmin && (
             <>
-              <div className="px-3 py-2 border-t border-white/5 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-violet-400/70">Admin Only</div>
-              <button
-                onClick={() => { onGoChat?.(); setOpen(false) }}
-                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
-              >
-                <MessagesSquare size={13} className="text-violet-400 shrink-0" />
-                <span className="flex-1 text-left">AI Chat Hub</span>
-              </button>
               <div className="px-3 py-2 border-t border-white/5 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Site Logo · Admin</div>
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -5503,10 +5654,10 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, onGo
   )
 }
 
-function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange }: { user: UserData | null; isAdminAccount?: boolean; onSignOut: () => void; onAvatarChange?: (url: string | null) => void }) {
+function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange, onGoHome, onGoFeed }: { user: UserData | null; isAdminAccount?: boolean; onSignOut: () => void; onAvatarChange?: (url: string | null) => void; onGoHome?: () => void; onGoFeed?: () => void }) {
   const [open, setOpen] = useState(false)
-  const [chatSettingsOpen, setChatSettingsOpen] = useState(false)
-  const [chatTab, setChatTab] = useState<"layout" | "providers" | "agent" | "capabilities" | "keys">("layout")
+  // The logo menu's navigation, here too (2026-10-12) - another route to each
+  const { fsAvailable, isFullscreen, toggleFullscreen } = useFullscreenToggle()
   const ref = useRef<HTMLDivElement>(null)
   const isAdmin = isAdminAccount || (user !== null && ADMIN_EMAILS.includes(user.email))
 
@@ -5549,11 +5700,6 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
     return () => document.removeEventListener("mousedown", handleClick)
   }, [])
 
-  // Reopening the dropdown always starts on the profile view
-  useEffect(() => {
-    if (!open) setChatSettingsOpen(false)
-  }, [open])
-
   return (
     <div className="relative" ref={ref}>
       {/* Trigger — animated silver rim, same treatment as the site logo box */}
@@ -5595,59 +5741,11 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
       )}
 
       {open && (
-        <div className={`absolute top-full right-0 mt-2 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden ${
-          chatSettingsOpen && isAdmin && user !== null
-            ? "w-[min(600px,calc(100vw-16px))]"
-            : "w-72 max-h-[80vh] overflow-y-auto"
-        }`}>
-          {user !== null && chatSettingsOpen && isAdmin ? (
-            /* ── Chat Settings mode: wide tabbed panel replaces the list ── */
-            <>
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
-                <button
-                  onClick={() => setChatSettingsOpen(false)}
-                  className="p-1.5 -ml-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
-                  title="Back to profile"
-                >
-                  <ChevronDown size={14} className="rotate-90" />
-                </button>
-                <SlidersHorizontal size={14} className="text-slate-300 shrink-0" />
-                <span className="flex-1 text-sm text-white font-medium">Chat Settings</span>
-                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-white/15 bg-black font-mono text-[11px] shrink-0">
-                  <Ticket size={10} className="text-slate-400" />
-                  <span className="text-white tabular-nums">{user.ticketBalance.toLocaleString()}</span>
-                </span>
-              </div>
-              <div className="flex border-b border-white/5">
-                {([
-                  ["layout", "Layout"],
-                  ["providers", "Providers"],
-                  ["agent", "Agent"],
-                  ["capabilities", "Capabilities"],
-                  ["keys", "API Keys"],
-                ] as const).map(([id, label]) => (
-                  <button
-                    key={id}
-                    onClick={() => setChatTab(id)}
-                    className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors border-b-2 ${
-                      chatTab === id
-                        ? "border-white/80 text-white bg-white/[0.05]"
-                        : "border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="max-h-[62vh] overflow-y-auto overscroll-contain px-4 py-3.5">
-                {chatTab === "layout" && <ChatLayoutSettings />}
-                {chatTab === "providers" && <ChatProviderSettings />}
-                {chatTab === "agent" && <ChatAgentSettings />}
-                {chatTab === "capabilities" && <ChatAgentCapabilities />}
-                {chatTab === "keys" && <ChatApiKeysSettings />}
-              </div>
-            </>
-          ) : user !== null ? (
+        <div className="absolute top-full right-0 mt-2 rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-xl shadow-2xl z-50 overflow-hidden w-72 max-h-[80vh] overflow-y-auto"
+          // Its own size whatever the taskbar's zoom (unzoomPanel's note)
+          style={ref.current ? { zoom: 1 / cssZoomOf(ref.current) } : undefined}>
+          {/* (Chat Settings moved to the admin Lab -> Studios, 2026-10-12) */}
+          {user !== null ? (
             <>
               {/* Identity header — silver-rimmed avatar, same treatment as the site logo */}
               <div className="flex items-center gap-3 px-4 py-3.5 border-b border-white/[0.06]">
@@ -5701,22 +5799,45 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                 </span>
               </div>
 
-              {/* Settings — opens the wide tabbed Chat Settings panel */}
-              {isAdmin && (
-                <div className="border-b border-white/[0.06]">
-                  <div className="px-4 pt-3 pb-1 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">
-                    Settings
-                  </div>
+              {/* Go to - the logo menu's navigation, plus My Generations */}
+              <div className="border-b border-white/[0.06] py-1">
+                <button
+                  onClick={() => { onGoHome?.(); setOpen(false) }}
+                  className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  <Sparkles size={13} className="text-slate-300 shrink-0" />
+                  <span className="flex-1 text-left">Home</span>
+                </button>
+                <button
+                  onClick={() => { onGoFeed?.(); setOpen(false) }}
+                  className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  <Layers size={13} className="text-slate-300 shrink-0" />
+                  <span className="flex-1 text-left">Regular feed</span>
+                </button>
+                <Link
+                  href="/my-generations"
+                  onClick={() => setOpen(false)}
+                  className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  <Images size={13} className="text-slate-300 shrink-0" />
+                  <span className="flex-1 text-left">My Generations</span>
+                </Link>
+                {fsAvailable && (
                   <button
-                    onClick={() => { setChatTab("layout"); setChatSettingsOpen(true) }}
+                    onClick={() => { void toggleFullscreen(); setOpen(false) }}
                     className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
                   >
-                    <SlidersHorizontal size={13} className="text-slate-400 shrink-0" />
-                    <span className="flex-1 text-left">Chat Settings</span>
-                    <ChevronDown size={12} className="text-slate-500 -rotate-90" />
+                    {isFullscreen
+                      ? <Minimize2 size={13} className="text-slate-300 shrink-0" />
+                      : <Maximize2 size={13} className="text-slate-300 shrink-0" />}
+                    <span className="flex-1 text-left">{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span>
+                    <span className={`w-7 h-4 rounded-full p-0.5 transition-colors ${isFullscreen ? "bg-white/70" : "bg-white/15"}`}>
+                      <span className={`block w-3 h-3 rounded-full bg-[#070b14] transition-transform ${isFullscreen ? "translate-x-3" : ""}`} />
+                    </span>
                   </button>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Actions */}
               <div className="p-3 space-y-2">
@@ -7433,7 +7554,7 @@ function RefDropdown({
       {/* Not ID-verified (CCBill: uploads only from verified accounts): the
           library stays locked - a lock and the way in instead of the grid */}
       {open && idVerified === false && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999] p-3" style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl overflow-y-auto overscroll-contain z-[9999] p-3" style={{ ...unzoomPanel(menuPos), width: menuPos.width * (menuPos.z || 1), maxHeight: menuPos.maxHeight * (menuPos.z || 1) }}>
           <IdLockedPanel className="mx-auto max-w-lg border-none bg-transparent" />
         </div>
       )}
@@ -7441,7 +7562,7 @@ function RefDropdown({
         <div
           // A sheet over the prompt box is solid - its white prompt text showed through the 96% glass
           className={`fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border border-white/[0.09] shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)] ${menuPos.sheet ? "bg-[#070b14]" : "bg-[#070b14]/96 backdrop-blur-xl"}`}
-          style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width, maxHeight: menuPos.maxHeight }}
+          style={{ ...unzoomPanel(menuPos), width: menuPos.width * (menuPos.z || 1), maxHeight: menuPos.maxHeight * (menuPos.z || 1) }}
         >
           {/* ── Header: title + ID mark on the left, close on the right ── */}
           <div className="flex items-center gap-3 px-4 sm:px-5 pt-4 pb-3">
@@ -7619,7 +7740,7 @@ function RefDropdown({
                         onClick={handleDuplicateSelected}
                         disabled={picked.length === 0 || duplicating === "working" || library.length + picked.length > libraryLimit}
                         title={library.length + picked.length > libraryLimit ? `Not enough room - the library holds ${libraryLimit}` : "Make a copy of each selected picture, with its layers"}
-                        className={`${btn} ${duplicating === "done" ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300" : "border-violet-500/25 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20"}`}
+                        className={`${btn} ${duplicating === "done" ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300" : "border-white/20 bg-white/[0.07] text-slate-100 hover:bg-white/[0.12] hover:border-white/35"}`}
                       >
                         {duplicating === "working" ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
                         {duplicating === "done" ? "Copied!" : duplicating === "working" ? "Copying\u2026" : "Duplicate"}
@@ -7790,7 +7911,7 @@ function RefDropdown({
 
           {/* ── The library: scrolls inside the panel ── */}
           <div className="min-h-[140px] flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 pt-3 pb-4"
-            style={menuPos.underDock > 0 ? { paddingBottom: menuPos.underDock + 16 } : undefined}>
+            style={menuPos.underDock > 0 ? { paddingBottom: menuPos.underDock * (menuPos.z || 1) + 16 } : undefined}>
             {/* ── Batch bar (admin batch mode) ── */}
             {batchMode && (
               <div className="mb-3 space-y-2 rounded-xl border border-cyan-500/25 bg-cyan-500/[0.04] p-3">
@@ -8171,7 +8292,7 @@ function TextDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const z = cssZoomOf(buttonRef.current!)
-      const panelW = Math.min(1080 * z, window.innerWidth - 8)
+      const panelW = Math.min(1080, window.innerWidth - 8)
       setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(4, Math.min(rect.left, window.innerWidth - panelW - 4)) / z, z })
     }
   }, [open])
@@ -8233,7 +8354,7 @@ function TextDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(1080, (window.innerWidth - 8) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14]/95 backdrop-blur-md shadow-2xl z-[9999] overflow-y-auto overscroll-contain" style={{ ...unzoomPanel(menuPos), maxHeight: window.innerHeight - menuPos.top * (menuPos.z || 1) - 8, width: Math.min(1080, window.innerWidth - 8) }}>
           {/* Header — synced site logo in the silver rim, like the page heroes */}
           <div className="flex items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-white/[0.06]">
             <SiteLogoBox size={22} rounded={7} />
@@ -16968,7 +17089,6 @@ function PromptBox({
   onSiteLogoChange,
   onGoHome,
   onGoFeed,
-  onGoChat,
   cardMedia,
   promptScale = 1,
 }: {
@@ -17012,7 +17132,6 @@ function PromptBox({
   onSiteLogoChange?: (url: string | null) => void
   onGoHome?: () => void
   onGoFeed?: () => void
-  onGoChat?: () => void
   // Home-page card media for the model picker's Cards view (shared w/ taskbar menus)
   cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
   // Feed -> Prompt Box Size: zoom applied to the inner container (the fixed
@@ -17243,7 +17362,8 @@ function PromptBox({
   // NanoBanana 2.1: thinking for everyone (priced - lib/ticket-pricing
   // nb21TicketCost), safety tolerance for admins only (the server puts
   // everyone else on fal's standard 4, lib/public-moderation)
-  const [nb21Thinking, setNb21Thinking] = useState<Nb21Thinking>("medium")
+  // High by default (owner, 2026-10-11 - it was switched up every time); priced +1 by nb21TicketCost
+  const [nb21Thinking, setNb21Thinking] = useState<Nb21Thinking>("high")
   const [nb21Safety, setNb21Safety] = useState<"1" | "2" | "3" | "4" | "5" | "6">("6")
   const [nb21WebSearch, setNb21WebSearch] = useState(false)
   /*
@@ -18472,6 +18592,32 @@ function PromptBox({
         return
       }
 
+      // --- Higgsfield exclusives (admin): one job per slot, watched as a queue row ---
+      if (HIGGSFIELD_IMAGE_MODELS.has(model.id)) {
+        await Promise.all(slotIds.map(async (sid) => {
+          try {
+            const res = await fetch("/api/admin/higgsfield/image-submit", {
+              signal: AbortSignal.timeout(90_000),
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: model.id, prompt: currentPrompt, aspectRatio, quality, referenceImages }),
+            })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok || !data.success) {
+              onUpdatePending(sid, { status: "failed", error: data.error || "Submission failed" })
+              return
+            }
+            if (data.ticketCost > 0) onDeductTickets?.(data.ticketCost)
+            onUpdatePending(sid, { queueId: data.queueId, referenceImageUrls: data.permanentReferenceUrls?.length ? data.permanentReferenceUrls : permanentRefUrls })
+            // lib/higgsfield finishes it on the jobs poll; the queue watcher claims the picture
+            onStartPolling(sid, data.queueId, currentPrompt)
+          } catch (err: any) {
+            onUpdatePending(sid, { status: "failed", error: err.message || "Network error" })
+          }
+        }))
+        return
+      }
+
       // --- Kling V3 Image: one FAL job per slot ---
       if (model.id === "kling-v3-image") {
         const resolution = quality === "2k" ? "2K" : "1K"
@@ -18904,12 +19050,7 @@ function PromptBox({
         // Submit N separate jobs concurrently — each gets its own queue entry and slot
         await Promise.all(slotIds.map(async (sid) => {
           try {
-            const res = await fetch("/api/generate", {
-              signal: AbortSignal.timeout(180_000),
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
-            })
+            const res = await fetch("/api/generate", submitInit({ clientSlotId: sid, prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }))
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
             if (data.newBalance !== undefined) onBalanceChange(data.newBalance)
@@ -18926,12 +19067,7 @@ function PromptBox({
         }
       } else {
         // Single FAL request (count=1)
-        const res = await fetch("/api/generate", {
-          signal: AbortSignal.timeout(180_000),
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }),
-        })
+        const res = await fetch("/api/generate", submitInit({ clientSlotId: slotId, prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }))
         const data = await readGen(res)
         if (!res.ok) {
           onUpdatePending(slotId, { status: "failed", error: data.error || "Generation failed" })
@@ -19635,7 +19771,6 @@ function PromptBox({
                 onLogoChange={onSiteLogoChange}
                 onGoHome={onGoHome}
                 onGoFeed={onGoFeed}
-                onGoChat={onGoChat}
                 size={20}
                 openUp
               />
@@ -21903,9 +22038,10 @@ function PromptBox({
                     ? "Filter engine: keyword list + name list + Gemini AI check (strongest, ~$0.00007/prompt) — click for Static (free, lists only)"
                     : "Filter engine: keyword list + static name list only (free, no API calls) — click for Gemini AI mode"}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
+                    // Silver, the site's own (2026-10-12 - was violet / cyan): the AI engine reads brighter
                     ccbillFilterMode === "gemini"
-                      ? "bg-violet-500/15 border-violet-500/40 text-violet-300"
-                      : "bg-cyan-500/10 border-cyan-500/30 text-cyan-300"
+                      ? "bg-white/[0.10] border-white/30 text-slate-100"
+                      : "bg-white/[0.04] border-white/15 text-slate-400"
                   }`}
                 >
                   {ccbillFilterMode === "gemini" ? "AI" : "List"}
@@ -24934,7 +25070,7 @@ function NewsDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; z?: number }>({ top: 0, left: 0 })
   const [notifications, setNotifications] = useState<PortalNotification[]>([])
   const [articles, setArticles] = useState<NewsArticlePreview[]>([])
   const [dismissed, setDismissed] = useState<number[]>([])
@@ -24980,7 +25116,8 @@ function NewsDropdown({
   useEffect(() => {
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
-      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - 408)) })
+      // Screen px, and the panel cancels the taskbar's zoom (unzoomPanel's note)
+      setMenuPos({ top: rect.bottom + 8, left: Math.max(8, Math.min(rect.left, window.innerWidth - 408)), z: cssZoomOf(buttonRef.current) })
     }
   }, [open])
 
@@ -25198,7 +25335,7 @@ function NewsDropdown({
       {open && (
         <div
           className="fixed w-[400px] max-w-[calc(100vw-16px)] rounded-xl border border-white/10 bg-slate-900/98 backdrop-blur-md shadow-2xl overflow-hidden z-[9999]"
-          style={{ top: menuPos.top, left: menuPos.left, animation: "pv2NewsIn 150ms ease-out" }}
+          style={{ top: menuPos.top, left: menuPos.left, zoom: 1 / (menuPos.z || 1), animation: "pv2NewsIn 150ms ease-out" }}
         >
           <style>{`@keyframes pv2NewsIn { from { opacity: 0; transform: translateY(-6px) } to { opacity: 1; transform: none } }`}</style>
           {/* Header */}
@@ -25636,7 +25773,7 @@ function ShopDropdown({
     if (open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
       const z = cssZoomOf(buttonRef.current!)
-      const panelW = Math.min(PANEL_W * z, window.innerWidth - 16)
+      const panelW = Math.min(PANEL_W, window.innerWidth - 16)
       setMenuPos({ top: (rect.bottom + 8) / z, left: Math.max(8, Math.min(rect.left, window.innerWidth - panelW - 8)) / z, z })
     }
   }, [open])
@@ -25665,7 +25802,7 @@ function ShopDropdown({
       </button>
 
       {open && (
-        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14] shadow-2xl shadow-black/70 z-[9999] overflow-y-auto overscroll-contain" style={{ maxHeight: window.innerHeight / (menuPos.z || 1) - menuPos.top - 8, top: menuPos.top, left: menuPos.left, width: Math.min(PANEL_W, (window.innerWidth - 16) / menuPos.z) }}>
+        <div className="fixed rounded-2xl border border-white/[0.08] bg-[#070b14] shadow-2xl shadow-black/70 z-[9999] overflow-y-auto overscroll-contain" style={{ ...unzoomPanel(menuPos), maxHeight: window.innerHeight - menuPos.top * (menuPos.z || 1) - 8, width: Math.min(PANEL_W, window.innerWidth - 16) }}>
           {effectsEnabled && (
             <style>{`
               @keyframes pv2ShopPulse {
@@ -25730,7 +25867,7 @@ function ShopDropdown({
               ))}
             </div>
             <p className="text-[10px] text-slate-500 px-0.5">
-              {TICKET_PACKAGES.length} packs from {TICKET_PACKAGES[0].tickets} to {TICKET_PACKAGES[TICKET_PACKAGES.length - 1].tickets} tickets · as low as <span className="text-slate-300">${bestRate.toFixed(3)}</span> a ticket{isDevTier ? " with your 10% off" : ""}
+              {TICKET_PACKAGES.length} packs from {TICKET_PACKAGES[0].tickets} to {TICKET_PACKAGES[TICKET_PACKAGES.length - 1].tickets} tickets · as low as <span className="text-slate-300">${bestRate.toFixed(3)}</span> a ticket{isDevTier ? " with your 20% off" : ""}
             </p>
           </div>
 
@@ -25748,7 +25885,7 @@ function ShopDropdown({
                   animate={effectsEnabled}
                   eyebrow={<span className="text-emerald-300">Dev Tier · active</span>}
                   title="You're on Dev Tier"
-                  sub={<>10% off every pack, 8 generations at once</>}
+                  sub={<>20% off every pack, 8 generations at once</>}
                   cta="Manage"
                   onClick={() => handleNav("/subscriptions")}
                 />
@@ -25786,7 +25923,7 @@ function ShopDropdown({
                   ))}
                 </div>
                 <div className="flex flex-wrap gap-x-3 gap-y-1 px-0.5">
-                  {["10% off every pack", "8 generations at once", "250 reference slots"].map(t => (
+                  {["20% off every pack", "8 generations at once", "500 reference slots"].map(t => (
                     <span key={t} className="inline-flex items-center gap-1 text-[10px] text-slate-400">
                       <Check size={9} className="text-white" />{t}
                     </span>
@@ -25853,6 +25990,9 @@ export default function PortalV2Page() {
   // Restored failures from a previous session — kept separate so they can be
   // interleaved with DB images by timestamp instead of crowding the top of the feed.
   const [savedFails, setSavedFails] = useState<ImageItem[]>([])
+  // The account's true failure count (the server sends up to 5000 cards; this
+  // is how many there are) - the Feed menu's Clear errors count
+  const [failTotal, setFailTotal] = useState(0)
   const [refLibrary, setRefLibrary] = useState<RefImage[]>([])
   const [activeRefIds, setActiveRefIds] = useState<string[]>([])
   // Account reference library: folder tree, server-enforced limit, bulk-upload progress
@@ -26319,21 +26459,35 @@ export default function PortalV2Page() {
   // --- Admin only: news manager modal (opened from the News dropdown) ---
   const [newsManagerTarget, setNewsManagerTarget] = useState<{ section: "articles" | "notifications"; articleId?: number } | null>(null)
 
-  // --- Admin: add selected generations to dataset buckets ---
-  const [addToBucketOpen, setAddToBucketOpen] = useState(false)
-  const [datasetBuckets, setDatasetBuckets] = useState<Bucket[]>([])
-  const [datasetFolders, setDatasetFolders] = useState<BucketFolder[]>([])
-  const [bucketsLoading, setBucketsLoading] = useState(false)
-  const [bucketLoadError, setBucketLoadError] = useState<string | null>(null)
-  const [recentBucketIds, setRecentBucketIds] = useState<number[]>([])
-
-  useEffect(() => {
-    try { setRecentBucketIds(JSON.parse(localStorage.getItem("pv2-recent-buckets") || "[]")) } catch {}
-  }, [])
-
-  const datasetAuthHeaders = (): Record<string, string> => {
-    const pass = typeof sessionStorage !== "undefined" ? (sessionStorage.getItem("admin-password") ?? "") : ""
-    return pass ? { "x-admin-password": pass } : {}
+  /*
+   * Select mode, image feed (2026-10-12): the selection into one of the
+   * account's assets (the same picker as the Refs panel / My Generations - the
+   * assets API takes generation ids and keeps the account's own pictures),
+   * and Edit: the ONE selected picture opened in the Image Studio.
+   */
+  const [feedAssetPickOpen, setFeedAssetPickOpen] = useState(false)
+  const [feedAssetNote, setFeedAssetNote] = useState<string | null>(null)
+  const feedAssetsApi = useUserAssets(feedAssetPickOpen)
+  const [editingSelected, setEditingSelected] = useState(false)
+  const handleEditSelectedInStudio = async () => {
+    if (selectedImageIds.size !== 1 || editingSelected) return
+    setEditingSelected(true)
+    try {
+      const r = await fetch("/api/images/by-ids", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageIds: Array.from(selectedImageIds) }),
+      })
+      const img = r.ok ? ((await r.json()).images ?? [])[0] as { imageUrl?: string; prompt?: string } | undefined : undefined
+      if (!img?.imageUrl || /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(img.imageUrl)) { setFeedAssetNote("That one can't be opened in the Image Studio."); return }
+      openInImageStudio({ url: img.imageUrl, title: (img.prompt || "Feed edit").slice(0, 60) })
+      setSelectMode(false)
+      setSelectedImageIds(new Set())
+    } catch {
+      setFeedAssetNote("Couldn't open it - try again.")
+    } finally {
+      setEditingSelected(false)
+    }
   }
 
   // Save the selected generations into the account's reference library. Refs
@@ -26404,60 +26558,6 @@ export default function PortalV2Page() {
     } finally {
       setBulkAddingRefs(false)
     }
-  }
-
-  const handleOpenAddToBucket = async () => {
-    if (!isAdminAccount || selectedImageIds.size === 0) return
-    setAddToBucketOpen(true)
-    setBucketsLoading(true)
-    setBucketLoadError(null)
-    try {
-      const headers = datasetAuthHeaders()
-      const [bRes, fRes] = await Promise.all([
-        fetch("/api/admin/buckets", { headers }),
-        fetch("/api/admin/folders", { headers }),
-      ])
-      if (bRes.status === 401 || fRes.status === 401) {
-        setBucketLoadError("Admin unlock required — open Feed → Feed Filters, enter your admin password, then retry.")
-      } else if (!bRes.ok || !fRes.ok) {
-        setBucketLoadError("Failed to load buckets — try again.")
-      } else {
-        setDatasetBuckets(await bRes.json())
-        setDatasetFolders(await fRes.json())
-      }
-    } catch {
-      setBucketLoadError("Failed to load buckets — check your connection.")
-    } finally {
-      setBucketsLoading(false)
-    }
-  }
-
-  const handleAddToBucket = async (bucketId: number) => {
-    const ids = Array.from(selectedImageIds)
-    const res = await fetch(`/api/admin/buckets/${bucketId}/images`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...datasetAuthHeaders() },
-      body: JSON.stringify({ imageIds: ids }),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    setRecentBucketIds(prev => {
-      const next = [bucketId, ...prev.filter(id => id !== bucketId)].slice(0, 20)
-      try { localStorage.setItem("pv2-recent-buckets", JSON.stringify(next)) } catch {}
-      return next
-    })
-    // Keep select mode on so more can be selected, but clear the handled selection
-    setSelectedImageIds(new Set())
-  }
-
-  const handleCreateAndAddToBucket = async (name: string) => {
-    const res = await fetch("/api/admin/buckets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...datasetAuthHeaders() },
-      body: JSON.stringify({ name }),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const bucket = await res.json()
-    await handleAddToBucket(bucket.id)
   }
 
   // --- Video scanner state ---
@@ -27436,12 +27536,61 @@ export default function PortalV2Page() {
         if (hints.length > 0) sdPrompt = `${promptText.trim()} ${hints.join(" ")}`
       }
     }
+    /*
+     * The loading tile goes up on the click (2026-10-12), not when the route
+     * answers. The route checks the account, measures (and, when too big,
+     * re-encodes) the references and submits to fal before it replies -
+     * seconds on some models - and the Generate button looked dead meanwhile.
+     * The placeholder has no request id, so nothing polls it and it is not
+     * persisted; the reply turns it into the real slot (same slotId), a
+     * failure takes it down.
+     *
+     * The shape the video will come out in, when it is known now, for the
+     * loading tile: Motion Control takes its motion clip's (character from
+     * the video) or the character image's; clip tools keep their source
+     * clip's (Lucy Edit is always 16:9, DreamActor takes its character
+     * picture's); image-to-video takes the start image's; text and
+     * reference runs the aspect chosen. Media sizes are measured after the
+     * tile is up and patched in.
+     */
+    const slotId = `video-${Date.now()}`
+    const startedAt = Date.now()
+    const m = selectedVideoModel
+    const chosenAr = m.aspectRatios?.length && videoAspectRatio && videoAspectRatio !== "auto" ? videoAspectRatio : undefined
+    const shapeFrom: { url: string; kind: "image" | "video" } | { ar: string } | null =
+      m.id === "kling-v3-motion"
+        ? (videoCharacterOrientation === "video" && videoMotionVideoUrl ? { url: videoMotionVideoUrl, kind: "video" } : videoStartFrameUrl ? { url: videoStartFrameUrl, kind: "image" } : null)
+      : m.id === "lucy-edit-pro" ? { ar: "16:9" }
+      : m.id === "dreamactor-v2" ? (sdRefImageUrls[0] ? { url: sdRefImageUrls[0], kind: "image" } : null)
+      : sdMode === "edit" && sdEditVideoUrl ? (chosenAr ? { ar: chosenAr } : { url: sdEditVideoUrl, kind: "video" })
+      : isLipsync ? null
+      : sdImageUrl && sdMode !== "r2v" ? { url: sdImageUrl, kind: "image" }
+      : chosenAr ? { ar: chosenAr }
+      : null
+    const expectedAspect = shapeFrom && "ar" in shapeFrom ? shapeFrom.ar : undefined
+    setVideoPendingSlots(prev => [{
+      slotId, requestId: "", falEndpoint: "", submitting: true,
+      prompt: promptText, model: m.id, duration: videoDuration, resolution: videoResolution, ticketCost: 0, startedAt,
+      aspectRatio: isLipsync ? videoLipsyncAspectRatio : (videoAspectRatio || undefined),
+      startFrameUrl: videoStartFrameUrl || undefined, endFrameUrl: videoEndFrameUrl || undefined,
+      ...(expectedAspect ? { expectedAspect } : {}),
+    }, ...prev])
+    if (shapeFrom && "url" in shapeFrom) {
+      measureMediaAspect(shapeFrom.url, shapeFrom.kind).then(ar => {
+        if (ar) setVideoPendingSlots(prev => prev.map(s => (s.slotId === slotId ? { ...s, expectedAspect: ar } : s)))
+      })
+    }
+    /** The route's answer into the placeholder (put back if its tile was dismissed meanwhile - the job runs either way). */
+    const fillVideoSlot = (slot: VideoPendingSlot) => setVideoPendingSlots(prev => prev.some(s => s.slotId === slotId)
+      ? prev.map(s => (s.slotId === slotId ? { ...slot, expectedAspect: s.expectedAspect ?? slot.expectedAspect, submitting: undefined } : s))
+      : [slot, ...prev])
+    // The button is free again almost at once (a short guard against a double
+    // tap), like the image models'; the tile shows the job is on its way
     setVideoGenerating(true)
+    const freeButton = setTimeout(() => setVideoGenerating(false), 600)
     try {
-      const res = await fetch("/api/video/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const res = await fetch(isHiggsfieldModel(selectedVideoModel.id) ? "/api/admin/higgsfield/video-submit" : "/api/video/generate", submitInit({
+          clientSlotId:         slotId,
           prompt:               sdPrompt,
           imageUrl:             sdImageUrl,
           endImageUrl:          sdEndImageUrl,
@@ -27501,18 +27650,17 @@ export default function PortalV2Page() {
           ...(selectedVideoModel.id === "wan-2.2-lora"
             ? { loras: videoLoraSel ? [{ path: videoLoraSel.path, scale: videoLoraSel.scale, transformer: videoLoraSel.transformer }] : [] }
             : {}),
-        }),
-      })
+        }))
       const data = await res.json()
       if (!data.success) throw new Error(data.error || "Generation failed")
       const slotBase = {
-        slotId:               `video-${Date.now()}`,
+        slotId,
         prompt:               promptText,
         model:                selectedVideoModel.id,
         duration:             data.duration || videoDuration,
         resolution:           videoResolution,
         ticketCost:           data.ticketCost,
-        startedAt:            Date.now(),
+        startedAt,
         aspectRatio:          isLipsync ? videoLipsyncAspectRatio : (videoAspectRatio || undefined),
         audioEnabled:         videoAudioEnabled,
         startFrameUrl:        videoStartFrameUrl || undefined,
@@ -27520,34 +27668,7 @@ export default function PortalV2Page() {
         motionVideoUrl:       videoMotionVideoUrl || undefined,
         keepOriginalSound:    videoKeepOriginalSound,
         characterOrientation: videoCharacterOrientation,
-      }
-      /*
-       * The shape the video will come out in, when it is known now, for the
-       * loading tile: Motion Control takes its motion clip's (character from
-       * the video) or the character image's; clip tools keep their source
-       * clip's (Lucy Edit is always 16:9, DreamActor takes its character
-       * picture's); image-to-video takes the start image's; text and
-       * reference runs the aspect chosen. Media sizes are measured after the
-       * tile is up and patched in.
-       */
-      const m = selectedVideoModel
-      const chosenAr = m.aspectRatios?.length && videoAspectRatio && videoAspectRatio !== "auto" ? videoAspectRatio : undefined
-      const shapeFrom: { url: string; kind: "image" | "video" } | { ar: string } | null =
-        m.id === "kling-v3-motion"
-          ? (videoCharacterOrientation === "video" && videoMotionVideoUrl ? { url: videoMotionVideoUrl, kind: "video" } : videoStartFrameUrl ? { url: videoStartFrameUrl, kind: "image" } : null)
-        : m.id === "lucy-edit-pro" ? { ar: "16:9" }
-        : m.id === "dreamactor-v2" ? (sdRefImageUrls[0] ? { url: sdRefImageUrls[0], kind: "image" } : null)
-        : sdMode === "edit" && sdEditVideoUrl ? (chosenAr ? { ar: chosenAr } : { url: sdEditVideoUrl, kind: "video" })
-        : isLipsync ? null
-        : sdImageUrl && sdMode !== "r2v" ? { url: sdImageUrl, kind: "image" }
-        : chosenAr ? { ar: chosenAr }
-        : null
-      if (shapeFrom && "ar" in shapeFrom) (slotBase as VideoPendingSlotBase).expectedAspect = shapeFrom.ar
-      const measureLater = shapeFrom && "url" in shapeFrom ? shapeFrom : null
-      if (measureLater) {
-        measureMediaAspect(measureLater.url, measureLater.kind).then(ar => {
-          if (ar) setVideoPendingSlots(prev => prev.map(s => (s.slotId === slotBase.slotId ? { ...s, expectedAspect: ar } : s)))
-        })
+        ...(expectedAspect ? { expectedAspect } : {}),
       }
       // Update UI balance immediately.
       // For admin users the generate route skips deduction, so we also persist via use-tickets.
@@ -27572,19 +27693,21 @@ export default function PortalV2Page() {
           falEndpoint: data.falEndpoint || '',
           queueJobId:  data.queueId,
         }
-        setVideoPendingSlots(prev => [slot, ...prev])
+        fillVideoSlot(slot)
       } else {
         const slot: VideoPendingSlot = {
           ...slotBase,
           requestId:   data.requestId,
           falEndpoint: data.falEndpoint,
         }
-        setVideoPendingSlots(prev => [slot, ...prev])
+        fillVideoSlot(slot)
       }
     } catch (err: any) {
       console.error("Video generate error:", err)
+      setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slotId))
       alert(err.message || "Video generation failed")
     } finally {
+      clearTimeout(freeButton)
       setVideoGenerating(false)
     }
   }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec, videoInsertTimes])
@@ -28405,6 +28528,69 @@ export default function PortalV2Page() {
     videoQueuePollingIntervals.current[queueJobId] = interval
   }, [startVideoPolling, setVideoPendingSlots, setVideoItems, setSavedVideoFails, setUser])
 
+  /*
+   * The account's video jobs in flight, adopted on load (2026-10-12). Video
+   * tiles came back after a refresh only if this tab had stored them - a
+   * refresh while the submit was still answering, or a job started on another
+   * device, showed nothing until the video landed. The server's rows are the
+   * record: anything running that no tile tracks gets one, and the normal
+   * pollers take it from there (a request id: video-status; a queued row: the
+   * queue poller).
+   */
+  const videoAdoptedForUser = useRef<number | null>(null)
+  useEffect(() => {
+    if (!user?.id || videoAdoptedForUser.current === user.id) return
+    videoAdoptedForUser.current = user.id
+    const pageLoadedAt = Date.now()
+    const adopt = async (last: boolean) => {
+      try {
+        const r = await fetch("/api/admin/my-active-jobs?type=video", { cache: "no-store" })
+        if (!r.ok) return
+        const jobs: { id: number; falRequestId: string | null; falEndpoint?: string; clientSlotId?: string | null; modelId: string; prompt: string; createdAt: string; duration?: string; resolution?: string; aspectRatio?: string }[] = (await r.json()).jobs ?? []
+        setVideoPendingSlots(prev => {
+          let next = prev
+          // A carried-over tile whose submit was still answering: its job names it
+          for (const j of jobs) {
+            const asked = j.clientSlotId ? next.find(s => s.slotId === j.clientSlotId && s.submitting) : undefined
+            if (!asked) continue
+            next = next.map(s => (s.slotId === asked.slotId ? {
+              ...s, submitting: undefined,
+              requestId: j.falRequestId ?? "", falEndpoint: j.falEndpoint ?? "",
+              ...(j.falRequestId ? {} : { queueJobId: j.id }),
+            } : s))
+          }
+          // The last pass: a carried-over tile no job claimed was never submitted
+          if (last) next = next.filter(s => !(s.submitting && (s.startedAt ?? 0) < pageLoadedAt))
+          const reqs = new Set(next.map(s => s.requestId).filter(Boolean))
+          const qids = new Set(next.map(s => s.queueJobId).filter((v): v is number => v != null))
+          const add: VideoPendingSlot[] = jobs
+            .filter(j => !(j.falRequestId && reqs.has(j.falRequestId)) && !qids.has(j.id))
+            // Asked for by a tile in THIS page, still submitting: its own reply fills it
+            .filter(j => !(j.clientSlotId && next.some(s => s.slotId === j.clientSlotId)))
+            // A request id is needed to watch a job at fal; a queued row is watched by its queue id
+            .filter(j => !!j.falRequestId === !!j.falEndpoint || !j.falRequestId)
+            .map(j => ({
+              slotId: `video-db-${j.id}`,
+              requestId: j.falRequestId ?? "",
+              falEndpoint: j.falEndpoint ?? "",
+              ...(j.falRequestId ? {} : { queueJobId: j.id }),
+              prompt: j.prompt,
+              model: j.modelId,
+              duration: j.duration ?? "5",
+              resolution: j.resolution,
+              ticketCost: 0,
+              startedAt: Date.parse(j.createdAt) || Date.now(),
+              aspectRatio: j.aspectRatio,
+            }))
+          return add.length ? [...add, ...next] : next
+        })
+      } catch { /* the next pass tries again */ }
+    }
+    // At load, then while a request sent just before the reload may still be landing
+    const timers = [0, 6_000, 15_000, 35_000, 75_000].map((ms, k, all) => setTimeout(() => void adopt(k === all.length - 1), ms))
+    return () => timers.forEach(clearTimeout)
+  }, [user?.id])
+
   // Watch for new video slots with queueJobId but no requestId
   useEffect(() => {
     videoPendingSlots.forEach(slot => {
@@ -28571,6 +28757,9 @@ export default function PortalV2Page() {
 
     sharedPollTimer.current = setInterval(tick, 3000)
   }, [handlePrependImage, handleRemovePending, handleUpdatePending, handleBalanceChange])
+  // For the 10s pass (an effect bound once per account): link a job to the tile that asked for it
+  const startPollingRef = useRef(startPolling)
+  startPollingRef.current = startPolling
 
   // Start/resume polling whenever pending slots change (handles new generations + page refresh restore).
   // Skip queued slots (no requestId yet) — startQueuePollingForVideoSlot handles those.
@@ -28683,8 +28872,10 @@ export default function PortalV2Page() {
 
   const isOwner = user?.email === "dirtysecretai@gmail.com" || user?.email === "promptandprotocol@gmail.com"
   const hasEffectiveDevAccess = hasPromptStudioDev || isAdminAccount || isAuditAccount
+  // Image Studio / Edit Image layers - kept after Apply - are for EVERY account
+  // (2026-10-13; they were a Dev Tier perk): the editors below get canUseLayers
   // Server value wins once fetched; fallback mirrors lib/ref-limits.ts tiers
-  const refLibraryLimit = refLimit ?? (isAdminAccount ? 1000 : hasEffectiveDevAccess ? 250 : 50)
+  const refLibraryLimit = refLimit ?? (isAdminAccount ? 1000 : hasEffectiveDevAccess ? 500 : 50)
   const maxConcurrent = isOwner ? Infinity : hasEffectiveDevAccess ? 6 : 2
   const videoMaxConcurrent = isOwner ? Infinity : hasEffectiveDevAccess ? 2 : 1
   const videoActiveJobCount = videoPendingSlots.length
@@ -28983,6 +29174,14 @@ export default function PortalV2Page() {
         // promoter had worked through them one at a time — and a reload was
         // the only way to see where the run had got to.
         const waitingDbJobs = inFlight.filter((j: any) => !j.falRequestId)
+        // A tile no job claimed within 3 minutes was never submitted (see below)
+        const claimed = new Set(inFlight.map((j: any) => (j.parameters as any)?.clientSlotId).filter(Boolean))
+        for (const sl of pendingSlotsRef.current) {
+          if (sl.status !== "loading" || sl.queueId != null || sl.queueJobId != null || sl.nb2RequestId || sl.streamDataUrl) continue
+          // Only tiles carried over from before a reload: this page's own submits answer for themselves
+          if (claimed.has(sl.slotId) || sl.queuedAtMs == null || sl.queuedAtMs >= PAGE_LOADED_AT || Date.now() - sl.queuedAtMs < 3 * 60_000) continue
+          handleUpdatePending(sl.slotId, { status: "failed", error: "This generation didn't start (the page was reloaded while it was being sent). Nothing was charged - try again." })
+        }
         if (nb2DbJobs.length === 0 && waitingDbJobs.length === 0) return
 
         const currentSlots = pendingSlotsRef.current
@@ -29015,6 +29214,26 @@ export default function PortalV2Page() {
         const dismissed = loadDismissedFails()
         const dismissedIds = new Set(dismissed.ids)
         const dismissedReqs = new Set(dismissed.reqs)
+
+        /*
+         * A tile whose submit was still answering when the page reloaded
+         * (2026-10-12): the request finished on its own (keepalive) and its
+         * row names the tile (clientSlotId). Link the two - the tile gets its
+         * queue id and the normal poller - instead of adopting the job as a
+         * second tile after the grace period. A tile no job ever claimed in 3
+         * minutes was not submitted at all: it says so.
+         */
+        for (const j of inFlight) {
+          const c = (j.parameters as any)?.clientSlotId
+          if (typeof c !== "string") continue
+          const asked = currentSlots.find(sl => sl.slotId === c && sl.queueId == null && sl.queueJobId == null && !sl.nb2RequestId && sl.status === "loading")
+          if (!asked) continue
+          if (j.falRequestId) recoveredJobsRef.current.add(j.falRequestId)
+          recoveredJobsRef.current.add(`q${j.id}`)
+          trackedDbJobIds.add(j.id)
+          handleUpdatePending(asked.slotId, { queueId: j.id })
+          startPollingRef.current(asked.slotId, j.id, j.prompt)
+        }
 
         // A tile placed for a queued row has no poller of its own, because
         // there was nothing to poll yet. The moment its row is promoted and
@@ -29536,7 +29755,18 @@ export default function PortalV2Page() {
 
   // Edited image: free the old slot first (soft clear — admin keeps the original),
   // then upload the edited version and swap it into the same position.
-  const handleEditRef = useCallback(async (id: string, newUrl: string): Promise<RefImage | null> => {
+  /*
+   * An edit applied again before the last save landed (2026-10-12): the popup
+   * still holds the id that save is replacing, so both re-created the same
+   * row - two copies in Refs. Each save is chained: a later one waits for the
+   * one before and replaces what IT made.
+   */
+  const editChains = useRef(new Map<string, Promise<RefImage | null>>())
+  const handleEditRef = useCallback(async (askedId: string, newUrl: string): Promise<RefImage | null> => {
+    let id = askedId
+    const prior = editChains.current.get(askedId)
+    if (prior) { const next = await prior.catch(() => null); if (next?.id) id = next.id }
+    const run = (async (): Promise<RefImage | null> => {
     const old = refLibraryRef.current.find(r => r.id === id)
     // Optimistic: show the edited image immediately
     setRefLibrary(prev => prev.map(r => r.id === id ? { ...r, url: newUrl } : r))
@@ -29590,6 +29820,11 @@ export default function PortalV2Page() {
       // Row sync failed — editing continues locally against the data URL
       return { id, url: newUrl, folderId: old.folderId ?? null, layers: old.layers ?? null }
     }
+    })()
+    const keys = [...new Set([askedId, id])]
+    for (const k of keys) editChains.current.set(k, run)
+    void run.finally(() => setTimeout(() => { for (const k of keys) if (editChains.current.get(k) === run) editChains.current.delete(k) }, 120_000))
+    return run
   }, [])
 
   // Dev-Tier multi-layer stacks: optimistic state update + debounced persist
@@ -29719,6 +29954,8 @@ export default function PortalV2Page() {
         const refs: RefImage[] = (data.references || []).map((r: any) => ({
           id: String(r.id), url: r.url, folderId: r.folderId ?? null,
         }))
+        // Made thumbnails load straight from the media host (RefThumb)
+        for (const r of data.references || []) if (typeof r.thumbUrl === "string") refThumbDirect.set(String(r.id), r.thumbUrl)
         // Merge (don't clobber) anything the user added while this fetch was in flight
         setRefLibrary(prev => {
           const ids = new Set(refs.map(r => r.id))
@@ -29851,7 +30088,10 @@ export default function PortalV2Page() {
           const cutoff = Date.now() - 3 * 3600 * 1000
           const restored = (JSON.parse(stored) as PendingSlot[])
             .filter(s => s.status !== "done")
-            .filter(s => s.queueId != null || s.queueJobId != null || !!s.nb2RequestId)
+            // ...or one whose submit may still land: the request outlives the
+            // page (submitInit), and the job finds its tile by clientSlotId
+            .filter(s => s.queueId != null || s.queueJobId != null || !!s.nb2RequestId
+              || (s.status === "loading" && s.queuedAtMs != null && Date.now() - s.queuedAtMs < 3 * 60_000))
             .filter(s => s.queuedAtMs != null && s.queuedAtMs > cutoff)
           // setPendingSlots here bypasses handleAddPending, so it has to keep
           // the same invariant itself: a stored list written while a duplicate
@@ -29874,7 +30114,11 @@ export default function PortalV2Page() {
         if (stored) {
           const slots = JSON.parse(stored) as VideoPendingSlot[]
           const cutoff = Date.now() - 90 * 60 * 1000
-          setVideoPendingSlots(slots.filter(s => !s.startedAt || s.startedAt > cutoff))
+          // A tile whose submit was still answering when the page went is kept
+          // for 3 minutes: the request outlives the page (submitInit) and the
+          // adoption pass puts the job into it by its clientSlotId
+          setVideoPendingSlots(slots.filter(s => (!s.startedAt || s.startedAt > cutoff)
+            && !(s.submitting && (!s.startedAt || Date.now() - s.startedAt > 3 * 60_000))))
         }
       } catch {}
       // Active ref ids (library itself comes from the account — see fetch effect)
@@ -29915,6 +30159,7 @@ export default function PortalV2Page() {
         const data = await res.json()
         if (!data.success) return
         let rows: any[] = data.fails || []
+        if (typeof data.total === "number") setFailTotal(data.total)
         // Ledger sweep: rows the user already dismissed locally are HIDDEN and
         // re-dismissed server-side with their now-known row ids (the first
         // dismiss may have had nothing to target). Entries the server no
@@ -29976,6 +30221,7 @@ export default function PortalV2Page() {
   // Dismiss a failed tile — removes it from the feed permanently (per-account)
   const handleDismissFail = useCallback((item: ImageItem) => {
     setSavedFails(prev => prev.filter(f => f.id !== item.id))
+    if (item.queueRowId) setFailTotal(n => Math.max(0, n - 1))
     // A failed generation now keeps its original card (the pending slot), so
     // dismissing has to retire that too — otherwise the error tile stays put
     setPendingSlots(prev => prev.filter(s => s.failItemId !== item.id))
@@ -30014,20 +30260,29 @@ export default function PortalV2Page() {
     falRequestIds.forEach(rq => recordDismissedFail(null, rq))
     setSavedFails([])
     setSavedVideoFails([])
+    setFailTotal(0)
     setVideoItems(prev => prev.filter(v => !v.failed))
     setFreshImages(prev => prev.filter(i => !i.failed))
     setPendingSlots(prev => prev.filter(s => s.status !== 'failed'))
-    if (ids.length || falRequestIds.length) {
+    // Every failure on the account (all: true), not only the cards loaded here;
+    // the request-id ones are session fails that may have no row yet
+    fetch('/api/user/failed-generations', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true }),
+    }).catch(() => {})
+    if (falRequestIds.length) {
       fetch('/api/user/failed-generations', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: [...new Set(ids)], falRequestIds: [...new Set(falRequestIds)] }),
+        body: JSON.stringify({ falRequestIds: [...new Set(falRequestIds)] }),
       }).catch(() => {})
     }
   }, [savedFails, savedVideoFails, pendingSlots])
 
   const handleDismissVideoFail = useCallback((item: VideoItem) => {
     setSavedVideoFails(prev => prev.filter(f => f.id !== item.id))
+    if (item.queueRowId) setFailTotal(n => Math.max(0, n - 1))
     setVideoItems(prev => prev.filter(v => !(v.failed && v.id === item.id)))
     const ids = item.queueRowId ? [item.queueRowId] : []
     const falRequestIds = !item.queueRowId && item.failKey?.startsWith('rf-') ? [item.failKey.slice(3)] : []
@@ -30191,8 +30446,20 @@ export default function PortalV2Page() {
   useEffect(() => {
     async function fetchUser() {
       try {
-        const res = await fetch("/api/auth/session", { cache: "no-store" })
-        const data = await res.json()
+        /*
+         * A server error is not "signed out" (2026-10-12): on a database blip
+         * the session check answered authenticated:false, the page drew the
+         * sign-in screen, and every generating tile was dropped until the next
+         * reload. Retried with a pause; only a real answer decides.
+         */
+        let res: Response | null = null
+        for (let attempt = 0; attempt < 5; attempt++) {
+          res = await fetch("/api/auth/session", { cache: "no-store" }).catch(() => null)
+          if (res && res.status < 500) break
+          await new Promise(r => setTimeout(r, 800 * (attempt + 1)))
+        }
+        if (!res) return
+        const data = await res.json().catch(() => ({}))
         if (data.authenticated) {
           const [ticketRes, subRes, jobsRes] = await Promise.all([
             fetch(`/api/user/tickets?userId=${data.user.id}`),
@@ -30244,14 +30511,45 @@ export default function PortalV2Page() {
 
             // Split in-flight DB jobs: those with falRequestId use NB2-style polling (cross-device tiles),
             // those without use queue-ID polling (canvas-style).
-            const nb2DbJobs = inFlight.filter((j: any) => j.falRequestId && !doneNb2Ids.has(j.falRequestId))
-            const queueDbJobs = inFlight.filter((j: any) => !j.falRequestId)
+            /*
+             * A REFRESH MUST NOT HIDE WORK IN FLIGHT (2026-10-12).
+             *
+             * Jobs with a fal request id but no dedicated status route -
+             * NanoBanana 2.1 and every model settled by its webhook or the
+             * harvester - fell between the two lists below: not polled as
+             * nb2 (no route), not queue-tracked (they have a request id). A
+             * tile restored for one got no watcher, and one whose submit had
+             * not answered before the reload (no ids stored, so dropped) was
+             * only re-adopted by the 10s pass after 45 seconds - by which
+             * time a NanoBanana run is usually finished. The tile vanished
+             * until the picture landed. They are queue-tracked now, from the
+             * first load: a tile at once, and the normal queue poller on it.
+             */
+            const nb2DbJobs = inFlight.filter((j: any) => j.falRequestId && !doneNb2Ids.has(j.falRequestId) && !!MODEL_STATUS_URLS[j.modelId])
+            const queueDbJobs = inFlight.filter((j: any) => !j.falRequestId || !MODEL_STATUS_URLS[j.modelId])
+            // The 10s pass must not adopt these a second time
+            for (const j of queueDbJobs) if (j.falRequestId) recoveredJobsRef.current.add(j.falRequestId)
 
             const byQueueId = new Map(currentSlots.filter(s => s.queueId).map(s => [s.queueId, s]))
+            // A tile whose submit was still answering when the page went: the job names it
+            const idlessSlotIds = new Set(currentSlots.filter(s => s.queueId == null && s.queueJobId == null && !s.nb2RequestId).map(s => s.slotId))
+            const askedBy = (j: any): string | undefined => {
+              const c = j.parameters?.clientSlotId
+              return typeof c === "string" && idlessSlotIds.has(c) ? c : undefined
+            }
             const slotAssignments = queueDbJobs.map((j: any) => ({
-              slotId: byQueueId.get(j.id)?.slotId ?? `restored-${j.id}`,
+              slotId: byQueueId.get(j.id)?.slotId ?? askedBy(j) ?? `restored-${j.id}`,
               queueId: j.id as number,
               prompt: j.prompt as string,
+              // The row's own settings, for a tile this device never had:
+              // queue time (feed order), shape, model
+              row: {
+                queuedAtMs: queuedAtMsOf(j),
+                modelId: j.modelId as string,
+                aspectRatio: typeof j.parameters?.aspectRatio === "string" ? j.parameters.aspectRatio : undefined,
+                quality: typeof j.parameters?.quality === "string" ? j.parameters.quality : undefined,
+                referenceImageUrls: j.parameters?.permanentReferenceUrls || j.parameters?.referenceImageUrls || [],
+              },
             }))
 
             // Detect completed queue-backed slots (for recently-finished image fetching).
@@ -30384,6 +30682,10 @@ export default function PortalV2Page() {
             ])
             const unheardOf = currentSlots.filter(s =>
               s.status === "loading"
+              // No ids: its submit has not answered. Kept while it still may
+              // (under 3 minutes - the 10s pass links it when its row appears)
+              && (s.queueId != null || s.queueJobId != null || !!s.nb2RequestId
+                || (s.queuedAtMs != null && Date.now() - s.queuedAtMs < 3 * 60_000))
               && !accountedFor.has(s.slotId)
               && !completedQueueSlotIds.has(s.slotId)
               && !(s.nb2RequestId && doneNb2Ids.has(s.nb2RequestId)))
@@ -30426,6 +30728,7 @@ export default function PortalV2Page() {
                 // feed - along with the aspect ratio the tile reserves space
                 // with and the run's own settings.
                 ...slotAssignments.map(sa => keepIfFinished(sa.slotId, sa.queueId) ?? ({
+                  ...sa.row,
                   ...(liveById.get(sa.slotId) ?? liveByQueue.get(sa.queueId) ?? byQueueId.get(sa.queueId) ?? {}),
                   // Keep the live slot's own id when it has one, so the tile
                   // is updated in place rather than replaced under a new key.
@@ -30665,7 +30968,7 @@ function employeePending(
         {/* Mobile-only top row: branding + queue + tickets + profile + dashboard */}
         <div className="flex sm:hidden items-center justify-between px-3 h-9 border-b border-white/5">
           <div className="flex items-center gap-2">
-            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} onGoChat={() => setScannerMode("chat")} size={24} />
+            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} size={24} />
             <div className="w-px h-3 bg-white/10" />
             <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
             <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
@@ -30675,7 +30978,7 @@ function employeePending(
               <Ticket size={10} className="text-slate-400" />
               <span className="text-white tabular-nums">{user ? user.ticketBalance.toLocaleString() : "---"}</span>
             </div>
-            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} />
+            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
             <Link
               href="/dashboard"
               className="relative overflow-hidden flex items-center px-2 py-1 rounded-md border border-white/25 bg-white/10 text-[10px] font-bold text-white hover:bg-white/15 hover:border-white/40 transition-all"
@@ -30693,7 +30996,7 @@ function employeePending(
         <div className="flex items-center justify-between px-4 h-12">
           {/* Wordmark — desktop only. Logo (admin-uploadable dropdown) + title centered over the links. */}
           <div className="hidden sm:flex items-center gap-3 shrink-0 mr-3">
-            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} onGoChat={() => setScannerMode("chat")} size={40} />
+            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} size={40} />
             {/* The wordmark gives its width to the model strip below xl. */}
             <div className="hidden xl:flex flex-col items-center leading-none gap-1">
               <span className="text-[13px] font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60">AI Design Studio</span>
@@ -30805,7 +31108,7 @@ function employeePending(
               onActivate={videoRefsEnabled ? handleActivateRefVideo : motionRefsEnabled ? handleActivateRefMotion : handleActivateRefImageOnly}
               onDeactivate={videoRefsEnabled ? handleDeactivateRefVideo : motionRefsEnabled ? handleDeactivateRefMotion : handleDeactivateRef}
               onEditSave={handleEditRef}
-              canUseLayers={hasEffectiveDevAccess}
+              canUseLayers
               onSaveLayers={handleSaveRefLayers}
               folders={refFolders}
               uploadProgress={refUploadProgress}
@@ -30876,10 +31179,12 @@ function employeePending(
               onHiddenImageModelsChange={handleHiddenImageModelsChange}
               hiddenVideoModels={feedHiddenVideoModels}
               onHiddenVideoModelsChange={handleHiddenVideoModelsChange}
-              errorCount={
+              errorCount={Math.max(
+                // Beyond the cards loaded here, the account's true total
+                failTotal,
                 savedFails.length + savedVideoFails.length
-                + pendingSlots.filter(s => s.status === "failed" && !savedFails.some(f => f.id === s.failItemId)).length
-              }
+                + pendingSlots.filter(s => s.status === "failed" && !savedFails.some(f => f.id === s.failItemId)).length,
+              )}
               onClearErrors={handleClearAllErrors}
             />
             {/* AI Chat Hub moved to the logo dropdown's admin-only section */}
@@ -30898,7 +31203,7 @@ function employeePending(
                 {user ? user.ticketBalance.toLocaleString() : "---"}
               </span>
             </div>
-            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} />
+            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
             <Link
               href="/dashboard"
               className="relative overflow-hidden flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/25 bg-white/10 text-[11px] font-bold text-white hover:bg-white/15 hover:border-white/40 transition-all"
@@ -30928,12 +31233,35 @@ function employeePending(
           hiddenView={feedShowHidden}
           downloadProgress={downloadProgress}
           downloadError={downloadError}
-          isAdmin={isAdminAccount}
-          onAddToBucket={handleOpenAddToBucket}
           onAddToRefs={handleBulkAddToRefs}
           addingToRefs={bulkAddingRefs}
           addToRefsNote={bulkRefsNote}
+          // Pictures only: the image feed (the video feed's selection is clips)
+          onAddToAssets={scannerMode === "image" ? () => { setFeedAssetNote(null); setFeedAssetPickOpen(true) } : undefined}
+          addToAssetsNote={scannerMode === "image" ? feedAssetNote : null}
+          onEditInStudio={scannerMode === "image" && studioUser ? () => void handleEditSelectedInStudio() : undefined}
+          editing={editingSelected}
         />
+      )}
+      {feedAssetPickOpen && typeof document !== "undefined" && createPortal(
+        <div className="relative z-[10060]">
+          <AddToAssetModal
+            count={selectedImageIds.size}
+            assets={feedAssetsApi.assets}
+            onAdd={async a => {
+              const r = await feedAssetsApi.update({ id: a.id, addImageIds: Array.from(selectedImageIds) })
+              setFeedAssetPickOpen(false)
+              setFeedAssetNote(r.added > 0 ? `Added ${r.added} picture${r.added === 1 ? "" : "s"} to ${r.asset.name}` : `Nothing new for ${r.asset.name} - already there, or it's full`)
+            }}
+            onCreate={async (kind, name) => {
+              const a = await feedAssetsApi.create({ kind, name, imageIds: Array.from(selectedImageIds) })
+              setFeedAssetPickOpen(false)
+              setFeedAssetNote(`Made ${a.name} with ${a.refs.length} picture${a.refs.length === 1 ? "" : "s"}`)
+            }}
+            onClose={() => setFeedAssetPickOpen(false)}
+          />
+        </div>,
+        document.body,
       )}
 
       {/* Admin only: news & notifications manager (same editor as /admin/news) */}
@@ -30953,7 +31281,7 @@ function employeePending(
       {chatMediaItem && (
         <RefImageEditorModal
           image={{ id: `chat-media:${chatMediaItem.imageUrl}`, url: chatMediaItem.imageUrl }}
-          canUseLayers={hasEffectiveDevAccess}
+          canUseLayers
           layerStack={chatMediaLayers}
           onLayerStackChange={(st) => setChatMediaLayers(st)}
           onApply={(newUrl) => {
@@ -30970,7 +31298,7 @@ function employeePending(
       {editingRef && (
         <RefImageEditorModal
           image={editingRef}
-          canUseLayers={hasEffectiveDevAccess}
+          canUseLayers
           onApply={(newUrl) => {
             void handleEditRef(editingRef.id, newUrl)
             setEditingRef(null)
@@ -30984,7 +31312,7 @@ function employeePending(
         <FrameExtractorModal
           onClose={() => setFramesOpen(false)}
           onAddRefs={(files) => addRefsToAccount(files, null, {})}
-          canUseLayers={hasEffectiveDevAccess}
+          canUseLayers
         />
       )}
 
@@ -30993,7 +31321,7 @@ function employeePending(
       {genEditCanvas && (
         <RefImageEditorModal
           image={genEditCanvas.ref}
-          canUseLayers={hasEffectiveDevAccess}
+          canUseLayers
           layerStack={genEditCanvas.stack}
           onLayerStackChange={(st) => {
             if (/^\d+$/.test(genEditCanvas.ref.id)) handleSaveRefLayers(genEditCanvas.ref.id, st)
@@ -31043,21 +31371,6 @@ function employeePending(
         </div>
       )}
 
-      {/* Admin only: shared Add to Bucket modal (same one as /admin/dataset) */}
-      {addToBucketOpen && isAdminAccount && (
-        <AddToBucketModal
-          count={selectedImageIds.size}
-          buckets={datasetBuckets}
-          folders={datasetFolders}
-          recentBucketIds={recentBucketIds}
-          loading={bucketsLoading}
-          error={bucketLoadError}
-          onClose={() => setAddToBucketOpen(false)}
-          onAdd={handleAddToBucket}
-          onCreateAndAdd={handleCreateAndAddToBucket}
-        />
-      )}
-
       {scannerMode === "employees" ? (
         // Fixed to the viewport, like the chat branch. Unconstrained, the two
         // feeds grew the PAGE as they loaded, so the window scrollbar appeared
@@ -31077,7 +31390,6 @@ function employeePending(
               onLogoChange={setSiteLogoUrl}
               onGoHome={() => { setActiveEmployee(null); setScannerMode("home") }}
               onGoFeed={() => { setActiveEmployee(null); setScannerMode("image") }}
-              onGoChat={() => { setActiveEmployee(null); setScannerMode("chat") }}
               size={22}
             />
           }
@@ -31131,7 +31443,7 @@ function employeePending(
             <ImageStudio
               signedIn={user !== null}
               isAdmin={isAdminAccount}
-              canUseLayers={hasEffectiveDevAccess}
+              canUseLayers
               refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
               onSaveToRefs={async file => { await addRefsToAccount([file], null) }}
               onReplaceRef={(refId, dataUrl) => handleEditRef(refId, dataUrl)}
@@ -31177,7 +31489,6 @@ function employeePending(
           audioGroups={AUDIO_MODEL_GROUPS}
           audioCostByName={AUDIO_MODEL_COST_BY_NAME}
           onSelectAudioModel={handleSelectAudioModel}
-          onGoChat={() => setScannerMode("chat")}
           onGoEmployee={(id) => { setActiveEmployee(id); setScannerMode("employees") }}
           onGoThreeD={() => { setActiveEmployee("3d-studio"); setScannerMode("employees") }}
           onOpenFrames={() => setFramesOpen(true)}
@@ -31244,7 +31555,7 @@ function employeePending(
               onDeactivateRef={handleDeactivateRef}
               onEditRef={handleEditRef}
               onSaveLayers={handleSaveRefLayers}
-              canUseLayers={hasEffectiveDevAccess}
+              canUseLayers
               promptOverride={promptOverride}
               fluxOverride={fluxOverride}
             />
@@ -31257,7 +31568,6 @@ function employeePending(
             onSiteLogoChange={setSiteLogoUrl}
             onGoHome={() => setScannerMode("home")}
             onGoFeed={() => setScannerMode("image")}
-            onGoChat={() => setScannerMode("chat")}
             cardMedia={homeCards}
             promptScale={feedPromptScale}
             userId={user?.id ?? null}
@@ -31271,7 +31581,7 @@ function employeePending(
             onDeactivateRef={handleDeactivateRef}
             onReorderRefs={handleReorderActiveRefs}
             onEditRef={handleEditRef}
-            canUseLayers={hasEffectiveDevAccess}
+            canUseLayers
             onSaveLayers={handleSaveRefLayers}
             onLoadPreset={handleLoadPreset}
             onUploadRef={handleUploadRef}
@@ -31622,7 +31932,8 @@ function employeePending(
           onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null); setViewerNav(null) }}
           onDismissFail={handleDismissFail}
           onEditCanvas={handleEditCanvas}
-          editCanvasLocked={!hasEffectiveDevAccess}
+          // Layers are open to every account (2026-10-13) - nothing to unlock
+          editCanvasLocked={false}
           navList={viewerNav ?? imageNavList}
           navIndex={(viewerNav ?? imageNavList).findIndex(img => img.id === selectedImage.id)}
           onNavigate={setSelectedImage}

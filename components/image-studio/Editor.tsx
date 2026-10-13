@@ -351,9 +351,12 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     const d = docRef.current!
     const layers = await Promise.all(d.layers.map(async l => {
       const rt = rts.current.get(l.id)
+      // The pixels as they are NOW: the popup stores the document in the
+      // background after Apply, and the user may already be editing on
+      const pix = rt?.pix, mask = rt?.mask
       const out: StudioLayer = { ...l }
-      if (l.kind === "raster" && rt?.pix) { out.src = await urlFor(rt.pix, "layer"); out.pw = rt.pix.width; out.ph = rt.pix.height }
-      if (l.mask && rt?.mask) out.mask = { ...l.mask, src: await urlFor(rt.mask, "mask"), mw: rt.mask.width, mh: rt.mask.height }
+      if (l.kind === "raster" && pix) { out.src = await urlFor(pix, "layer"); out.pw = pix.width; out.ph = pix.height }
+      if (l.mask && mask) out.mask = { ...l.mask, src: await urlFor(mask, "mask"), mw: mask.width, mh: mask.height }
       return out
     }))
     return { ...d, layers }
@@ -1942,6 +1945,14 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
 
   // ── inline Apply (the popup) ──
   const [confirmClose, setConfirmClose] = useState(false)
+  /*
+   * The history step last applied (2026-10-12). The popup no longer re-opens
+   * itself after Apply (it was slow), so the editor says it worked, Close no
+   * longer asks to discard what was just applied, and Apply again with
+   * nothing new is a no-op (repeat clicks made one saved copy each).
+   */
+  const appliedIdx = useRef(0)
+  const [justApplied, setJustApplied] = useState(false)
   const applyInline = async () => {
     const d = docRef.current
     if (!d || !onApply || busy) return
@@ -1951,10 +1962,16 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       if (c && (Math.abs(c.x) > 0.5 || Math.abs(c.y) > 0.5 || Math.abs(c.w - d.width) > 0.5 || Math.abs(c.h - d.height) > 0.5)) applyCrop()
       setToolState("move")
     }
+    if (histIdx.current === appliedIdx.current) { flash(appliedIdx.current > 0 ? "Already applied - nothing new to apply" : "No edits to apply yet"); return }
     setBusy("apply")
     try {
       await new Promise(r => requestAnimationFrame(r))
+      const at = histIdx.current
       await onApply(flatten(docRef.current!, rts.current, true), serialize)
+      appliedIdx.current = at
+      setJustApplied(true)
+      setTimeout(() => setJustApplied(false), 2500)
+      flash("Applied")
     } catch (e: any) {
       flash(String(e?.message || e || "Could not apply"), true)
     } finally {
@@ -2253,7 +2270,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
             <button
               onClick={() => {
                 // Edits would be lost: a second click within 3 seconds confirms
-                if (histIdx.current > 0 && !confirmClose) { setConfirmClose(true); setTimeout(() => setConfirmClose(false), 3000); return }
+                if (histIdx.current !== appliedIdx.current && !confirmClose) { setConfirmClose(true); setTimeout(() => setConfirmClose(false), 3000); return }
                 onExit()
               }}
               title="Close without applying"
@@ -2301,7 +2318,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
           {extraActions}
           {inline && onApply && (
             <BrandButton primary size="sm" busy={busy === "apply"} disabled={!!busy || !!aiBusy} onClick={() => void applyInline()} title="Save the edit (Enter in no text box)">
-              Apply
+              {justApplied ? "Applied ✓" : "Apply"}
             </BrandButton>
           )}
           <IconBtn title="Show / hide the panels" onClick={() => setPanelOpen(o => !o)}><PanelRight size={14} /></IconBtn>

@@ -5,7 +5,7 @@ import { devTierWhere } from '@/lib/dev-tier'
 // Max ACTIVE (non-cleared) reference-library images per account.
 // Cleared refs don't count — they're soft-deleted (kept for admin review).
 export const REF_LIMIT_FREE = 50
-export const REF_LIMIT_DEV = 250
+export const REF_LIMIT_DEV = 500 // 2026-10-13 (was 250)
 export const REF_LIMIT_ADMIN = 1000
 
 export async function getUserRefLimit(userId: number, email: string): Promise<number> {

@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { createPortal } from "react-dom"
 import { assetCaptionTickets } from "@/lib/ai-text-pricing"
+import { assetPicturesTickets, assetViewPlan, isPersonKind, isPlaceKind } from "@/lib/storyboard"
 import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
@@ -82,7 +83,26 @@ export type RefCap = {
  * draft decides which assets each shot shows and sends their photos with
  * that still (a shot's References, in its Details, is where to change it).
  */
-export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
+/**
+ * Cast & sets (2026-10-11): make an asset's reference pictures from its
+ * description (route asset-pictures). Returns the new pictures, or the error.
+ */
+export async function requestAssetPictures(boardId: number, a: StoryAsset, o: { outfitViews?: number; another?: boolean } = {}): Promise<{ refs?: { id: string; url: string; caption?: string; tags?: string[] }[]; tickets?: number; balance?: number; error?: string; needTickets?: boolean }> {
+  const r = await fetch(`/api/employees/storyboards/${boardId}/asset-pictures`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assetId: a.id, outfitViews: o.outfitViews, another: o.another, asset: a }),
+  }).catch(() => null)
+  const j = r ? await r.json().catch(() => ({})) : {}
+  if (!r?.ok) return { error: j.error || `Could not make the pictures (${r?.status ?? "network"})`, needTickets: !!j.needTickets }
+  return j
+}
+/** Whether an asset kind can get "another angle" (an edit of its first picture). */
+export const canAddAngle = (k: string) => isPlaceKind(k) || k === "object" || k === "vehicle"
+
+export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId, boardAspect }: {
+  /** the board (Cast & sets pictures are made on it) */
+  boardId?: number
+  boardAspect?: string
   assets: StoryAsset[]
   onChange: (fn: (a: StoryAsset[]) => StoryAsset[]) => void
   refLibrary: { id: string; url: string }[]
@@ -106,6 +126,24 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
   const [libOpen, setLibOpen] = useState(false)
   const [saving, setSaving] = useState<string | null>(null) // board asset id
   const [describing, setDescribing] = useState<string | null>(null) // board asset id
+  // Cast & sets: pictures being made (asset ids), and an outfit's chosen view count
+  const [picturing, setPicturing] = useState<Record<string, boolean>>({})
+  const [outfitViews, setOutfitViews] = useState<Record<string, number>>({})
+  const suggestedList = assets.filter(a => a.suggested)
+  const priceOf = (a: StoryAsset, another = false) => assetPicturesTickets(a.kind, { outfitViews: outfitViews[a.id] ?? 1, another, boardAspect })
+  /** Make (or add) an asset's pictures; the asset is accepted if it was a suggestion. */
+  const makePictures = async (a: StoryAsset, another = false) => {
+    if (!boardId || picturing[a.id]) return
+    if (!(a.notes || "").trim()) { flash(`Describe ${a.name} first - its pictures are made from the description`); return }
+    const asset = { ...a, suggested: undefined }
+    patch(a.id, () => asset)
+    setPicturing(p => ({ ...p, [a.id]: true }))
+    const j = await requestAssetPictures(boardId, asset, { outfitViews: outfitViews[a.id] ?? 1, another })
+    setPicturing(p => ({ ...p, [a.id]: false }))
+    if (j.error || !j.refs) { flash(j.error || "Could not make the pictures"); return }
+    patch(a.id, x => ({ ...x, suggested: undefined, refs: [...x.refs, ...j.refs!.filter(r => !x.refs.some(y => y.url === r.url)).map(r => ({ id: r.id, url: r.url, active: false, ...(r.caption ? { caption: r.caption } : {}), ...(r.tags?.length ? { tags: r.tags } : {}) }))].slice(0, MAX_ASSET_REFS) }))
+    flash(`${a.name}: ${j.refs.length} picture${j.refs.length === 1 ? "" : "s"} made${j.tickets ? ` · ${j.tickets} tickets` : ""}`)
+  }
 
   const refCount = assets.reduce((n, a) => n + a.refs.length, 0)
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(n => (n === msg ? null : n)), 3500) }
@@ -197,7 +235,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
         title="Assets"
         logo={22}
         size="sm"
-        eyebrow={`${assets.length} asset${assets.length === 1 ? "" : "s"} · ${refCount} reference${refCount === 1 ? "" : "s"}`}
+        eyebrow={`${assets.length - suggestedList.length} asset${assets.length - suggestedList.length === 1 ? "" : "s"} · ${refCount} reference${refCount === 1 ? "" : "s"}`}
       />
       <p className="text-[10px] text-slate-600 leading-snug">
         Characters, vehicles, props, places, outfits - each a set of reference photos. The AI draft picks which ones go
@@ -205,11 +243,61 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
       </p>
       {notice && <p className="text-[10.5px] text-amber-300 leading-snug">{notice}</p>}
 
+      {/* Cast & sets: what the AI draft says the board relies on, not made yet */}
+      {suggestedList.length > 0 && (
+        <div className="rounded-xl border border-violet-300/25 bg-violet-500/[0.06] p-2 space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <Sparkles size={12} className="text-violet-200" />
+            <span className="text-[11px] font-bold text-violet-100">Suggested by the draft</span>
+            <span className="text-[9.5px] font-mono text-violet-200/60">{suggestedList.length}</span>
+            <button onClick={() => onChange(list => list.map(x => (x.suggested ? { ...x, suggested: undefined } : x)))}
+              className="ml-auto rounded-md border border-violet-300/30 px-1.5 py-0.5 text-[10px] text-violet-100 hover:bg-violet-500/20">Create all</button>
+            <button onClick={() => onChange(list => list.filter(x => !x.suggested))} title="Dismiss every suggestion" className="text-violet-200/60 hover:text-white"><X size={12} /></button>
+          </div>
+          <p className="text-[9.5px] leading-snug text-violet-100/60">The recurring characters, places and things your plan uses. Create them as assets - and make their pictures, so every still keeps them looking the same.</p>
+          {suggestedList.map(a => {
+            const Icon = ASSET_ICONS[a.kind]
+            const views = assetViewPlan(a.kind, { outfitViews: outfitViews[a.id] ?? 1, boardAspect })
+            return (
+              <div key={a.id} className="rounded-lg border border-white/10 bg-black/25 p-1.5 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Icon size={12} className="shrink-0 text-slate-200" />
+                  <input value={a.name} onChange={e => patch(a.id, x => ({ ...x, name: e.target.value.slice(0, 80) }))}
+                    className="flex-1 min-w-0 bg-transparent text-[11px] font-semibold text-slate-100 focus:outline-none" />
+                  <span className="text-[9px] uppercase tracking-wider text-slate-500 shrink-0">{kindLabel(a.kind)}</span>
+                  <button onClick={() => onChange(list => list.filter(x => x.id !== a.id))} title="Dismiss" className="shrink-0 text-slate-500 hover:text-red-300"><X size={11} /></button>
+                </div>
+                <textarea value={a.notes} onChange={e => patch(a.id, x => ({ ...x, notes: e.target.value.slice(0, 1000) }))} rows={2}
+                  className="w-full resize-none rounded-md border border-white/10 bg-black/30 px-1.5 py-1 text-[10px] leading-snug text-slate-300 focus:border-white/30 focus:outline-none" />
+                <div className="flex flex-wrap items-center gap-1">
+                  {a.kind === "wardrobe" && (
+                    <span className="flex items-center rounded-md border border-white/10 p-0.5 text-[9.5px]">
+                      {[1, 2, 3].map(n => (
+                        <button key={n} onClick={() => setOutfitViews(o => ({ ...o, [a.id]: n }))}
+                          className={`px-1.5 rounded ${(outfitViews[a.id] ?? 1) === n ? "bg-white/15 text-white" : "text-slate-400"}`}>{n}</button>
+                      ))}
+                    </span>
+                  )}
+                  <button onClick={() => patch(a.id, x => ({ ...x, suggested: undefined }))}
+                    className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10">Create</button>
+                  <button onClick={() => void makePictures(a)} disabled={!boardId || !!picturing[a.id]}
+                    title={`Create it and make ${views.length} picture${views.length === 1 ? "" : "s"}: ${views.map(v => v.label).join(", ")}`}
+                    className="flex items-center gap-1 rounded-md border border-violet-300/40 bg-violet-500/20 px-2 py-0.5 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/30 disabled:opacity-50">
+                    {picturing[a.id] ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                    Create + {views.length} picture{views.length === 1 ? "" : "s"}
+                    <span className="inline-flex items-center gap-0.5 font-mono opacity-80"><Ticket size={9} />{priceOf(a)}</span>
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
       {describing && (() => {
         const a = assets.find(x => x.id === describing)
         return a ? <DescribeAsset asset={a} thumb={thumb} onClose={() => setDescribing(null)} onChange={next => patch(a.id, () => next)} /> : null
       })()}
-      {assets.map(a => {
+      {assets.filter(a => !a.suggested).map(a => {
         const Icon = ASSET_ICONS[a.kind]
         const isOpen = open[a.id] ?? true
         return (
@@ -278,6 +366,28 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills }: {
                     </button>
                   )}
                 </div>
+                {boardId && (a.refs.length === 0 || canAddAngle(a.kind)) && a.kind !== "style" && a.kind !== "other" && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    {a.refs.length === 0 && a.kind === "wardrobe" && (
+                      <span className="flex items-center rounded-md border border-white/10 p-0.5 text-[9.5px]" title="How many views of the outfit">
+                        {[1, 2, 3].map(n => (
+                          <button key={n} onClick={() => setOutfitViews(o => ({ ...o, [a.id]: n }))}
+                            className={`px-1.5 rounded ${(outfitViews[a.id] ?? 1) === n ? "bg-white/15 text-white" : "text-slate-400"}`}>{n}</button>
+                        ))}
+                      </span>
+                    )}
+                    <button onClick={() => void makePictures(a, a.refs.length > 0)} disabled={!!picturing[a.id] || a.refs.length >= MAX_ASSET_REFS}
+                      title={a.refs.length === 0
+                        ? `Make ${isPersonKind(a.kind) ? "front, three-quarter and back views" : isPlaceKind(a.kind) ? "a wide view" : a.kind === "wardrobe" ? "the outfit's views" : "a picture"} from the notes below`
+                        : "Another angle - an edit of the first picture, so the place / thing stays the same"}
+                      className="flex items-center gap-1 rounded-md border border-violet-300/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/20 disabled:opacity-50">
+                      {picturing[a.id] ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                      {a.refs.length === 0 ? "Make pictures" : "Another angle"}
+                      <span className="inline-flex items-center gap-0.5 font-mono opacity-80"><Ticket size={9} />{priceOf(a, a.refs.length > 0)}</span>
+                    </button>
+                    {picturing[a.id] && <span className="text-[9.5px] text-slate-500">about a minute…</span>}
+                  </div>
+                )}
                 <input
                   value={a.notes}
                   onChange={e => patch(a.id, x => ({ ...x, notes: e.target.value }))}

@@ -6,6 +6,7 @@ import { uploadToR2, objectExists } from '@/lib/r2'
 import { signMediaUrl } from '@/lib/media-url'
 import sharp from 'sharp'
 import { fetchMedia } from '@/lib/media-fetch'
+import { withDbRetry } from '@/lib/db-retry'
 
 /**
  * A reference's thumbnail — made once, then served by the CDN forever.
@@ -46,16 +47,23 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const token = (await cookies()).get('session')?.value
-  const user = token ? await getUserFromSession(token) : null
+  // A Refs grid asks for dozens of these at once: a momentary database drop
+  // is retried rather than turned into an "Unavailable" tile
+  const user = token ? await withDbRetry(() => getUserFromSession(token), 3, 'ref thumb').catch(() => null) : null
   if (!user) return new NextResponse('Unauthorized', { status: 401, headers: NO_STORE })
 
   const id = parseInt((await params).id, 10)
   if (!Number.isFinite(id)) return new NextResponse('Invalid id', { status: 400, headers: NO_STORE })
 
-  const ref = await prisma.userReference.findFirst({
-    where: { id, userId: user.id },
-    select: { url: true },
-  })
+  let ref: { url: string } | null
+  try {
+    ref = await withDbRetry(() => prisma.userReference.findFirst({
+      where: { id, userId: user.id },
+      select: { url: true },
+    }), 3, 'ref thumb')
+  } catch {
+    return new NextResponse('Busy - try again', { status: 503, headers: NO_STORE })
+  }
   if (!ref) return new NextResponse('Not found', { status: 404, headers: NO_STORE })
 
   // Already made — send the browser to the media Worker with a signed link.
@@ -73,9 +81,22 @@ export async function GET(
     // through and generate, which also repairs a half-written object.
   }
 
+  /*
+   * A reference picked from the user's own generations already has a small
+   * thumbnail (GeneratedImage.thumbnailUrl, 600px webp) - make this one from
+   * THAT (2026-10-12). The originals are often 18MB+ 4K PNGs: downloading one
+   * took 23-52s from the dev machine, past the timeout, and the tile said
+   * "Unavailable".
+   */
+  const gen = await prisma.generatedImage.findFirst({
+    where: { userId: user.id, imageUrl: ref.url, thumbnailUrl: { not: null } },
+    select: { thumbnailUrl: true },
+  }).catch(() => null)
   let source: Response
   try {
-    source = await fetchMedia(ref.url, { signal: AbortSignal.timeout(25_000) })
+    source = gen?.thumbnailUrl
+      ? await fetchMedia(gen.thumbnailUrl, { signal: AbortSignal.timeout(15_000) }).then(r => (r.ok ? r : fetchMedia(ref.url, { signal: AbortSignal.timeout(50_000) })))
+      : await fetchMedia(ref.url, { signal: AbortSignal.timeout(50_000) })
   } catch {
     return new NextResponse('Source unreachable', { status: 502, headers: NO_STORE })
   }
