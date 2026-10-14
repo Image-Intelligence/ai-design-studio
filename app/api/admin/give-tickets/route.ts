@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { notePackTickets } from '@/lib/plan-tickets'
 
 
 
@@ -51,6 +52,9 @@ export async function POST(request: Request) {
         totalBought: { increment: ticketsToAdd },
       },
     })
+
+    // Bonus / pack tickets never expire - keep them out of a running plan's refill bar
+    await notePackTickets(user.id, ticketsToAdd).catch(e => console.error('notePackTickets failed', e))
 
     // Create a record of the free ticket grant
     await prisma.ticketPurchase.create({

@@ -15,6 +15,8 @@ import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Tick
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
 import { AudioStudio } from "@/components/audio/AudioStudio"
+import { RechargeStation, TicketPill, usePlanTickets } from "@/components/tickets/RechargeStation"
+import { packDiscountFor, packPriceAt } from "@/lib/dev-tier-plans"
 import { AUDIO_GROUPS, AUDIO_STUDIO_MODELS, audioCostTier } from "@/lib/audio-studio"
 import { EmployeesView, type EmployeeId } from "@/components/employees/EmployeesView"
 import { ImageStudio } from "@/components/image-studio/ImageStudio"
@@ -4125,7 +4127,7 @@ function FeedDropdown({
     try {
       const headers = adminPasswordHeaders()
       const [dRes, bRes, fRes] = await Promise.all([
-        fetch("/api/admin/dataset?page=1&limit=1", { headers }),
+        fetch("/api/admin/dataset?page=1&limit=1&facets=1", { headers }),
         fetch("/api/admin/buckets", { headers }),
         fetch("/api/admin/folders", { headers }),
       ])
@@ -4468,14 +4470,29 @@ function FeedDropdown({
                                 placeholder="Quality: any"
                                 options={facets.qualities.filter(q => q.value).map(q => ({ value: q.value!, label: `${q.value} (${q.count})` }))}
                               />
-                              <MultiFilterSelect
-                                values={draft.users.map(String)}
-                                onChange={v => setF("users", v.map(Number))}
-                                placeholder="User: any"
-                                searchable
-                                options={facets.users.map(u => ({ value: String(u.id), label: `${u.email} (${u.count})` }))}
-                              />
                             </div>
+                          </div>
+                        )}
+
+                        {/* User - whose generations to show (auditor accounts listed first) */}
+                        {facets && (
+                          <div>
+                            <span className={labelCls}>User</span>
+                            <MultiFilterSelect
+                              values={draft.users.map(String)}
+                              onChange={v => setF("users", v.map(Number))}
+                              placeholder="User: everyone"
+                              searchable
+                              options={facets.users.map(u => ({ value: String(u.id), label: `${u.auditor ? `AUDITOR · ${u.auditor} · ` : ""}${u.email} (${u.count})` }))}
+                            />
+                            {facets.users.some(u => u.auditor) && (
+                              <button
+                                onClick={() => setF("users", facets.users.filter(u => u.auditor).map(u => u.id))}
+                                className="mt-1.5 px-2 py-1 rounded-md border border-amber-500/30 bg-amber-500/10 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors"
+                              >
+                                Auditor accounts only
+                              </button>
+                            )}
                           </div>
                         )}
 
@@ -4710,7 +4727,7 @@ interface AdminFeedFacets {
   aspects:   { value: string; count: number }[]
   qualities: { value: string | null; count: number }[]
   tags:      { value: string; count: number }[]
-  users:     { id: number; email: string; name: string | null; count: number }[]
+  users:     { id: number; email: string; name: string | null; count: number; auditor?: string }[]
 }
 
 // Multi-select filter dropdown — same control as /admin/dataset's filter bar
@@ -4871,7 +4888,7 @@ function AdminFeedFilterPanel({ initial, onApply, onClose }: {
     try {
       const headers = adminPasswordHeaders()
       const [dRes, bRes, fRes] = await Promise.all([
-        fetch("/api/admin/dataset?page=1&limit=1", { headers }),
+        fetch("/api/admin/dataset?page=1&limit=1&facets=1", { headers }),
         fetch("/api/admin/buckets", { headers }),
         fetch("/api/admin/folders", { headers }),
       ])
@@ -5798,6 +5815,8 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                   <span className="text-white tabular-nums tracking-wider">{user.ticketBalance.toLocaleString()}</span>
                 </span>
               </div>
+              {/* Plan accounts: the recharge station (renders nothing without a plan) */}
+              <RechargeStation balance={user.ticketBalance} className="mx-3 my-2" />
 
               {/* Go to - the logo menu's navigation, plus My Generations */}
               <div className="border-b border-white/[0.06] py-1">
@@ -23954,6 +23973,7 @@ function VideoFeed({
   onDismissFail,
   tileBorders = false,
   modelFilter = null,
+  adminFilters = null,
 }: {
   pendingSlots: VideoPendingSlot[]
   items: VideoItem[]
@@ -23975,7 +23995,13 @@ function VideoFeed({
   tileBorders?: false | "slim" | "fill" | "smart"
   // Feed dropdown's per-model filter: explicit DB model ids, or null for all
   modelFilter?: string[] | null
+  // Admin feed filters (Feed dropdown) - same API and params as the image
+  // feed, so picking a user shows THEIR clips here too
+  adminFilters?: AdminFeedFilters | null
 }) {
+  // Admin-filtered and hidden views show exactly what the API returns: no
+  // session tiles, pending slots or saved fails woven in
+  const curated = showHidden || !!adminFilters
   // Pull the same historical feed as the image scanner — with infinite scroll
   // Stable identity for the model filter so effects don't churn on re-render
   const modelFilterKey = (modelFilter ?? []).join(",")
@@ -24025,11 +24051,19 @@ function VideoFeed({
     setDbLoading(true)
     const epoch = videoEpochRef.current
     try {
-      const c = videoCursorRef.current
-      const cursorQs = c ? `&before=${encodeURIComponent(c.before)}&beforeId=${c.beforeId}` : ""
-      const modelQs = modelFilter && modelFilter.length > 0 ? `&models=${encodeURIComponent(modelFilter.join(","))}` : ""
-      const res = await fetch(`/api/my-images?limit=${videoPagLimitRef.current}&type=video&cursor=1${showHidden ? "&hidden=true" : ""}${cursorQs}${modelQs}`)
-      if (!res.ok) return
+      let res: Response
+      if (adminFilters) {
+        // Admin feed filters - the dataset API, page-based, clips only
+        const params = buildAdminFeedParams(adminFilters, videoPageRef.current, videoPagLimitRef.current)
+        params.set("mediaType", "video")
+        res = await fetch(`/api/admin/dataset?${params}`, { headers: adminPasswordHeaders() })
+      } else {
+        const c = videoCursorRef.current
+        const cursorQs = c ? `&before=${encodeURIComponent(c.before)}&beforeId=${c.beforeId}` : ""
+        const modelQs = modelFilter && modelFilter.length > 0 ? `&models=${encodeURIComponent(modelFilter.join(","))}` : ""
+        res = await fetch(`/api/my-images?limit=${videoPagLimitRef.current}&type=video&cursor=1${showHidden ? "&hidden=true" : ""}${cursorQs}${modelQs}`)
+      }
+      if (!res.ok) { if (adminFilters) videoHasMoreRef.current = false; return }
       const data = await res.json()
       if (!data.images) return
       if (epoch !== videoEpochRef.current) return
@@ -24038,15 +24072,20 @@ function VideoFeed({
         const newItems = (data.images as any[]).filter(img => !existingIds.has(img.id))
         return [...prev, ...newItems]
       })
-      videoHasMoreRef.current = !!data.hasMore
-      if (data.nextCursor) videoCursorRef.current = data.nextCursor
+      if (adminFilters) {
+        videoHasMoreRef.current = videoPageRef.current < (data.pagination?.totalPages ?? 0)
+        videoPageRef.current += 1
+      } else {
+        videoHasMoreRef.current = !!data.hasMore
+        if (data.nextCursor) videoCursorRef.current = data.nextCursor
+      }
     } finally {
       if (epoch === videoEpochRef.current) {
         videoLoadingRef.current = false
         setDbLoading(false)
       }
     }
-  }, [showHidden, modelFilterKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showHidden, modelFilterKey, adminFilters]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Initial load + full reset when the hidden toggle changes
   useEffect(() => {
@@ -24141,8 +24180,8 @@ function VideoFeed({
         failKey: f.failKey,
       }))
     // Hidden view: only the API results — session items are never hidden
-    onNavListChange(showHidden ? dbList : [...sessionList, ...dbList, ...failsList])
-  }, [items, dbImages, savedFails, onNavListChange, showHidden])
+    onNavListChange(curated ? dbList : [...sessionList, ...dbList, ...failsList])
+  }, [items, dbImages, savedFails, onNavListChange, curated])
 
   // IDs already shown as session items — skip them in the DB section.
   // Session VideoItem.id is a FAL request ID string, which never matches a numeric
@@ -24172,7 +24211,7 @@ function VideoFeed({
     return `/api/images/${img.id}?thumb=1`
   }
 
-  const hasContent = showHidden
+  const hasContent = curated
     ? dbImages.length > 0 || dbLoading || videoHasMoreRef.current
     : pendingSlots.length > 0 || items.length > 0 || dbImages.length > 0 || savedFails.length > 0 || dbLoading || videoHasMoreRef.current
 
@@ -24180,7 +24219,7 @@ function VideoFeed({
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-700">
         <Video size={28} strokeWidth={1.5} />
-        <p className="text-sm">{showHidden ? "No hidden videos" : "Generated videos will appear here"}</p>
+        <p className="text-sm">{adminFilters ? "No videos match these filters" : showHidden ? "No hidden videos" : "Generated videos will appear here"}</p>
       </div>
     )
   }
@@ -24205,7 +24244,7 @@ function VideoFeed({
   const nodes: { weight: number; node: ReactNode }[] = []
   const vRowsMode = fullSize && fullSizeLayout === "masonry" && masonryMode === "rows"
 
-  if (!showHidden) {
+  if (!curated) {
     // Loading / queued slots (hidden view shows only DB results)
     // The image feed's branded tile (2026-10-08 - was an orange spinner), in the
     // frame the finished video will have: its shape when it is already known
@@ -24299,7 +24338,7 @@ function VideoFeed({
   const videoFailFrontier = videoHasMoreRef.current && dbImages.length > 0
     ? Math.min(...dbImages.map(i => (i.createdAt ? new Date(i.createdAt).getTime() : 0)))
     : videoHasMoreRef.current ? Infinity : -Infinity
-  const bodyFails = showHidden ? [] : savedFails.filter(f =>
+  const bodyFails = curated ? [] : savedFails.filter(f =>
     !bodyLiveFailIds.has(f.id) && (f.createdAt ? new Date(f.createdAt).getTime() : 0) >= videoFailFrontier)
   const bodyEntries: ({ t: number; kind: "db"; img: ImageItem } | { t: number; kind: "fail"; fail: VideoItem })[] = [
     ...dbImages.filter(img => !sessionDbIds.has(img.id)).map(img => ({ t: img.createdAt ? new Date(img.createdAt).getTime() : 0, kind: "db" as const, img })),
@@ -24455,7 +24494,7 @@ function VideoFeed({
     }
     // Persist the strip layout (dbId + column, in visual order) — session tiles
     // map through their dbId; spinners (no dbId yet) are transient and skipped
-    if (!showHidden) {
+    if (!curated) {
       try {
         const keyToDbId = new Map(items.filter(i => i.dbId !== undefined && !i.failed).map(i => [i.id, i.dbId!]))
         const next: Array<{ id: number; col: number }> = []
@@ -25784,7 +25823,10 @@ function ShopDropdown({
     onToggle()
   }
 
-  const packPrice = (p: (typeof TICKET_PACKAGES)[number]) => (isDevTier ? p.devTierPrice : p.freeTierPrice)
+  // The pack discount is per plan - Creator 10%, Pro 15%, Max 20% (lib/dev-tier-plans)
+  const { data: planTickets } = usePlanTickets(user?.ticketBalance)
+  const packPct = isDevTier ? (planTickets?.packDiscountPct || packDiscountFor(planTickets?.planId)) : 0
+  const packPrice = (p: (typeof TICKET_PACKAGES)[number]) => (packPct ? packPriceAt(p.freeTierPrice, packPct) : p.freeTierPrice)
   const bestRate = Math.min(...TICKET_PACKAGES.map(p => packPrice(p) / p.tickets))
   const minPlan = Math.min(...CCBILL_PLANS.map(p => p.price))
 
@@ -25838,6 +25880,7 @@ function ShopDropdown({
 
           {/* ── Tickets ── */}
           <div className="p-3 space-y-2">
+            {user && <RechargeStation balance={user.ticketBalance} />}
             <ShopBanner
               video={SHOP_MENU_MEDIA.ticketsVideo}
               poster={SHOP_MENU_MEDIA.ticketsPoster}
@@ -25885,7 +25928,7 @@ function ShopDropdown({
                   animate={effectsEnabled}
                   eyebrow={<span className="text-emerald-300">Dev Tier · active</span>}
                   title="You're on Dev Tier"
-                  sub={<>20% off every pack, 8 generations at once</>}
+                  sub={<>{packPct}% off every pack, 8 generations at once</>}
                   cta="Manage"
                   onClick={() => handleNav("/subscriptions")}
                 />
@@ -25923,7 +25966,7 @@ function ShopDropdown({
                   ))}
                 </div>
                 <div className="flex flex-wrap gap-x-3 gap-y-1 px-0.5">
-                  {["20% off every pack", "8 generations at once", "500 reference slots"].map(t => (
+                  {["Up to 20% off every pack", "8 generations at once", "500 reference slots"].map(t => (
                     <span key={t} className="inline-flex items-center gap-1 text-[10px] text-slate-400">
                       <Check size={9} className="text-white" />{t}
                     </span>
@@ -26428,6 +26471,14 @@ export default function PortalV2Page() {
   // configuration survives refresh AND follows the account across devices.
   const [adminFeedFilters, setAdminFeedFilters] = useState<AdminFeedFilters | null>(null)
   const adminFeedFilterCount = countActiveAdminFeedFilters(adminFeedFilters)
+  // The audio feed's copy of the admin filters: the dataset query without
+  // page/limit (it pages itself), rebuilt only when the filters change
+  const audioAdminFeed = useMemo(() => {
+    if (!isAdminAccount || !adminFeedFilters) return null
+    const p = buildAdminFeedParams(adminFeedFilters, 1, 24)
+    p.delete("page"); p.delete("limit"); p.delete("mediaType")
+    return { query: p.toString(), headers: adminPasswordHeaders() }
+  }, [isAdminAccount, adminFeedFilters])
   const adminFiltersRestoredRef = useRef(false)
 
   // Restore saved filters once the account is known to be admin
@@ -30974,10 +31025,8 @@ function employeePending(
             <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 bg-black font-mono text-[10px]" style={{ boxShadow: "0 0 8px rgba(255,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
-              <Ticket size={10} className="text-slate-400" />
-              <span className="text-white tabular-nums">{user ? user.ticketBalance.toLocaleString() : "---"}</span>
-            </div>
+            {/* Plan accounts: the silver recharge ring; tap for the station */}
+            <TicketPill balance={user?.ticketBalance} iconSize={10} className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 bg-black font-mono text-[10px]" textClassName="text-white tabular-nums" />
             <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
             <Link
               href="/dashboard"
@@ -31197,12 +31246,8 @@ function employeePending(
               <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
               <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
             </div>
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" style={{ boxShadow: "0 0 8px rgba(255,255,255,0.06), inset 0 0 12px rgba(0,0,0,0.6)" }}>
-              <Ticket size={11} className="text-slate-400" />
-              <span className="text-white tabular-nums tracking-wider">
-                {user ? user.ticketBalance.toLocaleString() : "---"}
-              </span>
-            </div>
+            {/* Plan accounts: the silver recharge ring; click for the station */}
+            <TicketPill balance={user?.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" textClassName="text-white tabular-nums tracking-wider" />
             <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
             <Link
               href="/dashboard"
@@ -31620,6 +31665,7 @@ function employeePending(
             isAdmin={isAdminAccount}
             ticketBalance={user.ticketBalance}
             onTicketsSpent={n => setUser(prev => prev ? { ...prev, ticketBalance: prev.ticketBalance - n } : prev)}
+            adminFeed={audioAdminFeed}
           />
         ) : (
           /* Signed out: the same prompt the image and video views show */
@@ -31746,6 +31792,7 @@ function employeePending(
               onNavListChange={setVideoNavList}
               cols={feedVideoCols}
               showHidden={feedShowHidden}
+              adminFilters={isAdminAccount ? adminFeedFilters : null}
               fullSize={feedFullSize}
               fullSizeLayout={feedFullSizeLayout}
               masonryMode={feedMasonryMode}

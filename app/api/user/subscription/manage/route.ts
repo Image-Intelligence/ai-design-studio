@@ -7,6 +7,8 @@ import {
   ccbillDatalinkConfigured, ccbillCancelSubscription, CCBILL_SUPPORT_URL, type CcbillPlan, type CcbillPlanId,
 } from '@/lib/ccbill'
 import { findDevTierSubscription, DEV_TIER_PERKS } from '@/lib/dev-tier'
+import { packDiscountFor } from '@/lib/dev-tier-plans'
+import { adminPlanOf, setAdminPlan } from '@/lib/plan-tickets'
 import { ENHANCE_LIMITS } from '@/lib/prompt-enhance'
 import { checkIsAdmin } from '@/lib/admin-check'
 
@@ -83,7 +85,8 @@ export async function GET() {
   const isAdmin = !!u.email && await checkIsAdmin(u.email)
   let current = null
   if (isAdmin) {
-    const max = getCcbillPlan('max')!
+    // Max unless the admin picked another plan here (nothing is billed)
+    const max = await adminPlanOf(u.id)
     current = {
       id: sub?.id ?? 0,
       kind: 'manual' as Kind,
@@ -100,7 +103,7 @@ export async function GET() {
       cancelRequestedAt: null,
       scheduledPlanId: null,
       // Admins are unmetered (lib/prompt-enhance); the page shows Max's figure
-      enhancePerDay: ENHANCE_LIMITS.max,
+      enhancePerDay: ENHANCE_LIMITS[max.id],
     }
   } else if (sub) {
     const meta = metaOf(sub.metadata)
@@ -133,7 +136,8 @@ export async function GET() {
     cancelFromHere: ccbillDatalinkConfigured(),
     supportUrl: CCBILL_SUPPORT_URL,
     plans: CCBILL_PLANS.map(p => ({ ...p, enhancePerDay: ENHANCE_LIMITS[p.id] })),
-    perks: DEV_TIER_PERKS,
+    // The pack discount is per plan (10 / 15 / 20%): the account's own, or Max's for admins and visitors
+    perks: { ...DEV_TIER_PERKS, packDiscountPct: current ? packDiscountFor(current.planId) : DEV_TIER_PERKS.packDiscountPct },
     enhanceFree: ENHANCE_LIMITS.free,
     current,
     endedScheduledPlanId: endedScheduled,
@@ -150,8 +154,13 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({})) as { action?: string; planId?: string; reason?: string; note?: string }
   const sub = await findDevTierSubscription(u.id)
   const bad = (error: string, status = 400) => jsonPrivate({ error }, { status })
-  // Admin accounts are always on Max (see GET) - nothing here applies to them
-  if (u.email && await checkIsAdmin(u.email)) return bad('Admin accounts are always on Max - there is nothing to change.')
+  // Admin accounts pick any plan instantly - no checkout, nothing billed (see GET)
+  if (u.email && await checkIsAdmin(u.email)) {
+    const plan = body.action === 'change' ? getCcbillPlan(body.planId) : null
+    if (!plan) return bad('Admin accounts can only switch plans - there is no billing to cancel or resume.')
+    await setAdminPlan(u.id, plan.id)
+    return jsonPrivate({ ok: true, adminPlanId: plan.id })
+  }
 
   // ── change plan ──
   if (body.action === 'change') {

@@ -17,7 +17,7 @@ export default function RefundPage() {
         <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Refund Policy
         </h1>
-        <p className="text-center text-sm text-slate-500 mb-2">Last Updated: October 13, 2026 | Version 2.0</p>
+        <p className="text-center text-sm text-slate-500 mb-2">Last Updated: October 13, 2026 | Version 2.1</p>
         <p className="text-center text-sm text-slate-500 mb-8">Prompt &amp; Protocol LLC — AI Design Studio</p>
 
         <div className="space-y-8 text-slate-300">
@@ -80,7 +80,7 @@ export default function RefundPage() {
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Partial billing periods (if you cancel mid-cycle, your access continues until the end of the paid period — no prorated refund is issued)</li>
               <li>Billing cycles where you did not actively use the Service</li>
-              <li>Tickets credited by a billing cycle that you have not used yet (they stay in your balance - tickets do not expire)</li>
+              <li>Plan tickets left unused at a renewal (each renewal refills your plan tickets back up to the plan&apos;s monthly bar; unused plan tickets do not accumulate) or when a subscription ends</li>
               <li>Automatic renewal charges — it is your responsibility to cancel before the renewal date</li>
               <li>Charges for billing cycles during which the Service experienced partial downtime due to third-party provider issues</li>
             </ul>
@@ -88,7 +88,7 @@ export default function RefundPage() {
             <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">3.1 How to Cancel Your Subscription</h3>
             <p className="mb-4">
               You may cancel your subscription at any time through your account settings. Cancellation stops future billing immediately.
-              Your plan&apos;s benefits remain active through the end of the current paid period, and your ticket balance stays in your account afterwards (tickets do not expire).
+              Your plan&apos;s benefits and plan tickets remain active through the end of the current paid period. After that, unused plan tickets end; tickets you bought in packs stay in your account and never expire.
               Cancellation does not trigger a refund of any amount already charged.
             </p>
             <p className="mb-4">

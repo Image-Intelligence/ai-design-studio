@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SilverRim, LoopVideo, ShopHeader, ShopBackdrop, ShopFooter, SHOP_MEDIA } from '@/components/shop/ShopKit';
+import { RechargeStation, refreshPlanTickets } from '@/components/tickets/RechargeStation';
 
 const HERO_POSTER = `${SHOP_MEDIA}/sub/manage-hero-7a0de64f-211b-4a1e-a54a-10d9a08cbc05.webp`;
 const HERO_VIDEO = `${SHOP_MEDIA}/sub/manage-loop-7bdb07a7-4514-47fb-ad05-4155a8c37941.mp4`;
@@ -25,7 +26,7 @@ const PLAN_ART: Record<string, string> = {
   max: `${SHOP_MEDIA}/sub/max-5bbe0716-dff8-4551-899b-7d53762eefa6.webp`,
 };
 
-type Plan = { id: string; name: string; price: number; tickets: number; periodDays: number; enhancePerDay: number };
+type Plan = { id: string; name: string; price: number; tickets: number; periodDays: number; enhancePerDay: number; packDiscountPct: number };
 type Current = {
   id: number; kind: 'ccbill' | 'manual'; planId: string; planName: string; price: number; ticketsPerCycle: number;
   status: string; renewing: boolean; startDate: string; nextBillingDate: string | null; endDate: string | null;
@@ -74,6 +75,7 @@ export default function ManageSubscriptionPage() {
       if (!r.ok) { setNotice({ tone: 'warn', text: j.error || 'Something went wrong', ...(j.supportUrl ? { link: { href: j.supportUrl, label: 'Open CCBill support' } } : {}) }); return j; }
       if (j.checkoutUrl) { window.location.href = j.checkoutUrl; return j; }
       await load();
+      void refreshPlanTickets();
       return j;
     } finally { setBusy(null); }
   };
@@ -100,7 +102,7 @@ export default function ManageSubscriptionPage() {
   const statusLine = !cur
     ? (data.endedScheduledPlanId ? `Your plan ended ${day(data.lastEndedAt)}.` : "You don't have a plan right now.")
     : data.admin
-      ? 'Admin account · Max is included automatically · no billing'
+      ? `Admin account · on ${cur.planName} · switch to any plan below, nothing is billed`
       : cur.kind === 'manual'
       ? (cur.endDate ? `Granted by an admin · ends ${day(cur.endDate)}` : 'Granted by an admin · no billing')
       : cur.status === 'cancelled'
@@ -168,11 +170,13 @@ export default function ManageSubscriptionPage() {
       {/* Only with a plan - otherwise four dashes say nothing */}
       {cur && <section className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Stat icon={<CreditCard size={14} />} label="Price" value={cur ? (cur.kind === 'manual' ? 'Complimentary' : `${money(cur.price)}/mo`) : '—'} />
-        <Stat icon={<Sparkles size={14} />} label="Tickets each month" value={cur ? cur.ticketsPerCycle.toLocaleString() : '—'} />
+        <Stat icon={<Sparkles size={14} />} label="Monthly ticket bar" value={cur ? cur.ticketsPerCycle.toLocaleString() : '—'} />
         <Stat icon={<CalendarClock size={14} />} label={cur?.renewing ? 'Next renewal' : 'Plan ends'}
           value={!cur ? '—' : cur.renewing ? day(cur.nextBillingDate) : cur.endDate ? day(cur.endDate) : cur.kind === 'manual' ? 'No end date' : day(cur.nextBillingDate)} />
         <Stat icon={<Ticket size={14} />} label="Ticket balance" value={data.balance.toLocaleString()} />
       </section>}
+      {/* The silver recharge station: plan tickets left of the monthly bar (renders nothing for manual grants) */}
+      {cur && (cur.kind === 'ccbill' || data.admin) && <RechargeStation balance={data.balance} className="mt-3 max-w-md" />}
 
       {/* ── What the plan unlocks ── */}
       <section className="mt-6 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 sm:p-6">
@@ -183,8 +187,8 @@ export default function ManageSubscriptionPage() {
           <Perk icon={<Zap size={15} />} title={`${data.perks.concurrency.dev} generations at once`} sub={`Free accounts run ${data.perks.concurrency.free}`} />
           <Perk icon={<Images size={15} />} title={`${data.perks.refLibrary.dev}-picture reference library`} sub={`Free accounts keep ${data.perks.refLibrary.free}`} />
           <Perk icon={<Sparkles size={15} />} title={`${cur?.enhancePerDay ?? '25-200'} free AI actions a day`} sub={`Storyboard drafts & edits, captions, enhance - free accounts get ${data.enhanceFree}, then tickets`} />
-          <Perk icon={<CalendarClock size={15} />} title="Tickets never expire" sub="Unused tickets roll over, month after month" />
-          <Perk icon={<Gauge size={15} />} title={`${(cur?.ticketsPerCycle ?? curPlan?.tickets ?? 250).toLocaleString()} tickets every month`} sub="Credited with each payment" />
+          <Perk icon={<CalendarClock size={15} />} title="Refills every month" sub="Each renewal tops your plan tickets back up to the full bar - pack tickets never expire" />
+          <Perk icon={<Gauge size={15} />} title={`${(cur?.ticketsPerCycle ?? curPlan?.tickets ?? 250).toLocaleString()}-ticket monthly bar`} sub="Used tickets come back with each payment" />
         </div>
       </section>
 
@@ -193,7 +197,7 @@ export default function ManageSubscriptionPage() {
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
             <h2 className="text-xl font-bold text-white">{cur ? 'Change plan' : 'Choose a plan'}</h2>
-            <p className="text-[12px] text-slate-500">Every plan has the same perks - bigger plans add tickets (a little cheaper each) and free AI actions.</p>
+            <p className="text-[12px] text-slate-500">Bigger plans bring a bigger monthly ticket bar (a little cheaper per ticket), a bigger pack discount and more free AI actions.</p>
           </div>
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-3">
@@ -216,7 +220,8 @@ export default function ManageSubscriptionPage() {
                   <p className="text-lg font-bold text-white">{p.name}</p>
                   <p className="mt-0.5"><span className="text-2xl font-black text-white">{money(p.price)}</span><span className="text-[12px] text-slate-500"> /month</span></p>
                   <ul className="mt-3 space-y-1.5 text-[12.5px] text-slate-300">
-                    <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.tickets.toLocaleString()} tickets a month</li>
+                    <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.tickets.toLocaleString()} tickets, refilled monthly</li>
+                    <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.packDiscountPct}% off ticket packs</li>
                     <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />{p.enhancePerDay} free AI actions a day</li>
                     <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />All Dev Tier perks</li>
                   </ul>
@@ -225,13 +230,13 @@ export default function ManageSubscriptionPage() {
                       <div className="w-full rounded-lg border border-white/15 bg-white/[0.04] py-2 text-center text-[13px] font-semibold text-slate-300">Current plan</div>
                     ) : (
                       <button
-                        onClick={() => setConfirmPlan(p)}
-                        disabled={!data.checkoutAvailable || !!busy || scheduled || !!data.admin}
-                        title={data.admin ? 'Admin accounts are always on Max' : undefined}
+                        onClick={() => (data.admin ? act({ action: 'change', planId: p.id }, `plan-${p.id}`) : setConfirmPlan(p))}
+                        disabled={(!data.checkoutAvailable && !data.admin) || !!busy || scheduled}
+                        title={data.admin ? 'Admin account: switches instantly, nothing is billed' : undefined}
                         className={cn('flex w-full items-center justify-center gap-1.5 rounded-lg py-2 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40',
                           dir === 'down' ? 'border border-white/15 bg-white/[0.04] text-slate-200 hover:bg-white/[0.09]' : 'bg-slate-100 text-slate-900 hover:bg-white')}
                       >
-                        {dir === 'up' ? <><ArrowUp size={14} /> Upgrade</> : dir === 'down' ? <><ArrowDown size={14} /> Downgrade</> : <>Choose {p.name}</>}
+                        {data.admin ? <>Switch to {p.name}</> : dir === 'up' ? <><ArrowUp size={14} /> Upgrade</> : dir === 'down' ? <><ArrowDown size={14} /> Downgrade</> : <>Choose {p.name}</>}
                       </button>
                     )}
                   </div>
@@ -320,8 +325,8 @@ export default function ManageSubscriptionPage() {
                     </>
                   ) : (
                     <>
-                      <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />You pay {money(p.price)} at CCBill now and get {p.tickets.toLocaleString()} tickets straight away.</li>
-                      {cur && <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />Your {cur.planName} plan ends as soon as the payment goes through - no double billing. Tickets you already have stay yours.</li>}
+                      <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />You pay {money(p.price)} at CCBill now and your plan tickets are filled up to {p.tickets.toLocaleString()} straight away.</li>
+                      {cur && <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />Your {cur.planName} plan ends as soon as the payment goes through - no double billing. Pack tickets stay yours; unused plan tickets count toward the new bar.</li>}
                       <li className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-400" />Renews monthly - cancel any time from this page.</li>
                     </>
                   )}
@@ -441,7 +446,7 @@ function CancelModal({ cur, reasons, busy, onClose, onConfirm }: { cur: Current;
       <p className="mt-1 text-[13px] leading-relaxed text-slate-400">
         {manual
           ? 'This plan was granted by an admin, so it ends straight away and your account returns to Free.'
-          : `It won't renew. You keep everything - perks and tickets - until ${day(cur.nextBillingDate)}; after that the account returns to Free. Tickets you have never expire.`}
+          : `It won't renew. You keep everything - perks and tickets - until ${day(cur.nextBillingDate)}; after that the account returns to Free and unused plan tickets end. Tickets from packs never expire.`}
       </p>
       {!manual && (
         <>

@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { verifyWebhookSecret, expectedClientAccnum, getCcbillPlan, ccbillCancelSubscription } from '@/lib/ccbill'
+import { startPlanTickets, refillPlanTickets, endPlanTickets } from '@/lib/plan-tickets'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,17 +33,6 @@ async function parseBody(request: Request): Promise<Record<string, string>> {
     }
   } catch {}
   return out
-}
-
-async function creditTickets(userId: number, tickets: number): Promise<{ before: number; after: number }> {
-  const before = (await prisma.ticket.findUnique({ where: { userId }, select: { balance: true } }))?.balance ?? 0
-  const t = await prisma.ticket.upsert({
-    where: { userId },
-    create: { userId, balance: tickets, totalBought: tickets, totalUsed: 0 },
-    update: { balance: { increment: tickets }, totalBought: { increment: tickets } },
-    select: { balance: true },
-  })
-  return { before, after: t.balance }
 }
 
 /**
@@ -125,18 +115,20 @@ export async function POST(request: Request) {
           metadata: { provider: 'ccbill', planId: plan.id, planName: plan.name, ticketsPerCycle: plan.tickets },
         },
       })
-      const bal = await creditTickets(userId, plan.tickets)
-      await recordCharge(created.id, userId, plan.price, plan.tickets, bal, `${plan.name} plan - first month`, transactionId)
-
       /*
        * A plan change (X-replaces = the Subscription it replaces, set by
        * /api/user/subscription/manage). The new plan is paid for, so the old
        * one ends now: its renewal is cancelled at CCBill and it stops granting
-       * anything. Tickets it already credited stay with the account.
+       * anything. Its unused plan tickets count toward the new plan's bar
+       * (the account is filled UP to the new plan, not given it on top);
+       * pack tickets carry over untouched (lib/plan-tickets).
        */
       const replacesId = parseInt(body['X-replaces'] ?? '')
-      if (!isNaN(replacesId)) {
-        const old = await prisma.subscription.findFirst({ where: { id: replacesId, userId } })
+      const old = !isNaN(replacesId) ? await prisma.subscription.findFirst({ where: { id: replacesId, userId } }) : null
+      const fill = await startPlanTickets(created, old)
+      await recordCharge(created.id, userId, plan.price, fill.credited, fill, `${plan.name} plan - first month (filled to ${plan.tickets} tickets)`, transactionId)
+
+      if (old) {
         if (old && old.id !== created.id) {
           let cancelNote: string | null = null
           if (old.ccbillSubscriptionId && old.autoRenew) {
@@ -157,6 +149,8 @@ export async function POST(request: Request) {
               metadata: {
                 ...((old.metadata as Record<string, unknown> | null) ?? {}),
                 replacedBy: created.id,
+                // its plan tickets moved into the new plan's bar - never "end" them again
+                planTicketsOpen: false,
                 ...(cancelNote ? { ccbillCancelPending: cancelNote } : {}),
               },
             },
@@ -180,8 +174,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ received: true })
       }
       const plan = getCcbillPlan((sub.metadata as any)?.planId)
-      const tickets = plan?.tickets
-        ?? (typeof (sub.metadata as any)?.ticketsPerCycle === 'number' ? (sub.metadata as any).ticketsPerCycle : 0)
       const nextBilling = body.renewalDate
         ? new Date(body.renewalDate)
         : plan
@@ -196,10 +188,9 @@ export async function POST(request: Request) {
           ...(transactionId ? { ccbillLastTransactionId: transactionId } : {}),
         },
       })
-      if (tickets > 0) {
-        const bal = await creditTickets(sub.userId, tickets)
-        await recordCharge(sub.id, sub.userId, sub.billingAmount ?? plan?.price ?? 0, tickets, bal, `${plan?.name ?? 'Dev Tier'} plan - renewal`, transactionId)
-      }
+      // Refill to the plan's bar - only what was used comes back (lib/plan-tickets)
+      const fill = await refillPlanTickets(sub)
+      await recordCharge(sub.id, sub.userId, sub.billingAmount ?? plan?.price ?? 0, fill.credited, fill, `${plan?.name ?? 'Dev Tier'} plan - renewal (refilled to ${plan?.tickets ?? 'plan'} tickets)`, transactionId)
       return NextResponse.json({ received: true })
     }
 
@@ -237,6 +228,9 @@ export async function POST(request: Request) {
           endDate: new Date(),
         },
       })
+      // The plan's unused tickets end with it; pack tickets stay (lib/plan-tickets)
+      const ended = await prisma.subscription.findUnique({ where: { ccbillSubscriptionId: subscriptionId }, select: { id: true, userId: true, metadata: true } })
+      if (ended) await endPlanTickets(ended)
       return NextResponse.json({ received: true })
     }
 

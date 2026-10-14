@@ -55,10 +55,11 @@ const MIN_TICKETS = Math.min(...CCBILL_PLANS.map(p => p.tickets));
 const MAX_TICKETS = Math.max(...CCBILL_PLANS.map(p => p.tickets));
 
 // What changes between Free and Dev Tier (and what doesn't). Every plan
-// carries the same Dev Tier benefits; plans differ by tickets per month.
+// carries the core Dev Tier benefits; plans differ by the monthly ticket bar,
+// the pack discount (10 / 15 / 20%) and the free AI actions a day.
 const TIER_COMPARISON: { feature: string; free: string; dev: string; devWins: boolean }[] = [
   { feature: 'Monthly tickets',         free: '—',             dev: `${MIN_TICKETS.toLocaleString()}–${MAX_TICKETS.toLocaleString()} delivered every month`, devWins: true },
-  { feature: 'Ticket packs',            free: 'Standard price', dev: '20% off every pack',                devWins: true },
+  { feature: 'Ticket packs',            free: 'Standard price', dev: '10-20% off every pack',                devWins: true },
   { feature: 'Concurrent generations',  free: '2 at a time',    dev: '8 at a time (6 image + 2 video)',   devWins: true },
   { feature: 'Reference library',       free: '50 slots',       dev: '500 slots',                         devWins: true },
   { feature: 'Free AI actions a day',   free: '5',              dev: '25–200 by plan, then tickets',      devWins: true },
@@ -68,8 +69,8 @@ const TIER_COMPARISON: { feature: string; free: string; dev: string; devWins: bo
 ];
 
 const DEV_TIER_FEATURES = [
-  { icon: CalendarClock, title: 'Tickets on autopilot', text: 'Fresh tickets land every month - and they never expire.' },
-  { icon: Ticket,        title: '20% off every pack',   text: 'Top up any time from the Ticket Dispenser for less.' },
+  { icon: CalendarClock, title: 'Tickets on autopilot', text: 'Your plan refills back up to its full ticket bar every month.' },
+  { icon: Ticket,        title: 'Up to 20% off packs',  text: '10% on Creator, 15% on Pro, 20% on Max - top up any time for less.' },
   { icon: Layers,        title: '4× the capacity',      text: '8 generations at once: 6 image + 2 video.' },
   { icon: BookMarked,    title: '10× the references',   text: '500 reference slots for your characters, places and looks.' },
   { icon: Sparkles,      title: 'Free AI actions',      text: 'Storyboard drafts and edits, captions and prompt enhance - 25 to 200 free a day.' },
@@ -78,15 +79,15 @@ const DEV_TIER_FEATURES = [
 const FAQ = [
   {
     q: 'Which plan should I pick?',
-    a: 'Every plan has the same Dev Tier benefits - bigger plans bring more tickets each month (a little cheaper per ticket) and more free AI actions a day. Pick the one closest to what you use; you can always top up with a pack at 20% off.',
+    a: 'Bigger plans bring a bigger monthly ticket bar (a little cheaper per ticket), a bigger pack discount (10% / 15% / 20%) and more free AI actions a day. Pick the one closest to what you use each month; you can always top up with a discounted pack.',
   },
   {
     q: 'How does billing work?',
-    a: 'Your plan renews automatically every month and your tickets are credited the moment payment clears. Payments are processed securely by CCBill, our authorized payment processor - the charge on your statement will show CCBill’s billing descriptor.',
+    a: 'Your plan renews automatically every month and your plan tickets are refilled to the full bar the moment payment clears. Payments are processed securely by CCBill, our authorized payment processor - the charge on your statement will show CCBill’s billing descriptor.',
   },
   {
     q: 'Can I cancel anytime?',
-    a: 'Yes. Cancel from your account settings (or through CCBill’s support portal) and you keep every benefit until the end of the period you already paid for. Tickets you’ve received are yours and never expire.',
+    a: 'Yes. Cancel from your account settings (or through CCBill’s support portal) and you keep every benefit until the end of the period you already paid for. After that, unused plan tickets end - tickets you bought in packs are yours and never expire.',
   },
   {
     q: 'Can I change plans later?',
@@ -94,7 +95,7 @@ const FAQ = [
   },
   {
     q: 'What happens to unused tickets?',
-    a: 'Nothing - tickets never expire. They stay on your account even if you cancel.',
+    a: 'Plan tickets work like a bar that refills: at each renewal your plan tops you back up to its full amount (use 500 of Max’s 1,350 and you get 500 back), so they don’t pile up month to month, and they end when the plan ends. Tickets from packs never expire and are never touched by a refill.',
   },
   {
     q: 'Is my payment information safe?',
@@ -384,7 +385,7 @@ export default function SubscribePage() {
           <section className="mt-8 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
             <div className="grid grid-cols-3 lg:grid-cols-1 gap-3">
               {[
-                { value: '20%', label: 'off every ticket pack' },
+                { value: '20%', label: 'off every ticket pack on Max' },
                 { value: '8×', label: 'concurrent generations' },
                 { value: '10×', label: 'reference library slots' },
               ].map(({ value, label }) => (
@@ -429,14 +430,14 @@ export default function SubscribePage() {
       <main className="relative z-10 max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-10 pt-5 sm:pt-8 pb-28 lg:pb-16">
         <Hero eyebrow="Development Tier · monthly plans" title="Create on autopilot.">
           <p className="mt-3 sm:mt-4 text-sm sm:text-base text-slate-300 leading-relaxed max-w-xl">
-            Fresh tickets every month, 20% off every pack, four times the generations at once and a ten times
+            Tickets that refill every month, up to 20% off every pack, four times the generations at once and a ten times
             bigger reference library. Cancel anytime.
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
             {[
               { icon: <Crown size={12} />, t: `From ${usd(MIN_PRICE)} a month` },
               { icon: <Ticket size={12} />, t: '$0.08 a ticket on every plan' },
-              { icon: <InfinityIcon size={12} />, t: 'Tickets never expire' },
+              { icon: <InfinityIcon size={12} />, t: 'Refills every month' },
             ].map(c => (
               <span key={c.t} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/10 bg-white/[0.05] text-[11px] sm:text-xs text-slate-200 backdrop-blur">
                 {c.icon} {c.t}
@@ -484,15 +485,15 @@ export default function SubscribePage() {
                 <div className="rounded-xl bg-white/[0.05] border border-white/15 p-3">
                   <div className="flex items-center gap-2">
                     <Zap size={14} className="text-slate-200" />
-                    <span className="text-sm font-bold text-white">{selectedPlan.tickets.toLocaleString()} tickets every month</span>
+                    <span className="text-sm font-bold text-white">{selectedPlan.tickets.toLocaleString()} tickets, refilled every month</span>
                   </div>
                   <p className="text-[11px] text-slate-400 pl-6 mt-0.5">
-                    ${planUsdPerTicket(selectedPlan).toFixed(3)} a ticket · credited every cycle · never expire
+                    ${planUsdPerTicket(selectedPlan).toFixed(3)} a ticket · topped back up to {selectedPlan.tickets.toLocaleString()} each renewal
                   </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] text-slate-400">
-                  {['20% off every pack', '8 generations at once', '500 reference slots', 'Cancel anytime'].map(t => (
+                  {[`${selectedPlan.packDiscountPct}% off every pack`, '8 generations at once', '500 reference slots', 'Cancel anytime'].map(t => (
                     <div key={t} className="flex items-center gap-1.5">
                       <Check size={12} className="text-white shrink-0" />
                       <span>{t}</span>

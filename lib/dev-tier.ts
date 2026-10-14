@@ -28,7 +28,10 @@ export async function findDevTierSubscription(userId: number) {
 
 /** What Dev Tier unlocks, plan by plan where it differs - shown on /subscriptions. */
 export const DEV_TIER_PERKS = {
-  packDiscountPct: 20, // 2026-10-13 (was 10): ~43% margin on the cheapest pack after CCBill
+  // The BEST pack discount (Max). Each plan has its own - 10 / 15 / 20% -
+  // in lib/dev-tier-plans (packDiscountFor); 20% still clears ~43% margin on
+  // the cheapest pack ticket after CCBill's cut.
+  packDiscountPct: 20,
   concurrency: { free: 2, dev: 6 },
   refLibrary: { free: 50, dev: 500 },
 } as const

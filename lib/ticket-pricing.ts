@@ -562,7 +562,9 @@ export interface TicketPackage {
   bestValue?: boolean
 }
 
-// Dev Tier price = 20% off (2026-10-13; was 10%) - lib/dev-tier DEV_TIER_PERKS.packDiscountPct
+// devTierPrice = the BEST Dev Tier price (Max, 20% off). Creator pays 10% off and
+// Pro 15% off - price a pack for an account with lib/dev-tier-plans packPriceAt(
+// freeTierPrice, packDiscountFor(planId)); devTierPrice stays the worst case for margins.
 export const TICKET_PACKAGES: TicketPackage[] = [
   { tickets: 25,  name: 'Single',    freeTierPrice: 5.00, devTierPrice: 4.00  },
   { tickets: 50,  name: 'Spark',     freeTierPrice: 9.00, devTierPrice: 7.20  },

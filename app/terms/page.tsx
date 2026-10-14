@@ -17,7 +17,7 @@ export default function TermsPage() {
         <h1 className="text-center text-lg font-bold text-white uppercase tracking-[0.2em] mb-1">
           Terms of Service
         </h1>
-        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: October 13, 2026 | Version 5.0</p>
+        <p className="text-center text-sm text-slate-500 mb-10">Last Updated: October 13, 2026 | Version 5.1</p>
 
         <div className="space-y-8 text-slate-300">
           <section>
@@ -164,24 +164,26 @@ export default function TermsPage() {
             <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.2 Ticket Packs</h3>
             <p className="mb-4">
               Tickets can be bought in one-time packs, with or without a subscription. Packs range from 25 to 825 tickets; the current
-              packs and prices are listed on the Buy Tickets page. Subscribers receive 20% off every ticket pack.
+              packs and prices are listed on the Buy Tickets page. Subscribers receive a discount on every ticket pack: 10% on Creator, 15% on Pro and 20% on Max. <strong>Tickets bought in packs never expire</strong> and are never affected by a plan&apos;s monthly refill.
             </p>
 
             <h3 className="text-xl font-semibold mb-3 mt-6 text-slate-300">5.3 Subscription Plans</h3>
             <p className="mb-4">We offer three monthly subscription plans (&quot;Dev Tier&quot;):</p>
             <ul className="list-disc list-inside space-y-2 ml-4 mb-4">
-              <li><strong>Creator:</strong> $19.99 USD per month - 250 tickets per month</li>
-              <li><strong>Pro:</strong> $49.99 USD per month - 650 tickets per month</li>
-              <li><strong>Max:</strong> $99.99 USD per month - 1,350 tickets per month</li>
+              <li><strong>Creator:</strong> $19.99 USD per month - a 250-ticket monthly bar, 10% off ticket packs</li>
+              <li><strong>Pro:</strong> $49.99 USD per month - a 650-ticket monthly bar, 15% off ticket packs</li>
+              <li><strong>Max:</strong> $99.99 USD per month - a 1,350-ticket monthly bar, 20% off ticket packs</li>
             </ul>
             <p className="mb-4">
-              Every plan includes access to every model and every Studio, 20% off ticket packs, more generations at once and a larger
-              reference library. Plans differ in their monthly tickets and their free daily allowance of AI text actions.
+              Every plan includes access to every model and every Studio, more generations at once and a larger reference library.
+              Plans differ in their monthly ticket bar, their ticket pack discount and their free daily allowance of AI text actions.
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>Subscriptions renew automatically every 30 days unless canceled before the next billing date</li>
-              <li>Tickets are credited each time a renewal payment succeeds</li>
-              <li>Tickets do not expire - unused subscription and pack tickets stay in your balance, including after you cancel</li>
+              <li><strong>Plan tickets refill, they do not accumulate:</strong> each time a payment succeeds, your plan tickets are topped back up to the plan&apos;s monthly bar (for example, a Max subscriber who used 500 of 1,350 plan tickets receives 500, bringing them back to 1,350). Unused plan tickets do not roll over on top of the bar</li>
+              <li>Plan tickets are used before pack tickets</li>
+              <li>When a subscription ends (cancellation at the end of the paid period, expiry, refund or chargeback), its unused plan tickets end with it. Tickets bought in packs never expire and stay in your balance</li>
+              <li>When you change plans, your unused plan tickets count toward the new plan&apos;s bar</li>
               <li>You may cancel at any time from your account&apos;s Subscriptions page; cancellation takes effect at the end of the current billing period</li>
               <li><strong>No refunds are provided for partial billing periods or unused tickets</strong> (see the Refund Policy)</li>
               <li>We will give at least 30 days&apos; notice of any change to subscription pricing or to the ticket expiry policy</li>

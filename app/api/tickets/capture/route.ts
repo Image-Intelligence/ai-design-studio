@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { notePackTickets } from '@/lib/plan-tickets'
 
 
 const PAYPAL_API_BASE = process.env.NODE_ENV === 'production'
@@ -261,6 +262,9 @@ export async function POST(request: Request) {
         totalBought: { increment: ticketsCount },
       },
     })
+    // Bonus / pack tickets never expire - keep them out of a running plan's refill bar
+    await notePackTickets(user.id, ticketsCount).catch(e => console.error('notePackTickets failed', e))
+
     console.log('Ticket balance updated:', ticketRecord.balance)
 
     // NEW: Record discount code usage if applicable

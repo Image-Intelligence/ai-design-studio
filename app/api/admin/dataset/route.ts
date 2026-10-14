@@ -78,7 +78,7 @@ export async function GET(req: Request) {
   const hasCaption  = searchParams.get('hasCaption')  || ''   // 'true' | 'false'
   const hasTag      = searchParams.get('hasTag')      || ''   // 'true' | 'false'
   const tagFilter   = searchParams.get('tagFilter')   || ''   // specific tag value
-  const mediaType   = searchParams.get('mediaType')   || ''   // 'image' | 'video' | ''
+  const mediaType   = searchParams.get('mediaType')   || ''   // 'image' | 'video' | 'audio' | ''
   const markedOnly  = searchParams.get('markedOnly') === 'true'
   const bucketId    = searchParams.get('bucketId')    || ''
   // Exclusion: hide generations already sorted into any of these buckets
@@ -113,6 +113,11 @@ export async function GET(req: Request) {
   if (mediaType === 'image') where.AND = VIDEO_EXTS.map(e => ({ NOT: { imageUrl: { endsWith: e } } }))
   // 'motion' = videos AND gifs — the Slicing Studio's sliceable set
   if (mediaType === 'motion') where.OR = [...VIDEO_EXTS, '.gif'].map(e => ({ imageUrl: { endsWith: e } }))
+  // Audio Studio runs (model 'audio:<id>') are sound files: their own media
+  // type for the portal's audio feed, and never in the picture / clip feeds
+  const AUDIO_MODEL = { model: { startsWith: 'audio:' } }
+  if (mediaType === 'audio') where.AND = [AUDIO_MODEL]
+  if (mediaType === 'image' || mediaType === 'video') where.AND = [...((where.AND as any[]) ?? []), { NOT: AUDIO_MODEL }]
 
   if (hasRefs === 'true')        where.referenceImageUrls = { isEmpty: false }
   else if (hasRefs === 'false') where.referenceImageUrls = { isEmpty: true }
@@ -261,15 +266,32 @@ export async function GET(req: Request) {
       orderBy: { _count: { id: 'desc' } },
       take: 100,
     })
-    const userIds = userFacets.map(u => u.userId)
+    // Merchant auditor accounts (AuditAccount) are ALWAYS listed, first, even
+    // with a handful of generations or none - the top-100 cut above used to hide
+    // them, and admins need to watch exactly those accounts' usage.
+    const auditors = await prisma.auditAccount.findMany({ select: { userId: true, username: true } })
+    const auditorName = new Map(auditors.map(a => [a.userId, a.username]))
+    const missingAuditorIds = auditors.map(a => a.userId).filter(id => !userFacets.some(u => u.userId === id))
+    const auditorCounts = missingAuditorIds.length
+      ? await prisma.generatedImage.groupBy({ by: ['userId'], where: { isDeleted: false, userId: { in: missingAuditorIds } }, _count: { id: true } })
+      : []
+    const counted = [
+      ...userFacets.map(u => ({ userId: u.userId, count: u._count.id })),
+      ...missingAuditorIds.map(id => ({ userId: id, count: auditorCounts.find(c => c.userId === id)?._count.id ?? 0 })),
+    ]
     const userDetails = await prisma.user.findMany({
-      where: { id: { in: userIds } },
+      where: { id: { in: counted.map(u => u.userId) } },
       select: { id: true, email: true, name: true },
     })
     const userMap = Object.fromEntries(userDetails.map(u => [u.id, u]))
-    const users = userFacets
-      .map(u => ({ id: u.userId, email: userMap[u.userId]?.email ?? `#${u.userId}`, name: userMap[u.userId]?.name ?? null, count: u._count.id }))
+    const users = counted
+      .map(u => ({
+        id: u.userId, email: userMap[u.userId]?.email ?? `#${u.userId}`, name: userMap[u.userId]?.name ?? null, count: u.count,
+        ...(auditorName.has(u.userId) ? { auditor: auditorName.get(u.userId)! } : {}),
+      }))
       .filter(u => u.email)
+      // auditors first (then by generation count, as before)
+      .sort((a, b) => Number(!!b.auditor) - Number(!!a.auditor) || b.count - a.count)
 
     facetsPayload = {
       models:    models.map(m => ({ value: m.model,       count: m._count })),

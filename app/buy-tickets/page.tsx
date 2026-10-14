@@ -11,6 +11,8 @@ import { SilverRim, LoopVideo, ShopHeader, ShopBackdrop, ShopFooter, SHOP_MEDIA 
 // Pack prices live in lib/ticket-pricing.ts so the shop and the admin
 // Ticket Economics page always quote the same USD-per-ticket.
 import { TICKET_PACKAGES, type TicketPackage } from "@/lib/ticket-pricing"
+import { packDiscountFor, packPriceAt } from "@/lib/dev-tier-plans"
+import { RechargeStation, usePlanTickets } from "@/components/tickets/RechargeStation"
 
 interface UserData {
   id: number
@@ -74,7 +76,7 @@ const FAQ = [
   },
   {
     q: "Is there a cheaper way to get tickets?",
-    a: "Dev Tier plans include tickets every month from $0.074 each, and take 20% off every pack on this page.",
+    a: "Dev Tier plans refill your tickets every month from $0.074 each, and take 10% (Creator), 15% (Pro) or 20% (Max) off every pack on this page.",
   },
 ]
 
@@ -83,10 +85,10 @@ const usd = (n: number) => `$${n.toFixed(2)}`
 const BASE_RATE = TICKET_PACKAGES[0].freeTierPrice / TICKET_PACKAGES[0].tickets
 const BEST_RATE = Math.min(...TICKET_PACKAGES.map(p => p.freeTierPrice / p.tickets))
 
-function PackCard({ pkg, active, dev, onSelect, wide }: {
-  pkg: TicketPackage; active: boolean; dev: boolean; onSelect: () => void; wide?: boolean
+function PackCard({ pkg, active, dev, pct, onSelect, wide }: {
+  pkg: TicketPackage; active: boolean; dev: boolean; pct: number; onSelect: () => void; wide?: boolean
 }) {
-  const price = dev ? pkg.devTierPrice : pkg.freeTierPrice
+  const price = dev ? packPriceAt(pkg.freeTierPrice, pct) : pkg.freeTierPrice
   const rate = price / pkg.tickets
   const save = Math.round((1 - pkg.freeTierPrice / pkg.tickets / BASE_RATE) * 100)
   return (
@@ -156,6 +158,7 @@ export default function BuyTicketsPage() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<TicketPackage>(TICKET_PACKAGES.find(p => p.popular) ?? TICKET_PACKAGES[0])
   const [hasPromptStudioDev, setHasPromptStudioDev] = useState(false)
+  const { data: planTickets } = usePlanTickets(null)
   const [acceptedTOS, setAcceptedTOS] = useState(false)
   const [purchasing, setPurchasing] = useState(false)
   const [purchaseError, setPurchaseError] = useState<string | null>(null)
@@ -216,7 +219,9 @@ export default function BuyTicketsPage() {
   if (!user) return null
 
   const dev        = hasPromptStudioDev
-  const price      = dev ? selected.devTierPrice : selected.freeTierPrice
+  // Each plan has its own pack discount: Creator 10%, Pro 15%, Max 20%
+  const pct        = dev ? (planTickets?.packDiscountPct || packDiscountFor(planTickets?.planId)) : 0
+  const price      = dev ? packPriceAt(selected.freeTierPrice, pct) : selected.freeTierPrice
   const savings    = selected.freeTierPrice - price
   const ppt        = price / selected.tickets
 
@@ -316,10 +321,11 @@ export default function BuyTicketsPage() {
           <div className="mt-5 px-4 py-3 rounded-xl border border-violet-500/30 bg-violet-500/10 flex items-center gap-3">
             <Sparkles size={15} className="text-violet-300 flex-shrink-0" />
             <p className="text-sm text-slate-300">
-              <span className="font-bold text-violet-300">Dev Tier pricing active</span> - you&apos;re saving 10% on every pack.
+              <span className="font-bold text-violet-300">Dev Tier pricing active</span> - your plan saves you {pct}% on every pack.
             </p>
           </div>
         )}
+        {dev && <RechargeStation balance={user.ticketBalance} className="mt-3 max-w-md" />}
 
         {/* ── Packs + checkout ── */}
         <section className="mt-8 sm:mt-10">
@@ -338,6 +344,7 @@ export default function BuyTicketsPage() {
                   key={pkg.tickets}
                   pkg={pkg}
                   dev={dev}
+                  pct={pct}
                   active={selected.tickets === pkg.tickets}
                   onSelect={() => setSelected(pkg)}
                   wide={i === TICKET_PACKAGES.length - 1 && TICKET_PACKAGES.length % 2 === 1}
@@ -383,7 +390,7 @@ export default function BuyTicketsPage() {
                       </span>
                     ) : (
                       <span className="text-[10px] text-slate-500">
-                        Dev Tier price: <span className="text-slate-300">{usd(selected.devTierPrice)}</span>
+                        With a plan: <span className="text-slate-300">from {usd(packPriceAt(selected.freeTierPrice, 20))}</span> (up to 20% off)
                       </span>
                     )}
                   </div>
@@ -478,7 +485,7 @@ export default function BuyTicketsPage() {
                 >
                   <p className="text-sm font-bold text-violet-200">Make tickets go further</p>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Dev Tier plans include tickets every month from $0.074 each - and take 20% off every pack here.
+                    Dev Tier plans refill your tickets every month from $0.074 each - and take up to 20% off every pack here.
                   </p>
                   <p className="text-xs font-bold text-violet-300 mt-2">See the plans →</p>
                 </Link>

@@ -107,7 +107,7 @@ interface Facets {
   aspects:   { value: string; count: number }[]
   qualities: { value: string | null; count: number }[]
   tags:      { value: string; count: number }[]
-  users:     { id: number; email: string; name: string | null; count: number }[]
+  users:     { id: number; email: string; name: string | null; count: number; auditor?: string }[]
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
@@ -2806,7 +2806,7 @@ export default function DatasetPage() {
 const modelOptions      = useMemo(() => (facets?.models    ?? []).map(m => ({ value: m.value,       label: `${m.value.replace('fal-ai/', '')} (${m.count})` })), [facets?.models])
   const aspectOptions     = useMemo(() => (facets?.aspects   ?? []).map(a => ({ value: a.value ?? '', label: `${a.value} (${a.count})` })),                          [facets?.aspects])
   const qualityOptions    = useMemo(() => (facets?.qualities ?? []).map(q => ({ value: q.value ?? '', label: `${q.value} (${q.count})` })),                          [facets?.qualities])
-  const userOptions       = useMemo(() => (facets?.users     ?? []).map(u => ({ value: String(u.id), label: `${u.name ? `${u.name} · ` : ''}${u.email} (${u.count})` })), [facets?.users])
+  const userOptions       = useMemo(() => (facets?.users     ?? []).map(u => ({ value: String(u.id), label: `${u.auditor ? `AUDITOR · ${u.auditor} · ` : ''}${u.name ? `${u.name} · ` : ''}${u.email} (${u.count})` })), [facets?.users])
   // Exclude picker: folders first (exclude the whole subtree), then individual buckets
   // labeled with their parent folder for context
   const excludeOptions    = useMemo(() => {

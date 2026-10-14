@@ -371,10 +371,17 @@ function AudioSettings({
 }
 
 export function AudioStudio({
-  modelId, onModelChange, isAdmin, ticketBalance, onTicketsSpent, topOffsetPx = 49,
+  modelId, onModelChange, isAdmin, ticketBalance, onTicketsSpent, topOffsetPx = 49, adminFeed = null,
 }: {
   /** The taskbar's height above this view. */
   topOffsetPx?: number
+  /**
+   * The portal's admin feed filters (Feed dropdown), as a ready query for
+   * /api/admin/dataset without page/limit. When set, the feed shows exactly
+   * the matching audio from every account - e.g. one user's runs - instead of
+   * your own, and leaves out this session's pending / failed cards.
+   */
+  adminFeed?: { query: string; headers: Record<string, string> } | null
   modelId: string
   onModelChange: (id: string) => void
   isAdmin: boolean
@@ -418,6 +425,8 @@ export function AudioStudio({
   const [cursor, setCursor] = useState<{ before: string; beforeId: number } | null>(null)
   const [hasMore, setHasMore] = useState(true)
   const [loadingPast, setLoadingPast] = useState(false)
+  const adminPageRef = useRef(1)
+  const adminKey = adminFeed?.query ?? null
 
   const cost = audioTicketCost(model, { chars: text.length + (lyrics?.length ?? 0), seconds: model.duration ? duration : undefined, inputSeconds: audio?.seconds })
   const missing =
@@ -432,6 +441,19 @@ export function AudioStudio({
     if (loadingPast) return
     setLoadingPast(true)
     try {
+      if (adminFeed) {
+        // Admin feed filters: the dataset API, page-based, audio only
+        if (reset) adminPageRef.current = 1
+        const page = adminPageRef.current
+        const res = await fetch(`/api/admin/dataset?${adminFeed.query}&mediaType=audio&page=${page}&limit=24`, { headers: adminFeed.headers })
+        if (!res.ok) { setHasMore(false); if (reset) setPast([]); return }
+        const d = await res.json()
+        const rows: AudioItem[] = d.images ?? []
+        setPast(p => (reset ? rows : [...p, ...rows.filter(r => !p.some(x => x.id === r.id))]))
+        setHasMore(page < (d.pagination?.totalPages ?? 0))
+        adminPageRef.current = page + 1
+        return
+      }
       const c = reset ? null : cursor
       const qs = c ? `&before=${encodeURIComponent(c.before)}&beforeId=${c.beforeId}` : ""
       const res = await fetch(`/api/my-images?type=audio&cursor=1&limit=24${qs}`)
@@ -442,8 +464,9 @@ export function AudioStudio({
       const last = rows[rows.length - 1]
       setCursor(d.nextCursor ?? (last ? { before: last.createdAt, beforeId: last.id } : null))
     } catch {} finally { setLoadingPast(false) }
-  }, [cursor, loadingPast])
-  useEffect(() => { loadPast(true) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cursor, loadingPast, adminFeed])
+  // First load, and a fresh list whenever the admin filters change
+  useEffect(() => { setCursor(null); loadPast(true) }, [adminKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Pending runs: restored on load, polled until settled ──
   useEffect(() => { setPending(readPending()) }, [])
@@ -568,7 +591,8 @@ export function AudioStudio({
     voiceConsent, setVoiceConsent, isAdmin,
     options, setOption: (k: string, v: string) => setOptions(o => ({ ...o, [k]: v })), onWriteLyrics: writeLyrics,
   }
-  const shown = [...session, ...past.filter(p => !session.some(s => s.id === p.id))]
+  // Admin-filtered: exactly the API's results; otherwise this session's runs on top
+  const shown = adminFeed ? past : [...session, ...past.filter(p => !session.some(s => s.id === p.id))]
   const g = groupOf(model)
 
   return (
@@ -590,7 +614,7 @@ export function AudioStudio({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-            {pending.map(p => (
+            {!adminFeed && pending.map(p => (
               <div key={p.requestId} className="rounded-2xl border border-white/10 bg-slate-900/70 overflow-hidden">
                 <div className="relative h-24 px-4 pt-4 pb-3 bg-gradient-to-br from-white/[0.06] via-transparent to-black/40">
                   <div className="h-full text-slate-500/60"><Waveform seed={p.startedAt % 997} playing /></div>
@@ -602,7 +626,7 @@ export function AudioStudio({
                 </div>
               </div>
             ))}
-            {failed.map(f => (
+            {!adminFeed && failed.map(f => (
               <div key={f.key} className="rounded-2xl border border-red-500/30 bg-red-950/30 p-3">
                 <div className="flex items-start gap-2">
                   <p className="flex-1 text-[11px] font-bold text-red-200">{f.name} failed</p>
@@ -620,7 +644,7 @@ export function AudioStudio({
           {!shown.length && !pending.length && !loadingPast && (
             <div className="mt-16 text-center text-slate-500">
               <Music size={28} className="mx-auto mb-3 opacity-50" />
-              <p className="text-sm">No audio yet. Pick a model, write something, and generate.</p>
+              <p className="text-sm">{adminFeed ? "No audio matches these filters" : "No audio yet. Pick a model, write something, and generate."}</p>
             </div>
           )}
           {hasMore && shown.length > 0 && (

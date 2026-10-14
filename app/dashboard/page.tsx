@@ -12,6 +12,7 @@ import { CatalogCard, type CatalogMedia } from "@/components/dashboard/CatalogSt
 import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { GenerationsCarousel } from "@/components/home/GenerationsCarousel"
 import { StudioLaunchers } from "@/components/dashboard/StudioLaunchers"
+import { TicketPill, RechargeInline } from "@/components/tickets/RechargeStation"
 
 interface UserData {
   id: number
@@ -253,10 +254,7 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-black/40 font-mono text-xs">
-              <Ticket size={11} className="text-slate-500" />
-              <span className="text-white tabular-nums">{user.ticketBalance.toLocaleString()}</span>
-            </div>
+            <TicketPill balance={user.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-black/40 font-mono text-xs" textClassName="text-white tabular-nums" />
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg border border-white/8 bg-white/3">
               {/* Profile picture — synced account-wide (same avatarUrl as the portal-v2 bubble) */}
               <div className="w-6 h-6 rounded-full overflow-hidden bg-gradient-to-br from-slate-200 to-slate-500 flex items-center justify-center text-[10px] font-black text-black shrink-0">
@@ -472,8 +470,10 @@ export default function DashboardPage() {
                 <span className="text-sm font-semibold text-slate-400">tickets</span>
               </div>
               <p className="text-[11px] text-slate-500 leading-snug mt-2">
-                {hasPromptStudioDev ? "Dev tier is active: 10% off every ticket pack." : "Upgrade to Dev tier for 10% off every ticket pack."}
+                {hasPromptStudioDev ? "Dev Tier is active: your plan refills every month and takes 10-20% off every ticket pack." : "Dev Tier plans refill your tickets every month and take up to 20% off every ticket pack."}
               </p>
+              {/* The silver recharge ring: plan tickets left of the monthly bar */}
+              <RechargeInline balance={user.ticketBalance} className="mt-3" />
             </div>
 
             <div className="relative grid grid-cols-2 gap-2">
