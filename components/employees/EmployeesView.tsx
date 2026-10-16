@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, Layers, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart } from "lucide-react"
+import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, Layers, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart, Globe2 } from "lucide-react"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/employees"
 import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { LoopVideo } from "@/components/shop/ShopKit"
@@ -124,6 +124,17 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
     icon: Layers,
     accent: "rose",
     highlights: ["Layers, masks, blend modes", "AI select and background removal", "Adjustments you can undo"],
+  },
+  {
+    id: "worlds",
+    name: "Worlds",
+    tagline: "Walk inside a picture",
+    blurb:
+      "Start from one of your pictures and a live world model builds the place around you as you move: walk with "
+      + "WASD, look around, change the weather or the scene with words, and record the walk into your feed.",
+    icon: Globe2,
+    accent: "sky",
+    highlights: ["Live, as you move", "Change the world with words", "Record walks to your feed"],
   },
 ]
 

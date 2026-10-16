@@ -18,6 +18,8 @@ export function enforcePublicModeration(model: string, input: Record<string, unk
     || model.startsWith('recraft-v4-') || model === 'recraft-v4.1-flash') {
     input.enable_safety_checker = true
   }
+  // FLUX 3 Klein / Klein Base (public 2026-10-16): their specs send false
+  if (model.startsWith('flux-3-klein')) input.enable_safety_checker = true
   // FLUX 3 Image: safety_tolerance 0 (strictest) - 4; fal's default 2
   if (model === 'flux-3-image') input.safety_tolerance = 2
   // NanoBanana 2 Lite and 2.1: fal's standard level (4), not the most

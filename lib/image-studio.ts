@@ -187,7 +187,8 @@ export const CANVAS_PRESETS = [
  *            clicks alone: SAM 2 (fal-ai/sam2/image)   ~$0.001 per run  -> 1
  *   subject  BiRefNet v2 (fal-ai/birefnet/v2), mask    ~$0.002 per run  -> 1
  */
-export const STUDIO_AI_TICKETS = { select: 1, subject: 1 } as const
+// guided: Bria Guided Background Removal ($0.03 -> 1; admin-only while under test, 2026-10-15)
+export const STUDIO_AI_TICKETS = { select: 1, subject: 1, guided: 1 } as const
 export type StudioAiOp = keyof typeof STUDIO_AI_TICKETS
 
 // ── cleaning what arrives ────────────────────────────────────────────────────

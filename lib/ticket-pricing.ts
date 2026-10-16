@@ -34,6 +34,8 @@ export const VIDEO_TOOL_MODELS = new Set([
   'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
   // 2026-10-03 second round: text-prompted tracking masks, audio-only dubbing
   'sam-3.1-video', 'elevenlabs-dubbing',
+  // 2026-10-15: Mirelo SFX 2.0 sound for a clip
+  'mirelo-sfx2-video',
   // 2026-10-07: re-light a clip from a lit-sphere picture; swap its person for a character; edit it from words
   'minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro',
   // Pixelcut: cut the subject out of a clip
@@ -801,12 +803,15 @@ function batch0928TicketCost(model: string, o: {
  *   HeyGen Translate       $0.10 (precision) / $0.05 (fast) per s of output;
  *                          dynamic duration can run long, priced at +15%
  *   Mirelo SFX 1.6         $0.01 per s, one sample, as long as the clip (60s max)
+ *   Mirelo SFX 2.0         $0.015 per s (fal's standard rate - $0.010 is an
+ *                          intro price until 2026-12-13), one sample (60s max)
  */
 const BATCH_1003_MODELS = new Set([
   'minimax-h3-max-lipsync', 'pixverse-music-video', 'minimax-h3-max-camera', 'happy-horse-1.1',
   'heygen-avatar4', 'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast', 'seedance-2.5-complete', 'sam-3.1-video', 'elevenlabs-dubbing',
   'void-video-removal', 'veed-subtitles', 'minimax-h3-max-insert', 'depth-anything-video',
-  'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
+  'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video', 'mirelo-sfx2-video',
+  'omnihuman-v2',
 ])
 const VEED_DYNAMIC = new Set(['glass', 'whisper', 'glide2', 'fusion', 'glide', 'terminal', 'handwritten', 'backdrop', 'backdrop2'])
 export function batch1003TicketCost(model: string, o: {
@@ -824,6 +829,10 @@ export function batch1003TicketCost(model: string, o: {
       usd = s * rate * (s > 15 ? 1.2 : 1)
       break
     }
+    case 'omnihuman-v2':
+      // $0.105 per second of the audio (the video is as long), 4-60s on this site
+      usd = Math.ceil(Math.min(60, Math.max(4, o.audioSec && o.audioSec > 0 ? o.audioSec : 10))) * 0.105
+      break
     case 'pixverse-music-video': {
       const s = Math.min(360, Math.max(10, Math.ceil(o.audioSec && o.audioSec > 0 ? o.audioSec : 30)))
       usd = s * (res === '1080p' ? 0.09 : 0.06)
@@ -853,6 +862,9 @@ export function batch1003TicketCost(model: string, o: {
       break
     case 'mirelo-sfx-video':
       usd = Math.min(60, Math.max(1, Math.ceil(src))) * 0.01
+      break
+    case 'mirelo-sfx2-video':
+      usd = Math.min(60, Math.max(1, Math.ceil(src))) * 0.015
       break
     case 'heygen-avatar4': {
       // $0.10 per output second: the audio's length, or the script's at 2.5
@@ -1066,6 +1078,7 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'veo-3.1-fast-extend',  label: 'Veo 3.1 Fast Extend',    kind: 'tool', durations: [], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'Veo Fast rates on the 7s it adds.' },
   { id: 'minimax-h3-max-turbo-extend', label: 'MiniMax H3 Max Turbo Extend', kind: 'tool', durations: ['5', '10', '15'], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'none', note: 'fal $0.025/$0.04/$0.08/$0.16 per s added.' },
   // 2026-10-03 batch (admin, under test)
+  { id: 'omnihuman-v2', label: 'OmniHuman v2', kind: 'generator', durations: [], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.105 per s of the audio (4-60s on this site).' },
   { id: 'minimax-h3-max-lipsync', label: 'H3 Max Lip Sync', kind: 'generator', durations: [], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05 / $0.08 / $0.16 per s of the audio (5s min, x1.2 over 15s).' },
   { id: 'pixverse-music-video', label: 'PixVerse Music Video', kind: 'generator', durations: [], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.06 / $0.09 per s of audio (10s min).' },
   { id: 'minimax-h3-max-camera', label: 'H3 Max Camera Controls', kind: 'generator', durations: ['3', '5', '8', '10', '15'], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.05 / $0.08 / $0.16 per s (regular rates; 40% off until Oct 15).' },
@@ -1077,6 +1090,7 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'heygen-translate', label: 'HeyGen Translate', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.10 per s of output (+15% for dynamic duration).' },
   { id: 'heygen-translate-fast', label: 'HeyGen Translate Fast', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 per s of output (+15%).' },
   { id: 'mirelo-sfx-video', label: 'Mirelo SFX 1.6', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.01 per s, one sample (60s max).' },
+  { id: 'mirelo-sfx2-video', label: 'Mirelo SFX 2.0', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.015 per s (standard; $0.01 intro to Dec 13), one sample (60s max). Admin only.' },
   // 2026-10-07 (admin): lib/batch-1007-video
   { id: 'vidu-q4', label: 'Vidu Q4', kind: 'generator', durations: ['3', '5', '8', '10', '16'], resolutions: ['540p', '720p', '1080p', '2k', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.045 / $0.095 / $0.12 / $0.19 / $0.39 per s (regular rates; 30% off until Nov 30). Audio free.' },
   { id: 'minimax-h3-max-relight', label: 'H3 Max Relight', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 / $0.32 per s of the source (15s max).' },
@@ -1186,6 +1200,81 @@ export function flux3ImageTicketCost(o: { quality?: string; aspectRatio?: string
   const usd = flux3Blocks(tier, o.aspectRatio) * FLUX3_IMAGE_USD_PER_BLOCK
   return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
 }
+
+// ── FLUX 3 Klein / Klein Base, Krea 3 (2026-10-15, admin) ───────────────────
+/*
+ * Both take an explicit {width, height}, so the site picks the size from the
+ * frame and the quality tier - and the price follows the size it sends.
+ * 'auto' with a reference takes the reference's shape at the tier's area
+ * (sending nothing would let a 4K reference make a 4K - and 4K-priced - run).
+ */
+function frameRatio(aspect: string | undefined, ref?: { width: number; height: number } | null): number {
+  const m = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(aspect ?? '')
+  if (m && +m[1] > 0 && +m[2] > 0) return +m[1] / +m[2]
+  return ref && ref.width > 0 && ref.height > 0 ? ref.width / ref.height : 1
+}
+/** A frame of about `area` pixels, each side a multiple of 16 in [256, maxSide]. */
+export function sizeForArea(aspect: string | undefined, area: number, maxSide: number, ref?: { width: number; height: number } | null): { width: number; height: number } {
+  const r = Math.min(8, Math.max(1 / 8, frameRatio(aspect, ref)))
+  let w = Math.sqrt(area * r), h = w / r
+  const k = Math.min(1, maxSide / Math.max(w, h))
+  w *= k; h *= k
+  const f16 = (v: number) => Math.min(maxSide, Math.max(256, Math.floor(v / 16) * 16))
+  return { width: f16(w), height: f16(h) }
+}
+
+/*
+ * FLUX 3 Klein bills per image by output tier (fal, 2026-10-15 - "planned"
+ * pricing, so it is priced at that schedule now):
+ *              768sq   1K     1.5K    2K     4K
+ *   Klein      .008   .009   .011    .014   .036
+ *   Klein Base .024   .027   .033    .042   .108
+ * The same for an edit (references are not billed). The tier is read on the
+ * dearer of pixels and longest side, so a wide 2K frame is never priced as a
+ * square one. Klein is 1 ticket at every size; Base 1 / 1 / 2 / 3.
+ */
+const KLEIN_USD = { klein: [0.008, 0.009, 0.011, 0.014, 0.036], base: [0.024, 0.027, 0.033, 0.042, 0.108] }
+export const KLEIN_TIER_AREA: Record<string, number> = { '1k': 1024 * 1024, '2k': 2048 * 2048, '4k': 4096 * 4096 }
+export function kleinSize(aspect: string | undefined, quality: string | undefined, ref?: { width: number; height: number } | null) {
+  return sizeForArea(aspect, KLEIN_TIER_AREA[quality ?? ''] ?? KLEIN_TIER_AREA['1k'], 4096, ref)
+}
+function kleinTier(w: number, h: number): number {
+  const edges = [768, 1024, 1536, 2048]
+  const bySide = edges.findIndex(e => Math.max(w, h) <= e)
+  const byArea = edges.findIndex(e => w * h <= e * e)
+  return Math.max(bySide < 0 ? 4 : bySide, byArea < 0 ? 4 : byArea)
+}
+export function kleinTicketCost(model: string, o: { quality?: string; aspectRatio?: string; refDims?: { width: number; height: number } | null }): number {
+  const { width, height } = kleinSize(o.aspectRatio, o.quality, o.refDims)
+  const usd = (model.startsWith('flux-3-klein-base') ? KLEIN_USD.base : KLEIN_USD.klein)[kleinTier(width, height)]
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
+}
+
+/*
+ * Krea 3 bills $0.025 per megapixel (1024x1024), counting the output AND each
+ * reference - a reference larger than the output counts at the output's size,
+ * so every reference is priced at the output's size (the most it can cost).
+ * At most 4,220,160 px and 3200 px a side: 1K ~1 MP, 2K ~4 MP (no 4K).
+ *   1K text-to-image $0.025 -> 1 ticket, with one reference $0.05 -> 2
+ *   2K text-to-image $0.10  -> 3,        with one reference $0.20 -> 5
+ */
+export const KREA3_USD_PER_MP = 0.025
+export function krea3Size(aspect: string | undefined, quality: string | undefined, ref?: { width: number; height: number } | null) {
+  return sizeForArea(aspect, quality === '2k' || quality === '4k' ? 2048 * 2048 : 1024 * 1024, 3200, ref)
+}
+export function krea3TicketCost(o: { quality?: string; aspectRatio?: string; refs?: number; refDims?: { width: number; height: number } | null }): number {
+  const { width, height } = krea3Size(o.aspectRatio, o.quality, o.refDims)
+  const mp = (width * height) / (1024 * 1024)
+  const usd = KREA3_USD_PER_MP * mp * (1 + Math.min(8, Math.max(0, o.refs ?? 0)))
+  return Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
+}
+
+/*
+ * Krea 3 Realtime: $0.013 for every second a session is open (fal,
+ * 2026-10-15, "pricing TBD"). Sold in 30-second blocks: $0.39 -> 10 tickets.
+ */
+export const KREA3_REALTIME_BLOCK_SEC = 30
+export const KREA3_REALTIME_BLOCK_TICKETS = Math.ceil((0.013 * KREA3_REALTIME_BLOCK_SEC) / 0.04 - 1e-9)
 
 // ── ChatGPT Images 2.5 ───────────────────────────────────────────────────────
 /*

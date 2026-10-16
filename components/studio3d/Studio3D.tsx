@@ -21,7 +21,7 @@ import {
   Box, Loader2, Upload, X, Trash2, Download, RotateCw, Grid3x3, Camera, Video, Sparkles, Wand2, Printer, Gamepad2,
   Film, Smartphone, Globe, ChevronRight, Ticket, Clock, AlertTriangle, CheckCircle2, ImagePlus, Play, Pause, Library,
 } from "lucide-react"
-import { THREED_TOOLS, STAGES, PURPOSE_LABEL, getTool, toolTickets, withDefaults, clipIds, type ThreeDTool, type ThreeDStage, type Purpose, type Control } from "@/lib/threed/catalog"
+import { THREED_TOOLS, STAGES, PURPOSE_LABEL, getTool, toolTickets, withDefaults, clipIds, isWorldBuildTool, type ThreeDTool, type ThreeDStage, type Purpose, type Control } from "@/lib/threed/catalog"
 import { CLIP_LIBRARY, clipLabel } from "@/lib/threed/clip-library"
 import type { AssetOut } from "@/lib/threed/assets"
 import type { ViewerHandle, ModelInfo, PrintReport, Backdrop } from "./Viewer3D"
@@ -48,8 +48,10 @@ const imagesOf = (a: Asset | null) => (a ? a.files.filter(f => f.kind === "image
 const fmtBytes = (n?: number) => (n ? (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`) : "")
 const ago = (iso: string) => { const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000); return s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` }
 
-export function Studio3D({ isAdmin, refLibrary, logo, onBalanceChange, onUseFrame }: {
+export function Studio3D({ isAdmin, refLibrary, logo, onBalanceChange, onUseFrame, pick }: {
   isAdmin: boolean
+  /** A tool picked on the Home page's 3D models page - the studio opens on it (n changes per pick) */
+  pick?: { id: string; n: number } | null
   /** The account's Refs library - pictures to build from. */
   refLibrary: { id: string; url: string }[]
   logo?: React.ReactNode
@@ -57,9 +59,18 @@ export function Studio3D({ isAdmin, refLibrary, logo, onBalanceChange, onUseFram
   /** A rendered frame handed to the portal (to animate it with a video model, or keep it as a reference). */
   onUseFrame?: (dataUrl: string, to: "video" | "refs") => void
 }) {
-  const [stage, setStage] = useState<ThreeDStage>("model")
+  const picked = isWorldBuildTool(pick?.id) ? undefined : getTool(pick?.id)
+  const [stage, setStage] = useState<ThreeDStage>(() => picked?.stage ?? "model")
   const [purpose, setPurpose] = useState<Purpose | null>(null)
-  const [toolId, setToolId] = useState<string>("meshy-7.1-image")
+  const [toolId, setToolId] = useState<string>(() => picked?.id ?? "meshy-7.1-image")
+  // A later pick from the Home page while the studio is open
+  useEffect(() => {
+    const t = getTool(pick?.id)
+    if (!t || isWorldBuildTool(t.id)) return
+    setPurpose(null)
+    setStage(t.stage)
+    setToolId(t.id)
+  }, [pick?.id, pick?.n])
   const [prompt, setPrompt] = useState("")
   const [images, setImages] = useState<string[]>([])
   const [options, setOptions] = useState<Record<string, unknown>>({})
@@ -96,6 +107,9 @@ export function Studio3D({ isAdmin, refLibrary, logo, onBalanceChange, onUseFram
     const r = await fetch(`/api/employees/studio3d${before}`).catch(() => null)
     const j = r?.ok ? await r.json() : null
     if (!j) return
+    // Worlds (Hunyuan World, splats) belong to the Worlds studio now - not listed here
+    const mine = <T extends { toolId: string }>(xs: T[]) => xs.filter(x => !isWorldBuildTool(x.toolId))
+    j.assets = mine(j.assets); j.jobs = mine(j.jobs); j.failed = mine(j.failed)
     setJobs(j.jobs); setFailed(j.failed); setMore(j.more)
     setAssets(cur => {
       const next = append ? [...cur, ...j.assets.filter((a: Asset) => !cur.some(c => c.id === a.id))] : [...j.assets, ...cur.filter(c => !j.assets.some((a: Asset) => a.id === c.id) && c.id < (j.assets.at(-1)?.id ?? 0))]

@@ -136,6 +136,9 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   const [cropAspect, setCropAspect] = useState<string>("free")
   const [crop, setCrop] = useState<Rect | null>(null)
   const [aiPrompt, setAiPrompt] = useState("")
+  // Guided background removal's steer ("keep the leash") and the expand model (Bria Expand or Bria Fibo)
+  const [guidePrompt, setGuidePrompt] = useState("")
+  const [expandModel, setExpandModel] = useState<"bria-expand" | "bria-fibo-expand">("bria-expand")
   const [aiPoints, setAiPoints] = useState<{ x: number; y: number; label: 0 | 1 }[]>([])
   const [aiBox, setAiBox] = useState<Rect | null>(null)
   const [aiBusy, setAiBusy] = useState<string | null>(null)
@@ -1670,17 +1673,18 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   }
 
   // ── AI ──
-  const runAi = async (op: "select" | "subject" | "remove-bg") => {
+  const runAi = async (op: "select" | "subject" | "remove-bg" | "guided-bg") => {
     const d = docRef.current
     if (!d || aiBusy) return
     if (op === "select" && !aiPrompt.trim() && !aiPoints.length && !aiBox) { flash("Describe it, click on it or drag a box around it first", true); return }
     const cur = d.layers.find(l => l.id === selectedIdRef.current)
-    if (op === "remove-bg" && (!cur || cur.kind === "group" || cur.kind === "adjust")) { flash("Pick the layer to cut out", true); return }
+    const cutOut = op === "remove-bg" || op === "guided-bg"
+    if (cutOut && (!cur || cur.kind === "group" || cur.kind === "adjust")) { flash("Pick the layer to cut out", true); return }
     setAiBusy(op)
     try {
       // What the model sees: the layer alone for background removal, else the whole picture
-      let src = op === "remove-bg" && cur ? layerInCanvasSpace(d, cur, rtOf(cur.id)) : flatten(d, rts.current, true)
-      if (op === "remove-bg") { const b = newCanvas(src.width, src.height), bx = ctx2d(b); bx.fillStyle = "#fff"; bx.fillRect(0, 0, b.width, b.height); bx.drawImage(src, 0, 0); src = b }
+      let src = cutOut && cur ? layerInCanvasSpace(d, cur, rtOf(cur.id)) : flatten(d, rts.current, true)
+      if (cutOut) { const b = newCanvas(src.width, src.height), bx = ctx2d(b); bx.fillStyle = "#fff"; bx.fillRect(0, 0, b.width, b.height); bx.drawImage(src, 0, 0); src = b }
       let small = fitWithin(src, 2048)
       let dataUrl = small.toDataURL("image/jpeg", 0.9)
       if (dataUrl.length > 3_800_000) { small = fitWithin(src, 1400); dataUrl = small.toDataURL("image/jpeg", 0.85) }
@@ -1688,7 +1692,8 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       const r = await fetch("/api/employees/image-studio/ai", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          op: op === "select" ? "select" : "subject", image: dataUrl,
+          op: op === "select" ? "select" : op === "guided-bg" ? "guided" : "subject", image: dataUrl,
+          ...(op === "guided-bg" && guidePrompt.trim() ? { prompt: guidePrompt.trim() } : {}),
           ...(op === "select" ? {
             prompt: aiPrompt.trim() || undefined,
             points: aiPoints.map(q => ({ x: q.x * k, y: q.y * k, label: q.label })),
@@ -1701,7 +1706,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       if (!r.ok || !j.mask) throw new Error(j.error || "The AI selection failed")
       const img = await new Promise<HTMLImageElement>((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("Could not read the mask")); im.src = j.mask })
       const m = selectionFromMaskImage(img, d.width, d.height)
-      if (op === "remove-bg" && cur) {
+      if (cutOut && cur) {
         // Non-destructive: the background is masked out, not deleted
         const { w, h } = contentSize(cur)
         rtOf(cur.id).mask = canvasMaskToLayer(m, cur, w, h)
@@ -1923,7 +1928,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       x.fillStyle = "#fff"; x.fillRect(0, 0, iw, ih)
       x.drawImage(flatten(d, rts.current, true), ix0, iy0, ix1 - ix0, iy1 - iy0, 0, 0, iw, ih)
       const image = await putBlob("ai", await toBlob(img, "image/jpeg", 0.95))
-      const j = await postGen({ op: "expand", image, prompt: expandPrompt.trim() || undefined, expand: { canvas: [kw, kh], at: [ax, ay] } })
+      const j = await postGen({ op: "expand", image, prompt: expandPrompt.trim() || undefined, expand: { canvas: [kw, kh], at: [ax, ay] }, ...(expandModel === "bria-fibo-expand" ? { expandModel } : {}) })
       const pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
       uploaded.current.set(pix, j.url)
       // The expansion goes UNDER the layers, which keep their pixels - it only shows in the new space
@@ -2230,7 +2235,13 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
           {cropOutside(crop, doc) ? (
             <>
               <input value={expandPrompt} onChange={e => setExpandPrompt(e.target.value)} placeholder="The new space (optional)…" className="w-44 shrink-0 rounded-md bg-black/40 border border-white/15 px-2 py-1 text-[11px] text-white focus:outline-none focus:border-white/40" />
-              <AiButton inline primary size="xs" busy={aiBusy === "expand"} disabled={!!aiBusy} onClick={() => void expandCrop()} cost={EXPAND_TICKETS} model="Bria Expand">Generative expand</AiButton>
+              {(
+                <select value={expandModel} onChange={e => setExpandModel(e.target.value as typeof expandModel)} title="Which model paints the new space" className="shrink-0 rounded-md bg-black/40 border border-white/15 px-1.5 py-1 text-[11px] text-white focus:outline-none focus:border-white/40">
+                  <option value="bria-expand">Bria Expand</option>
+                  <option value="bria-fibo-expand">Bria Fibo Expand</option>
+                </select>
+              )}
+              <AiButton inline primary size="xs" busy={aiBusy === "expand"} disabled={!!aiBusy} onClick={() => void expandCrop()} cost={EXPAND_TICKETS} model={expandModel === "bria-fibo-expand" ? "Bria Fibo Expand" : "Bria Expand"}>Generative expand</AiButton>
               <span className="shrink-0 text-slate-500">or Apply to add empty space</span>
             </>
           ) : <span className="shrink-0 text-slate-500">Drag past the edge to add space - then Generative expand can fill it</span>}
@@ -2406,6 +2417,13 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
                   {selLayer?.kind === "raster" && !painting && (
                     <div className="silver-edge rounded-xl p-2.5 flex flex-wrap items-start gap-2">
                       <AiButton busy={aiBusy === "remove-bg"} disabled={!!aiBusy} onClick={() => runAi("remove-bg")} cost={STUDIO_AI_TICKETS.subject} model="BiRefNet v2"><ScissorsLineDashed size={12} /> Remove background</AiButton>
+                      {/* Guided removal (public 2026-10-16): say what to keep or drop */}
+                      {(
+                        <div className="w-full flex flex-wrap items-start gap-2">
+                          <input value={guidePrompt} onChange={e => setGuidePrompt(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void runAi("guided-bg") }} placeholder="Guide it (optional) - e.g. keep the leash, drop the chair" maxLength={500} className="flex-1 min-w-[160px] rounded-md bg-black/40 border border-white/15 px-2 py-1.5 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-white/40" />
+                          <AiButton busy={aiBusy === "guided-bg"} disabled={!!aiBusy} onClick={() => runAi("guided-bg")} cost={STUDIO_AI_TICKETS.guided} model="Bria Guided"><ScissorsLineDashed size={12} /> Guided remove</AiButton>
+                        </div>
+                      )}
                       <button onClick={openAiPanel} className="text-[10px] text-slate-400 hover:text-white mt-1.5">More AI tools →</button>
                     </div>
                   )}

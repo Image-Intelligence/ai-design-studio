@@ -3,7 +3,7 @@
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
+import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
 import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
@@ -11,7 +11,7 @@ import { createPortal } from "react-dom"
 import Link from "next/link"
 import ChatWidget from "@/components/ChatWidget"
 import ChatHub from "@/components/chat-hub"
-import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes } from "lucide-react"
+import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes, Radio } from "lucide-react"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
 import { AudioStudio } from "@/components/audio/AudioStudio"
@@ -23,6 +23,7 @@ import { ImageStudio } from "@/components/image-studio/ImageStudio"
 import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/employees"
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
 import { Studio3D } from "@/components/studio3d/Studio3D"
+import { WorldsStudio } from "@/components/worlds/WorldsStudio"
 import { StoryboardWorkspace } from "@/components/employees/StoryboardWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
@@ -33,6 +34,11 @@ import { BrandTitle, BrandButton } from "@/components/employees/StudioBrand"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { registerImageStudio, openInImageStudio, useImageStudioAvailable, type StudioOpenRequest } from "@/components/image-studio/bridge"
 import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
+import { KreaLiveSession } from "@/components/realtime/KreaLiveSession"
+import { DirectorLiveSession } from "@/components/realtime/DirectorLiveSession"
+import { wmaBlockTickets, WMA_BLOCK_SEC, WMA_MODELS, WMA_MODEL_IDS, type WmaModelId } from "@/lib/realtime-wma"
+import { THREED_TOOLS, WORLD_BUILD_TOOLS, toolTickets } from "@/lib/threed/catalog"
+import { BUILD_NAMES } from "@/components/worlds/WorldBuilder"
 import { LightingStudio } from "@/components/video/LightingStudio"
 import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
@@ -146,6 +152,8 @@ interface ImageModelConfig {
   isLocalModel?: boolean           // admin-only: runs on local GPU via upscaler-server.py
   isCustomFlux?: boolean           // admin-only: custom Flux checkpoint + LoRA inference
   supportsSafetyChecker?: boolean  // fal content-safety toggle: admins can flip it (default off), non-admins are forced ON (CCBill)
+  promptOptional?: boolean         // runs without a prompt (Fibo Expand: the frame is the instruction)
+  isRealtime?: boolean             // Krea 3 Realtime: Generate opens the live session (KreaLiveSession) instead of a job
 }
 
 const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
@@ -205,6 +213,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   // 2026-10-03 second round (admin)
   { id: "sam-3.1-image",        apiId: "sam-3.1-image",            name: "SAM 3.1 Select",      aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "bria-replace-background", apiId: "bria-replace-background", name: "Bria Replace Background", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  { id: "bria-guided-remove-bg", apiId: "bria-guided-remove-bg", name: "Bria Guided Background Removal", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "bria-embed-product",   apiId: "bria-embed-product",       name: "Bria Embed Product",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 1, isUpscaler: true, isTryOn: true },
   { id: "seedream-5-flash-layerize", apiId: "seedream-5-flash-layerize", name: "SeeDream 5 Flash Layerize", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   // 2026-10-03 image tools (admin): one image in (Bria: two, on the try-on picker)
@@ -245,6 +254,13 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "flux-1-dev",           apiId: "flux-1-dev",               name: "FLUX 1 Dev",          aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], supportsAcceleration: true, maxReferenceImages: 1, isFal: true, maxImages: 1 },
   // FLUX 3 Image: one entry; references switch it to the edit endpoint
   { id: "flux-3-image",         apiId: "flux-3-image",             name: "FLUX 3",              aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "2:1", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  // 2026-10-15 batch (ADMIN ONLY while under test): text-to-image, or the edit
+  // endpoint when references are attached - priced from the size sent
+  { id: "flux-3-klein",         apiId: "flux-3-klein",             name: "FLUX 3 Klein",        aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "flux-3-klein-base",    apiId: "flux-3-klein-base",        name: "FLUX 3 Klein Base",   aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  { id: "krea-3-realtime",      apiId: "krea-3-realtime",          name: "Krea 3 Realtime",     aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isRealtime: true, promptOptional: true },
+  { id: "krea-3",               apiId: "krea-3",                   name: "Krea 3",              aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 8, isFal: true, maxImages: 4 },
+  { id: "bria-fibo-expand",     apiId: "bria-fibo-expand",         name: "Bria Fibo Expand",    aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4"], supportsQuality: false, maxReferenceImages: 1, requiresReferenceImage: true, promptOptional: true, isFal: true, maxImages: 1 },
   { id: "flux-2",               apiId: "flux-2",                   name: "FLUX 2",              aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, supportsAcceleration: true, maxReferenceImages: 4,  isFal: true  },
   { id: "pro-scanner-v3",       apiId: "gemini-3-pro-image",       name: "Pro Scanner v3",      aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: false },
   { id: "flash-scanner-v2.5",   apiId: "gemini-2.5-flash-image",   name: "Flash Scanner v2.5",  aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, maxReferenceImages: 4,  isFal: false },
@@ -277,6 +293,10 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (modelId === "grok-imagine-2")      return hasRefImages ? 3 : 2   // the edit bills per input image
   if (modelId === "mai-image-2.5-pro")   return hasRefImages ? 7 : 5   // token-billed; the edit is dearer
   if (modelId === "flux-3-image")        return flux3ImageTicketCost({ quality, aspectRatio, refs: hasRefImages ? 1 : 0 })
+  // Priced on the size sent; "auto" with a reference is shown at a square frame
+  if (modelId === "flux-3-klein" || modelId === "flux-3-klein-base") return kleinTicketCost(modelId, { quality, aspectRatio })
+  if (modelId === "krea-3-realtime")     return KREA3_REALTIME_BLOCK_TICKETS   // per 30 seconds of session
+  if (modelId === "krea-3")              return krea3TicketCost({ quality, aspectRatio, refs: refCount ?? (hasRefImages ? 1 : 0) })
   if (modelId === "ideogram-4.5")        return quality === "high" ? 6 : quality === "low" ? 1 : 2   // fal $0.03 / $0.06 / $0.22 an image
   if (modelId === "qwen-image-3")        return (quality === "1k" ? 1 : 2) + (hasRefImages ? 1 : 0)   // fal $0.04 1K / $0.075 2K; edit +1
   // Topaz bills by OUTPUT megapixels; the server prices the measured source.
@@ -764,6 +784,8 @@ interface VideoModelConfig {
   supportsVideoExtend?: boolean // a video in the refs panel continues/edits it (Flux 3 extend, Omni edit)
   fpsOptions?: string[]         // LTX 2.5 exposes a frame-rate choice
   isVideoTool?: boolean         // transforms an uploaded clip (upscale/restore) — no prompt needed
+  /** A live session, not a job: Generate reads "Go Live" and opens its popup (H3 Max Director, components/realtime/DirectorLiveSession) */
+  isRealtime?: boolean
   toolPrompt?: boolean          // this tool accepts an optional guidance prompt
   upscaleFactors?: string[]     // 1-4x, per the tool's own schema
   targetFpsOptions?: string[]   // frame interpolation targets
@@ -813,8 +835,9 @@ const BATCH_0928_VIDEO = new Set([
   "grok-video-1.5-lite", "minimax-h3-max-turbo-extend", "minimax-h3-max-recast",
   // 2026-10-03 batch
   "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "happy-horse-1.1",
+  "omnihuman-v2",
   "void-video-removal", "veed-subtitles", "minimax-h3-max-insert", "depth-anything-video",
-  "heygen-translate", "heygen-translate-fast", "mirelo-sfx-video",
+  "heygen-translate", "heygen-translate-fast", "mirelo-sfx-video", "mirelo-sfx2-video",
   "heygen-avatar4", "ltx-2.5-audio-pro", "ltx-2.5-audio-fast", "sam-3.1-video", "elevenlabs-dubbing",
   // 2026-10-06: Kandinsky 6.0 Pro / Lite and its VSR
   "kandinsky6-pro", "kandinsky6-lite", "kandinsky6-vsr", "kandinsky6-vsr-lite",
@@ -1419,6 +1442,12 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     audioType: "none",
   },
   // ── 2026-10-03 batch (ADMIN ONLY while under test) - lib/batch-1003-video ──
+  // 2026-10-16 (ADMIN ONLY, under test): a person's photo + a voice or song -> a talking / singing video
+  { id: "omnihuman-v2", name: "OmniHuman v2", durations: [], supportsEndFrame: false, audioType: "upload",
+    audioUpload: { label: "Voice or song", hint: "WAV / MP3, 4 - 60s - the video runs as long as this", required: true } },
+  // 2026-10-16 (ADMIN ONLY, under test): a film you direct live - lib/realtime-wma
+  { id: "minimax-h3-max-director", name: "H3 Max Director", durations: [], resolutions: ["480p","544p","640p","704p","768p","1080p","1440p"], aspectRatios: ["16:9","9:16","1:1"], supportsEndFrame: false, audioType: "none", textToVideo: true,
+    supportsReferenceVideo: true, refImagesOnly: true, refLimits: { images: 9, videos: 0, audios: 0 }, frameTags: "none", isRealtime: true },
   { id: "minimax-h3-max-lipsync", name: "H3 Max Lip Sync", durations: [], resolutions: ["480p","768p","1080p"], supportsEndFrame: false, audioType: "upload",
     audioUpload: { label: "Voice track", hint: "WAV / MP3, 5s - 15 min - the video runs as long as this", required: true } },
   { id: "pixverse-music-video", name: "PixVerse Music Video", durations: [], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4"], supportsEndFrame: false, textToVideo: true, audioType: "upload",
@@ -1451,6 +1480,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     choice: { label: "Translate into", note: "dubbed, with the lips re-synced", options: [{ value: "Spanish", label: "Spanish" }, { value: "French", label: "French" }, { value: "German", label: "German" }, { value: "Italian", label: "Italian" }, { value: "Portuguese", label: "Portuguese" }, { value: "Japanese", label: "Japanese" }, { value: "Korean", label: "Korean" }, { value: "Chinese", label: "Chinese" }, { value: "Mandarin", label: "Mandarin" }, { value: "Hindi", label: "Hindi" }, { value: "Arabic", label: "Arabic" }, { value: "Dutch", label: "Dutch" }, { value: "Polish", label: "Polish" }, { value: "Turkish", label: "Turkish" }, { value: "Swedish", label: "Swedish" }, { value: "Danish", label: "Danish" }, { value: "Romanian", label: "Romanian" }, { value: "Greek", label: "Greek" }, { value: "Ukrainian", label: "Ukrainian" }, { value: "Indonesian", label: "Indonesian" }, { value: "Filipino", label: "Filipino" }, { value: "English", label: "English" }] } },
   { id: "heygen-translate-fast", name: "HeyGen Translate Fast", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 480,
     choice: { label: "Translate into", note: "faster and half the price of precision", options: [{ value: "Spanish", label: "Spanish" }, { value: "French", label: "French" }, { value: "German", label: "German" }, { value: "Italian", label: "Italian" }, { value: "Portuguese", label: "Portuguese" }, { value: "Japanese", label: "Japanese" }, { value: "Korean", label: "Korean" }, { value: "Chinese", label: "Chinese" }, { value: "Mandarin", label: "Mandarin" }, { value: "Hindi", label: "Hindi" }, { value: "Arabic", label: "Arabic" }, { value: "Dutch", label: "Dutch" }, { value: "Polish", label: "Polish" }, { value: "Turkish", label: "Turkish" }, { value: "Swedish", label: "Swedish" }, { value: "Danish", label: "Danish" }, { value: "Romanian", label: "Romanian" }, { value: "Greek", label: "Greek" }, { value: "Ukrainian", label: "Ukrainian" }, { value: "Indonesian", label: "Indonesian" }, { value: "Filipino", label: "Filipino" }, { value: "English", label: "English" }] } },
+  { id: "mirelo-sfx2-video", name: "Mirelo SFX 2.0", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60 },
   { id: "mirelo-sfx-video", name: "Mirelo SFX 1.6", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60 },
   // second round (admin): a talking photo with HeyGen's voices, video from audio, tracking masks, dubbing
   { id: "heygen-avatar4", name: "HeyGen Avatar 4", durations: [], resolutions: ["360p","480p","540p","720p","1080p"], aspectRatios: ["auto","16:9","9:16","1:1","4:5","5:4"], supportsEndFrame: false, audioType: "upload",
@@ -1584,6 +1614,12 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "recraft-v4.1":        "$$$",
   "flux-2":              "$",
   "flux-3-image":        "$$",
+  "flux-3-klein":        "$",
+  "flux-3-klein-base":   "$",
+  "krea-3":              "$",
+  "krea-3-realtime":     "$$$",
+  "bria-fibo-expand":    "$",
+  "bria-guided-remove-bg": "$",
   "flux-1-dev":          "$$",
   "kling-v3-image":      "$",
   "kling-o3-image":      "$$",
@@ -1631,6 +1667,8 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "happy-horse":        "$$",
   "happy-horse-1.1":    "$$$",
   "minimax-h3-max-lipsync": "$$",
+  "minimax-h3-max-director": "$$$",
+  "omnihuman-v2": "$$$",
   "pixverse-music-video": "$$$",
   "minimax-h3-max-camera": "$$",
   "void-video-removal": "$",
@@ -1645,6 +1683,7 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "heygen-translate":   "$$$",
   "heygen-translate-fast": "$$",
   "mirelo-sfx-video":   "$",
+  "mirelo-sfx2-video":  "$",
   "heygen-avatar4":     "$$",
   "ltx-2.5-audio-pro":  "$$$",
   "ltx-2.5-audio-fast": "$$$",
@@ -1731,7 +1770,8 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
 // lib/audio-studio's section order, and a $ tier from a typical run
 const AUDIO_MODEL_GROUPS = AUDIO_GROUPS.map(g => ({
   label: g.label, type: g.key, accent: g.accent, dot: g.dot, note: g.note,
-  items: AUDIO_STUDIO_MODELS.filter(m => m.group === g.key && !m.admin).map(m => m.name),
+  // hidden ones (Mureka Lyrics Video) start from a song in the feed, not the picker
+  items: AUDIO_STUDIO_MODELS.filter(m => m.group === g.key && !m.admin && !m.hidden).map(m => m.name),
 }))
 // Audio models still under test (admin flag in lib/audio-studio): admins only
 const ADMIN_AUDIO_MODEL_GROUPS = [
@@ -1832,7 +1872,7 @@ const IMAGE_MODEL_GROUPS = [
   // Public 2026-10-02: V4 copies the style of the attached references (one is required)
   { label: "Recraft V4",        type: "style refs · SVG vector output", accent: "text-violet-400", dot: "bg-violet-400", items: ["Recraft V4"] },
   { label: "Wan",               type: "text to image",             accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.7 Pro"] },
-  { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 3", "FLUX 1 Dev", "FLUX 2"] },
+  { label: "Black Forest Labs", type: "text to image",             accent: "text-amber-400",   dot: "bg-amber-400",   items: ["FLUX 3", "FLUX 3 Klein", "FLUX 3 Klein Base", "FLUX 1 Dev", "FLUX 2"] },
   { label: "OpenAI",            type: "text to image · edit",      accent: "text-green-400",   dot: "bg-green-400",   items: ["ChatGPT Images 2.0", "ChatGPT Images 2.5"] },
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
   // Public since 2026-09-25. The tier (v4, Fast, Instant, Tiling) is picked
@@ -1844,7 +1884,7 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Pixelcut",          type: "product photography · background removal", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Product Photo", "Background Removal"] },
   // Public 2026-10-01 (priced from fal's rates, tested)
   { label: "Topaz",             type: "upscale · restore · adjust", accent: "text-lime-400",    dot: "bg-lime-400",    items: ["Topaz Image"] },
-  { label: "Bria",              type: "text to image · edit · product tools", accent: "text-teal-400", dot: "bg-teal-400", items: ["Bria Fibo 1.5", "Bria Replace Background", "Bria Product in Hand", "Bria Embed Product"] },
+  { label: "Bria",              type: "text to image · edit · product tools", accent: "text-teal-400", dot: "bg-teal-400", items: ["Bria Fibo 1.5", "Bria Replace Background", "Bria Product in Hand", "Bria Embed Product", "Bria Guided Background Removal", "Bria Fibo Expand"] },
   { label: "Microsoft",         type: "text to image · edit",      accent: "text-sky-400",     dot: "bg-sky-400",     items: ["MAI Image 2.5 Pro"] },
   // ESRGAN (Real-ESRGAN) is Tencent ARC Lab's - public with the other fal upscalers 2026-10-08
   { label: "Tencent",           type: "text to image · edit · upscale", accent: "text-sky-300", dot: "bg-sky-300",     items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct", "ESRGAN"] },
@@ -1852,7 +1892,7 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Alibaba",           type: "text to image · edit · new angles", accent: "text-orange-400", dot: "bg-orange-400", items: ["Qwen Image 3", "Multi-Angle Reshoot"] },
   { label: "Meta",              type: "text to image · edit · cut-outs", accent: "text-blue-400", dot: "bg-blue-400", items: ["Meta Muse", "SAM 3.1 Select"] },
   // Public 2026-10-02 (priced from fal's rates, tested)
-  { label: "Krea",              type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
+  { label: "Krea",              type: "text to image · style references", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 3", "Krea 2 Large", "Krea 2 Medium", "Krea 2 Medium Turbo"] },
   // Public 2026-10-04: Marigold (ETH Zurich's open depth model)
   // DRCT: an academic super-resolution transformer (no company of its own)
   { label: "Open Source",       type: "depth maps · upscale", accent: "text-slate-300", dot: "bg-slate-400", items: ["Marigold V2 Depth", "DRCT"] },
@@ -1883,9 +1923,10 @@ const IMAGE_MODEL_SECTIONS: { label: string; note?: string; accent?: string; dot
 /** The home page's Upscale / Tools sub-sections, by model (see HomeView). */
 const HOME_IMAGE_UPSCALE_NAMES = ["SeedVR2 Upscale", "Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"]
 // Single-image tools with no upscale factor: no 2x/4x picker, no "2x" on the tile
-const NO_FACTOR_TOOLS = new Set(["marigold-v2", "pixelcut-bg-removal", "recraft-vectorize", "seedream-5-pro-layerize", "qwen-multi-angle", "sam-3.1-image", "bria-replace-background", "seedream-5-flash-layerize"])
+const NO_FACTOR_TOOLS = new Set(["bria-guided-remove-bg", "marigold-v2", "pixelcut-bg-removal", "recraft-vectorize", "seedream-5-pro-layerize", "qwen-multi-angle", "sam-3.1-image", "bria-replace-background", "seedream-5-flash-layerize"])
 // Single-image tools that take a short text: what it acts on (sent as the prompt)
-const TOOL_TEXT: Record<string, { label: string; placeholder: string }> = {
+const TOOL_TEXT: Record<string, { label: string; placeholder: string; optional?: boolean }> = {
+  "bria-guided-remove-bg": { label: "Guide", placeholder: "optional - what to keep or drop, e.g. keep the leash, drop the chair", optional: true },
   "sam-3.1-image": { label: "Select", placeholder: "what to cut out - e.g. the fox, the red car" },
   "bria-replace-background": { label: "Background", placeholder: "the new background - e.g. a sunlit beach at golden hour" },
 }
@@ -1896,6 +1937,10 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // scanners (Gemini API no longer used for images), SUPIR (Replicate, not
   // fal) and the two local RunPod upscalers. Their configs stay so old feed
   // items still resolve; they just aren't offered.
+  // 2026-10-15 batch: FLUX 3 Klein / Klein Base, Krea 3 and the two Bria tools
+  // went public 2026-10-16 (moved to their makers' groups above); the live
+  // session stays here while under test
+  { label: "Krea",      type: "live editing · every keystroke a new frame", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 3 Realtime"] },
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
@@ -1909,7 +1954,7 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Vidu", type: "text · image · start/end · refs to video · audio · up to 4K", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q4", "Vidu Q3", "Vidu Q3 Turbo"] },
   { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
   { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot · relight", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot", "H3 Max Relight"] },
-  { label: "ByteDance",   type: "image & text to video · character swap · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "DreamActor v2", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
+  { label: "ByteDance",   type: "image & text to video · character swap · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "OmniHuman v2", "DreamActor v2", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
   { label: "Google Veo", type: "text · image · first/last · refs · audio · extend", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite", "Veo 3.1 Extend", "Veo 3.1 Fast Extend"] },
   { label: "Wan",         type: "image & text to video · character swap", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7", "Wan 2.2 Animate Replace"] },
   { label: "Alibaba Wan 3.0", type: "text · image · refs · with audio", accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
@@ -1927,7 +1972,7 @@ const VIDEO_MODEL_GROUPS = [
   // Public 2026-10-04: captions, dubbing and sound for a clip you already have
   { label: "VEED", type: "animated subtitles", accent: "text-violet-300", dot: "bg-violet-300", items: ["VEED Subtitles"] },
   { label: "ElevenLabs", type: "dub a clip into another language", accent: "text-slate-200", dot: "bg-slate-200", items: ["ElevenLabs Dubbing"] },
-  { label: "Mirelo", type: "sound effects for a silent clip", accent: "text-orange-300", dot: "bg-orange-300", items: ["Mirelo SFX 1.6"] },
+  { label: "Mirelo", type: "sound effects for a silent clip", accent: "text-orange-300", dot: "bg-orange-300", items: ["Mirelo SFX 2.0", "Mirelo SFX 1.6"] },
   // Public 2026-10-08 with the rest of the 2026-10-07 batch
   { label: "Decart", type: "edit a clip from words", accent: "text-sky-300", dot: "bg-sky-300", items: ["Lucy Edit Pro"] },
   { label: "Lipsync",     type: "lip sync video",        accent: "text-pink-400",    dot: "bg-pink-400",    items: ["Lipsync v3"] },
@@ -1945,6 +1990,46 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Higgsfield", type: "exclusive · motion transfer · object swap · directed shots", accent: "text-slate-200", dot: "bg-slate-300", items: ["Genjutsu Motion Transfer", "Genjutsu Object Swap", "Cinema Studio 4.0"] },
 ]
 const HOME_VIDEO_TOOL_NAMES = VIDEO_MODEL_CONFIGS.filter(m => m.isVideoTool).map(m => m.name)
+// ── Home page: the Worlds and 3D model sections (2026-10-16, admin only) ──
+// Live world models (lib/realtime-wma), by maker. H3 Max Director is NOT here:
+// it is a realtime VIDEO model and lives in the video models (owner, 2026-10-16)
+// The world BUILDERS (Hunyuan World, Tripo splat) moved here from the 3D models
+// the same day - they make worlds, not 3D models
+const HOME_WORLDS_GROUPS = [
+  { label: "Robbyant", type: "live world", accent: "text-sky-300", dot: "bg-sky-300", items: ["Lingbot World 2"] },
+  { label: "Alibaba", type: "live world", accent: "text-yellow-400", dot: "bg-yellow-400", items: ["Abot World 0"] },
+  { label: "Tencent", type: "build a world", accent: "text-emerald-300", dot: "bg-emerald-300", items: [BUILD_NAMES["hunyuan-world"].name] },
+  { label: "Tripo", type: "build a world", accent: "text-violet-300", dot: "bg-violet-300", items: [BUILD_NAMES["triposplat"].name] },
+]
+const HOME_WORLDS_COST: Record<string, string> = {
+  ...Object.fromEntries(WMA_MODEL_IDS.filter(id => WMA_MODELS[id].kind === "world").map(id => [WMA_MODELS[id].name, `${wmaBlockTickets(id)}/${WMA_BLOCK_SEC}s`])),
+  ...Object.fromEntries(WORLD_BUILD_TOOLS.map(t => [BUILD_NAMES[t.id]?.name ?? t.label, String(toolTickets(t, {}, 1))])),
+}
+/** fal's own model thumbnails - the cards' art until one is uploaded */
+const HOME_WORLDS_STILLS: Record<string, string> = {
+  "Lingbot World 2": "https://v3b.fal.media/files/b/0aae847a/LTkPBlluv8lxjIeVMN4jP.jpg",
+  "Abot World 0": "https://v3b.fal.media/files/b/0aae847b/upNdNjKbwCCAGc2DccBsE.jpg",
+}
+// The 3D Studio's tools (lib/threed/catalog): the generators (stage "model") by
+// maker, and everything else (concept, refine, rig, worlds) as its tools
+const THREED_ACCENTS: Record<string, string> = {
+  Meshy: "text-lime-300", Tripo: "text-violet-300", Hunyuan: "text-emerald-300", Hyper3D: "text-cyan-300",
+  TRELLIS: "text-blue-300", Hi3D: "text-amber-300", Qwen: "text-fuchsia-300", Patina: "text-orange-300", "SAM 3D": "text-sky-300",
+}
+const threeDGroupsOf = (tools: typeof THREED_TOOLS) => {
+  const out: { label: string; type: string; accent: string; dot: string; items: string[] }[] = []
+  for (const t of tools) {
+    const g = out.find(x => x.label === t.family)
+    if (g) g.items.push(t.label)
+    else out.push({ label: t.family, type: "3D", accent: THREED_ACCENTS[t.family] ?? "text-slate-300", dot: "bg-slate-300", items: [t.label] })
+  }
+  return out
+}
+const HOME_3D_GROUPS = threeDGroupsOf(THREED_TOOLS.filter(t => t.stage === "model"))
+// (the world builders, stage "world", are the Worlds studio's - not listed as 3D models)
+const HOME_3D_TOOL_GROUPS = threeDGroupsOf(THREED_TOOLS.filter(t => t.stage !== "model" && t.stage !== "world"))
+const HOME_3D_COST: Record<string, string> = Object.fromEntries(THREED_TOOLS.map(t => [t.label, String(toolTickets(t, {}))]))
+
 const ADMIN_VIDEO_MODEL_GROUPS = [
   /*
    * Wired but NOT listed (2026-09-28): Marey (t2v/i2v, motion + pose transfer)
@@ -1956,11 +2041,15 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    */
   { label: "Wan",    type: "LoRA video · pricing TBD",                        accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA"] },
   { label: "Topaz", type: "colorize · fal's endpoint is down", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Colorize"] },
+  // Mirelo SFX 2.0 (2026-10-15) and OmniHuman v2 (2026-10-16) went public
+  // 2026-10-16 and moved to their makers' groups above
+  // 2026-10-16 (under test): a continuous film you steer while it plays
+  { label: "MiniMax Live", type: "direct a film live · named references · with sound", accent: "text-rose-400", dot: "bg-rose-400", items: ["H3 Max Director"] },
   // The 2026-10-07 batch (Vidu Q4, H3 Max Relight, the character swaps) went
   // public 2026-10-08 and moved to its makers' groups above
 ]
 // Models fal runs without any prompt (their inputs are the image/audio)
-const PROMPTLESS_VIDEO_MODELS = new Set(["minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2"])
+const PROMPTLESS_VIDEO_MODELS = new Set(["omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
 /** Minutes the portal keeps polling a video before giving up (default 20) - the
@@ -1981,7 +2070,10 @@ const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "sam-3.1-video": "What to track - e.g. the dog, the red car",
   "minimax-h3-max-insert": "Describe the new shot to insert (optional)",
   "mirelo-sfx-video": "Describe the sounds you want (optional)",
+  "mirelo-sfx2-video": "Describe the sounds you want (optional) - speech already in the clip is kept",
   "minimax-h3-max-lipsync": "No prompt needed - the photo and voice track are all it takes",
+  "omnihuman-v2": "Optional: direct the scene, the movement and the camera - the photo and the audio do the rest",
+  "minimax-h3-max-director": "The film: the look, who is in it (name your references), where, and what happens - you direct the rest live",
   "pixverse-music-video": "Lyrics to show as subtitles (optional) - the song drives the video",
   "heygen-avatar4": "What they say - type the script (or upload a voice track)",
   "ltx-2.5-audio-pro": "Describe the video (required without a start image)",
@@ -2001,6 +2093,9 @@ const ADMIN_VIDEO_MODEL_IDS = new Set([
   "marey",
   "marey-motion-transfer", "marey-pose-transfer",
   "topaz-colorize",
+  // mirelo-sfx2-video and omnihuman-v2: public 2026-10-16
+  // 2026-10-16: live director
+  "minimax-h3-max-director",
 ])
 
 // ── Wan 2.2 custom-LoRA picker (admin) ─────────────────────────────────────
@@ -9018,8 +9113,64 @@ function FeedMasonry({ head, body, n, gap = 8 }: {
   )
 }
 
-function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRatio, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false, silverRim = false, letterbox = false, spanBoost = false, capHeightPx, onNaturalSize }: {
+/**
+ * The image viewer's frame strip for a Krea 3 Realtime session tile: every
+ * kept frame, like a Storyboard shot's stills - pick one to view (the viewer's
+ * download / reference / edit act on it), or make it the tile's cover.
+ * Floats above the viewer (z-50): at the top on a phone, the bottom elsewhere.
+ */
+function LiveFrameStrip({ frames, index, cover, onPick, onMakeCover }: {
+  frames: { url: string; prompt?: string }[]
+  index: number
+  cover: number
+  onPick: (i: number) => void
+  onMakeCover: (i: number) => void | Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const strip = useRef<HTMLDivElement>(null)
+  useEffect(() => { strip.current?.querySelector<HTMLElement>(`[data-frame="${index}"]`)?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" }) }, [index])
+  const n = frames.length
+  return (
+    <div className="fixed left-1/2 top-2 z-[60] w-[min(96vw,760px)] -translate-x-1/2 rounded-2xl border border-white/15 bg-black/80 p-2 backdrop-blur sm:top-auto sm:bottom-3" onClick={e => e.stopPropagation()}>
+      <div className="mb-1.5 flex items-center gap-2 px-1">
+        <Layers size={12} className="text-slate-400" />
+        <span className="text-[11px] font-semibold text-white">Live session · frame {index + 1} of {n}</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button onClick={() => onPick((index - 1 + n) % n)} aria-label="Previous frame" className="rounded-full border border-white/20 p-1 text-white hover:bg-white/10"><ChevronLeft size={13} /></button>
+          <button onClick={() => onPick((index + 1) % n)} aria-label="Next frame" className="rounded-full border border-white/20 p-1 text-white hover:bg-white/10"><ChevronRight size={13} /></button>
+          <button disabled={busy || index === cover} onClick={async () => { setBusy(true); try { await onMakeCover(index) } finally { setBusy(false) } }}
+            className="rounded-lg border border-white/20 px-2 py-1 text-[10.5px] font-semibold text-white hover:bg-white/10 disabled:opacity-40"
+            title="Show this frame on the feed tile">{index === cover ? "Cover" : busy ? "Saving…" : "Make cover"}</button>
+        </div>
+      </div>
+      <div ref={strip} className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:thin]">
+        {frames.map((f, i) => (
+          <button key={`${i}-${f.url}`} data-frame={i} onClick={() => onPick(i)} title={f.prompt}
+            className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border ${i === index ? "border-white ring-2 ring-white/40" : "border-white/15 hover:border-white/40"}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={f.url} alt="" loading="lazy" className="h-full w-full object-cover" />
+            {i === cover && <span className="absolute bottom-0 inset-x-0 bg-black/70 text-[8px] font-bold text-white">COVER</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Which frame each live-session tile shows (by row id) - the viewer opens on it. */
+const liveFrameChoice = new Map<number, number>()
+/** A Krea 3 Realtime session tile's kept frames (more than one), else undefined. */
+const liveFramesOf = (img: { videoMetadata?: Record<string, any> }): { url: string; prompt?: string; seed?: number | null }[] | undefined => {
+  const f = img.videoMetadata?.liveFrames
+  return Array.isArray(f) && f.length > 1 ? f : undefined
+}
+
+function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRatio, fullRes = false, selectMode, selected, onSelect, fullWidth = false, isVideo = false, adminThumb = false, silverRim = false, letterbox = false, spanBoost = false, capHeightPx, onNaturalSize, liveFrames, coverIndex }: {
   src: string; alt: string; onClick?: () => void; imageId?: number; directUrl?: string
+  // A Krea 3 Realtime session's tile (2026-10-16): every frame the session kept,
+  // flipped through in place (arrows + counter); the viewer opens on the one shown
+  liveFrames?: { url: string }[]
+  coverIndex?: number
   // Injected by FeedMasonry on multi-column tiles: load a higher-res rendition
   spanBoost?: boolean
   // Injected by FeedMasonry on multi-column tiles: fix the MEDIA box to this
@@ -9063,6 +9214,21 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   // (lib/thumbnail), so the proxy is a redirect to a ~40KB webp, while a 4K
   // NanoBanana 2.1 PNG is ~20MB: thirty of those queued ~600MB and the tiles
   // sat blank for minutes. directUrl is only the fallback before a row exists.
+  // A live session's tile shows the frame picked with its arrows (each frame is a
+  // 768px JPEG - light enough to be its own thumbnail)
+  const frameList = liveFrames && liveFrames.length > 1 ? liveFrames : null
+  // A tile the feed rebuilds (opening the viewer re-renders the grid) keeps the frame it showed
+  const [frameIdx, setFrameIdx] = useState(() => (frameList ? Math.min(frameList.length - 1, Math.max(0, (imageId ? liveFrameChoice.get(imageId) : undefined) ?? coverIndex ?? frameList.length - 1)) : 0))
+  const frameTouched = useRef(!!(imageId && liveFrameChoice.has(imageId)))
+  // New frames arriving (the session is still saving): follow the newest, unless one was picked
+  useEffect(() => {
+    if (frameList && !frameTouched.current) setFrameIdx(Math.min(frameList.length - 1, Math.max(0, coverIndex ?? frameList.length - 1)))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frameList?.length, coverIndex])
+  const shownFrame = frameList ? frameList[Math.min(frameIdx, frameList.length - 1)] : null
+  if (shownFrame) { thumbUrl = shownFrame.url; directUrl = shownFrame.url; src = shownFrame.url }
+  useEffect(() => { if (frameList && imageId) liveFrameChoice.set(imageId, frameIdx) }, [frameList, imageId, frameIdx])
+  const stepFrame = (d: number) => { if (!frameList) return; frameTouched.current = true; setFrameIdx(i => (i + d + frameList.length) % frameList.length) }
   const thumbSrc = thumbUrl
     ? thumbUrl
     : adminThumb && imageId
@@ -9173,6 +9339,15 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
       )}
       {isVideo && loaded && (
         <div className="absolute bottom-1 right-1 px-1 py-0.5 rounded bg-black/60 text-[8px] font-mono text-white/70 pointer-events-none">VID</div>
+      )}
+      {frameList && !selectMode && (
+        <>
+          <span className="absolute top-1 right-1 z-10 flex items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[9px] font-mono text-white/85 pointer-events-none"><Layers size={9} />{frameIdx + 1}/{frameList.length}</span>
+          <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-between p-1 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+            <button onClick={e => { e.stopPropagation(); stepFrame(-1) }} aria-label="Previous frame" className="rounded-full border border-white/25 bg-black/60 p-1 text-white hover:bg-black/80"><ChevronLeft size={13} /></button>
+            <button onClick={e => { e.stopPropagation(); stepFrame(1) }} aria-label="Next frame" className="rounded-full border border-white/25 bg-black/60 p-1 text-white hover:bg-black/80"><ChevronRight size={13} /></button>
+          </div>
+        </>
       )}
       {selectMode && (
         <div className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all ${selected ? "bg-cyan-400 border-cyan-400" : "border-white/60 bg-black/40"}`}>
@@ -10485,6 +10660,7 @@ function ImageDetailModal({
   onUsePrompt,
   onAddRef,
   onEditCanvas,
+  onLiveEdit,
   editCanvasLocked = false,
   navList,
   navIndex,
@@ -10503,6 +10679,8 @@ function ImageDetailModal({
   // editCanvasLocked marks non-Dev accounts — their click routes to the
   // Dev Tier upgrade page instead of the canvas.
   onEditCanvas?: (image: ImageItem) => void
+  /** Admin: open this picture in a Krea 3 Realtime live session */
+  onLiveEdit?: (image: ImageItem) => void
   editCanvasLocked?: boolean
   navList?: ImageItem[]
   navIndex?: number
@@ -11266,6 +11444,17 @@ function ImageDetailModal({
                     >
                       {editCanvasLocked ? <Sparkles size={11} /> : <Pencil size={11} />}
                       Edit
+                    </button>
+                  )}
+                  {/* Krea 3 Realtime (admin): edit this picture live, by typing */}
+                  {onLiveEdit && !image.failed && image.imageUrl?.startsWith("https://") && !/\.(mp4|webm|mov|glb|svg)(\?|$)/i.test(image.imageUrl.split("#")[0]) && (
+                    <button
+                      onClick={() => { onLiveEdit(image); onClose() }}
+                      title="Edit this picture live with Krea 3 Realtime - every change to the prompt re-renders it"
+                      className="flex-1 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 hover:border-white/30 text-slate-200 text-[11px] font-medium transition-all flex items-center justify-center gap-1.5"
+                    >
+                      <Radio size={11} />
+                      Live
                     </button>
                   )}
                   <button
@@ -12265,7 +12454,7 @@ function ImageGrid({
             if (sameAsAny(heldByHead, img)) return
             const node = img.failed
               ? <FailedSlot key={`fresh-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} />
-              : <GridImage key={`fresh-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
+              : <GridImage key={`fresh-${img.id}`} liveFrames={liveFramesOf(img)} coverIndex={img.videoMetadata?.coverIndex} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} directUrl={img.imageUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />
             headNodes.push({ weight: arHeightWeight(img.aspectRatio, img.videoMetadata), node, key: `fresh-${img.id}`, t: img.createdAt ? Date.parse(img.createdAt) : undefined })
           })
           // Strict queue order, newest first. Entries without a timestamp keep
@@ -12284,14 +12473,14 @@ function ImageGrid({
           images.forEach((img) => nodes.push({
             weight: arHeightWeight(img.aspectRatio, img.videoMetadata),
             key: `af-${img.id}`,
-            node: <GridImage key={`af-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} adminThumb silverRim={tileBorders} />,
+            node: <GridImage key={`af-${img.id}`} liveFrames={liveFramesOf(img)} coverIndex={img.videoMetadata?.coverIndex} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} adminThumb silverRim={tileBorders} />,
           }))
         } else if (showHidden) {
           // Hidden view: exactly the API results (user's hidden items)
           images.forEach((img) => nodes.push({
             weight: arHeightWeight(img.aspectRatio, img.videoMetadata),
             key: `h-${img.id}`,
-            node: <GridImage key={`h-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />,
+            node: <GridImage key={`h-${img.id}`} liveFrames={liveFramesOf(img)} coverIndex={img.videoMetadata?.coverIndex} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} silverRim={tileBorders} />,
           }))
         } else {
           // DB images merged with restored fails, sorted by createdAt so fails land in place
@@ -12351,7 +12540,7 @@ function ImageGrid({
               ? <FailedSlot key={`sf-${img.id}`} prompt={img.prompt} error={img.failError || "Generation failed"} aspectRatio={img.aspectRatio} onRetry={onRetryFail ? () => onRetryFail(img) : undefined} onClick={selectMode ? undefined : () => onImageClick(img)} onDismiss={onDismissFail ? () => onDismissFail(img) : undefined} />
               // isVideo: without it a video renders through <img src="...mp4">,
               // which cannot decode — that is the broken metallic placeholder.
-              : <GridImage key={`db-${img.id}`} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} silverRim={tileBorders} />
+              : <GridImage key={`db-${img.id}`} liveFrames={liveFramesOf(img)} coverIndex={img.videoMetadata?.coverIndex} src={img.imageUrl} alt={img.prompt} onClick={selectMode ? undefined : () => onImageClick(img)} imageId={img.id} thumbUrl={img.thumbnailUrl} aspectRatio={img.aspectRatio} fullRes={fullRes} selectMode={selectMode} selected={selectedIds?.has(img.id)} onSelect={onSelectToggle} fullWidth={fullSize} letterbox={fullSize && fullSizeLayout === "grid"} isVideo={isVideoItem(img)} silverRim={tileBorders} />
             const imgT = img.createdAt ? new Date(img.createdAt).getTime() : 0
             if (layoutCols.has(img.id) && imgT >= cutoffT) {
               restoredById.set(img.id, { weight: arHeightWeight(img.aspectRatio, img.videoMetadata), node, key: `db-${img.id}`, presetCol: layoutCols.get(img.id), t: imgT })
@@ -12437,7 +12626,16 @@ function ImageGrid({
               if (next.length > 0 || images.length > 0) {
                 const nextIds = new Set(next.map(e => e.id))
                 const loadedIds = new Set<number>([...images.map(i => i.id), ...freshImages.map(i => i.id), ...savedFails.map(f => f.id)])
-                const tail = headLayoutRef.current.filter(e => !nextIds.has(e.id) && !loadedIds.has(e.id))
+                /*
+                 * Entries for rows not loaded yet are kept only until the
+                 * first page arrives (2026-10-15). After that, a saved strip
+                 * entry whose row is on a LATER page would join the strip -
+                 * at the top - when scrolling loaded it: a 129-tile batch
+                 * (more than a page) reshuffled the top of the feed on every
+                 * scroll, and a refresh put it back. Rows from later pages
+                 * now always arrive below, in feed order.
+                 */
+                const tail = images.length > 0 ? [] : headLayoutRef.current.filter(e => !nextIds.has(e.id) && !loadedIds.has(e.id))
                 headLayoutRef.current = [...next, ...tail].slice(0, HEAD_LAYOUT_MAX)
                 localStorage.setItem(HEAD_LAYOUT_KEY, JSON.stringify(headLayoutRef.current))
               }
@@ -18122,13 +18320,17 @@ function PromptBox({
   const canGenerate = model.isTryOn
     ? !isGenerationMaintenance && !!userId && tryOnPerson.url.startsWith("http") && tryOnGarment.url.startsWith("http") && !generating && !queueFull && hasEnoughTickets
     : model.isUpscaler
-    ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint) && hasEnoughTickets && (!TOOL_TEXT[model.id] || toolText.trim().length > 0)
-    : !isGenerationMaintenance && !!userId && prompt.trim().length > 0 && !generating && !needsRefImage && !queueFull && hasEnoughTickets
+    ? !isGenerationMaintenance && !!userId && upscaleSourceUrl.trim().startsWith("http") && !generating && !queueFull && (!model.isLocalModel || !!selectedLocalCheckpoint) && hasEnoughTickets && (!TOOL_TEXT[model.id] || !!TOOL_TEXT[model.id].optional || toolText.trim().length > 0)
+    : model.isRealtime
+    // A live session isn't a queue job: a full queue or a job in flight doesn't
+    // hold it up. The panel pays its own 30-second blocks (it says if it can't)
+    ? !isGenerationMaintenance && !!userId && (isAdminAccount || ticketBalance >= KREA3_REALTIME_BLOCK_TICKETS)
+    : !isGenerationMaintenance && !!userId && (prompt.trim().length > 0 || !!model.promptOptional) && !generating && !needsRefImage && !queueFull && hasEnoughTickets
 
   // --- Quick Generate (pinned tab) ---
   const pinnedTab = pinnedTabId ? tabs.find(t => t.id === pinnedTabId) ?? null : null
   const pinnedModel = pinnedTab ? IMAGE_MODEL_CONFIGS.find(m => m.id === pinnedTab.modelId) ?? null : null
-  const pinnedRunnable = !!pinnedModel && !pinnedModel.isUpscaler && !pinnedModel.isLocalModel && !pinnedModel.isCustomFlux
+  const pinnedRunnable = !!pinnedModel && !pinnedModel.isUpscaler && !pinnedModel.isLocalModel && !pinnedModel.isCustomFlux && !pinnedModel.isRealtime
   const pinnedImageCount = pinnedTab && pinnedModel
     ? Math.min(Math.max(1, pinnedTab.imageCount), pinnedModel.maxImages ?? 1)
     : 1
@@ -18289,6 +18491,7 @@ function PromptBox({
         : model.id === "seedream-5-pro-layerize" || model.id === "seedream-5-flash-layerize" ? "Split into layers"
         : model.id === "sam-3.1-image" ? `Select · ${toolText.trim()}`
         : model.id === "bria-replace-background" ? `New background · ${toolText.trim()}`
+        : model.id === "bria-guided-remove-bg" ? (toolText.trim() ? `Guided cut-out · ${toolText.trim()}` : "Guided cut-out")
         : model.id === "qwen-multi-angle" ? `Reshoot · ${angleH}° / ${angleV}° · zoom ${angleZoom}`
         : model.id === "aura-sr" ? `${upscaleFactor}x AuraSR` : model.id === "esrgan" ? `${upscaleFactor}x ESRGAN` : model.id === "drct" ? `${upscaleFactor}x DRCT` : model.id === "supir" ? `${upscaleFactor}x SUPIR` : `${upscaleFactor}x upscale`
       onAddPending({
@@ -19161,6 +19364,12 @@ function PromptBox({
 
   const handleGenerate = async () => {
     if (!canGenerate) return
+    // Krea 3 Realtime is a live session, not a job: open it on the first
+    // active reference (or words alone) with what is typed so far
+    if (model.isRealtime) {
+      window.dispatchEvent(new CustomEvent("krea-live:open", { detail: { source: activeRefImages[0]?.url ?? null, prompt } }))
+      return
+    }
     // ── BATCH MODE (admin) ──
     // Handed to the server in ONE request. This used to be a loop in the tab
     // (four POSTs in flight), so a refresh mid-run abandoned every batch that
@@ -19869,6 +20078,18 @@ function PromptBox({
               slots on the right. fal wants person_image_url and
               product_image_url, so the UI names them instead of relying on
               the order refs happen to be in. */}
+          {model.isRealtime && (
+            // One line on a phone (the full explanation took half the screen
+            // above the prompt); the longer version from sm up
+            <div className="px-4 py-2 border-b border-white/5 flex items-center gap-2">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">Live</span>
+              <p className="min-w-0 text-[11px] text-slate-400 leading-snug">
+                <span className="sm:hidden">Edits redraw as you type. Billed only while live.</span>
+                <span className="hidden sm:inline">Edits redraw the picture as you type. Opens on your first active reference (or words alone), or press <b className="text-slate-300">Live</b> on any feed picture. Billed only while live - switch it off any time.</span>
+              </p>
+            </div>
+          )}
+
           {model.isTryOn && (
             <div className="px-4 pt-4 pb-3 border-b border-white/5">
               <div className="flex items-center justify-between mb-2.5">
@@ -22260,7 +22481,8 @@ function PromptBox({
                 onClick={handleGenerate}
                 disabled={batchMode ? (generating || refBatchUrls.length === 0 || !prompt.trim()) : !canGenerate}
                 data-keep-refs-open
-                className={`relative overflow-hidden flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg text-[12px] font-bold transition-all flex-1 sm:flex-none ${
+                title={model.isRealtime ? `Opens a live session - ${KREA3_REALTIME_BLOCK_TICKETS} tickets per ${KREA3_REALTIME_BLOCK_SEC} seconds while it is live` : undefined}
+                className={`relative overflow-hidden flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg text-[12px] font-bold whitespace-nowrap transition-all flex-1 sm:flex-none ${
                   canGenerate
                     ? "bg-white/10 border border-white/25 text-white hover:bg-white/15 hover:border-white/40"
                     : "bg-white/5 text-slate-600 cursor-not-allowed border border-white/10"
@@ -22274,13 +22496,18 @@ function PromptBox({
                 )}
                 {generating ? (
                   <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                ) : model.isRealtime ? (
+                  <Radio size={12} className="hidden sm:block" />
                 ) : (
                   <Ticket size={12} />
                 )}
                 {isGenerationMaintenance ? "Temporarily Offline"
+                  // Realtime is billed by time, not per picture - the rate sits under
+                  // the label on a phone (the row is shared) and beside it from sm up
+                  : model.isRealtime ? <span className="flex flex-col items-start leading-tight sm:flex-row sm:items-baseline sm:gap-2"><span>Go Live</span><span className="text-[10px] font-semibold opacity-70"><span className="sm:hidden">{KREA3_REALTIME_BLOCK_TICKETS}/{KREA3_REALTIME_BLOCK_SEC}s</span><span className="hidden sm:inline">{KREA3_REALTIME_BLOCK_TICKETS} tickets / {KREA3_REALTIME_BLOCK_SEC}s</span></span></span>
                   : batchMode ? (refBatchUrls.length === 0 ? "No batches" : `Run ${refBatchUrls.length} batches`)
                   : queueFull ? "Queue Full" : "Generate"}
-                {!isGenerationMaintenance && !queueFull && !batchMode && !model.isLocalModel && <span className="opacity-70">{totalCost}</span>}
+                {!isGenerationMaintenance && !queueFull && !batchMode && !model.isLocalModel && !model.isRealtime && <span className="opacity-70">{totalCost}</span>}
               </button>
             </div>
           </div>
@@ -23005,7 +23232,10 @@ function VideoCustomizationPanel({
   const isLipsync = !!model.supportsLipsync
   const isOmni = !!model.videoModes
   const omniMode = isOmni ? sd20Mode : "t2v"
-  const ticketCost = isLipsync
+  const ticketCost = model.isRealtime
+    // A live model: the price of one 30-second block (lib/realtime-wma)
+    ? wmaBlockTickets("minimax-h3-max-director", resolution)
+    : isLipsync
     ? Math.max(10, Math.ceil((lipsyncVideoDuration ?? 0) * 6))
     : isOmni
     ? (omniMode === "edit"
@@ -23052,7 +23282,7 @@ function VideoCustomizationPanel({
           <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500">Video settings</p>
         </div>
         <span className="ml-auto shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg border border-white/10 bg-white/[0.04] text-[10px] font-mono text-slate-300">
-          <Ticket size={9} />{ticketCost}{(isSD20Family && duration === "auto") || (isLipsync && !lipsyncVideoDuration) || (isOmni && omniMode === "edit" && !editSourceDuration) ? "~" : ""}
+          <Ticket size={9} />{ticketCost}{model.isRealtime ? "/30s" : ""}{(isSD20Family && duration === "auto") || (isLipsync && !lipsyncVideoDuration) || (isOmni && omniMode === "edit" && !editSourceDuration) ? "~" : ""}
         </span>
       </div>
 
@@ -23463,12 +23693,20 @@ function VideoCustomizationPanel({
           {model.resolutions && (
             <div className="space-y-1.5">
               <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Resolution</p>
-              <div className="flex gap-1.5">
-                {model.resolutions.map(r => (
-                  <button key={r} onClick={() => onResolutionChange(r)}
-                    className={`flex-1 ${btnBase} ${resolution === r ? btnActive : btnIdle}`}>{r}</button>
-                ))}
-              </div>
+              {/* More than four sizes (H3 Max Director has seven) is a dropdown - a row of chips that long overflows */}
+              {model.resolutions.length > 4 ? (
+                <select value={model.resolutions.includes(resolution) ? resolution : ""} onChange={e => onResolutionChange(e.target.value)} className={selectCls}>
+                  {!model.resolutions.includes(resolution) && <option value="" disabled>Pick a size</option>}
+                  {model.resolutions.map(r => <option key={r} value={r}>{model.isRealtime ? `${r} · ${wmaBlockTickets("minimax-h3-max-director", r)} tickets / 30s` : r}</option>)}
+                </select>
+              ) : (
+                <div className="flex gap-1.5">
+                  {model.resolutions.map(r => (
+                    <button key={r} onClick={() => onResolutionChange(r)}
+                      className={`flex-1 ${btnBase} ${resolution === r ? btnActive : btnIdle}`}>{r}</button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -23699,7 +23937,7 @@ function VideoCustomizationPanel({
             </p>
           </div>
           <span className="shrink-0 flex items-center gap-1.5 font-mono text-base font-bold text-white">
-            <Ticket size={13} className="text-slate-400" />{ticketCost}
+            <Ticket size={13} className="text-slate-400" />{ticketCost}{model.isRealtime && <span className="text-[11px] text-slate-400">/30s live</span>}
           </span>
         </div>
       </div>
@@ -24508,7 +24746,9 @@ function VideoFeed({
         if (next.length > 0 || dbImages.length > 0) {
           const nextIds = new Set(next.map(e => e.id))
           const loadedIds = new Set<number>([...dbImages.map(i => i.id), ...sessionDbIds])
-          const tail = headLayoutRef.current.filter(e => !nextIds.has(e.id) && !loadedIds.has(e.id))
+          // Unloaded rows' entries only survive until the first page arrives
+          // (see the image feed): later pages must not pull tiles to the top
+          const tail = dbImages.length > 0 ? [] : headLayoutRef.current.filter(e => !nextIds.has(e.id) && !loadedIds.has(e.id))
           headLayoutRef.current = [...next, ...tail].slice(0, VIDEO_HEAD_LAYOUT_MAX)
           localStorage.setItem(VIDEO_HEAD_LAYOUT_KEY, JSON.stringify(headLayoutRef.current))
         }
@@ -24752,7 +24992,9 @@ function VideoPromptBar({
     ? parseInt(duration) * (resolution === "1080p" ? 12 : 7)
     : ({ "480p": { "5": 7, "10": 14 }, "720p": { "5": 13, "10": 26 }, "1080p": { "5": 20, "10": 40 } } as any)[resolution]?.[duration] ?? 20
 
-  const metaLine = isLipsyncModel
+  const metaLine = model.isRealtime
+    ? `${resolution} · ${aspectRatio} · billed while live`
+    : isLipsyncModel
     ? lipsyncVideoDuration ? `${lipsyncVideoDuration.toFixed(1)}s · 6/sec` : "upload video + audio"
     : model.id === "gemini-omni-flash"
     ? `${duration}s · ${aspectRatio} · native audio`
@@ -24900,9 +25142,9 @@ function VideoPromptBar({
               >
                 {generating
                   ? <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  : !isGenerationMaintenance && <><Ticket size={11} />{ticketCost}</>
+                  : !isGenerationMaintenance && (model.isRealtime ? <Radio size={12} /> : <><Ticket size={11} />{ticketCost}</>)
                 }
-                {isGenerationMaintenance ? "Temporarily Offline" : "Generate"}
+                {isGenerationMaintenance ? "Temporarily Offline" : model.isRealtime ? <>Go Live <span className="text-[10px] font-semibold opacity-70">{wmaBlockTickets("minimax-h3-max-director", resolution)}/{WMA_BLOCK_SEC}s</span></> : "Generate"}
               </button>
             </div>
           </>
@@ -24951,9 +25193,9 @@ function VideoPromptBar({
               >
                 {generating
                   ? <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  : !isGenerationMaintenance && <><Ticket size={11} />{ticketCost}</>
+                  : !isGenerationMaintenance && (model.isRealtime ? <Radio size={12} /> : <><Ticket size={11} />{ticketCost}</>)
                 }
-                {isGenerationMaintenance ? "Temporarily Offline" : "Generate"}
+                {isGenerationMaintenance ? "Temporarily Offline" : model.isRealtime ? <>Go Live <span className="text-[10px] font-semibold opacity-70">{wmaBlockTickets("minimax-h3-max-director", resolution)}/{WMA_BLOCK_SEC}s</span></> : "Generate"}
               </button>
             </div>
           </>
@@ -25040,9 +25282,9 @@ function VideoPromptBar({
           >
             {generating
               ? <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-              : !isGenerationMaintenance && <><Ticket size={11} />{ticketCost}</>
+              : !isGenerationMaintenance && (model.isRealtime ? <Radio size={12} /> : <><Ticket size={11} />{ticketCost}</>)
             }
-            {isGenerationMaintenance ? "Temporarily Offline" : "Generate"}
+            {isGenerationMaintenance ? "Temporarily Offline" : model.isRealtime ? <>Go Live <span className="text-[10px] font-semibold opacity-70">{wmaBlockTickets("minimax-h3-max-director", resolution)}/{WMA_BLOCK_SEC}s</span></> : "Generate"}
           </button>
         </div>
       </div>
@@ -26132,6 +26374,21 @@ export default function PortalV2Page() {
   // Rescan payload for the custom flux panel — full flux* settings from a generation
   const [fluxOverride, setFluxOverride] = useState<{ meta: Record<string, unknown>; version: number } | null>(null)
   const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null)
+  // A Krea 3 Realtime session tile opens on the frame its tile shows; the
+  // viewer's strip flips through the rest (the modal sees that frame as the image)
+  const [viewerFrame, setViewerFrame] = useState(0)
+  useEffect(() => {
+    const lf = selectedImage ? liveFramesOf(selectedImage) : undefined
+    if (!lf || !selectedImage) return
+    setViewerFrame(liveFrameChoice.get(selectedImage.id) ?? Math.min(lf.length - 1, Number(selectedImage.videoMetadata?.coverIndex ?? lf.length - 1)))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedImage?.id])
+  const viewerImage = useMemo(() => {
+    const lf = selectedImage ? liveFramesOf(selectedImage) : undefined
+    if (!selectedImage || !lf) return selectedImage
+    const f = lf[Math.min(viewerFrame, lf.length - 1)]
+    return { ...selectedImage, imageUrl: f.url, thumbnailUrl: f.url, prompt: f.prompt ? `${f.prompt}${f.seed != null ? ` (seed ${f.seed})` : ""} - Krea 3 Realtime` : selectedImage.prompt }
+  }, [selectedImage, viewerFrame])
   // When the viewer was opened from somewhere other than the feed (a storyboard's
   // stills), its arrows step through that list instead of the feed
   const [viewerNav, setViewerNav] = useState<ImageItem[] | null>(null)
@@ -27029,6 +27286,31 @@ export default function PortalV2Page() {
   }, [])
   const handleBalanceChange = useCallback((balance: number) =>
     setUser(u => u ? { ...u, ticketBalance: balance } : u), [])
+  // A live session's clips were swapped for fal's full-quality recording (the
+  // tiles already in the feed take the sharp file), or a whole session was saved
+  const handleLiveUpgraded = useCallback((model: string, r: { upgraded: { id: number; url: string; thumbnailUrl: string | null }[]; added: { id: number; url: string; thumbnailUrl: string | null; durationSec: number }[] }) => {
+    if (r.upgraded.length) setFreshImages(p => p.map(x => {
+      const u = r.upgraded.find(y => y.id === x.id)
+      return u ? { ...x, imageUrl: u.url, thumbnailUrl: u.thumbnailUrl ?? x.thumbnailUrl, quality: "full", videoMetadata: { ...(x.videoMetadata ?? {}), isVideo: true, fullQuality: true, thumbnailUrl: u.thumbnailUrl ?? x.videoMetadata?.thumbnailUrl } } : x
+    }))
+    for (const a of r.added) handlePrependImage({ id: a.id, imageUrl: a.url, thumbnailUrl: a.thumbnailUrl, prompt: "Live session (full quality)", model, quality: "full", createdAt: new Date().toISOString(), videoMetadata: { isVideo: true, duration: String(a.durationSec), thumbnailUrl: a.thumbnailUrl, fullQuality: true } })
+  }, [handlePrependImage])
+  // Krea 3 Realtime live session (admin): opened from the feed viewer's Live
+  // button, or by Generate with Krea 3 Realtime picked in the image menu
+  const [liveEdit, setLiveEdit] = useState<{ source: string | null; prompt: string } | null>(null)
+  // H3 Max Director live session (admin): Generate with it picked in the video models
+  const [directorLive, setDirectorLive] = useState<{ prompt: string; refs: string[]; resolution: string; aspectRatio: string } | null>(null)
+  // What a Home page card picked in the Worlds studio / 3D Studio (with a nonce, so picking the same one again re-applies it)
+  const [worldsPick, setWorldsPick] = useState<{ id: string; n: number } | null>(null)
+  const [threeDPick, setThreeDPick] = useState<{ id: string; n: number } | null>(null)
+  useEffect(() => {
+    const open = (e: Event) => {
+      const d = (e as CustomEvent<{ source?: string | null; prompt?: string }>).detail ?? {}
+      setLiveEdit({ source: d.source ?? null, prompt: d.prompt ?? "" })
+    }
+    window.addEventListener("krea-live:open", open)
+    return () => window.removeEventListener("krea-live:open", open)
+  }, [])
 
   // Clear stale pv2-flux-images localStorage key (written by old code before DB saving was added)
   useEffect(() => {
@@ -27498,6 +27780,11 @@ export default function PortalV2Page() {
     })
   }, [selectedVideoModel, videoToolSourceSec])
   const handleVideoGenerate = useCallback(async (promptText: string) => {
+    // A live model opens its session instead of queueing a job
+    if (selectedVideoModel.isRealtime) {
+      setDirectorLive({ prompt: promptText, refs: videoRefImageUrls.filter(Boolean) as string[], resolution: videoResolution, aspectRatio: videoAspectRatio })
+      return
+    }
     const isMotion = selectedVideoModel.id === "kling-v3-motion"
     const isLipsync = !!selectedVideoModel.supportsLipsync
     const isOmni = !!selectedVideoModel.videoModes
@@ -31318,6 +31605,33 @@ function employeePending(
         />
       )}
 
+      {/* Krea 3 Realtime live session (admin) - saved frames go to the top of the feed */}
+      {directorLive && isAdminAccount && (
+        <DirectorLiveSession
+          initialPrompt={directorLive.prompt}
+          refs={directorLive.refs}
+          resolution={directorLive.resolution}
+          aspectRatio={directorLive.aspectRatio}
+          refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
+          onUpgraded={r => handleLiveUpgraded("minimax-h3-max-director", r)}
+          onClose={() => setDirectorLive(null)}
+          onBalanceChange={handleBalanceChange}
+        />
+      )}
+      {liveEdit && isAdminAccount && (
+        <KreaLiveSession
+          source={liveEdit.source}
+          initialPrompt={liveEdit.prompt}
+          onClose={() => setLiveEdit(null)}
+          onBalanceChange={handleBalanceChange}
+          // One tile per session: the first kept frame adds it, later ones update it in place
+          onSaved={(row) => setFreshImages(p => {
+            const item: ImageItem = { id: row.id, imageUrl: row.url, thumbnailUrl: row.url, prompt: row.prompt, model: "krea-3-realtime", aspectRatio: row.aspectRatio, createdAt: new Date().toISOString(), videoMetadata: { liveFrames: row.frames, coverIndex: row.frames.length - 1 } }
+            return p.some(x => x.id === row.id) ? p.map(x => (x.id === row.id ? { ...x, ...item, createdAt: x.createdAt } : x)) : [item, ...p]
+          })}
+        />
+      )}
+
       {/* Chat hub media viewer — the full Edit Reference canvas with the
           clicked image as the base: same tools as the reference editor
           (draw, blur, crop, mask, cut, shapes, Dev-Tier layers). Apply
@@ -31472,6 +31786,7 @@ function employeePending(
             // Refs library - and, for "Animate this frame", on into the video models
             <Studio3D
               isAdmin={isAdminAccount}
+              pick={threeDPick}
               refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
               logo={<SiteLogoBox size={26} />}
               onBalanceChange={handleBalanceChange}
@@ -31481,6 +31796,18 @@ function employeePending(
                 await addRefsToAccount([file], null, { autoActivate: true })
                 if (to === "video") { setActiveEmployee(null); setScannerMode("video") }
               }}
+            />
+          ) : activeEmployee === "worlds" ? (
+            // Live world models (2026-10-16, admin): a world starts from a Refs
+            // picture, and recorded walks land in the video feed
+            <WorldsStudio
+              pick={worldsPick}
+              refLibrary={refLibrary.map(r => ({ id: r.id, url: r.url }))}
+              isAdmin={isAdminAccount}
+              onUpgraded={r => handleLiveUpgraded("lingbot-world-2", r)}
+              onUploaded={url => void addRefsToAccount([{ url }], null, { autoActivate: false })}
+              onBalanceChange={handleBalanceChange}
+              onSaved={row => handlePrependImage({ id: row.id, imageUrl: row.url, thumbnailUrl: row.thumbnailUrl, prompt: row.prompt, model: row.model, aspectRatio: row.aspectRatio, createdAt: new Date().toISOString(), videoMetadata: { isVideo: true, duration: String(row.durationSec), thumbnailUrl: row.thumbnailUrl } })}
             />
           ) : activeEmployee === "image-studio" ? (
             // Layered editing: the Refs library is where images come from and
@@ -31538,7 +31865,24 @@ function employeePending(
           onGoThreeD={() => { setActiveEmployee("3d-studio"); setScannerMode("employees") }}
           onOpenFrames={() => setFramesOpen(true)}
           onCardMediaChange={handleCardMediaChange}
-          onGoFeed={(kind) => setScannerMode(kind)}
+          onGoFeed={(kind) => setScannerMode(kind === "worlds" ? "video" : kind === "3d" ? "threed" : kind)}
+          // Worlds and 3D: admin only while all of their models are
+          worldsGroups={isAdminAccount ? HOME_WORLDS_GROUPS : []}
+          worldsCostByName={HOME_WORLDS_COST}
+          worldsStills={HOME_WORLDS_STILLS}
+          onSelectWorldsModel={isAdminAccount ? (name) => {
+            const id = WMA_MODEL_IDS.find(m => WMA_MODELS[m].name === name) ?? WORLD_BUILD_TOOLS.find(t => BUILD_NAMES[t.id]?.name === name)?.id
+            if (id) setWorldsPick(p => ({ id, n: (p?.n ?? 0) + 1 }))
+            setActiveEmployee("worlds"); setScannerMode("employees")
+          } : undefined}
+          threeDGroups={isAdminAccount ? HOME_3D_GROUPS : []}
+          threeDToolGroups={isAdminAccount ? HOME_3D_TOOL_GROUPS : []}
+          threeDCostByName={HOME_3D_COST}
+          onSelectThreeDModel={isAdminAccount ? (name) => {
+            const tool = THREED_TOOLS.find(t => t.label === name)
+            if (tool) setThreeDPick(p => ({ id: tool.id, n: (p?.n ?? 0) + 1 }))
+            setActiveEmployee("3d-studio"); setScannerMode("employees")
+          } : undefined}
         />
       ) : scannerMode === "chat" && isAdminAccount ? (
         <ChatHub
@@ -31818,7 +32162,7 @@ function employeePending(
             onGenerate={handleVideoGenerate}
             onPromptChange={setVideoPromptText}
             generating={videoGenerating}
-            canGenerate={!videoGenerating && (selectedVideoModel.isVideoTool ? (videoRefVideoUrls.filter(Boolean).length > 0 || !!videoEditSourceUrl) : selectedVideoModel.supportsLipsync ? (!!videoLipsyncVideoUrl && !!videoLipsyncAudioUrl) : (selectedVideoModel.textToVideo || !!videoStartFrameUrl || (!!selectedVideoModel.supportsReferenceVideo && (videoRefImageUrls.some(Boolean) || videoRefVideoUrls.some(Boolean))))) && (selectedVideoModel.id !== "kling-v3-motion" || !!videoMotionVideoUrl) && videoActiveJobCount < videoMaxConcurrent}
+            canGenerate={selectedVideoModel.isRealtime ? !videoGenerating : !videoGenerating && (selectedVideoModel.isVideoTool ? (videoRefVideoUrls.filter(Boolean).length > 0 || !!videoEditSourceUrl) : selectedVideoModel.supportsLipsync ? (!!videoLipsyncVideoUrl && !!videoLipsyncAudioUrl) : (selectedVideoModel.textToVideo || !!videoStartFrameUrl || (!!selectedVideoModel.supportsReferenceVideo && (videoRefImageUrls.some(Boolean) || videoRefVideoUrls.some(Boolean))))) && (selectedVideoModel.id !== "kling-v3-motion" || !!videoMotionVideoUrl) && videoActiveJobCount < videoMaxConcurrent}
             queueFull={videoActiveJobCount >= videoMaxConcurrent && videoMaxConcurrent !== Infinity}
             isGenerationMaintenance={isGenerationMaintenance && !isAdminAccount && !isAuditAccount}
             isAdminAccount={isAdminAccount}
@@ -31971,14 +32315,15 @@ function employeePending(
       )}
 
       {/* Image detail modal */}
-      {selectedImage && (
+      {selectedImage && viewerImage && (
         <ImageDetailModal
-          image={selectedImage}
+          image={viewerImage}
           onClose={() => { setSelectedImage(null); setViewerNav(null) }}
           onRescan={handleRescan}
           onUsePrompt={(text) => { handleUsePrompt(text); setSelectedImage(null); setViewerNav(null) }}
           onDismissFail={handleDismissFail}
           onEditCanvas={handleEditCanvas}
+          onLiveEdit={isAdminAccount ? (img) => setLiveEdit({ source: img.imageUrl, prompt: "" }) : undefined}
           // Layers are open to every account (2026-10-13) - nothing to unlock
           editCanvasLocked={false}
           navList={viewerNav ?? imageNavList}
@@ -31998,6 +32343,22 @@ function employeePending(
             } else {
               addRef(url)
             }
+          }}
+        />
+      )}
+      {selectedImage && liveFramesOf(selectedImage) && (
+        <LiveFrameStrip
+          frames={liveFramesOf(selectedImage)!}
+          index={Math.min(viewerFrame, liveFramesOf(selectedImage)!.length - 1)}
+          cover={Number(selectedImage.videoMetadata?.coverIndex ?? -1)}
+          onPick={i => { setViewerFrame(i); liveFrameChoice.set(selectedImage.id, i) }}
+          onMakeCover={async i => {
+            const r = await fetch("/api/realtime/krea/save", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: selectedImage.id, index: i }) }).catch(() => null)
+            const j = r?.ok ? await r.json() : null
+            if (!j) return
+            const patch = (x: ImageItem) => (x.id === selectedImage.id ? { ...x, imageUrl: j.url, videoMetadata: { ...(x.videoMetadata ?? {}), liveFrames: j.frames, coverIndex: i } } : x)
+            setFreshImages(p => p.map(patch))
+            setSelectedImage(cur => (cur ? patch(cur) : cur))
           }}
         />
       )}

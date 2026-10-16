@@ -32,6 +32,8 @@ import {
  *   erase     image + mask (white = remove)        -> Bria Eraser
  *   expand    image + expand { canvas: [W, H], at: [x, y] } (+ prompt) -> Bria Expand:
  *             the picture placed at `at` in a W x H frame, the rest painted in
+ *             (expandModel 'bria-fibo-expand': Bria Fibo Edit 1.5 Expand, the
+ *             same frame - public 2026-10-16)
  *   upscale   image + upscaler + factor (+ maxSide: the long edge it may reach)
  *   edit      image + prompt (the instruction) + model / quality / aspect
  *   generate  prompt + model / quality / aspect (+ image as a reference)
@@ -154,7 +156,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       // The picture's own size is measured, never taken from the page
       if (x < 0 || y < 0 || x + src!.w > W + 1 || y + src!.h > H + 1) return bad('The picture must sit inside the new canvas')
       if (src!.w >= W - 1 && src!.h >= H - 1) return bad('Drag the crop frame past the edge of the canvas first')
-      cost = EXPAND_TICKETS; model = 'bria-expand'; endpoint = 'fal-ai/bria/expand'
+      const fibo = body.expandModel === 'bria-fibo-expand'
+      // Both $0.04 a run; Fibo keeps the original's own pixels at full resolution
+      cost = EXPAND_TICKETS; model = fibo ? 'bria-fibo-expand' : 'bria-expand'; endpoint = fibo ? 'bria/fibo-edit-1.5/expand' : 'fal-ai/bria/expand'
       input = {
         image_url: image, canvas_size: [W, H], original_image_size: [src!.w, src!.h],
         original_image_location: [Math.min(x, W - src!.w), Math.min(y, H - src!.h)],

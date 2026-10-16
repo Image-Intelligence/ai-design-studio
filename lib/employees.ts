@@ -14,7 +14,7 @@
  * Storyboard, /api/employees/image-studio for Image Studio) and must be
  * opened with it.
  */
-export type EmployeeId = "movie-studio" | "face-swap" | "character-design" | "3d-studio" | "frames" | "storyboard" | "image-studio"
+export type EmployeeId = "movie-studio" | "face-swap" | "character-design" | "3d-studio" | "frames" | "storyboard" | "image-studio" | "worlds"
 
 export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "movie-studio": true,
@@ -26,6 +26,8 @@ export const EMPLOYEE_ADMIN_ONLY: Record<EmployeeId, boolean> = {
   "storyboard": false,
   // Public 2026-10-07: AI tools charged + public moderation; layer management is Dev Tier
   "image-studio": false,
+  // 2026-10-16: live world models (components/worlds) - under test
+  "worlds": true,
 }
 
 export const EMPLOYEE_IDS = Object.keys(EMPLOYEE_ADMIN_ONLY) as EmployeeId[]

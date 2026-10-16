@@ -130,6 +130,10 @@ export async function POST(req: Request) {
       const cap = spec.audioIn.maxMinutes * 60
       if (s > cap + 1) return jsonPrivate({ error: `That recording is too long - ${spec.audioIn.maxMinutes} minutes at most` }, { status: 400 })
       inputSeconds = Math.min(s, cap)
+      // Mirelo Video to Sound stops at the clip's end: ask for (and bill) no more than that
+      if (spec.durationFromInput && spec.duration) {
+        input.duration = Math.max(spec.duration.min, Math.min(input.duration ?? spec.duration.default, Math.ceil(inputSeconds)))
+      }
     }
 
     const promptText = [input.text, input.lyrics, input.style].filter(Boolean).join('\n')

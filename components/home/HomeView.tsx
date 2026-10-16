@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react"
-import { Image as ImageIcon, Video, Shield, Wand2, Star, Music, Clapperboard, Film, Sparkles, ArrowRight, ArrowLeft, ScanSearch, Images, Search, X, LayoutGrid, Layers, Brush } from "lucide-react"
+import { Image as ImageIcon, Video, Shield, Wand2, Star, Music, Clapperboard, Film, Sparkles, ArrowRight, ArrowLeft, ScanSearch, Images, Search, X, LayoutGrid, Layers, Brush, Globe2, Box } from "lucide-react"
 import { HomeMediaCard, type CardMedia } from "./HomeMediaCard"
 import { AudioCardArt } from "./AudioCardArt"
 import { GenerationsCarousel } from "./GenerationsCarousel"
@@ -79,9 +79,25 @@ const TALL_CARD_GAP = 6
  * wide screen look empty on the right and hid most models off the edge; a
  * grid shows all of them, as many across as the screen takes.
  */
-function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardMediaChange }: {
+/** Card art for a model with none uploaded yet: a picture (fal's own thumbnail for a world model), or a 3D tile. */
+function fallbackArt(kind: ModelsPageKind, m: HomeModel, stills?: Record<string, string>): ReactNode {
+  if (kind === "audio") return <AudioCardArt seed={m.name} tint={m.accent} />
+  const still = stills?.[m.name]
+  // eslint-disable-next-line @next/next/no-img-element
+  if (still) return <img src={still} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
+  if (kind === "3d") return (
+    <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.10),transparent_60%),linear-gradient(135deg,#0b1220,#05080f)]">
+      <Box size={34} className={`${m.accent} opacity-70`} />
+    </div>
+  )
+  return undefined
+}
+
+function ModelGrid({ models, kind, cards, isAdmin, costByName, fallbackStills, onSelect, onCardMediaChange }: {
   models: HomeModel[]
-  kind: "image" | "video" | "audio"
+  kind: ModelsPageKind
+  /** Card art until one is uploaded (worlds: fal's thumbnails) */
+  fallbackStills?: Record<string, string>
   cards: Record<string, CardMedia>
   isAdmin: boolean
   costByName: Record<string, string>
@@ -154,9 +170,9 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
           className={tall ? "row-span-2 aspect-[2/3]" : ""}
           frameAspect={tall ? 3 / 4 : 4 / 3}
           // Audio models: waveform art until a thumbnail is uploaded, and a sample to play
-          placeholder={kind === "audio" ? <AudioCardArt seed={m.name} tint={m.accent} /> : undefined}
-          // Image and video card art carries the model's name; audio art does not
-          nameInArt={kind !== "audio"}
+          placeholder={fallbackArt(kind, m, fallbackStills)}
+          // Image and video card art carries the model's name; audio, world and 3D fallback art does not
+          nameInArt={kind === "image" || kind === "video" || !!cards[`${kind}:${m.name}`]}
           sampleUrl={kind === "audio" ? cards[`audio:${m.name}::sample`]?.mediaUrl : undefined}
         />
         )
@@ -175,7 +191,8 @@ function ModelGrid({ models, kind, cards, isAdmin, costByName, onSelect, onCardM
  * cards still open a model in the composer), with their own history entry so
  * Back returns home, and remembered for a reload of this tab.
  */
-export type ModelsPageKind = "image" | "video" | "audio"
+export type ModelsPageKind = "image" | "video" | "audio" | "worlds" | "3d"
+const PAGE_KINDS: ModelsPageKind[] = ["image", "video", "audio", "worlds", "3d"]
 const HOME_PAGE_KEY = "pv2-home-page"
 
 const MODELS_PAGES: Record<ModelsPageKind, { title: string; feed: string; blurb: string; icon: ReactNode; toolsLabel?: string; toolsNote?: string }> = {
@@ -192,6 +209,16 @@ const MODELS_PAGES: Record<ModelsPageKind, { title: string; feed: string; blurb:
   audio: {
     title: "Audio Models", feed: "audio feed", icon: <Music size={17} />,
     blurb: "Voices, music, sound effects and audio tools. Tap a card's play button to hear a sample.",
+  },
+  // 2026-10-16, admin only while every model in them is
+  worlds: {
+    title: "Worlds Models", feed: "video feed", icon: <Globe2 size={17} />,
+    blurb: "Live worlds you walk around as they are made - move, look, act and change the world with words. Billed per 30 seconds while live; recorded walks save to your video feed.",
+  },
+  "3d": {
+    title: "3D Models", feed: "3D Studio", icon: <Box size={17} />,
+    blurb: "Pictures or words into 3D models - then retexture, clean up, split, rig, animate and build worlds, all in the 3D Studio.",
+    toolsLabel: "Refine, rig & worlds", toolsNote: "topology · textures · rigs · splats",
   },
 }
 
@@ -224,11 +251,14 @@ function cardStill(cards: Record<string, CardMedia>, key: string): string | null
  * slivers). Phones stack the card; a tablet (md-lg, iPad portrait) lays it
  * sideways - the three sit one per row there; three across from lg.
  */
-function ModelsHubCard({ kind, models, cards, costByName, onOpen, onFeed, onPick }: {
+function ModelsHubCard({ kind, models, cards, costByName, fallbackStills, admin, onOpen, onFeed, onPick }: {
   kind: ModelsPageKind
   models: HomeModel[]
   cards: Record<string, CardMedia>
   costByName: Record<string, string>
+  fallbackStills?: Record<string, string>
+  /** Shown to admins only for now - badged */
+  admin?: boolean
   onOpen: () => void
   onFeed?: () => void
   /** Open this model in its feed. */
@@ -236,7 +266,7 @@ function ModelsHubCard({ kind, models, cards, costByName, onOpen, onFeed, onPick
 }) {
   const meta = MODELS_PAGES[kind]
   const [q, setQ] = useState("")
-  const stills = models.map(m => cardStill(cards, `${kind}:${m.name}`)).filter((u): u is string => !!u).slice(0, 6)
+  const stills = models.map(m => cardStill(cards, `${kind}:${m.name}`) ?? fallbackStills?.[m.name] ?? null).filter((u): u is string => !!u).slice(0, 6)
   const makers = new Set(models.map(m => m.group)).size
   const needle = q.trim().toLowerCase()
   const hits = needle
@@ -256,11 +286,12 @@ function ModelsHubCard({ kind, models, cards, costByName, onOpen, onFeed, onPick
                 <img key={i} src={u} alt="" loading="lazy" className="w-full aspect-[4/3] object-cover" />
               ))
             : models.slice(0, 6).map(m => (
-                <div key={m.name} className="relative aspect-[4/3] overflow-hidden"><AudioCardArt seed={m.name} tint={m.accent} /></div>
+                <div key={m.name} className="relative aspect-[4/3] overflow-hidden">{kind === "3d" ? fallbackArt("3d", m) : <AudioCardArt seed={m.name} tint={m.accent} />}</div>
               ))}
         </div>
         <div className="absolute inset-0 bg-gradient-to-t from-[#070b14]/90 via-transparent to-transparent md:max-lg:bg-gradient-to-l md:max-lg:from-[#070b14]/70" />
         <span className="absolute top-3 left-3 flex h-9 w-9 items-center justify-center rounded-xl border border-white/15 bg-black/60 text-slate-200">{meta.icon}</span>
+        {admin && <span className="absolute top-3 right-3"><AdminModelBadge /></span>}
       </div>
 
       <div className="relative flex flex-1 flex-col gap-2 p-4 sm:p-5">
@@ -339,8 +370,9 @@ function ModelsHubCard({ kind, models, cards, costByName, onOpen, onFeed, onPick
 }
 
 /** One models page: by maker, a maker filter and a search, the generators then the tools. */
-function ModelsPage({ kind, main, tools, cards, isAdmin, costByName, onSelect, onCardMediaChange, onBack, onFeed }: {
+function ModelsPage({ kind, main, tools, cards, isAdmin, costByName, fallbackStills, onSelect, onCardMediaChange, onBack, onFeed }: {
   kind: ModelsPageKind
+  fallbackStills?: Record<string, string>
   main: HomeModel[]
   tools: HomeModel[]
   cards: Record<string, CardMedia>
@@ -362,7 +394,7 @@ function ModelsPage({ kind, main, tools, cards, isAdmin, costByName, onSelect, o
   const toolModels = tools.filter(keep)
   const shown = mainGroups.reduce((n, g) => n + g.models.length, 0) + toolModels.length
   const grid = (models: HomeModel[]) => (
-    <ModelGrid models={models} kind={kind} cards={cards} isAdmin={isAdmin} costByName={costByName} onSelect={onSelect} onCardMediaChange={onCardMediaChange} />
+    <ModelGrid models={models} kind={kind} cards={cards} isAdmin={isAdmin} costByName={costByName} fallbackStills={fallbackStills} onSelect={onSelect} onCardMediaChange={onCardMediaChange} />
   )
   return (
     <div className="w-full max-w-[2560px] mx-auto py-5 pb-32 px-[var(--home-gutter)] [--home-gutter:1rem] sm:[--home-gutter:1.5rem] lg:[--home-gutter:2rem] 2xl:[--home-gutter:3rem]">
@@ -464,6 +496,14 @@ export function HomeView({
   audioGroups = [],
   audioCostByName = {},
   onSelectAudioModel,
+  worldsGroups = [],
+  worldsCostByName = {},
+  worldsStills = {},
+  onSelectWorldsModel,
+  threeDGroups = [],
+  threeDToolGroups = [],
+  threeDCostByName = {},
+  onSelectThreeDModel,
   cards,
   onSelectImageModel,
   onSelectVideoModel,
@@ -494,6 +534,20 @@ export function HomeView({
   audioGroups?: (ModelGroup & { note?: string })[]
   audioCostByName?: Record<string, string>
   onSelectAudioModel?: (name: string) => void
+  /**
+   * Live world models and the 3D models (2026-10-16). ADMIN ONLY for now - every
+   * model in them is - so the portal passes them to admins alone.
+   */
+  worldsGroups?: ModelGroup[]
+  worldsCostByName?: Record<string, string>
+  /** fal's own thumbnail per world model, until a card is uploaded */
+  worldsStills?: Record<string, string>
+  onSelectWorldsModel?: (name: string) => void
+  /** 3D generators (pictures / words into a model) by maker, and the other 3D tools */
+  threeDGroups?: ModelGroup[]
+  threeDToolGroups?: ModelGroup[]
+  threeDCostByName?: Record<string, string>
+  onSelectThreeDModel?: (name: string) => void
   cards: Record<string, CardMedia>
   onSelectImageModel: (name: string) => void
   onSelectVideoModel: (name: string) => void
@@ -510,11 +564,11 @@ export function HomeView({
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem(HOME_PAGE_KEY)
-      if (saved === "image" || saved === "video" || saved === "audio") setPageState(saved)
+      if (PAGE_KINDS.includes(saved as ModelsPageKind)) setPageState(saved as ModelsPageKind)
     } catch {}
     const onPop = (e: PopStateEvent) => {
       const p = e.state?.homePage
-      setPageState(p === "image" || p === "video" || p === "audio" ? p : "home")
+      setPageState(PAGE_KINDS.includes(p) ? p : "home")
     }
     window.addEventListener("popstate", onPop)
     return () => window.removeEventListener("popstate", onPop)
@@ -599,6 +653,10 @@ export function HomeView({
   const otherStudios = SITE_EMPLOYEES.filter(e => e.id !== "storyboard" && e.id !== "frames" && e.id !== "image-studio" && !isLabStudio(e.id) && employeeVisibleTo(e.id, isAdmin))
 
   const audioModels = audioGroups.flatMap(g => g.items.map(name => ({ name, accent: g.accent, group: g.label, admin: false })))
+  // Admin only for now (the portal passes these to admins alone - and they are badged)
+  const worldsModels = isAdmin ? flatten(worldsGroups, true) : []
+  const threeDMain = isAdmin ? flatten(threeDGroups, true) : []
+  const threeDTools = isAdmin ? flatten(threeDToolGroups, true) : []
 
   /*
    * Featured layout: each card's spot at every breakpoint, worked out once
@@ -653,6 +711,15 @@ export function HomeView({
   if (page === "audio" && onSelectAudioModel) {
     return <ModelsPage kind="audio" main={audioModels} tools={[]} cards={cards} isAdmin={isAdmin} costByName={audioCostByName}
       onSelect={leaving(onSelectAudioModel)} onCardMediaChange={onCardMediaChange} onBack={() => openPage("home")} onFeed={goFeed ? () => goFeed("audio") : undefined} />
+  }
+  if (page === "worlds" && onSelectWorldsModel && worldsModels.length) {
+    // Recorded walks and directed films are videos: their feed is the video feed
+    return <ModelsPage kind="worlds" main={worldsModels} tools={[]} cards={cards} isAdmin={isAdmin} costByName={worldsCostByName} fallbackStills={worldsStills}
+      onSelect={leaving(onSelectWorldsModel)} onCardMediaChange={onCardMediaChange} onBack={() => openPage("home")} onFeed={onGoFeed ? () => { try { sessionStorage.removeItem(HOME_PAGE_KEY) } catch {}; onGoFeed("video") } : undefined} />
+  }
+  if (page === "3d" && onSelectThreeDModel && threeDMain.length + threeDTools.length) {
+    return <ModelsPage kind="3d" main={threeDMain} tools={threeDTools} cards={cards} isAdmin={isAdmin} costByName={threeDCostByName}
+      onSelect={leaving(onSelectThreeDModel)} onCardMediaChange={onCardMediaChange} onBack={() => openPage("home")} />
   }
 
   return (
@@ -931,7 +998,7 @@ export function HomeView({
         MODELS - one card per kind, each opening its own page (by maker, with
         a filter and a search). The full lists used to be here, one long scroll.
       */}
-      <Section icon={<LayoutGrid size={17} />} title="Models" subtitle="Image · video · audio">
+      <Section icon={<LayoutGrid size={17} />} title="Models" subtitle={worldsModels.length || threeDMain.length ? "Image · video · audio · worlds · 3D" : "Image · video · audio"}>
         <div className="grid gap-3 sm:gap-4 2xl:gap-6 lg:grid-cols-3">
           <ModelsHubCard kind="image" models={[...imageGenerate, ...imageUpscale]} cards={cards} costByName={imageCostByName}
             onOpen={() => openPage("image")} onFeed={goFeed ? () => goFeed("image") : undefined} onPick={leaving(onSelectImageModel)} />
@@ -940,6 +1007,15 @@ export function HomeView({
           {onSelectAudioModel && audioModels.length > 0 && (
             <ModelsHubCard kind="audio" models={audioModels} cards={cards} costByName={audioCostByName}
               onOpen={() => openPage("audio")} onFeed={goFeed ? () => goFeed("audio") : undefined} onPick={leaving(onSelectAudioModel)} />
+          )}
+          {/* Admin only while every model in them is (2026-10-16) */}
+          {onSelectWorldsModel && worldsModels.length > 0 && (
+            <ModelsHubCard kind="worlds" models={worldsModels} cards={cards} costByName={worldsCostByName} fallbackStills={worldsStills} admin
+              onOpen={() => openPage("worlds")} onFeed={onGoFeed ? () => onGoFeed("video") : undefined} onPick={leaving(onSelectWorldsModel)} />
+          )}
+          {onSelectThreeDModel && threeDMain.length + threeDTools.length > 0 && (
+            <ModelsHubCard kind="3d" models={[...threeDMain, ...threeDTools]} cards={cards} costByName={threeDCostByName} admin
+              onOpen={() => openPage("3d")} onPick={leaving(onSelectThreeDModel)} />
           )}
         </div>
       </Section>

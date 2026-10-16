@@ -259,6 +259,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   // ltx-2.5-fast, flux-3, grok-video-1.5; then wan-2.7, wan-3.0, wan-3.0-prime,
   // flux-video-upscale, hunyuan-video-1.5, pixelcut-looping-video
   'wan-2.2-lora',
+  // 2026-10-16: H3 Max Director - a live session (lib/realtime-wma), never a job
+  'minimax-h3-max-director',
   // Kandinsky 6.0 Pro / Lite and its VSR (full / lite) public 2026-10-06
   // (kandinsky6TicketCost / upscalerVideoTicketCost, each run through the UI)
   // seedvr2-video, flashvsr-video, bytedance-video-upscale public 2026-10-02

@@ -125,9 +125,15 @@ export async function POST(req: Request) {
   // a card per queued batch IMMEDIATELY. Without them the tab had nothing to
   // draw and the only thing that produced tiles was the 10s recovery poll \u2014
   // which is why a run of 69 looked empty until it was reloaded.
+  // One insert stamps every row with the same createdAt - and the queue time
+  // becomes the image's feed position, so a whole batch tied to the
+  // millisecond and its tiles had no settled order. 1 ms apart, in the
+  // order queued (the first drains first; the feed shows the last on top).
+  const queuedAt = Date.now()
   const created = await prisma.generationQueue.createManyAndReturn({
     select: { id: true },
-    data: rows.map(r => ({
+    data: rows.map((r, i) => ({
+      createdAt: new Date(queuedAt + i),
       userId: user.id,
       modelId: model,
       modelType: 'image',

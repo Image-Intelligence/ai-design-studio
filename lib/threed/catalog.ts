@@ -15,7 +15,7 @@
  * Client-safe: the bench prices and validates with it, the route charges with it.
  */
 
-export type ThreeDStage = 'concept' | 'model' | 'refine' | 'rig' | 'world'
+export type ThreeDStage = 'concept' | 'model' | 'refine' | 'rig' | 'capture' | 'world'
 export type Purpose = 'print' | 'game' | 'animation' | 'hero' | 'fast' | 'ar' | 'web'
 
 export type Control = {
@@ -371,6 +371,23 @@ export const THREED_TOOLS: ThreeDTool[] = [
     build: i => ({ model_url: i.mesh, ...(i.prompt ? { text_style_prompt: i.prompt.slice(0, 600) } : {}), ...(i.images?.[0] ? { image_style_url: i.images[0] } : {}), ...pick(i.options, ['enable_pbr', 'enable_original_uv']) }),
     usd: () => 0.3,
   },
+  // Meshy 6 / 7 Retexture (2026-10-15, admin while under test): the same job
+  // as 6 Lite with a sharper texture - 2K or 4K base colour at $0.30, 8K at
+  // $0.45 (at 8K the PBR maps stay 4K). Same inputs as 6 Lite.
+  ...([['meshy-7-retexture', 'Retexture (Meshy 7)', 'meshy/v7/retexture'], ['meshy-6-retexture', 'Retexture (Meshy 6)', 'meshy/v6/retexture']] as const).map(([id, label, endpoint]): ThreeDTool => ({
+    id, label, family: 'Meshy', stage: 'refine', endpoint, admin: true,
+    needs: { mesh: true, prompt: 'optional', images: { min: 0, max: 1 } },
+    output: 'Same geometry, new material up to 8K - GLB, FBX, OBJ, USDZ, STL + PBR maps',
+    formats: ['glb', 'fbx', 'obj', 'usdz', 'stl'], purposes: ['game', 'hero', 'print'], minutes: 3,
+    bestFor: `Keep the shape, change what it is made of - describe it ("weathered bronze") or show a style picture. ${id.startsWith('meshy-7') ? 'Meshy\'s newest texturer.' : 'Meshy 6 at full strength (Lite is the quick one).'}`,
+    caveat: 'Needs a description or a style picture.',
+    controls: [
+      sel('texture_resolution', 'Texture size', [['2k', '2K'], ['4k', '4K'], ['8k', '8K (+$0.15)']], '2k'),
+      tog('enable_pbr', 'PBR maps', true), tog('enable_original_uv', 'Keep original UVs', true),
+    ],
+    build: i => ({ model_url: i.mesh, ...(i.prompt ? { text_style_prompt: i.prompt.slice(0, 600) } : {}), ...(i.images?.[0] ? { image_style_url: i.images[0] } : {}), ...pick(i.options, ['texture_resolution', 'enable_pbr', 'enable_original_uv']) }),
+    usd: o => (o.texture_resolution === '8k' ? 0.45 : 0.3),
+  })),
   {
     id: 'trellis-2-retexture', label: 'Retexture from a picture', family: 'TRELLIS', stage: 'refine',
     endpoint: 'fal-ai/trellis-2/retexture',
@@ -511,7 +528,10 @@ export const THREED_TOOLS: ThreeDTool[] = [
     endpointFor: o => (o.quality === 'fast' ? 'fal-ai/hunyuan-motion/fast' : 'fal-ai/hunyuan-motion'),
   },
 
-  // ══ WORLD: scenes, captures, reliefs ══════════════════════════════════════
+  // ══ WORLD: the world models - built in the WORLDS studio, not here ════════
+  // (2026-10-16, owner: they are world models, not 3D models). Stage 'world' is
+  // not one of the 3D Studio's STAGES, so it never lists them; the Worlds
+  // studio's "Build a world" mode runs them through the same job route.
   {
     id: 'hunyuan-world', label: 'Picture to world', family: 'Hunyuan', stage: 'world',
     endpoint: 'fal-ai/hunyuan_world/image-to-world',
@@ -539,8 +559,9 @@ export const THREED_TOOLS: ThreeDTool[] = [
     build: i => ({ image_url: i.images![0], output_format: 'ply' }),
     usd: () => 0.05,
   },
+  // ══ CAPTURE: 3D models from photos, and reliefs for printing ══════════════
   {
-    id: 'sam3-objects', label: 'Objects from a photo', family: 'SAM 3D', stage: 'world',
+    id: 'sam3-objects', label: 'Objects from a photo', family: 'SAM 3D', stage: 'capture',
     endpoint: 'fal-ai/sam-3/3d-objects',
     needs: { images: { min: 1, max: 1 }, prompt: 'required' },
     output: 'The named objects in a real photo as separate 3D models',
@@ -551,7 +572,7 @@ export const THREED_TOOLS: ThreeDTool[] = [
     usd: () => 0.05,
   },
   {
-    id: 'sam3-body', label: 'Body & pose from a photo', family: 'SAM 3D', stage: 'world',
+    id: 'sam3-body', label: 'Body & pose from a photo', family: 'SAM 3D', stage: 'capture',
     endpoint: 'fal-ai/sam-3/3d-body',
     needs: { images: { min: 1, max: 1 } },
     output: 'A person\'s body shape and pose as a mesh',
@@ -562,7 +583,7 @@ export const THREED_TOOLS: ThreeDTool[] = [
     usd: () => 0.05,
   },
   {
-    id: 'hi3d-relief', label: 'Relief / lithophane map', family: 'Hi3D', stage: 'world',
+    id: 'hi3d-relief', label: 'Relief / lithophane map', family: 'Hi3D', stage: 'capture',
     endpoint: 'hitem3d/hi3d/image-to-relief',
     needs: { images: { min: 1, max: 1 } },
     output: 'A depth map for reliefs, coins, plaques and lithophanes',
@@ -587,8 +608,12 @@ export const STAGES: { id: ThreeDStage; label: string; blurb: string }[] = [
   { id: 'model', label: 'Model', blurb: 'Pictures or words into 3D' },
   { id: 'refine', label: 'Refine', blurb: 'Topology, textures, parts, print prep' },
   { id: 'rig', label: 'Rig & animate', blurb: 'Skeletons, clip library, text to motion' },
-  { id: 'world', label: 'Worlds & captures', blurb: 'Environments, splats, photo captures, reliefs' },
+  { id: 'capture', label: 'Captures & print', blurb: 'Objects and bodies from photos, reliefs and lithophanes' },
 ]
+
+/** The world models (Hunyuan World, Tripo splat) - the Worlds studio builds with these. */
+export const WORLD_BUILD_TOOLS = THREED_TOOLS.filter(t => t.stage === 'world')
+export const isWorldBuildTool = (id: string | undefined) => !!id && WORLD_BUILD_TOOLS.some(t => t.id === id)
 
 export const PURPOSE_LABEL: Record<Purpose, string> = {
   print: '3D printing', game: 'Games', animation: 'Animation', hero: 'Hero detail', fast: 'Fast & cheap', ar: 'AR', web: 'Web',

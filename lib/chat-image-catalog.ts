@@ -74,7 +74,8 @@ const NOTES: Record<string, string> = {
 export const CHAT_IMAGE_MODELS: ChatImageEntry[] = AI_MODELS
   .filter(m => m.isAvailable !== false)
   // video and the local/upscaler-only entries are not create_media material
-  .filter(m => !/^(local-|clarity-upscaler|aura-sr|esrgan|drct|supir)/.test(m.id))
+  // (Krea 3 Realtime is a live session in its own panel, not a run)
+  .filter(m => !/^(local-|clarity-upscaler|aura-sr|esrgan|drct|supir|krea-3-realtime)/.test(m.id))
   .map(m => {
     const fal = getFalImageModelSpec(m.id)
     // A model whose references go to its EDIT endpoint (Ideogram 4.5, FLUX 3,

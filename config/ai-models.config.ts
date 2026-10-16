@@ -579,6 +579,33 @@ export const AI_MODELS: AIModel[] = [
     isAvailable: true,
     provider: 'fal'
   },
+  // 2026-10-15 batch (ADMIN ONLY while under test), fal cost / $0.04 a ticket.
+  // Klein and Krea 3 are priced per request from the size sent
+  // (lib/ticket-pricing kleinTicketCost / krea3TicketCost); these are the 1K
+  // text-to-image figures.
+  //   FLUX 3 Klein       $0.009 1K .. $0.036 4K           -> 1
+  //   FLUX 3 Klein Base  $0.027 1K, $0.042 2K, $0.108 4K  -> 1 / 2 / 3
+  //   Krea 3             $0.025 per MP of output + each reference
+  //   Bria Guided Background Removal $0.03, Fibo Edit 1.5 Expand $0.04 -> 1
+  ...([
+    ['flux-3-klein', 'blackforestlabs/flux-3/klein/text-to-image', 'FLUX 3 Klein', 'FLUX 3 Klein text-to-image; edits with up to 10 references', 1],
+    ['flux-3-klein-edit', 'blackforestlabs/flux-3/klein/edit-image', 'FLUX 3 Klein Edit', 'FLUX 3 Klein editing - up to 10 reference images', 1],
+    ['flux-3-klein-base', 'blackforestlabs/flux-3/klein/base/text-to-image', 'FLUX 3 Klein Base', 'FLUX 3 Klein Base text-to-image; edits with up to 10 references', 1],
+    ['flux-3-klein-base-edit', 'blackforestlabs/flux-3/klein/base/edit-image', 'FLUX 3 Klein Base Edit', 'FLUX 3 Klein Base editing - up to 10 reference images', 1],
+    ['krea-3', 'krea/v3/text-to-image', 'Krea 3', 'Krea 3 text-to-image; edits and combines up to 8 references', 1],
+    ['krea-3-edit', 'krea/v3/edit', 'Krea 3 Edit', 'Krea 3 editing - up to 8 reference images', 2],
+    ['bria-guided-remove-bg', 'bria/guided-remove-background', 'Bria Guided Background Removal', 'Cut the subject out, steered by an optional prompt', 1],
+    ['bria-fibo-expand', 'bria/fibo-edit-1.5/expand', 'Bria Fibo Expand', 'Expand a picture to a new frame (Fibo Edit 1.5)', 1],
+    // A live session, paid per 30 seconds (components/realtime/KreaLiveSession) - this row names its saved frames
+    ['krea-3-realtime', 'krea/v3/realtime', 'Krea 3 Realtime', 'Live editing session - frames saved from it', 10],
+  ] as const).map(([id, name, displayName, description, ticketCost]) => ({
+    id, name, displayName, description, ticketCost,
+    category: 'standard' as const,
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high' as const,
+    isAvailable: true,
+    provider: 'fal' as const,
+  })),
   // Ideogram 4.5 (2026-10-02) - fal per image by quality tier, any size:
   // low $0.03 / medium $0.06 / high $0.22 -> 1 / 2 / 6 tickets (getTicketCost
   // prices by quality; these are the medium defaults)

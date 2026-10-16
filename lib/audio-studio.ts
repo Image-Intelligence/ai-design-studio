@@ -115,6 +115,8 @@ export interface AudioStudioModel {
   hidden?: boolean
   /** The output is a VIDEO, saved under this model id so it lands in the video feed. */
   outputVideo?: { storeAs: string }
+  /** The output can't run past the uploaded clip (fal clamps it): the length asked is held to the clip's, so it is not billed for seconds it won't make. */
+  durationFromInput?: boolean
   /** A last check on the input the shape alone can't make (a message = refused before any charge). */
   validate?: (i: AudioRunInput) => string | null
   price: AudioPrice
@@ -174,7 +176,7 @@ export function parseDialogue(text: string): { speaker: number; text: string }[]
   return out
 }
 
-// ── Mureka (2026-10-07, admin while under test) ──────────────────────────────
+// ── Mureka (2026-10-07; public 2026-10-16) ────────────────────────────────────
 const MUREKA_MODEL = 'mureka-9.5'
 const MUREKA_GENRES = ['pop', 'rock', 'jazz', 'r&b', 'edm', 'ambient', 'folk', 'latin', 'k-pop', 'j-pop', 'house', 'gospel', 'lo-fi']
 const MUREKA_PODCAST_VOICES = ['Ethan', 'Victoria', 'Jake', 'Luna', 'Emma']
@@ -283,7 +285,6 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     blurb: 'Scores a video: music that follows its cuts and pacing.',
     text: { label: 'Style (optional)', placeholder: 'e.g. warm cinematic strings, hopeful - leave empty to let it choose', max: 500, required: false },
     audioIn: { label: 'Video to score', required: true, maxMinutes: 5, hint: 'MP4 - the music follows its cuts' },
-    admin: true,
     price: { usd: 0.009, per: 'inSecond' },
     build: i => clean({ video_url: i.audioUrl, num_samples: 1, prompt: i.text?.trim() || undefined }),
     outputs: (d: any) => (Array.isArray(d?.audios) && d.audios.length ? d.audios : d?.audio ? [d.audio] : []).filter((a: any) => a?.url).map((a: any) => ({ url: a.url })),
@@ -336,7 +337,7 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     lyrics: { required: true, max: 5000, placeholder: '[Verse]\n…\n[Chorus]\n…' },
     style: { label: 'Music style (optional)', placeholder: 'e.g. upbeat synth-pop, airy vocal, 120 bpm' },
     options: [{ key: 'gender', label: 'Vocal', values: [['', 'Any'], ['female', 'Female'], ['male', 'Male']], default: '' }],
-    lyricsHelper: true, admin: true,
+    lyricsHelper: true,
     price: { usd: 0.225, per: 'request' },
     build: i => clean({ model: MUREKA_MODEL, lyrics: i.lyrics, prompt: i.style?.slice(0, 2000) || undefined, gender: i.options?.gender || undefined }),
     outputs: murekaOut,
@@ -346,7 +347,6 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     blurb: 'Describe a song and Mureka writes and sings it. Over 3x the price of singing your own lyrics - Mureka 9.5 Song with "Write lyrics" is the cheaper way.',
     text: { label: 'Describe the song', placeholder: 'A bright summer love song with a catchy chorus', max: 2000, required: true },
     options: [{ key: 'genre', label: 'Genre', values: [['', 'Any'], ...MUREKA_GENRES.map(g => [g, g] as [string, string])], default: '' }],
-    admin: true,
     price: { usd: 0.75, per: 'request' },
     build: i => clean({ model: MUREKA_MODEL, prompt: i.text, styles: i.options?.genre ? [i.options.genre] : undefined }),
     outputs: murekaOut,
@@ -355,7 +355,6 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     id: 'mureka-instrumental', name: 'Mureka 9.5 Instrumental', group: 'music', provider: 'Mureka', endpoint: 'mureka/api/generate/instrumental',
     blurb: 'A full instrumental track from a description - no vocals.',
     text: { label: 'Describe the track', placeholder: 'e.g. moody lo-fi beat with soft piano and vinyl crackle', max: 1024, required: true },
-    admin: true,
     price: { usd: 0.225, per: 'request' },
     build: i => ({ model: MUREKA_MODEL, prompt: i.text }),
     outputs: murekaOut,
@@ -369,7 +368,7 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
       { key: 'layout', label: 'Layout', values: [1, 2, 3, 4, 5, 6, 7].map(n => [`layout_${n}`, `Layout ${n}`] as [string, string]), default: 'layout_1' },
       { key: 'aspect', label: 'Shape', values: [['9:16', '9:16 (vertical)'], ['16:9', '16:9 (wide)'], ['3:4', '3:4'], ['4:3', '4:3']], default: '9:16' },
     ],
-    fromSong: true, hidden: true, admin: true, outputVideo: { storeAs: 'mureka-lyrics-video' },
+    fromSong: true, hidden: true, outputVideo: { storeAs: 'mureka-lyrics-video' },
     price: { usd: 0.15, per: 'request' },
     // A window is REQUIRED (tested 2026-10-07: song_id alone -> "The supplied
     // input could not be processed"); the whole song's works (0 - 250s tested)
@@ -389,7 +388,6 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     text: { label: 'Script', placeholder: 'Ethan: Welcome back to the show.\nVictoria: Today we are talking about the ocean at night.', max: 4000, required: true },
     voices: { options: MUREKA_PODCAST_VOICES, default: 'Ethan', label: 'First host' },
     voice2: { options: MUREKA_PODCAST_VOICES, default: 'Victoria' },
-    admin: true,
     price: { usd: 0.1725, per: 'minute', charsPerSecond: 12 },
     validate: i => { const n = murekaPodcastTurns(i).length; return n === 0 ? 'Write the script' : n > 10 ? `That script makes ${n} turns - Mureka takes 10 at most (a turn is one line, or 400 characters of it)` : null },
     build: i => ({ conversations: murekaPodcastTurns(i) }),
@@ -576,6 +574,32 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     duration: { min: 1, max: 60, default: 10, step: 1 },
     price: { usd: 0.01, per: 'second' },
     build: i => clean({ text_prompt: i.text, duration: i.duration ?? 10, num_samples: 1, upload_audio_format: 'mp3' }),
+    outputs: d => (Array.isArray(d?.audio) ? d.audio : [d?.audio]).flatMap((f: any) => one()(f)).slice(0, 1),
+  },
+  // Mirelo SFX 2.0 (2026-10-15; public 2026-10-16). fal bills per second
+  // of output and per sample: $0.015 standard ($0.010 is an intro price until
+  // 2026-12-13) - priced at the standard rate. One sample, mp3.
+  {
+    id: 'mirelo-sfx2', name: 'Mirelo SFX 2.0', group: 'sfx', provider: 'Mirelo', endpoint: 'mirelo-ai/sfx2.0/text-to-audio',
+    blurb: 'Mirelo\'s newest sound effects - richer layers and longer takes.',
+    text: t('Describe the sound', 'e.g. a heavy wooden door creaks open in a stone hall', 2000),
+    duration: { min: 1, max: 60, default: 10, step: 1 },
+    price: { usd: 0.015, per: 'second' },
+    build: i => clean({ prompt: i.text, duration: i.duration ?? 10, num_samples: 1, upload_audio_format: 'mp3' }),
+    outputs: d => (Array.isArray(d?.audio) ? d.audio : [d?.audio]).flatMap((f: any) => one()(f)).slice(0, 1),
+  },
+  {
+    // The clip goes in the upload (MP4); the soundtrack comes back as audio
+    // alone, as long as asked - fal clamps it to the clip, so the charge for
+    // the asked length is never short. Speech already in the clip is kept.
+    id: 'mirelo-sfx2-v2a', name: 'Mirelo SFX 2.0 Video to Sound', group: 'sfx', provider: 'Mirelo', endpoint: 'mirelo-ai/sfx2.0/video-to-audio',
+    blurb: 'A synced soundtrack for a clip - foley, ambience and effects.',
+    text: { label: 'Sounds to add (optional)', placeholder: 'e.g. rain and distant thunder, footsteps on wet stone - leave empty to let it listen to the picture', max: 1000, required: false },
+    audioIn: { label: 'Video to add sound to', required: true, maxMinutes: 1, hint: 'MP4 up to a minute - the sound follows what is on screen' },
+    duration: { min: 1, max: 60, default: 10, step: 1 },
+    durationFromInput: true,
+    price: { usd: 0.015, per: 'second' },
+    build: i => clean({ video_url: i.audioUrl, duration: i.duration ?? 10, num_samples: 1, preserve_speech: true, upload_audio_format: 'mp3', text_prompt: i.text?.trim() || undefined }),
     outputs: d => (Array.isArray(d?.audio) ? d.audio : [d?.audio]).flatMap((f: any) => one()(f)).slice(0, 1),
   },
   {

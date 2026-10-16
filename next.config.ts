@@ -25,6 +25,9 @@ const nextConfig: NextConfig = {
     '/api/admin/home-cards': ['./node_modules/ffmpeg-static/**'],
     '/api/admin/frames-clips': ['./node_modules/ffmpeg-static/**'],
     '/api/video/assemble': ['./node_modules/ffmpeg-static/**'],
+    // Live-session recordings (worlds, H3 Director) are probed and cut from
+    // fal's full-quality take - it calls /api/video/assemble in-process
+    '/api/realtime/wma/upgrade': ['./node_modules/ffmpeg-static/**'],
     // Storyboard shots are conformed to the board's frame as they settle
     // (lib/storyboard-shoot calls /api/video/assemble's conform op in-process)
     '/api/employees/storyboards/[id]/shoot': ['./node_modules/ffmpeg-static/**'],

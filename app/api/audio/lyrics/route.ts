@@ -1,6 +1,5 @@
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
-import { checkIsAdmin } from '@/lib/admin-check'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { fal } from '@/lib/fal-client'
@@ -8,7 +7,7 @@ import { jsonPrivate } from '@/lib/api-json'
 
 /**
  * POST /api/audio/lyrics - "Write lyrics" under Mureka 9.5 Song's lyrics box
- * (2026-10-07, admin while Mureka is under test).
+ * (2026-10-07; public with Mureka 2026-10-16).
  *
  * Body: { prompt }   a topic, theme or title
  * Returns: { title, lyrics, ticketCost }
@@ -29,7 +28,6 @@ export async function POST(req: Request) {
   const token = (await cookies()).get('session')?.value
   const user = token ? await getUserFromSession(token) : null
   if (!user?.email) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
-  if (!(await checkIsAdmin(user.email))) return jsonPrivate({ error: 'Admin only' }, { status: 403 })
 
   const body = await req.json().catch(() => ({})) as { prompt?: unknown }
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 500) : ''

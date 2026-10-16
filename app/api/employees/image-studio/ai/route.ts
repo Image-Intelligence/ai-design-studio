@@ -22,6 +22,9 @@ import { requireIdVerified } from '@/lib/id-verification'
  *            click with nothing (tested 2026-10-06: a click on a boat gave 0
  *            masks, the same click plus "boat" or a box gave the boat).
  *   subject  BiRefNet v2: the main subject, no prompt (background removal)
+ *   guided   Bria Guided Background Removal: the main subject, steered by an
+ *            optional prompt ("keep the leash", "drop the chair"); its RGBA
+ *            cut-out's alpha becomes the mask. Admin-only while under test.
  * Returns: { mask: data URL (white = selected), tickets, balance }
  *
  * Charged in tickets before the model runs (STUDIO_AI_TICKETS: fal cost /
@@ -108,6 +111,19 @@ export async function POST(req: NextRequest) {
       })
       const urls = [...(out?.data?.masks ?? []), ...(out?.data?.masks?.length ? [] : [out?.data?.image])].map((m: any) => m?.url).filter(Boolean)
       mask = await mergeMasks(urls)
+    } else if (op === 'guided') {
+      const out: any = await fal.subscribe('bria/guided-remove-background', {
+        input: { image_url: image, ...(prompt ? { prompt } : {}), sync_mode: false } as any,
+      })
+      const u = out?.data?.image?.url
+      if (u) {
+        // The cut-out's alpha IS the mask (white = kept)
+        const r = await fetch(u)
+        if (r.ok) {
+          const alpha = await sharp(Buffer.from(await r.arrayBuffer())).ensureAlpha().extractChannel('alpha').png().toBuffer()
+          mask = await mergeMasks([`data:image/png;base64,${alpha.toString('base64')}`])
+        }
+      }
     } else {
       const out: any = await fal.subscribe('fal-ai/birefnet/v2', {
         input: { image_url: image, mask_only: true, operating_resolution: '2048x2048', output_format: 'png', sync_mode: true } as any,

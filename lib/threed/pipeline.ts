@@ -354,6 +354,9 @@ export async function submitThreeD(o: {
   if (n.prompt === 'required' && !o.input.prompt?.trim()) return { ok: false, error: `${tool.label} needs a description`, status: 400 }
   if (n.images && images.length < n.images.min) return { ok: false, error: n.images.min === 1 ? `${tool.label} needs a picture` : `${tool.label} needs at least ${n.images.min} pictures`, status: 400 }
   if (n.mesh && !o.input.mesh) return { ok: false, error: `${tool.label} works on a model - pick one from your library`, status: 400 }
+  // Meshy's retexture refuses a run with neither a description nor a style picture (a paid failure otherwise)
+  if (tool.family === 'Meshy' && tool.id.endsWith('-retexture') && !o.input.prompt?.trim() && !images.length)
+    return { ok: false, error: `${tool.label} needs a description of the new material or a style picture`, status: 400 }
   if (n.meshExt && o.input.mesh && !n.meshExt.includes(o.input.mesh.split('?')[0].split('.').pop()!.toLowerCase()))
     return { ok: false, error: `${tool.label} needs a ${n.meshExt.join('/').toUpperCase()} file`, status: 400 }
   const options = withDefaults(tool, o.input.options ?? {})

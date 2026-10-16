@@ -435,9 +435,10 @@ export default function DashboardPage() {
         {/*
           Ticket balance (wide screens), branded like the AI Design Studio card:
           the synced site logo, the rotating silver rim, and the light sweep on
-          the main button.
+          the main button. It grows FROM its content height (basis auto, not 0)
+          so the recharge line can never push the buttons out of the card.
         */}
-        <div className="hidden xl:block xl:flex-[1.15] min-h-[200px] relative rounded-2xl overflow-hidden p-[2px] isolate">
+        <div className="hidden xl:block xl:[flex:1.15_0_auto] min-h-[200px] relative rounded-2xl overflow-hidden p-[2px] isolate">
           {/* Rotating silver rim (oversized square so the sweep covers the whole card) */}
           <span
             className="absolute left-1/2 top-1/2 w-[250%] aspect-square -translate-x-1/2 -translate-y-1/2 animate-spin pointer-events-none -z-10"
@@ -469,7 +470,7 @@ export default function DashboardPage() {
                 </p>
                 <span className="text-sm font-semibold text-slate-400">tickets</span>
               </div>
-              <p className="text-[11px] text-slate-500 leading-snug mt-2">
+              <p className="text-[11px] text-slate-500 leading-snug mt-2 xl:short:hidden">
                 {hasPromptStudioDev ? "Dev Tier is active: your plan refills every month and takes 10-20% off every ticket pack." : "Dev Tier plans refill your tickets every month and take up to 20% off every ticket pack."}
               </p>
               {/* The silver recharge ring: plan tickets left of the monthly bar */}

@@ -21,6 +21,8 @@ export const BATCH_1003_GENERATORS = new Set([
   'heygen-avatar4', 'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast',
   // SeeDance 2.5 Draft -> Complete: re-renders a 480p draft at 1080p (no source clip - the draft's id)
   'seedance-2.5-complete',
+  // 2026-10-16 (admin, under test): OmniHuman v2 - a person's photo talks or sings to a track
+  'omnihuman-v2',
 ])
 /*
  * Promoted to public on 2026-10-04 after a priced, end-to-end run of each
@@ -35,25 +37,35 @@ export const BATCH_1003_PUBLIC = new Set([
   'mirelo-sfx-video', 'depth-anything-video',
   // SeeDance 2.5 Draft -> Complete in 1080p, public together (2026-10-04)
   'seedance-2.5-complete',
+  // Public 2026-10-16 (run through the portal UI): Mirelo SFX 2.0 and OmniHuman v2
+  'mirelo-sfx2-video', 'omnihuman-v2',
 ])
 export const BATCH_1003_TOOLS = new Set([
   'void-video-removal', 'veed-subtitles', 'minimax-h3-max-insert', 'depth-anything-video',
   'heygen-translate', 'heygen-translate-fast', 'mirelo-sfx-video',
   // second round: text-prompted masks that track through a clip, and audio-only dubbing
   'sam-3.1-video', 'elevenlabs-dubbing',
+  // 2026-10-15 (admin, under test): Mirelo SFX 2.0 - a soundtrack for a clip
+  'mirelo-sfx2-video',
 ])
 /** Tools that refuse to run without a prompt (VOID: what to remove; SAM: what to track). */
 export const BATCH_1003_PROMPT_REQUIRED = new Set(['void-video-removal', 'sam-3.1-video'])
 /** Generators driven by an uploaded audio track (audioUrl), not a prompt. */
-export const BATCH_1003_AUDIO_DRIVEN = new Set(['minimax-h3-max-lipsync', 'pixverse-music-video', 'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast'])
+export const BATCH_1003_AUDIO_DRIVEN = new Set(['minimax-h3-max-lipsync', 'pixverse-music-video', 'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast', 'omnihuman-v2'])
 /** Generators that need a photo to start from. */
-export const BATCH_1003_NEEDS_IMAGE = new Set(['minimax-h3-max-lipsync', 'minimax-h3-max-camera', 'heygen-avatar4'])
+export const BATCH_1003_NEEDS_IMAGE = new Set(['minimax-h3-max-lipsync', 'minimax-h3-max-camera', 'heygen-avatar4', 'omnihuman-v2'])
+/**
+ * OmniHuman v2 takes 4s to 5 min of audio, at $0.105 per second - a 5-minute
+ * track is $31.50, so the site caps it at a minute (2026-10-16, owner's call).
+ */
+export const OMNIHUMAN_AUDIO_SEC = { min: 4, max: 60 }
 /** LTX 2.5 audio-to-video takes 2s of audio at least; Pro up to 10s, Fast up to 20s. */
 export const LTX_AUDIO_MAX_SEC: Record<string, number> = { 'ltx-2.5-audio-pro': 10, 'ltx-2.5-audio-fast': 20 }
 
 /** fal endpoints, keyed by model (Happy Horse 1.1 by `${model}-${mode}`). */
 export const BATCH_1003_ENDPOINTS: Record<string, string> = {
   'minimax-h3-max-lipsync': 'minimax/h3-max/lip-sync/image-to-video',
+  'omnihuman-v2': 'bytedance/omnihuman/v2',
   'pixverse-music-video': 'pixverse/music-video/vibemv',
   'minimax-h3-max-camera': 'minimax/h3-max/camera-controls',
   'happy-horse-1.1-i2v': 'alibaba/happy-horse/v1.1/image-to-video',
@@ -65,6 +77,7 @@ export const BATCH_1003_ENDPOINTS: Record<string, string> = {
   'heygen-translate': 'fal-ai/heygen/v2/translate/precision',
   'heygen-translate-fast': 'fal-ai/heygen/v2/translate/speed',
   'mirelo-sfx-video': 'mirelo-ai/sfx1.6/video-to-video',
+  'mirelo-sfx2-video': 'mirelo-ai/sfx2.0/video-to-video',
   'heygen-avatar4': 'fal-ai/heygen/avatar4/image-to-video',
   'ltx-2.5-audio-pro': 'lightricks/ltx-2.5/audio-to-video/pro',
   'ltx-2.5-audio-fast': 'lightricks/ltx-2.5/audio-to-video/fast',
@@ -162,6 +175,10 @@ export function batch1003Input(model: string, p: Batch1003Params): Record<string
         resolution: mmRes(p.resolution, ['480P', '768P', '1080P'], '768P'),
         enable_transcription: true,
       }
+    case 'omnihuman-v2':
+      // The video runs as long as the audio; the prompt (optional) directs the
+      // scene, movement and camera
+      return { image_url: p.imageUrl, audio_url: p.audioUrl, ...(prompt ? { prompt: prompt.slice(0, 2000) } : {}) }
     case 'pixverse-music-video': {
       // The prompt box carries the lyrics (shown as subtitles), when given
       const style = pick(PIXVERSE_MV_STYLES, p.choice, 'Cinematic')
@@ -272,6 +289,15 @@ export function batch1003Input(model: string, p: Batch1003Params): Record<string
       // One take (fal bills per sample), as long as the clip (max 60s)
       return {
         video_url: p.editVideoUrl, num_samples: 1,
+        duration: Math.min(60, Math.max(1, Math.ceil(p.sourceSec && p.sourceSec > 0 ? p.sourceSec : 10))),
+        ...(prompt ? { text_prompt: prompt } : {}),
+      }
+    case 'mirelo-sfx2-video':
+      // SFX 2.0: one take (billed per sample), as long as the clip (60s max
+      // here). It keeps the speech already in the clip and builds the rest
+      // of the soundtrack around it (fal's default).
+      return {
+        video_url: p.editVideoUrl, num_samples: 1, preserve_speech: true,
         duration: Math.min(60, Math.max(1, Math.ceil(p.sourceSec && p.sourceSec > 0 ? p.sourceSec : 10))),
         ...(prompt ? { text_prompt: prompt } : {}),
       }

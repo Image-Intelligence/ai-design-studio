@@ -12,7 +12,7 @@ import { fitImageForFal } from '@/lib/fal-image-fit'
 import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds } from '@/lib/ticket-pricing'
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
-import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
+import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, OMNIHUMAN_AUDIO_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
 import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BATCH_1007_MAX_SEC, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input } from '@/lib/batch-1007-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
@@ -241,6 +241,10 @@ export async function POST(request: NextRequest) {
     const adminMode = apiAuth ? false : adminModeRaw
 
     // Admin-only models: hard server gate, regardless of what the client sent
+    // A live session (components/realtime/DirectorLiveSession, /api/realtime/wma), never a job here
+    if (model === 'minimax-h3-max-director') {
+      return NextResponse.json({ success: false, error: 'H3 Max Director runs live - press Go Live.' }, { status: 400 })
+    }
     if (ADMIN_ONLY_VIDEO_MODELS.has(model) && !isAdminUser) {
       return NextResponse.json({ success: false, error: 'Admin only' }, { status: 403 });
     }
@@ -422,7 +426,7 @@ export async function POST(request: NextRequest) {
       if (BATCH_1007_MAX_SEC[model] && model !== 'minimax-h3-max-relight' && editVideoDurationSec > BATCH_1007_MAX_SEC[model] + 0.5) {
         return NextResponse.json({ success: false, error: `This tool takes clips up to ${BATCH_1007_MAX_SEC[model]} seconds - trim it first.` }, { status: 400 });
       }
-      if ((model === 'mirelo-sfx-video') && editVideoDurationSec > 60.5) {
+      if ((model === 'mirelo-sfx-video' || model === 'mirelo-sfx2-video') && editVideoDurationSec > 60.5) {
         return NextResponse.json({ success: false, error: 'Mirelo SFX takes clips up to 60 seconds.' }, { status: 400 });
       }
       if ((model === 'heygen-translate' || model === 'heygen-translate-fast') && editVideoDurationSec > 480.5) {
@@ -483,6 +487,9 @@ export async function POST(request: NextRequest) {
       }
       if (BATCH_1003_AUDIO_DRIVEN.has(model) && !audioUrl) {
         return NextResponse.json({ success: false, error: model === 'pixverse-music-video' ? 'Upload the song (10 seconds to 6 minutes).' : 'Upload the voice track (at least 5 seconds).' }, { status: 400 });
+      }
+      if (model === 'omnihuman-v2' && audioDurationSec > 0 && (audioDurationSec < OMNIHUMAN_AUDIO_SEC.min - 0.1 || audioDurationSec > OMNIHUMAN_AUDIO_SEC.max + 0.5)) {
+        return NextResponse.json({ success: false, error: `The audio must be ${OMNIHUMAN_AUDIO_SEC.min} to ${OMNIHUMAN_AUDIO_SEC.max} seconds long.` }, { status: 400 });
       }
       if (model === 'minimax-h3-max-lipsync' && audioDurationSec > 0 && audioDurationSec < 4.9) {
         return NextResponse.json({ success: false, error: 'The voice track must be at least 5 seconds long.' }, { status: 400 });

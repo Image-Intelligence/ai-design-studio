@@ -12,7 +12,7 @@
  * app/api/generate/route.ts (ADMIN_ONLY_IMAGE_MODELS).
  */
 
-import { gptImage25DefaultEffort } from './ticket-pricing'
+import { gptImage25DefaultEffort, kleinSize, krea3Size } from './ticket-pricing'
 
 export interface FalImageBuildContext {
   /** User prompt (already trimmed). May be '' for promptless models. */
@@ -484,6 +484,10 @@ const AR_UNI = ['3:1', '2:1', '16:9', '3:2', '1:1', '2:3', '9:16', '1:2', '1:3']
 const UNI_MAX_REFS = 4
 // 2026-09-28 batch
 const AR_KREA = ['1:1', '4:3', '3:2', '16:9', '2.35:1', '4:5', '2:3', '9:16'] as const
+/** Bria Fibo Edit 1.5 Expand's aspect enum (schema 2026-10-15). */
+const AR_FIBO_EXPAND = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9'] as const
+/** FLUX 3 Klein and Krea 3 take any {width,height}; these are the frames the portal offers. */
+const AR_FREE = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9', '9:21'] as const
 /** Portal aspect -> fal's named size presets (Hunyuan 3, Recraft 4.1 Flash). */
 const PRESET_SIZE: Record<string, string> = {
   '1:1': 'square_hd', '4:3': 'landscape_4_3', '3:4': 'portrait_4_3',
@@ -1130,6 +1134,15 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     }),
   },
 
+  // ── FLUX 3 Klein / Klein Base (2026-10-15, admin) ─────────────────────────
+  // Two portal models, each text-to-image or - with references (up to 10) -
+  // its edit endpoint. Sized explicitly from frame + tier (kleinSize, which
+  // kleinTicketCost prices); prompt expansion on (fal's default).
+  'flux-3-klein': kleinSpec('flux-3-klein', 'blackforestlabs/flux-3/klein/text-to-image', 'flux-3-klein-edit'),
+  'flux-3-klein-edit': kleinSpec('flux-3-klein-edit', 'blackforestlabs/flux-3/klein/edit-image'),
+  'flux-3-klein-base': kleinSpec('flux-3-klein-base', 'blackforestlabs/flux-3/klein/base/text-to-image', 'flux-3-klein-base-edit'),
+  'flux-3-klein-base-edit': kleinSpec('flux-3-klein-base-edit', 'blackforestlabs/flux-3/klein/base/edit-image'),
+
   // ── Google NanoBanana Pro 2 ───────────────────────────────────────────────
   // A real spec rather than a hand-rolled branch, so everything that speaks
   // "fal image model" can drive it: server-side batches, /api/generate's own
@@ -1339,6 +1352,12 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
   'krea-2-large': kreaSpec('krea-2-large', 'krea/v2/large/text-to-image'),
   'krea-2-medium': kreaSpec('krea-2-medium', 'krea/v2/medium/text-to-image'),
   'krea-2-medium-turbo': kreaSpec('krea-2-medium-turbo', 'krea/v2/medium/turbo/text-to-image'),
+  // Krea 3 (2026-10-15, admin): text-to-image, or edit / combine with up to 8
+  // references (<image-N> tags by order). Billed per megapixel of output and
+  // of each reference (krea3TicketCost). Its safety checker stays on: fal says
+  // turning it off "requires account authorization".
+  'krea-3': krea3Spec('krea-3', 'krea/v3/text-to-image', 'krea-3-edit'),
+  'krea-3-edit': krea3Spec('krea-3-edit', 'krea/v3/edit'),
   'hunyuan-image-3': {
     id: 'hunyuan-image-3', endpoint: 'fal-ai/hunyuan-image/v3/text-to-image',
     needsImage: false, imageParam: null, maxInputImages: 0,
@@ -1560,6 +1579,32 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
     aspectRatios: null, usesImageSize: false,
     notes: 'New background from a prompt; subject kept. $0.04.',
     build: (ctx) => ({ image_url: ctx.imageUrls[0], prompt: ctx.prompt.slice(0, 1000) }),
+  },
+  // Bria Guided Background Removal (2026-10-15, admin): the photo's obvious
+  // subject cut out, adjusted by an optional plain-words prompt ("keep the
+  // dog's leash", "drop the chair"). RGBA PNG out. $0.03 -> 1 ticket.
+  'bria-guided-remove-bg': {
+    id: 'bria-guided-remove-bg',
+    endpoint: 'bria/guided-remove-background',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false, promptMax: 1000,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Cut-out (RGBA PNG); the prompt adjusts what is kept. $0.03.',
+    build: (ctx) => compact({ image_url: ctx.imageUrls[0], prompt: clip(ctx.prompt, 1000), sync_mode: false }),
+  },
+  // Bria Fibo Edit 1.5 Expand (2026-10-15, admin): the picture centred in a
+  // frame of the chosen shape, the rest painted in (optional prompt for what
+  // goes there). Its own pixels are kept at full resolution. $0.04 -> 1.
+  'bria-fibo-expand': {
+    id: 'bria-fibo-expand',
+    endpoint: 'bria/fibo-edit-1.5/expand',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false, promptMax: 2000,
+    aspectRatios: [...AR_FIBO_EXPAND], usesImageSize: false,
+    notes: 'the aspect ratio is the TARGET shape the picture is expanded to. $0.04.',
+    build: (ctx) => compact({
+      image_url: ctx.imageUrls[0],
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_FIBO_EXPAND, '16:9'),
+      prompt: clip(ctx.prompt, 2000),
+    }),
   },
   // Bria Embed Product: refs[0] = the scene, refs[1] = the product, placed in a
   // box worked out from the scene's measured size (ctx.options.refDims) and the
@@ -1873,6 +1918,45 @@ function kreaSpec(id: string, endpoint: string): FalImageModelSpec {
   }
 }
 
+/** FLUX 3 Klein / Klein Base: text-to-image (with editVariant) or its edit endpoint. */
+function kleinSpec(id: string, endpoint: string, editVariant?: string): FalImageModelSpec {
+  const edit = !editVariant
+  return {
+    id, endpoint, ...(editVariant ? { editVariant } : {}),
+    needsImage: edit, imageParam: edit ? 'image_urls' : null, maxInputImages: edit ? 10 : 0,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: [...AR_FREE], usesImageSize: true,
+    notes: 'explicit size from frame + tier (1k/2k/4k); refs order = "the first image"...',
+    build: (ctx) => compact({
+      prompt: ctx.prompt,
+      image_urls: edit ? ctx.imageUrls.slice(0, 10) : undefined,
+      image_size: kleinSize(ctx.aspectRatio, ctx.quality, ctx.options.refDims),
+      num_images: 1,
+      output_format: 'png',
+      // Admin-only while under test; /api/generate's moderation turns it on for everyone else
+      enable_safety_checker: false,
+    }),
+  }
+}
+
+/** Krea 3: text-to-image (with editVariant) or edit with 1-8 references. */
+function krea3Spec(id: string, endpoint: string, editVariant?: string): FalImageModelSpec {
+  const edit = !editVariant
+  return {
+    id, endpoint, ...(editVariant ? { editVariant } : {}),
+    needsImage: edit, imageParam: edit ? 'image_urls' : null, maxInputImages: edit ? 8 : 0,
+    promptRequired: true, promptMin: 1, promptMax: 5000,
+    aspectRatios: [...AR_FREE], usesImageSize: true,
+    notes: 'explicit size (<= 4.22 MP, 3200 px a side); refs are <image-1>.. by order',
+    build: (ctx) => compact({
+      prompt: ctx.prompt,
+      image_urls: edit ? ctx.imageUrls.slice(0, 8) : undefined,
+      image_size: krea3Size(ctx.aspectRatio, ctx.quality, ctx.options.refDims),
+      output_format: 'png',
+    }),
+  }
+}
+
 /** Uni-1 / Uni-1 Max text-to-image (references optional, capped for pricing). */
 function lumaUniSpec(id: string, endpoint: string, editVariant: string): FalImageModelSpec {
   return {
@@ -1928,6 +2012,13 @@ export const FAL_IMAGE_MODEL_IDS = Object.keys(FAL_IMAGE_MODELS)
  * reference.
  */
 export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
+  // Public 2026-10-16 (the 2026-10-15 batch, priced from fal's rates and run
+  // through the portal UI): FLUX 3 Klein / Klein Base (+edits; fal's safety
+  // checker forced on for users - lib/public-moderation), Krea 3 (+edit), Bria
+  // Guided Background Removal and Bria Fibo Expand
+  'flux-3-klein', 'flux-3-klein-edit', 'flux-3-klein-base', 'flux-3-klein-base-edit',
+  'krea-3', 'krea-3-edit',
+  'bria-guided-remove-bg', 'bria-fibo-expand',
   // Public 2026-10-06 (priced from fal's rates, run in the portal, Image Studio,
   // the Edit Image popup and the Storyboard): NanoBanana 2.1 and its edit
   // endpoint (2 / 3 / 4 tickets at 1K / 2K / 4K)

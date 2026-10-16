@@ -41,6 +41,9 @@ export function storyboardDraftTickets(mode: DraftMode, shots: number, opts: { w
 /** "Edit with AI" on one shot. */
 export const SHOT_EDIT_TICKETS = 1
 
+/** Worlds studio: Gemini writes a Lingbot world's 1-9 actions from a short idea (~3k in + ~1k out, a picture included: ~$0.01). */
+export const WORLD_ACTIONS_TICKETS = 1
+
 /** Prompt Enhance (Text dropdown / ✨). The daily caps by plan stay as an abuse limit. */
 export const ENHANCE_TICKETS = 1
 

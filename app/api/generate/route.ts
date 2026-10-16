@@ -160,6 +160,10 @@ export async function POST(request: Request) {
     // The 2026-08 fal image batch (Qwen 3, Reve 2.1, MAI 2.5, Grok Imagine 2,
     // Meta Muse, Bria FIBO, Ideogram v4, NB2 Lite, Recraft v4, Pixelcut,
     // Virtual Try-On, Topaz suite) is admin-only while under test.
+    // A live session (components/realtime/KreaLiveSession), never a job here
+    if (model === 'krea-3-realtime') {
+      return jsonPrivate({ error: 'Krea 3 Realtime is a live session - open it with Generate in the portal or Live on a picture' }, { status: 400 })
+    }
     const ADMIN_ONLY_IMAGE_MODELS = new Set([
       'gemini-2.5-flash-image', 'gemini-3-pro-image', 'gemini-3-pro-image-preview',
       'flash-scanner-v2.5', 'pro-scanner-v3',
@@ -1112,6 +1116,17 @@ export async function POST(request: Request) {
               ticketCost = flux3ImageTicketCost({ quality, aspectRatio, refDims, refs: falImageUrls.length })
             }
             if (model === 'qwen-image-3') ticketCost = (quality === '1k' ? 1 : 2) + (falImageUrls.length > 0 ? 1 : 0)
+            // FLUX 3 Klein / Klein Base and Krea 3 (2026-10-15): priced on the
+            // size really sent ('auto' follows the measured reference) and, for
+            // Krea 3, on every reference that goes with it
+            if (model === 'flux-3-klein' || model === 'flux-3-klein-base') {
+              const { kleinTicketCost } = await import('@/lib/ticket-pricing')
+              ticketCost = kleinTicketCost(model, { quality, aspectRatio, refDims })
+            }
+            if (model === 'krea-3') {
+              const { krea3TicketCost } = await import('@/lib/ticket-pricing')
+              ticketCost = krea3TicketCost({ quality, aspectRatio, refDims, refs: falImageUrls.length })
+            }
             // Topaz bills by OUTPUT megapixels: price from the measured source
             if (model.startsWith('topaz-')) {
               const { topazImageTicketCost } = await import('@/lib/ticket-pricing')
