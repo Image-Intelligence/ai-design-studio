@@ -69,10 +69,18 @@ export default {
      */
     const cache = caches.default
     const cacheKey = new Request(`${url.origin}/${encodeURI(key)}`, { method: 'GET' })
-    const hit = await cache.match(cacheKey)
-    if (hit) return hit
-
     const range = request.headers.get('range')
+    // A ranged request (every video player, Safari above all) must get a 206
+    // slice - a cached whole-file 200 makes Safari refuse to play and every
+    // other browser download the whole clip before the first frame. Only
+    // whole-file requests are answered from the cache; slices come from R2.
+    // (No effect on workers.dev, where the Cache API stores nothing - it
+    // matters once this runs on a custom domain.)
+    if (!range) {
+      const hit = await cache.match(cacheKey)
+      if (hit) return hit
+    }
+
     const object = await env.MEDIA_BUCKET.get(key, range ? { range: request.headers } : undefined)
     if (!object) return new Response('Not found', { status: 404 })
 

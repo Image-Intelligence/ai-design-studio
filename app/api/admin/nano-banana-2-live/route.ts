@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server'
+import { enforcePublicModeration } from '@/lib/public-moderation'
+import { checkIsAdmin } from '@/lib/admin-check'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
@@ -109,7 +111,8 @@ export async function POST(req: Request) {
     if (!targetUserId) return jsonPrivate({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 
     // Server-side ticket check — cost: 12 for 4K, 7 otherwise
-    const ticketCost = (resolution as string) === '4K' ? 12 : 7
+    // ...per picture: fal bills each one, and the page may ask for several (up to 4)
+    const ticketCost = ((resolution as string) === '4K' ? 12 : 7) * Math.min(Math.max(1, parseInt(String(num_images)) || 1), 4)
     // Amount actually debited from the DB — 0 for admins (image gens bypass
     // charging). Stored on the queue row so a failure refunds exactly this.
     const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
@@ -161,6 +164,9 @@ export async function POST(req: Request) {
 
     // Slot claimed (counter already incremented) — submit to FAL
     try {
+      // A non-admin runs moderated - checker on, standard tolerance - whatever
+      // the request asked for (lib/public-moderation; 2026-10-17)
+      enforcePublicModeration('nano-banana-2', input, await checkIsAdmin(sessionUser!.email))
       const submitted = await fal.queue.submit(endpoint, { input })
       await prisma.generationQueue.update({
         where: { id: claim.rowId },

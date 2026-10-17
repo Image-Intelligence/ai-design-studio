@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server'
+import { enforcePublicModeration } from '@/lib/public-moderation'
+import { checkIsAdmin } from '@/lib/admin-check'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
@@ -43,8 +45,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })
     }
 
-    // Server-side ticket cost — 4 for 3K, 2 otherwise
-    const ticketCost = (image_size as string) === 'auto_3K' ? 4 : 2
+    // Server-side ticket cost — 4 for 3K, 2 otherwise, per picture: fal bills each one, and the page may ask for several
+    // (a flat price for up to 8 lost money, 2026-10-17)
+    const ticketCost = ((image_size as string) === 'auto_3K' ? 4 : 2) * Math.min(Math.max(1, parseInt(String(num_images)) || 1), 8)
     // CCBill content filter — must pass BEFORE any charge or provider submit
     {
       const _cf = await enforceContentFilter(prompt, sessionUser.email)
@@ -118,6 +121,9 @@ export async function POST(req: Request) {
     let result: any
     try {
       const start = Date.now()
+      // A non-admin runs moderated - checker on, standard tolerance - whatever
+      // the request asked for (lib/public-moderation; 2026-10-17)
+      enforcePublicModeration('seedream-5-lite-edit', input, await checkIsAdmin(sessionUser.email))
       result = await fal.subscribe(endpoint, {
         input,
         logs: false,

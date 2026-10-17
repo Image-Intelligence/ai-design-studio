@@ -33,6 +33,9 @@ const nextConfig: NextConfig = {
     '/api/employees/storyboards/[id]/shoot': ['./node_modules/ffmpeg-static/**'],
     // Topaz / Flux video tools are priced from the measured source (lib/video-probe)
     '/api/video/generate': ['./node_modules/ffmpeg-static/**'],
+    // Higgsfield Genjutsu / Cinema Studio measure the source and reference
+    // clips to price them, and refuse a clip they cannot read (lib/video-probe)
+    '/api/admin/higgsfield/video-submit': ['./node_modules/ffmpeg-static/**'],
     // VOID results are re-timed to the source's speed as they are saved (lib/video-probe retimeVideo)
     '/api/video/status': ['./node_modules/ffmpeg-static/**'],
     // ...and the portal's own poller, which re-times VOID the same way

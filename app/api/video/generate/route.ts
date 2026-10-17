@@ -138,7 +138,7 @@ export async function POST(request: NextRequest) {
       hasDevTier = false,
       // Motion Control
       motionVideoUrl,
-      motionVideoDurationSec,
+      motionVideoDurationSec: clientMotionVideoDurationSec,
       characterOrientation = 'image',
       keepOriginalSound = true,
       // SeeDance 2.0 reference-to-video (also reused for Gemini Omni Flash modes)
@@ -146,7 +146,7 @@ export async function POST(request: NextRequest) {
       referenceImageUrls,
       referenceVideoUrls,
       referenceAudioUrls,
-      referenceVideoDurationSec = 0,
+      referenceVideoDurationSec: clientReferenceVideoDurationSec = 0,
       // Gemini Omni Flash edit (video-to-video)
       editVideoUrl,
       editVideoDurationSec: clientEditVideoDurationSec = 0,
@@ -154,7 +154,7 @@ export async function POST(request: NextRequest) {
       lipsyncVideoUrl,
       lipsyncAudioUrl,
       lipsyncSyncMode = 'cut_off',
-      lipsyncVideoDurationSec = 0,
+      lipsyncVideoDurationSec: clientLipsyncVideoDurationSec = 0,
       // WAN 2.5 safety
       wan25SafetyChecker = true,
       // Seedance 1.5 safety
@@ -180,14 +180,57 @@ export async function POST(request: NextRequest) {
       draftVideoId,
     } = await normalizeVideoRefs(rawBody);
 
-    // Video tools that fal bills by the source's length, size or frame rate:
-    // measure the clip instead of trusting the browser (it sends no size or
-    // fps, and the length it sends could be anything). A failed probe falls
-    // back to the browser's figure.
-    const probed = VIDEO_TOOL_MODELS.has(model) && editVideoUrl
-      ? await (await import('@/lib/video-probe')).probeRemoteVideo(editVideoUrl).catch(() => null)
+    /*
+     * Every clip and track the price depends on is MEASURED here (ffmpeg reads
+     * the header off the signed link), never taken from the browser: the
+     * lengths it sends could be anything, and fal bills the real file. A clip
+     * that cannot be read is refused rather than priced on the browser's
+     * number - that fallback let a 30s clip bill as 1s (2026-10-17 audit).
+     *   editVideoUrl        any model's source clip (tools, Omni edit, extends)
+     *   referenceVideoUrls  summed (SeeDance / Wan 3.0 bill input video seconds)
+     *   motionVideoUrl      Kling Motion Control bills the motion clip's length
+     *   lipsyncVideoUrl/AudioUrl  Lipsync v3 bills the output, set by both
+     */
+    // A length is 'auto' or a positive number of seconds: a negative one priced
+    // a negative charge, which the deduction would have paid out as credit
+    if (String(duration) !== 'auto' && !(Number.isFinite(parseFloat(String(duration))) && parseFloat(String(duration)) > 0)) {
+      return NextResponse.json({ success: false, error: 'Invalid duration' }, { status: 400 });
+    }
+    const videoProbe = await import('@/lib/video-probe')
+    const unreadable = (what: string) => NextResponse.json({ success: false, error: `Couldn't read the ${what} - try uploading it again.` }, { status: 400 })
+    const probed = editVideoUrl
+      ? await videoProbe.probeRemoteVideo(editVideoUrl).catch(() => null)
       : null
+    if (editVideoUrl && !probed && !(model === 'seedance-2.5-complete')) return unreadable('source video')
     const editVideoDurationSec: number = probed ? probed.seconds : (Number(clientEditVideoDurationSec) || 0)
+    const refVideoList: string[] = Array.isArray(referenceVideoUrls) ? referenceVideoUrls.filter((u: unknown): u is string => typeof u === 'string' && !!u) : []
+    let referenceVideoDurationSec = 0
+    if (refVideoList.length) {
+      const secs = await Promise.all(refVideoList.map(u => videoProbe.probeRemoteMediaSeconds(u).catch(() => null)))
+      if (secs.some(x => !x)) return unreadable('reference video')
+      referenceVideoDurationSec = secs.reduce<number>((a, x) => a + (x ?? 0), 0)
+    }
+    void clientReferenceVideoDurationSec
+    let motionVideoDurationSec: number | undefined = undefined
+    if (model === 'kling-v3-motion' && typeof motionVideoUrl === 'string' && motionVideoUrl) {
+      const sec = await videoProbe.probeRemoteMediaSeconds(motionVideoUrl).catch(() => null)
+      if (!sec) return unreadable('motion video')
+      motionVideoDurationSec = sec
+    }
+    void clientMotionVideoDurationSec
+    let lipsyncVideoDurationSec = 0
+    if (model === 'lipsync-v3' && typeof lipsyncVideoUrl === 'string' && lipsyncVideoUrl) {
+      const [v, a] = await Promise.all([
+        videoProbe.probeRemoteMediaSeconds(lipsyncVideoUrl).catch(() => null),
+        typeof lipsyncAudioUrl === 'string' && lipsyncAudioUrl ? videoProbe.probeRemoteMediaSeconds(lipsyncAudioUrl).catch(() => null) : Promise.resolve(null),
+      ])
+      if (!v) return unreadable('video')
+      if (lipsyncAudioUrl && !a) return unreadable('audio')
+      // cut_off ends with the shorter of the two; loop / bounce / silence /
+      // remap run to the longer one - that is the length fal bills
+      lipsyncVideoDurationSec = lipsyncSyncMode === 'cut_off' ? Math.min(v, a ?? v) : Math.max(v, a ?? 0)
+    }
+    void clientLipsyncVideoDurationSec
     /*
      * SeeDance 2.5 Complete: the draft is a video in the user's own feed. Its
      * fal draft id never leaves the server - the page sends the video's id,
@@ -209,11 +252,15 @@ export async function POST(request: NextRequest) {
       const secs = await (await import('@/lib/video-probe')).probeRemoteMediaSeconds(row.imageUrl).catch(() => null)
       draftInfo = { draftId: meta.seedanceDraftId, seconds: secs && secs > 0 ? secs : 10 }
     }
-    // Audio-driven models (lip sync, music video) bill by the audio's length:
-    // measured here, never taken from the browser
-    const audioDurationSec: number = BATCH_1003_AUDIO_DRIVEN.has(model) && audioUrl
-      ? await (await import('@/lib/video-probe')).probeRemoteMediaSeconds(audioUrl).catch(() => 0) ?? 0
+    // Audio-driven models (lip sync, music video, HeyGen Avatar IV's uploaded
+    // track) bill by the audio's length: measured here, never taken from the
+    // browser - and a track that cannot be read is refused, not priced as the
+    // default length
+    const audioMeasured = (BATCH_1003_AUDIO_DRIVEN.has(model) || model === 'heygen-avatar4') && audioUrl
+    const audioDurationSec: number = audioMeasured
+      ? await videoProbe.probeRemoteMediaSeconds(audioUrl).catch(() => 0) ?? 0
       : 0
+    if (audioMeasured && !(audioDurationSec > 0)) return unreadable('audio')
 
     // CCBill compliance: fal content-safety flags from the client are only honored
     // for verified admins — regular users ALWAYS run with the checker ON, no matter
@@ -736,7 +783,8 @@ export async function POST(request: NextRequest) {
         prompt,
         resolution: resolution === '1080p' ? '720p' : resolution,
         generate_audio: generateAudio,
-        enable_safety_checker: false,
+        // Off for admins only - everyone else runs with fal's checker (CCBill; 2026-10-17)
+        enable_safety_checker: !isAdminUser,
       };
       // Only pass duration when explicitly selected (omit for "auto" — let the model decide)
       if (duration && duration !== 'auto') sd20Base.duration = String(duration);
@@ -1101,7 +1149,8 @@ export async function POST(request: NextRequest) {
         image_url: imageUrl,
         resolution,
         duration: parseInt(duration),
-        enable_safety_checker: false,
+        // Off for admins only - everyone else runs with fal's checker (CCBill; 2026-10-17)
+        enable_safety_checker: !isAdminUser,
       };
       if (prompt?.trim()) falInput.prompt = prompt.trim();
     } else {

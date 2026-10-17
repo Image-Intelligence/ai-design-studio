@@ -20,7 +20,20 @@ function parseSize(size: string): { width: number; height: number } {
   return (w && h) ? { width: w, height: h } : { width: 1024, height: 1024 }
 }
 
-function computeGptTicketCost(quality: string, size: string): number {
+/*
+ * Priced on what is really sent: a quality fal does not know is sent as
+ * 'high' (below), so it is priced as high - it used to cost 1 ticket - and a
+ * size outside the page's six is priced as the 4K one (the dearest), since
+ * the run renders whatever WxH was asked. References are billed as input
+ * tokens by the edit endpoint (~$0.01 each): one ticket per four.
+ */
+const GPT2_SIZES = new Set(['1024x1024', '1024x768', '1024x1536', '1920x1080', '2560x1440', '3840x2160'])
+function computeGptTicketCost(rawQuality: string, rawSize: string, refs = 0): number {
+  const quality = ['low', 'medium', 'high'].includes(rawQuality) ? rawQuality : 'high'
+  const size = GPT2_SIZES.has(rawSize) ? rawSize : '3840x2160'
+  return gptBaseTicketCost(quality, size) + Math.ceil(Math.max(0, Math.min(8, refs)) / 4)
+}
+function gptBaseTicketCost(quality: string, size: string): number {
   if (quality === 'low') return 1
   if (quality === 'medium') {
     if (size === '1024x1024' || size === '2560x1440') return 3
@@ -84,7 +97,8 @@ export async function POST(req: Request) {
   }
 
   // Server-side ticket check — compute cost from quality + size, do not trust client value
-  const ticketCost = computeGptTicketCost(quality, size)
+  const refCount = (Array.isArray(referenceImages) ? referenceImages.length : 0) + (Array.isArray(referenceImageUrls) ? referenceImageUrls.length : 0)
+  const ticketCost = computeGptTicketCost(String(quality), String(size), refCount)
   // CCBill content filter — must pass BEFORE any charge or provider submit
   {
     const _cf = await enforceContentFilter(prompt, sessionUser.email)

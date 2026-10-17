@@ -30,4 +30,23 @@ export function enforcePublicModeration(model: string, input: Record<string, unk
   // Image Studio's Generative Fill (FLUX Pro Fill): fal's default 2, not the
   // most permissive 6 (2026-10-07 - the Studio and its popup are public)
   if (model === 'flux-pro-fill') input.safety_tolerance = '2'
+  /*
+   * Every other model (2026-10-17): whatever the client or a route's own
+   * defaults asked for, a non-admin runs with fal's checker ON and never
+   * above fal's standard tolerance (4 on the 1-6 scales; the named models
+   * above are held lower). Several routes hard-coded the checker off, or
+   * took it - and the tolerance - straight from the request body, so any
+   * account could turn moderation off for FLUX 2, Z-Image, NanoBanana Pro /
+   * 2, SeeDream 4.5 / 5 Lite, Wan 2.7 Pro and the canvas.
+   */
+  if ('enable_safety_checker' in input) input.enable_safety_checker = true
+  if (input.safety_tolerance != null) {
+    const t = Number(input.safety_tolerance)
+    if (!Number.isFinite(t) || t > 4) input.safety_tolerance = typeof input.safety_tolerance === 'number' ? 4 : '4'
+  }
+}
+
+/** The same rule for a route that sets the checker directly: the value a request may have. */
+export function publicSafetyChecker(requested: unknown, isAdmin: boolean): boolean {
+  return isAdmin ? requested === true : true
 }

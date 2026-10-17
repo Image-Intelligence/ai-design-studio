@@ -157,6 +157,12 @@ export async function POST(request: NextRequest) {
             }
           }
           const filename = `video-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+          // Index first, so it plays as soon as it starts downloading (several
+          // models put it at the end - lib/video-probe faststart; a remux, not a re-encode)
+          if (ext === 'mp4') {
+            const { faststart } = await import('@/lib/video-probe')
+            videoBuffer = Buffer.from(await faststart(videoBuffer))
+          }
           permanentVideoUrl = await uploadToR2(filename, videoBuffer, contentType)
           console.log(`[video/status] Uploaded video to blob: ${permanentVideoUrl}`)
         }

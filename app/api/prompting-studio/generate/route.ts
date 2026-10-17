@@ -1,4 +1,6 @@
 // app/api/prompting-studio/generate/route.ts
+import { enforcePublicModeration } from '@/lib/public-moderation'
+import { checkIsAdmin } from '@/lib/admin-check'
 // IMAGE generation endpoint with database saving
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -39,6 +41,9 @@ export async function POST(req: NextRequest) {
       return jsonPrivate({ success: false, error: 'Invalid session' }, { status: 401 });
     }
     userId = sessionUser.id
+    // Canvas jobs run moderated for non-admins (lib/public-moderation): its
+    // NanoBanana Pro / SeeDream 4.5 / FLUX 2 calls hard-coded the checker off
+    const canvasIsAdmin = await checkIsAdmin(sessionUser.email)
 
     if (await isGenerationBlocked(sessionUser.email)) {
       return jsonPrivate({ success: false, error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
@@ -194,7 +199,6 @@ export async function POST(req: NextRequest) {
     {
       const geminiScanners = new Set(['pro-scanner-v3', 'flash-scanner-v2.5', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image', 'gemini-3-pro-image'])
       if (geminiScanners.has(model)) {
-        const { checkIsAdmin } = await import('@/lib/admin-check')
         if (!(await checkIsAdmin(sessionUser.email))) {
           return jsonPrivate({ success: false, error: 'This model is not available' }, { status: 403 })
         }
@@ -273,6 +277,7 @@ export async function POST(req: NextRequest) {
 
       // Submit to FAL.ai async queue — webhook handles completion
       const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
+      enforcePublicModeration(String(actualModel), inputParams, canvasIsAdmin)
       const { request_id } = await fal.queue.submit(modelEndpoint, {
         input: inputParams,
         webhookUrl: `${appUrl}/api/webhooks/fal`,
@@ -373,6 +378,7 @@ export async function POST(req: NextRequest) {
 
       // Submit to FAL.ai async queue — webhook handles completion
       const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
+      enforcePublicModeration(String(actualModel), inputParams, canvasIsAdmin)
       const { request_id } = await fal.queue.submit(modelEndpoint, {
         input: inputParams,
         webhookUrl: `${appUrl}/api/webhooks/fal`,
@@ -473,6 +479,7 @@ export async function POST(req: NextRequest) {
 
       // Submit to FAL.ai async queue — webhook handles completion
       const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
+      enforcePublicModeration(String(actualModel), inputParams, canvasIsAdmin)
       const { request_id } = await fal.queue.submit(modelEndpoint, {
         input: inputParams,
         webhookUrl: `${appUrl}/api/webhooks/fal`,

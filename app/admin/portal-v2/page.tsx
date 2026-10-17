@@ -3,7 +3,7 @@
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
+import { seedvrUpscaleTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
 import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
@@ -44,6 +44,7 @@ import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/compo
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
 import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryPicker"
+import { PlayerVideo } from "@/components/feed/PlayerVideo"
 import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
 import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
@@ -278,6 +279,18 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
 ]
 
 // --- HELPERS ---
+function gpt2BaseTicketCost(quality: Quality, aspectRatio?: AspectRatio): number {
+  if (quality === "low") return 1
+  if (quality === "medium") {
+    if (aspectRatio === "1024x1024" || aspectRatio === "2560x1440") return 3
+    if (aspectRatio === "3840x2160") return 4
+    return 2  // 1024x768, 1024x1536, 1920x1080
+  }
+  if (aspectRatio === "1024x1024") return 8
+  if (aspectRatio === "2560x1440") return 9
+  if (aspectRatio === "3840x2160") return 15
+  return 6  // high: 1024x768, 1024x1536, 1920x1080
+}
 function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectRatio, loraActive?: boolean, hasRefImages?: boolean, refCount?: number): number {
   // Priced per request from measured fal costs; with "auto" + references the
   // shape is unknown here, so this is the upper bound (square).
@@ -303,10 +316,8 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   // Shown here for a typical 2048x2048 source at the default 2x.
   if (modelId.startsWith("topaz-"))      return topazImageTicketCost(modelId, {})
   if (modelId === "recraft-v4.1")        return 15   // flat 15 tickets/generation
-  if (modelId === "flux-1-dev") {
-    if (hasRefImages) return quality === "4k" ? 8 : quality === "2k" ? 6 : 3  // i2i
-    return quality === "4k" ? 6 : quality === "2k" ? 5 : 2                    // t2i
-  }
+  // per megapixel, as /api/generate charges (lib/ticket-pricing)
+  if (modelId === "flux-1-dev")         return flux1DevTicketCost({ quality, aspectRatio, i2i: !!hasRefImages, lora: !!loraActive })
   if (modelId === "flux-2") {
     if (loraActive && hasRefImages) return 3  // i2i+LoRA (1024×1024 tier)
     if (loraActive) return 2                  // t2i+LoRA (0-2 GB tier)
@@ -327,21 +338,9 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (HIGGSFIELD_IMAGE_MODELS.has(modelId)) return higgsfieldImageTicketCost(modelId, quality)
   if (modelId === "pro-scanner-v3")     return quality === "4k" ? 15 : 7
   if (modelId === "flash-scanner-v2.5") return 1
-  if (modelId === "gpt-image-2") {
-    if (quality === "low") return 1
-    if (quality === "medium") {
-      if (aspectRatio === "1024x1024" || aspectRatio === "2560x1440") return 3
-      if (aspectRatio === "3840x2160") return 4
-      return 2  // 1024x768, 1024x1536, 1920x1080
-    }
-    if (quality === "high") {
-      if (aspectRatio === "1024x1024") return 8
-      if (aspectRatio === "2560x1440") return 9
-      if (aspectRatio === "3840x2160") return 15
-      return 6  // 1024x768, 1024x1536, 1920x1080
-    }
-    return 1
-  }
+  // As /api/admin/gpt-image-2-stream charges: quality x size, plus one ticket
+  // per four references (the edit bills them as input tokens)
+  if (modelId === "gpt-image-2") return gpt2BaseTicketCost(quality, aspectRatio) + Math.ceil(Math.min(8, refCount ?? (hasRefImages ? 1 : 0)) / 4)
   // Anything not special-cased above bills straight from the shared config —
   // the same function /api/generate charges with.
   return configTicketCost(modelId, quality)
@@ -9248,7 +9247,10 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   // Full Size + "Full size" quality used to draw the ORIGINALS: ~20MB each for
   // a 4K NanoBanana PNG, so a batch of thirty took minutes to appear. Tapping a
   // tile still opens the true original in the viewer.
-  const displaySrc = imageId && imageId > 0 && !adminThumb && !isVideo ? `/api/images/${imageId}?display=tile` : null
+  // (Not for a live session's tile: the row's stored copy is its cover frame, so
+  // Full Size / wide tiles kept showing the first frame while the arrows moved
+  // the counter - the picked frame's own URL is what it draws)
+  const displaySrc = imageId && imageId > 0 && !adminThumb && !isVideo && !shownFrame ? `/api/images/${imageId}?display=tile` : null
   const midSrc = !spanBoost ? fullSrc
     : displaySrc ?? (fullSrc.startsWith("https://") ? `/_next/image?url=${encodeURIComponent(fullSrc)}&w=1080&q=75` : fullSrc)
   const renderedSrc = fullWidth && fullRes ? (displaySrc ?? fullSrc) : spanBoost ? midSrc : thumbSrc
@@ -11774,13 +11776,14 @@ function VideoDetailModal({
               </div>
             </div>
           ) : (
-            <video
-              ref={videoElRef}
+            // PlayerVideo: poster at once, a spinner while loading, muted
+            // fallback when sound autoplay is refused, a re-signed link if
+            // the old one expired - a click always ends in a playing video
+            <PlayerVideo
+              videoRef={videoElRef}
               src={video.videoUrl}
-              controls
-              autoPlay
-              loop
-              playsInline
+              rowId={video.id}
+              poster={video.id ? `/api/images/${video.id}?thumb=1` : undefined}
               className="object-contain"
               // Its final box from the first frame: the largest mediaAr rect
               // that fits the pane (cq units = the pane, a size container).
@@ -18270,10 +18273,9 @@ function PromptBox({
    * the same run at 1x. A flat price would be a straight loss at the top of the
    * range, so the tier follows the factor.
    */
-  const seedvrTicketCost =
-    seedvrMode === "target" ? (seedvrTarget === "2160p" ? 3 : 2)
-    : seedvrMode === "default" ? 2
-    : seedvrFactor <= 2 ? 2 : seedvrFactor <= 4 ? 4 : seedvrFactor <= 6 ? 8 : 16
+  // The server's function (lib/ticket-pricing); it prices the measured
+  // picture, this shows a typical 2048x2048 one
+  const seedvrTicketCost = seedvrUpscaleTicketCost({ mode: seedvrMode, factor: seedvrFactor })
   /*
    * Clarity bills per output megapixel: read the source's real size (the full
    * image - a thumbnail has the shape but not the pixels) to show what the
@@ -18311,7 +18313,7 @@ function PromptBox({
     : model.id === "nano-banana-2.1"
     // The same function the server charges with: size, thinking, each reference
     ? nb21TicketCost({ quality, thinking: nb21Thinking, refCount: activeRefImages.length, webSearch: nb21WebSearch })
-    : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0)
+    : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0, activeRefImages.length)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
   const needsRefImage = !!model.requiresReferenceImage && activeRefImages.length === 0
   const slotsNeeded = (model.isFal || model.id === "nano-banana-pro-2" || model.id === "gpt-image-2") ? imageCount : 1
@@ -23226,41 +23228,33 @@ function VideoCustomizationPanel({
     vid.src = objectUrl
   }
 
-  const motionMaxSec = characterOrientation === "video" ? 30 : 10
-  const sd20ResMultiplier = resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0
   const isSD20Family = model.id === "seedance-2.0" || model.id === "seedance-2.0-fast"
   const isLipsync = !!model.supportsLipsync
   const isOmni = !!model.videoModes
   const omniMode = isOmni ? sd20Mode : "t2v"
+  // The server's own billing function (lib/ticket-pricing videoTicketCost,
+  // the one /api/video/generate charges with), fed everything this panel
+  // knows - so the price shown is the price charged. The hand-written ladder
+  // it replaced (2026-10-17) fell back to a flat 20 for any model it did not
+  // list: Genjutsu showed 20 tickets and charged ~400 for a 10s 1080p clip.
+  const quoteRefVideos = videoRefVideoFilenames.length
+  const quoteMode = (model.id.startsWith("gemini-omni") || model.id === "flux-3") && (editSourceDuration ?? 0) > 0 ? "edit"
+    // reference clips make it a reference-to-video run (as the submit derives it)
+    : model.supportsReferenceVideo && quoteRefVideos > 0 ? "r2v" : sd20Mode
   const ticketCost = model.isRealtime
     // A live model: the price of one 30-second block (lib/realtime-wma)
     ? wmaBlockTickets("minimax-h3-max-director", resolution)
-    : isLipsync
-    ? Math.max(10, Math.ceil((lipsyncVideoDuration ?? 0) * 6))
-    : isOmni
-    ? (omniMode === "edit"
-        ? Math.max(3, Math.ceil(editSourceDuration || 8)) * 15
-        : (parseInt(duration) || 8) * 15)
-    : model.id === "kling-v3-motion"
-    ? Math.ceil(motionVideoDuration ?? motionMaxSec) * 6
-    : model.id === "kling-v3"
-    ? parseInt(duration) * (audioEnabled ? 8 : 6)
-    : model.id === "seedance-1.5"
-    ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
-    // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: editSourceDuration, fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps, hasStartImage: !!startFramePreview,
+    : videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled,
+        sd20Mode: quoteMode, referenceVideoCount: quoteRefVideos, referenceVideoDurationSec: videoRefVideoDuration,
+        referenceImageCount: quoteMode === "r2v" ? videoRefImagePreviews.length : 0,
+        hasStartImage: !!startFramePreview, hasEndImage: !!endFramePreview,
+        editVideoDurationSec: editSourceDuration, lipsyncVideoDurationSec: lipsyncVideoDuration ?? 0,
+        motionVideoDurationSec: motionVideoDuration ?? undefined, characterOrientation,
+        fps: ltxFps, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps,
         sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         audioDurationSec: audioSec, videoChoice: choiceValue,
         promptWords: (promptText ?? "").trim().split(/\s+/).filter(Boolean).length,
-        ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}),
-        // Omni / Flux 3: a source clip in the refs panel makes it an edit (Flux 3: extend)
-        sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && (editSourceDuration ?? 0) > 0 ? "edit" : undefined })
-    : isSD20Family
-    ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * sd20ResMultiplier)
-    : model.id === "happy-horse"
-    ? parseInt(duration) * (resolution === "1080p" ? 12 : 7)
-    : ({ "480p": { "5": 7, "10": 14 }, "720p": { "5": 13, "10": 26 }, "1080p": { "5": 20, "10": 40 } } as any)[resolution]?.[duration] ?? 20
+        ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}) })
 
   const btnBase   = "py-1.5 rounded-lg text-[11px] font-mono transition-all border"
   const btnActive = "bg-white/15 text-white border-white/30"
@@ -24969,28 +24963,20 @@ function VideoPromptBar({
   const motionMaxSec = characterOrientation === "video" ? 30 : 10
   const isSD20FamilyBar = model.id === "seedance-2.0" || model.id === "seedance-2.0-fast"
   const isLipsyncModel = !!model.supportsLipsync
-  const ticketCost = isLipsyncModel
-    ? Math.max(10, Math.ceil((lipsyncVideoDuration ?? 0) * 6))
-    : model.id === "kling-v3-motion"
-    ? Math.ceil(motionVideoDuration ?? motionMaxSec) * 6
-    : model.id === "kling-v3"
-    ? parseInt(duration) * (audioEnabled ? 8 : 6)
-    : model.id === "seedance-1.5"
-    ? Math.ceil(parseInt(duration) * 2.0 * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0) * (audioEnabled ? 1.0 : 0.5)) + 1
-    // SeeDance 2.5 / LTX 2.5 Pro / Luma: the billing function itself, so the price shown is the price charged
-    : model.id === "seedance-2.5" || model.id.startsWith("ltx-2.5-") || model.id === "flux-3" || model.id.startsWith("luma-ray-") || model.id.startsWith("gemini-omni") || model.id.startsWith("wan-3.0") || model.id === "wan-2.7" || model.id === "flux-video-upscale" || model.id === "minimax-h3-max" || model.id.startsWith("topaz-") || model.id === "seedvr2-video" || model.id === "flashvsr-video" || model.id === "bytedance-video-upscale" || BATCH_0928_VIDEO.has(model.id)
-    ? videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled, editVideoDurationSec: sourceSeconds, videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps, hasStartImage: !!startFramePreview,
+  // The server's own billing function, fed what the bar knows - the same
+  // quote as the settings panel (see VideoCustomizationPanel); the old
+  // hand-written ladder showed a flat 20 for every model it did not list
+  const ticketCost = videoTicketCost({ model: model.id, duration, resolution, generateAudio: audioEnabled,
+        editVideoDurationSec: sourceSeconds, lipsyncVideoDurationSec: lipsyncVideoDuration ?? 0,
+        motionVideoDurationSec: motionVideoDuration ?? undefined, characterOrientation,
+        hasStartImage: !!startFramePreview,
+        videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps,
         sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         // The same inputs the settings panel prices with, so the two quotes agree
         audioDurationSec: audioSeconds, videoChoice: choiceValue,
         promptWords: prompt.trim().split(/\s+/).filter(Boolean).length,
         ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}),
         sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && sourceSeconds > 0 ? "edit" : undefined })
-    : isSD20FamilyBar
-    ? Math.ceil(parseInt(duration === "auto" ? "5" : duration) * (model.id === "seedance-2.0-fast" ? 12 : 15) * (resolution === "1080p" ? 2.25 : resolution === "480p" ? 0.5 : 1.0))
-    : model.id === "happy-horse"
-    ? parseInt(duration) * (resolution === "1080p" ? 12 : 7)
-    : ({ "480p": { "5": 7, "10": 14 }, "720p": { "5": 13, "10": 26 }, "1080p": { "5": 20, "10": 40 } } as any)[resolution]?.[duration] ?? 20
 
   const metaLine = model.isRealtime
     ? `${resolution} · ${aspectRatio} · billed while live`

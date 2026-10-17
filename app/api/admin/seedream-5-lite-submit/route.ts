@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server'
+import { enforcePublicModeration } from '@/lib/public-moderation'
+import { checkIsAdmin } from '@/lib/admin-check'
 import { fal } from '@/lib/fal-client'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
@@ -111,6 +113,9 @@ export async function POST(req: Request) {
 
     let request_id: string
     try {
+      // A non-admin runs moderated - checker on, standard tolerance - whatever
+      // the request asked for (lib/public-moderation; 2026-10-17)
+      enforcePublicModeration('seedream-5-lite', input, await checkIsAdmin(user.email))
       const result = await fal.queue.submit(endpoint, { input, webhookUrl })
       request_id = result.request_id
     } catch (falErr: any) {

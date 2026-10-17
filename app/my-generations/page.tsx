@@ -23,6 +23,7 @@ import type { AssetKind } from "@/lib/storyboard"
 import { FolderPicker, touchRecentFolders, type PickerMode } from "@/components/my-generations/FolderPicker"
 import { holdCardVideos } from "@/components/home/card-video-scheduler"
 import { RefLibraryGrid } from "@/components/my-generations/RefLibraryGrid"
+import { PlayerVideo } from "@/components/feed/PlayerVideo"
 
 interface GeneratedImage extends MyGenImage {
   prompt: string
@@ -1135,7 +1136,7 @@ export default function MyGenerationsPage() {
 
           <div className="relative flex-1 flex items-center justify-center p-4 pt-14 min-h-0" onClick={(e) => e.stopPropagation()}>
             {selectedImage.videoMetadata?.isVideo ? (
-              <video key={selectedImage.id} src={selectedImage.imageUrl} controls autoPlay loop playsInline className="max-w-full max-h-full object-contain rounded-xl" />
+              <PlayerVideo key={selectedImage.id} src={selectedImage.imageUrl} rowId={selectedImage.id} poster={`/api/images/${selectedImage.id}?thumb=1`} className="max-w-full max-h-full object-contain rounded-xl" />
             ) : (
               /*
                * The full-size file straight from storage (the URL comes signed),

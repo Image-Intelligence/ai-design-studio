@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server'
+import { enforcePublicModeration } from '@/lib/public-moderation'
+import { checkIsAdmin } from '@/lib/admin-check'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
@@ -39,7 +41,8 @@ export async function POST(req: Request) {
     } = body
 
     // Server-side ticket cost — matches nano-banana-2-live pricing
-    const ticketCost = (resolution as string) === '4K' ? 12 : 7
+    // ...per picture: fal bills each one, and the page may ask for several (up to 4)
+    const ticketCost = ((resolution as string) === '4K' ? 12 : 7) * Math.min(Math.max(1, parseInt(String(num_images)) || 1), 4)
     // CCBill content filter — must pass BEFORE any charge or provider submit
     {
       const _cf = await enforceContentFilter(prompt, sessionUser.email)
@@ -78,6 +81,9 @@ export async function POST(req: Request) {
 
     let result: any
     try {
+      // A non-admin runs moderated - checker on, standard tolerance - whatever
+      // the request asked for (lib/public-moderation; 2026-10-17)
+      enforcePublicModeration('nano-banana-2', input, await checkIsAdmin(sessionUser.email))
       result = await fal.subscribe('fal-ai/nano-banana-2', { input, logs: false })
     } catch (falErr: any) {
       await refundGenerationTickets(sessionUser.id, sessionUser.email, ticketCost)

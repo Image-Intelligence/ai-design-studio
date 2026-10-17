@@ -59,6 +59,57 @@ export async function probeRemoteVideo(url: string, timeoutMs = 12_000): Promise
 }
 
 /**
+ * Does this MP4/MOV keep its index (the `moov` box) after the media data?
+ * Read from the top-level boxes at the start of the file. Several fal models
+ * (Hailuo, Kandinsky, Happy Horse, DreamActor, Higgsfield Cinema, Grok Edit -
+ * measured 2026-10-16) write it at the END, so a browser must fetch the file's
+ * tail before the first frame can show - the video "doesn't load" for a beat,
+ * or for a long while on a slow phone.
+ */
+export function moovAtEnd(buf: Buffer): boolean {
+  let off = 0
+  for (let i = 0; i < 12 && off + 8 <= buf.length; i++) {
+    let len = buf.readUInt32BE(off)
+    const type = buf.toString('latin1', off + 4, off + 8)
+    if (type === 'moov') return false
+    if (type === 'mdat') return true
+    if (len === 1 && off + 16 <= buf.length) len = Number(buf.readBigUInt64BE(off + 8))
+    if (len < 8) return false
+    off += len
+  }
+  return false
+}
+
+/**
+ * The same clip with its index moved to the front (`+faststart`), so it starts
+ * playing as soon as the first bytes arrive. A remux - nothing is re-encoded,
+ * the picture and sound are untouched. Anything already fast, or not an MP4/MOV
+ * this can read, comes back as it was. Any route importing this must list
+ * ffmpeg-static in next.config.ts `outputFileTracingIncludes`.
+ */
+export async function faststart(input: Buffer): Promise<Buffer> {
+  if (!moovAtEnd(input)) return input
+  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'faststart-'))
+  try {
+    const src = join(dir, 'in.mp4'), out = join(dir, 'out.mp4')
+    await writeFile(src, input)
+    await promisify(execFile)(ffmpegPath as unknown as string, [
+      '-y', '-hide_banner', '-loglevel', 'error', '-i', src,
+      '-map', '0', '-c', 'copy', '-movflags', '+faststart', out,
+    ], { timeout: 60_000, maxBuffer: 1 << 26 })
+    const fixed = await readFile(out)
+    return fixed.length > 1000 ? fixed : input
+  } catch {
+    return input
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/**
  * Play a clip faster or slower WITHOUT re-encoding: every timestamp is scaled
  * by `scale` (0.5 = twice as fast). Used to put VOID's 12 fps output back at
  * its source's speed. Audio, if any, is dropped - it would no longer match.

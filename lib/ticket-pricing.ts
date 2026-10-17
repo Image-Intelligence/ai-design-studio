@@ -217,6 +217,54 @@ export function topazVideoTicketCost(model: string, o: { seconds: number; height
 }
 
 /*
+ * FLUX.1 Dev and FLUX 2 (the legacy /api/generate branches), billed by fal
+ * per megapixel - started megapixels, so a 6.6 MP frame is 7 (2026-10-17):
+ *   FLUX.1 Dev  $0.025 / MP, image-to-image $0.03, LoRA $0.035 (either)
+ *   FLUX 2      $0.012 / MP, LoRA $0.021; its edit endpoints bill PROCESSED
+ *               megapixels - the output plus every reference sent, at
+ *               whatever size it arrived (refs are not shrunk on this path)
+ * Tickets = fal cost / $0.04, never under the tiers the page has always shown
+ * (FLUX.1 Dev 2 / 5 / 6, image-to-image 3 / 6 / 8; FLUX 2 1, LoRA 2, LoRA
+ * edit 3), so ordinary runs are unchanged. Both used to charge a flat 2 / 1
+ * whatever the size, LoRA or references - a LoRA edit with four 4K
+ * references cost ~$0.75 for 1 ticket.
+ */
+export const FLUX1_DEV_SIZES: Record<string, Record<string, { width: number; height: number }>> = {
+  '1k': { '1:1': { width: 1024, height: 1024 }, '16:9': { width: 1280, height: 720 }, '9:16': { width: 720, height: 1280 }, '4:3': { width: 1024, height: 768 }, '3:4': { width: 768, height: 1024 } },
+  '2k': { '1:1': { width: 1920, height: 1920 }, '16:9': { width: 1920, height: 1080 }, '9:16': { width: 1080, height: 1920 }, '4:3': { width: 1920, height: 1440 }, '3:4': { width: 1440, height: 1920 } },
+  '4k': { '1:1': { width: 2560, height: 2560 }, '16:9': { width: 2560, height: 1440 }, '9:16': { width: 1440, height: 2560 }, '4:3': { width: 2560, height: 1920 }, '3:4': { width: 1920, height: 2560 } },
+}
+export function flux1DevTicketCost(o: { quality?: string; aspectRatio?: string; i2i?: boolean; lora?: boolean }): number {
+  const tier = o.quality === '4k' ? '4k' : o.quality === '2k' ? '2k' : '1k'
+  const d = FLUX1_DEV_SIZES[tier][o.aspectRatio ?? '1:1'] ?? FLUX1_DEV_SIZES[tier]['1:1']
+  const rate = o.lora ? 0.035 : o.i2i ? 0.03 : 0.025
+  const usd = Math.ceil((d.width * d.height) / 1e6 - 1e-9) * rate
+  const floor = o.i2i ? (tier === '4k' ? 8 : tier === '2k' ? 6 : 3) : (tier === '4k' ? 6 : tier === '2k' ? 5 : 2)
+  return Math.max(floor, Math.ceil(usd / 0.04 - 1e-9))
+}
+export function flux2TicketCost(o: { outMP: number; refMP?: number; lora?: boolean }): number {
+  const usd = Math.ceil(o.outMP + (o.refMP ?? 0) - 1e-9) * (o.lora ? 0.021 : 0.012)
+  const floor = o.lora ? ((o.refMP ?? 0) > 0 ? 3 : 2) : 1
+  return Math.max(floor, Math.ceil(usd / 0.04 - 1e-9))
+}
+
+/*
+ * SeedVR2 image upscale (fal-ai/seedvr/upscale/image): fal bills $0.001 per
+ * OUTPUT megapixel, and the factor squares it - 10x over a 4 MP picture is
+ * ~420 MP, $0.42. Priced at fal cost / $0.04 a ticket on the measured source
+ * (an unmeasured one counts as 4.2 MP, 2048x2048), never under 2 tickets -
+ * which covers everything up to 80 MP, so ordinary runs are unchanged. The
+ * server used to charge a flat 2 whatever the factor (2026-10-17).
+ * 'default' is fal's own 2x; 'target' renders at most a 2160p frame.
+ */
+export function seedvrUpscaleTicketCost(o: { mode?: string; factor?: number | string; width?: number; height?: number }): number {
+  const srcMP = o.width && o.height ? (o.width * o.height) / 1e6 : 4.2
+  const outMP = o.mode === 'target' ? 3840 * 3840 / 1e6
+    : srcMP * Math.pow(o.mode === 'factor' ? Math.max(1, Math.min(10, Number(o.factor) || 2)) : 2, 2)
+  return Math.max(2, Math.ceil((outMP * 0.001) / 0.04 - 1e-9))
+}
+
+/*
  * Topaz image tools, priced from what fal bills (2026-10-01): $0.08 per
  * STARTED block of OUTPUT megapixels, the block depending on the tool and its
  * model. 2 tickets per block = a 50% margin at the $0.08 subscription ticket.
@@ -471,12 +519,18 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
      *   Prime    2 / 3.5 / 7    = 57 / 50 / 50%
      * The route sends 5s for 'auto' and anything else as asked (min 2s), and
      * an unknown resolution as 1080p - billed the same way.
+     * Reference mode: fal bills the input videos' seconds on top of the
+     * output's ("input video duration is billed in addition") - measured by
+     * the route, so they are added here (they were left out before 2026-10-17,
+     * when 15s of references on a 2s clip cost 4x what it charged).
      */
     const prime = model === 'wan-3.0-prime'
     const res = ['480p', '720p', '1080p'].includes(resolution) ? resolution : '1080p'
     const perSec = res === '480p' ? 2 : res === '720p' ? (prime ? 3.5 : 3) : (prime ? 7 : 5)
     const sec = duration === 'auto' ? 5 : Math.max(2, parseInt(duration) || 5)
-    ticketCost = Math.ceil(sec * perSec)
+    // (Prime has no reference endpoint - the route sends it no videos)
+    const refSec = !prime && effectiveSd20Mode === 'r2v' && referenceVideoCount > 0 ? Math.max(0, referenceVideoDurationSec) : 0
+    ticketCost = Math.ceil((sec + refSec) * perSec)
   } else if (INPUT_ROUTED_MODELS.has(model)) {
     // PLACEHOLDER — ADMIN ONLY until priced. Scaled by resolution the same
     // way the other per-second models are.
@@ -516,7 +570,9 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     };
     ticketCost = pricing[resolution]?.[duration] || 20;
   }
-  return ticketCost
+  // Never under one ticket, never NaN: a junk or negative length must not
+  // price a free (or credited) run
+  return Number.isFinite(ticketCost) ? Math.max(1, Math.ceil(ticketCost)) : 1
 }
 
 /**

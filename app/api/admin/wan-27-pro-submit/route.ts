@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server'
+import { enforcePublicModeration } from '@/lib/public-moderation'
+import { checkIsAdmin } from '@/lib/admin-check'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
@@ -134,8 +136,9 @@ export async function POST(req: Request) {
     const targetUserId: number | null = sessionUser?.id ?? null
     if (!targetUserId) return NextResponse.json({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 
-    // Server-side ticket check — WAN 2.7 Pro costs 4 tickets
-    const ticketCost = 4
+    // Server-side ticket check — WAN 2.7 Pro costs 4 tickets per picture: fal bills each one, and the page may ask for several
+    // (up to 4 edits / 5 text-to-image - a flat 4 lost money, 2026-10-17)
+    const ticketCost = 4 * Number(input.num_images ?? input.max_images ?? 1)
     const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
     // ── Spam-safe submission order (see kling-o3-submit for the rationale):
     // atomic user-slot claim → charge → global slot/submit, with the claimed
@@ -183,6 +186,9 @@ export async function POST(req: Request) {
     }
 
     try {
+      // A non-admin runs moderated - checker on, standard tolerance - whatever
+      // the request asked for (lib/public-moderation; 2026-10-17)
+      enforcePublicModeration('wan-2.7-pro', input, await checkIsAdmin(sessionUser!.email))
       const submitted = await fal.queue.submit(endpoint, { input })
       await prisma.generationQueue.update({
         where: { id: claim.rowId },

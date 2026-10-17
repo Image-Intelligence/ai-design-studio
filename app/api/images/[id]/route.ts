@@ -61,6 +61,17 @@ export async function GET(
       return res
     }
 
+    // ?stream=1 - a freshly signed link to the original, as a redirect. Players
+    // fall back to it when the link they were given has expired (a tab left
+    // open past the 12h signature): the video plays again without a reload.
+    // A redirect, not a proxy - the browser's range requests go straight to
+    // the media Worker.
+    if (searchParams.get('stream') === '1') {
+      const res = NextResponse.redirect(signMediaUrl(image.imageUrl), 302)
+      res.headers.set('Cache-Control', 'no-store')
+      return res
+    }
+
     if (isDisplay) {
       // The screen-sized copy (lib/display-image.ts): made on first request,
       // then a redirect to the stored file. Anything without one (a video) gets
@@ -108,15 +119,23 @@ export async function GET(
         }
         return new NextResponse(new Uint8Array(poster), { status: 200, headers: { 'Content-Type': 'image/webp', 'Cache-Control': 'private, max-age=86400' } })
       }
+      // Sound files and 3D meshes have no picture to shrink - answer at once
+      // rather than downloading the file for sharp to reject
+      if (vmeta.isAudio === true || /\.(mp3|wav|flac|m4a|aac|ogg|opus|glb|gltf|fbx|obj|usdz)(\?|#|$)/i.test(image.imageUrl)) {
+        return new NextResponse('No picture', { status: 404, headers: { 'Cache-Control': 'private, max-age=86400' } })
+      }
       // First view of this image — generate the thumbnail once, store it on R2 so
       // every future request (this route or the direct URL) is a cheap CDN-served file.
       const blobRes = await fetchMedia(image.imageUrl)
       if (!blobRes.ok) return new NextResponse('Image unavailable', { status: 404 })
       const buffer = Buffer.from(await blobRes.arrayBuffer())
+      // Anything else sharp cannot read is a quiet 415, not a logged crash
       const thumb = await sharp(buffer)
         .resize({ width: 600, withoutEnlargement: true })
         .webp({ quality: 75 })
         .toBuffer()
+        .catch(() => null)
+      if (!thumb) return new NextResponse('No picture', { status: 415, headers: { 'Cache-Control': 'private, max-age=86400' } })
       // Persist for next time (best-effort — on failure we simply regenerate later)
       try {
         const thumbUrl = await uploadToR2(`thumb/${id}-${Date.now()}.webp`, Buffer.from(thumb), 'image/webp')

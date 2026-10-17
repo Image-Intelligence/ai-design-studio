@@ -5,7 +5,8 @@ import prisma from '@/lib/prisma'
 import { resolveRequestUser, requireScopes, canUseModel, modelNotPermittedResponse } from '@/lib/api-key-auth'
 import { uploadToR2 } from '@/lib/r2'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
-import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, clarityUpscaleTicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
+import { checkIsAdmin } from '@/lib/admin-check'
+import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, clarityUpscaleTicketCost, flux1DevTicketCost, flux2TicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { reserveGenerationTickets } from '@/lib/ticket-gate'
@@ -342,6 +343,12 @@ export async function POST(request: Request) {
                 ? nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: gptRefCount, webSearch: body.nb21WebSearch === true })
                 : getTicketCost(model, quality)
     console.log('Selected model:', selectedModel.displayName, '- Quality:', quality, '- Cost:', ticketCost, 'ticket(s)')
+    // ChatGPT Images 2.0 runs through /api/admin/gpt-image-2-stream, which
+    // prices it by quality, size and references. Here it fell to the generic
+    // fal branch - two high-quality images for a flat 2 tickets (2026-10-17)
+    if (model === 'gpt-image-2') {
+      return jsonPrivate({ error: 'ChatGPT Images 2.0 runs from the image page - pick it there.' }, { status: 400 })
+    }
 
     // Per-user concurrency cap — this route creates GenerationQueue rows but never
     // gated on them, so a user could fire unlimited concurrent FAL jobs (runaway
@@ -472,7 +479,8 @@ export async function POST(request: Request) {
               resemblance: upscaleResemblance,
               guidance_scale: upscaleGuidance,
               num_inference_steps: upscaleSteps,
-              enable_safety_checker: false,
+              // Off for admins only - everyone else runs moderated (lib/public-moderation)
+              enable_safety_checker: !(await checkIsAdmin(user.email)),
             },
             webhookUrl,
           })
@@ -1100,37 +1108,51 @@ export async function POST(request: Request) {
             })
             modelEndpoint = built.endpoint
             newFalInput = built.input
+            // An edit endpoint's own id (krea-3-edit, flux-3-klein-edit,
+            // nano-banana-2.1-edit...) is accepted as the model too: price it as
+            // its base model, on the same measured size and references. Before
+            // 2026-10-17 those ids skipped every re-price below and paid the
+            // flat catalogue price (a 4K FLUX 3 edit: 2 tickets for $0.82).
+            const priceAs = model.endsWith('-edit') ? model.slice(0, -5) : model
             // The reference is measured now: charge for the shape it really is.
-            if (model === 'gpt-image-2.5') ticketCost = gptPrice(refDims)
+            if (priceAs === 'gpt-image-2.5') ticketCost = gptPrice(refDims)
             // Grok Imagine 2 runs its edit endpoint when references are attached,
             // which fal bills per input image on top - charge the edit's price
-            if (model === 'grok-imagine-2' && falImageUrls.length > 0) ticketCost = getTicketCost('grok-imagine-2-edit', quality)
-            if (model === 'mai-image-2.5-pro' && falImageUrls.length > 0) ticketCost = getTicketCost('mai-image-2.5-pro-edit', quality)
+            if (priceAs === 'grok-imagine-2' && falImageUrls.length > 0) ticketCost = getTicketCost('grok-imagine-2-edit', quality)
+            if (priceAs === 'mai-image-2.5-pro' && falImageUrls.length > 0) ticketCost = getTicketCost('mai-image-2.5-pro-edit', quality)
             // NanoBanana 2.1: priced on the references that really go (max 14)
-            if (model === 'nano-banana-2.1') ticketCost = nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: Math.min(14, falImageUrls.length), webSearch: body.nb21WebSearch === true })
+            if (priceAs === 'nano-banana-2.1') ticketCost = nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: Math.min(14, falImageUrls.length), webSearch: body.nb21WebSearch === true })
             // Qwen Image 3 (measured 2026-10-02): $0.04 at 1K -> 1 ticket, $0.075
             // at 2K (the old "4k" renders 2K) -> 2; the edit adds ~$0.006 for its
             // references ($0.081 at 2K) -> one ticket more
-            if (model === 'flux-3-image') {
+            if (priceAs === 'flux-3-image') {
               const { flux3ImageTicketCost } = await import('@/lib/ticket-pricing')
               ticketCost = flux3ImageTicketCost({ quality, aspectRatio, refDims, refs: falImageUrls.length })
             }
-            if (model === 'qwen-image-3') ticketCost = (quality === '1k' ? 1 : 2) + (falImageUrls.length > 0 ? 1 : 0)
+            if (priceAs === 'qwen-image-3') ticketCost = (quality === '1k' ? 1 : 2) + (falImageUrls.length > 0 ? 1 : 0)
             // FLUX 3 Klein / Klein Base and Krea 3 (2026-10-15): priced on the
             // size really sent ('auto' follows the measured reference) and, for
             // Krea 3, on every reference that goes with it
-            if (model === 'flux-3-klein' || model === 'flux-3-klein-base') {
+            if (priceAs === 'flux-3-klein' || priceAs === 'flux-3-klein-base') {
               const { kleinTicketCost } = await import('@/lib/ticket-pricing')
-              ticketCost = kleinTicketCost(model, { quality, aspectRatio, refDims })
+              ticketCost = kleinTicketCost(priceAs, { quality, aspectRatio, refDims })
             }
-            if (model === 'krea-3') {
+            if (priceAs === 'krea-3') {
               const { krea3TicketCost } = await import('@/lib/ticket-pricing')
               ticketCost = krea3TicketCost({ quality, aspectRatio, refDims, refs: falImageUrls.length })
             }
+            // SeedVR2 bills by OUTPUT megapixels too: the factor on the measured source
+            if (priceAs === 'seedvr2-upscale') {
+              const { seedvrUpscaleTicketCost } = await import('@/lib/ticket-pricing')
+              ticketCost = seedvrUpscaleTicketCost({
+                mode: typeof body.seedvrUpscaleMode === 'string' ? body.seedvrUpscaleMode : 'default',
+                factor: body.seedvrUpscaleFactor, width: refDims?.width, height: refDims?.height,
+              })
+            }
             // Topaz bills by OUTPUT megapixels: price from the measured source
-            if (model.startsWith('topaz-')) {
+            if (priceAs.startsWith('topaz-')) {
               const { topazImageTicketCost } = await import('@/lib/ticket-pricing')
-              ticketCost = topazImageTicketCost(model, {
+              ticketCost = topazImageTicketCost(priceAs, {
                 topazModel: typeof body.topazModel === 'string' ? body.topazModel : undefined,
                 upscaleFactor: body.topazUpscaleFactor,
                 width: refDims?.width, height: refDims?.height,
@@ -1318,6 +1340,7 @@ export async function POST(request: Request) {
 
         // Handle reference images (upload to FAL storage first)
         const permanentReferenceUrls: string[] = newFalSpec ? [...newFalPermanentRefs] : []
+        let legacyRefMP = 0
     /*
      * The second and third LoRAs, as sent - the body is canonicalised, so
      * these are the stored urls, not the signed ones fal was handed. Null when
@@ -1361,6 +1384,11 @@ export async function POST(request: Request) {
               // Refs arrive either as an https URL (library images — the client
               // no longer base64-encodes those) or as a base64 data URL.
               const imageBuffer = await refToBuffer(ref)
+              // FLUX 2's edit bills every reference's megapixels: measured below
+              if (model === 'flux-2') {
+                const m = await (await import('sharp')).default(imageBuffer).metadata().catch(() => null)
+                legacyRefMP += m?.width && m?.height ? (m.width * m.height) / 1e6 : 16
+              }
               const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' })
               const uploadedUrl = await fal.storage.upload(blob)
               imageUrls.push(uploadedUrl)
@@ -1391,10 +1419,30 @@ export async function POST(request: Request) {
           }
         }
 
+        // FLUX.1 Dev / FLUX 2 are billed per megapixel (lib/ticket-pricing):
+        // priced now that the size, LoRA and references sent are known
+        if (model === 'flux-1-dev') {
+          ticketCost = flux1DevTicketCost({ quality, aspectRatio, i2i: !!inputParams.image_url, lora: !!loraUrl })
+        } else if (model === 'flux-2') {
+          const sz = inputParams.image_size
+          const named: Record<string, number> = { square_hd: 1024 * 1024, landscape_4_3: 1024 * 768, portrait_4_3: 768 * 1024, landscape_16_9: 1024 * 576, portrait_16_9: 576 * 1024 }
+          const outPx = sz && typeof sz === 'object' ? Number(sz.width) * Number(sz.height) : named[String(sz)] ?? 1024 * 1024
+          ticketCost = flux2TicketCost({ outMP: outPx / 1e6, refMP: inputParams.image_urls ? legacyRefMP : 0, lora: !!loraUrl })
+        }
+
         // The endpoint is settled now, so narrow the setting to what it
         // accepts: the flux-lora endpoints stop at 'regular'.
         if (inputParams.acceleration === 'high' && /flux-lora/.test(modelEndpoint)) {
           inputParams.acceleration = 'regular'
+        }
+
+        // Moderation again, on the payload as it will be SENT: the per-model
+        // branches above set their own checker / tolerance after the first
+        // pass (FLUX 2 and Z-Image off, NanoBanana Pro at 6, SeeDream 4.5 and
+        // FLUX.1 Dev from the request), which undid it for non-admins
+        {
+          const { enforcePublicModeration } = await import('@/lib/public-moderation')
+          enforcePublicModeration(model, inputParams, await checkIsAdmin(user.email))
         }
 
         if (syncMode) {

@@ -15,7 +15,7 @@
  *   generate  any image model                  (lib/storyboard stillTickets)
  */
 import { getTicketCost } from '@/config/ai-models.config'
-import { topazImageTicketCost, clarityUpscaleTicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
+import { topazImageTicketCost, clarityUpscaleTicketCost, seedvrUpscaleTicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
 import { STORYBOARD_IMAGE_MODELS, STORYBOARD_ASPECTS, stillTickets } from '@/lib/storyboard'
 import { ADMIN_ONLY_IMAGE_MODELS } from '@/lib/chat-image-catalog'
 import { getCreateModel } from '@/lib/chat-hub-models'
@@ -71,7 +71,7 @@ export function upscaleFactor(id: UpscalerId, asked: number, w: number, h: numbe
 
 /** Tickets for one upscale of a w x h picture by `factor` - as the portal charges for the same upscaler. */
 export function upscaleTickets(id: UpscalerId, factor: number, w: number, h: number): number {
-  if (id === 'seedvr2-upscale') return getTicketCost('seedvr2-upscale')
+  if (id === 'seedvr2-upscale') return seedvrUpscaleTicketCost({ mode: 'factor', factor, width: w, height: h })
   // The portal's prices: Clarity per output MP (floor 7 / 26), ESRGAN and
   // AuraSR 1 flat (fal bills them by the compute second - pennies), DRCT 1
   // ticket per 2 output MP ($0.0045 / MP)

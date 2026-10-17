@@ -701,10 +701,29 @@ const BUFFER = 1.1
 export interface AudioPriceQuery {
   /** Characters of text sent (text + lyrics). */
   chars?: number
+  /**
+   * The same text weighted by how long it takes to SAY (spokenCharCount) -
+   * what output-billed speech estimates its length from. Defaults to chars.
+   */
+  spokenChars?: number
   /** Requested output length. */
   seconds?: number
   /** Length of the uploaded input audio. */
   inputSeconds?: number
+}
+
+/**
+ * Characters weighted by speaking time. The 12-a-second estimate holds for
+ * alphabetic text, but a Chinese / Japanese / Korean / Thai character is
+ * closer to a syllable - about 4 Latin letters' worth - so a CJK script priced
+ * as 12 a second was billed ~20% under what fal charged (2026-10-17 audit).
+ */
+// Thai, Hangul Jamo, kana, CJK ideographs (+ Ext A, compatibility), Hangul syllables
+const SPOKEN_WIDE = /[฀-๿ᄀ-ᇿ぀-ヿ㐀-䶿一-鿿가-힯豈-﫿]/
+export function spokenCharCount(text: string): number {
+  let n = 0
+  for (const ch of text) n += SPOKEN_WIDE.test(ch) ? 4 : 1
+  return n
 }
 
 /** What fal charges for one run, in USD (buffered). */
@@ -713,7 +732,8 @@ export function audioRunCostUsd(m: AudioStudioModel, q: AudioPriceQuery): number
   const chars = Math.max(q.chars ?? 0, 100)
   // Output length: what was asked for, or - for speech billed by output - an estimate from the text
   const inSec = Math.max(q.inputSeconds ?? 60, 1)
-  const outSec = (q.seconds ?? m.duration?.default ?? (p.charsPerSecond ? chars / p.charsPerSecond : 30))
+  const spoken = Math.max(q.spokenChars ?? 0, chars)
+  const outSec = (q.seconds ?? m.duration?.default ?? (p.charsPerSecond ? spoken / p.charsPerSecond : 30))
     + (p.outputIncludesInput ? inSec : 0)
   let usd: number
   switch (p.per) {

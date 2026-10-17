@@ -71,10 +71,14 @@ export async function POST(req: Request) {
       const clip = typeof b.editVideoUrl === 'string' ? b.editVideoUrl : (Array.isArray(b.referenceVideoUrls) ? b.referenceVideoUrls[0] : null)
       if (!clip) return jsonPrivate({ success: false, error: 'Add the source clip (4-30 seconds).' }, { status: 400 })
       if (!images.length) return jsonPrivate({ success: false, error: model === 'higgsfield-genjutsu-swap' ? 'Add a picture of what to swap in.' : 'Add a picture of each character.' }, { status: 400 })
-      // Billed on the clip's real length (rounded up, trimmed at 30s)
+      // Billed on the clip's MEASURED length (rounded up). A clip that cannot
+      // be read is refused - pricing it on the browser's number let a 30s
+      // 1080p clip bill as 4s - and so is one over the 30s Genjutsu takes
       const probed = await (await import('@/lib/video-probe')).probeRemoteVideo(clip).catch(() => null)
-      const sec = probed?.seconds ?? (Number(b.editVideoDurationSec) || 0)
-      if (sec && sec < 3.95) return jsonPrivate({ success: false, error: 'Genjutsu needs a clip of at least 4 seconds.' }, { status: 400 })
+      if (!probed) return jsonPrivate({ success: false, error: "Couldn't read the source clip - try uploading it again." }, { status: 400 })
+      const sec = probed.seconds
+      if (sec < 3.95) return jsonPrivate({ success: false, error: 'Genjutsu needs a clip of at least 4 seconds.' }, { status: 400 })
+      if (sec > 30.5) return jsonPrivate({ success: false, error: 'Genjutsu takes clips up to 30 seconds - trim this one first.' }, { status: 400 })
       if (model === 'higgsfield-genjutsu-swap' && probed && probed.width * probed.height < 409_600) {
         return jsonPrivate({ success: false, error: 'Object swap needs at least ~640x640 worth of pixels per frame - use a larger clip.' }, { status: 400 })
       }
@@ -103,7 +107,16 @@ export async function POST(req: Request) {
         ...(vids.length ? { video_urls: vids.slice(0, 10).map(sign) } : {}),
         ...(auds.length ? { audio_urls: auds.slice(0, 10).map(sign) } : {}),
       }
-      listTickets = higgsfieldVideoTicketCost(model, { resolution, duration, refVideoSec: Number(b.referenceVideoDurationSec) || 0 })
+      // Reference clips are billed by Higgsfield too (0.6x a second): measured
+      // here, not taken from the browser
+      let refVideoSec = 0
+      if (vids.length) {
+        const vp = await import('@/lib/video-probe')
+        const secs = await Promise.all(vids.slice(0, 10).map(u => vp.probeRemoteMediaSeconds(u).catch(() => null)))
+        if (secs.some(x => !x)) return jsonPrivate({ success: false, error: "Couldn't read a reference video - try uploading it again." }, { status: 400 })
+        refVideoSec = secs.reduce<number>((a, x) => a + (x ?? 0), 0)
+      }
+      listTickets = higgsfieldVideoTicketCost(model, { resolution, duration, refVideoSec })
     }
 
     const endpoint = HIGGSFIELD_ENDPOINTS[model]

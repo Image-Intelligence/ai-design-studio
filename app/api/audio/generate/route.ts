@@ -6,7 +6,7 @@ import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-g
 import { canonicalisePayload } from '@/lib/media-url'
 import { fal } from '@/lib/fal-client'
 import { jsonPrivate } from '@/lib/api-json'
-import { AUDIO_MODEL_PREFIX, audioTicketCost, getAudioStudioModel, type AudioRunInput } from '@/lib/audio-studio'
+import { AUDIO_MODEL_PREFIX, audioTicketCost, spokenCharCount, getAudioStudioModel, type AudioRunInput } from '@/lib/audio-studio'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 
 /**
@@ -142,6 +142,7 @@ export async function POST(req: Request) {
 
     const ticketCost = audioTicketCost(spec, {
       chars: (input.text?.length ?? 0) + (input.lyrics?.length ?? 0),
+      spokenChars: spokenCharCount((input.text ?? '') + (input.lyrics ?? '')),
       seconds: input.duration,
       inputSeconds,
     })

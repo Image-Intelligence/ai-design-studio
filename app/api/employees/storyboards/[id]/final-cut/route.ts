@@ -320,7 +320,21 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   if (body.action === 'resume') {
     if (st.job && (st.job.status === 'failed' || st.job.status === 'cancelled')) {
-      st.job = { ...st.job, status: 'running', error: null, message: 'Resuming' }
+      /*
+       * A cancel refunds the cut's charge (charged -> 0), so resuming a
+       * cancelled - or a failed, then cancelled - cut pays for it again.
+       * Before 2026-10-17 cancel-then-resume finished the whole cut free.
+       * A failed cut that was never cancelled still holds its charge and
+       * resumes without paying twice.
+       */
+      let charged = st.job.charged ?? 0
+      if (!user.isAdmin && !charged) {
+        const price = finalCutExtraTickets(st.job.options, totalSeconds(shots))
+        const paid = await deductGenerationTickets(user.id, user.email, price)
+        if (!paid.ok) return jsonPrivate({ error: `Resuming the Final Cut needs ${paid.need} tickets for the edit, cards and music - you have ${paid.have}`, needTickets: true }, { status: 402 })
+        charged = price
+      }
+      st.job = { ...st.job, charged, status: 'running', error: null, message: 'Resuming' }
       if (st.job.phase === 'shoot') st.work = { ...st.work, submitted: false }
       await save(board.id, st)
     }

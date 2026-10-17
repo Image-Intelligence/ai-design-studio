@@ -54,14 +54,15 @@ export async function GET(request: Request) {
     const favN = source === 'fav' ? n : source === 'all' ? 0 : Math.ceil(n / 2)
     const { hidden } = await readPrefs(user.id)
 
-    // Same exclusions as the feed: dataset uploads are training data, and
-    // '3d:' rows are meshes an <img> cannot draw.
+    // Same exclusions as the feed: dataset uploads are training data,
+    // '3d:' rows are meshes an <img> cannot draw, and 'audio:' rows are
+    // sound files with no picture at all.
     const favs = favN === 0 ? [] : await prisma.$queryRaw<{ id: number }[]>`
       SELECT g.id FROM "ImageRating" r
       JOIN "GeneratedImage" g ON g.id = r."generatedImageId"
       WHERE r."userId" = ${user.id} AND g."userId" = ${user.id} AND r.score >= 4
         AND g."isDeleted" = false AND g."isHidden" = false
-        AND g.model <> '__upload__' AND g.model NOT LIKE '3d:%'
+        AND g.model <> '__upload__' AND g.model NOT LIKE '3d:%' AND g.model NOT LIKE 'audio:%'
         AND g.id <> ALL(${hidden}::int[])
       ORDER BY random() LIMIT ${favN}`
     const favIds = new Set(favs.map(r => r.id))
@@ -71,7 +72,7 @@ export async function GET(request: Request) {
     const rand = randN <= 0 || source === 'fav' ? [] : await prisma.$queryRaw<{ id: number }[]>`
       SELECT id FROM "GeneratedImage"
       WHERE "userId" = ${user.id} AND "isDeleted" = false AND "isHidden" = false
-        AND model <> '__upload__' AND model NOT LIKE '3d:%'
+        AND model <> '__upload__' AND model NOT LIKE '3d:%' AND model NOT LIKE 'audio:%'
         AND id <> ALL(${hidden}::int[])
       ORDER BY random() LIMIT ${n}`
     const randIds = rand.map(r => r.id).filter(id => !favIds.has(id)).slice(0, randN)

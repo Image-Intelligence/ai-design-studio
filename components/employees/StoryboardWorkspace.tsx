@@ -2136,6 +2136,8 @@ function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction }: 
                   <BrandButton onClick={() => onAction("resume")} primary size="xs">Resume from “{FINAL_CUT_PHASES.find(x => x.key === job.phase)?.label}”</BrandButton>
                 )}
               </div>
+              {/* Cancelling refunded the cut's own charge, so a resume pays it again */}
+              {job.status === "cancelled" && <p className="text-[10.5px] text-slate-500 leading-snug">Cancelling refunded this cut - resuming charges it again.</p>}
             </div>
           )}
           {!shown && !showSteps && <p className="text-[11px] text-slate-500">No cut yet.</p>}

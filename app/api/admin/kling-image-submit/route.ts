@@ -79,8 +79,9 @@ export async function POST(req: Request) {
     const targetUserId: number | null = sessionUser?.id ?? null
     if (!targetUserId) return jsonPrivate({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 
-    // Server-side ticket check — Kling V3 costs 2 tickets
-    const ticketCost = 2
+    // Server-side ticket check — Kling V3 costs 2 tickets per picture: fal bills each one, and the page may ask for several
+    // (a flat price for up to 9 lost money, 2026-10-17)
+    const ticketCost = 2 * (input.num_images as number)
     const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
     // ── Spam-safe submission order (see kling-o3-submit for the rationale):
     // atomic user-slot claim → charge → global slot/submit, with the claimed

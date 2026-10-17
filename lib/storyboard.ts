@@ -18,7 +18,7 @@
 
 import { getCreateModel, computeCreateCost } from '@/lib/chat-hub-models'
 import { getTicketCost } from '@/config/ai-models.config'
-import { flux3ImageTicketCost, gptImage25TicketCost, ideogramTicketCost, nb21TicketCost } from '@/lib/ticket-pricing'
+import { flux3ImageTicketCost, gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, kleinTicketCost, krea3TicketCost } from '@/lib/ticket-pricing'
 
 export type StoryboardShot = {
   id: string
@@ -744,6 +744,10 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
     { key: 'ideogramExpansionModel', label: 'Magic prompt', options: o(['None', 'Off'], ['Medium', 'Medium'], ['Large', 'Large']), def: 'Medium', hint: 'Lets Ideogram expand the prompt - Off keeps it word for word' },
   ],
   'flux-3-image': [RES(['1k', '2k', '4k'], '2k')],
+  // 2026-10-17: the 2026-10-15 batch, public 2026-10-16 - the portal's sizes
+  'flux-3-klein': [RES(['1k', '2k', '4k'], '2k')],
+  'flux-3-klein-base': [RES(['1k', '2k', '4k'], '2k')],
+  'krea-3': [RES(['1k', '2k'], '2k')],
   'qwen-image-3': [
     RES(['1k', '2k'], '2k'),
     { key: 'qwenPromptExpansion', label: 'Prompt expansion', options: o(['true', 'On'], ['false', 'Off']), def: 'true', as: 'bool' },
@@ -843,6 +847,9 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
         case 'gpt-image-2.5': return gptImage25TicketCost({ quality: q ?? '2k', aspectRatio: aspect, refCount: refs })
         case 'nano-banana-2.1': return nb21TicketCost({ quality: q ?? '2k', refCount: refs, thinking: opt('nb21Thinking'), webSearch: opt('nb21WebSearch') === 'true' })
         case 'flux-3-image': return flux3ImageTicketCost({ quality: q, aspectRatio: aspect, refs })
+        // Priced on the size sent (and Krea 3 on every reference), as /api/generate charges
+        case 'flux-3-klein': case 'flux-3-klein-base': return kleinTicketCost(id, { quality: q, aspectRatio: aspect })
+        case 'krea-3': return krea3TicketCost({ quality: q, aspectRatio: aspect, refs })
         case 'qwen-image-3': return (q === '1k' ? 1 : 2) + (refs > 0 ? 1 : 0)
         case 'ideogram-v4': return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })
         case 'grok-imagine-2': return getTicketCost(refs > 0 ? 'grok-imagine-2-edit' : id, q)
@@ -950,6 +957,11 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'luma-uni-1', label: 'Luma Uni-1', refs: true },
   { id: 'luma-uni-1-max', label: 'Luma Uni-1 Max', refs: true },
   { id: 'recraft-v4.1-flash', label: 'Recraft V4.1 Flash', refs: false },
+  // Public 2026-10-16 (added to the Storyboard 2026-10-17): FLUX 3 Klein /
+  // Klein Base and Krea 3, references through their edit endpoints
+  { id: 'flux-3-klein', label: 'FLUX 3 Klein', refs: true },
+  { id: 'flux-3-klein-base', label: 'FLUX 3 Klein Base', refs: true },
+  { id: 'krea-3', label: 'Krea 3', refs: true },
 ]
 // NanoBanana 2.1 since the Studio went public (2026-10-07): Pro 2 is admin-only
 export const DEFAULT_IMAGE_MODEL = 'nano-banana-2.1'
@@ -969,6 +981,9 @@ export const STORYBOARD_VIDEO_MODELS = [
   'Kandinsky 6 Pro', 'Kandinsky 6 Lite',
   // 2026-10-08 (public): the still is its start frame (fal's image-to-video), 3-16s, sound always on
   'Vidu Q4',
+  // Public image-to-video models the Storyboard had not listed (added 2026-10-17):
+  // each animates the still as its start frame
+  'Happy Horse 1.1', 'Kling O3', 'H3 Max Camera Controls',
 ] as const
 export const DEFAULT_VIDEO_MODEL = 'SeeDance 2.5'
 /**
@@ -991,6 +1006,7 @@ export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
   'Hunyuan Video 1.5': 'hunyuan-video-1.5', 'Grok Imagine 1.5 Lite': 'grok-video-1.5-lite',
   'Kandinsky 6 Pro': 'kandinsky6-pro', 'Kandinsky 6 Lite': 'kandinsky6-lite',
   'Vidu Q4': 'vidu-q4',
+  'Happy Horse 1.1': 'happy-horse-1.1', 'Kling O3': 'kling-o3', 'H3 Max Camera Controls': 'minimax-h3-max-camera',
 }
 
 /**
@@ -1021,6 +1037,9 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'krea-2-medium-turbo': 'fastest Krea look', 'bria-fibo': 'licensed-data, commercially safe imagery',
   'luma-photon': 'cinematic, moody photographic frames', 'luma-photon-flash': 'cheap cinematic frames',
   'luma-uni-1': 'stylised scenes with refs', 'luma-uni-1-max': 'highest-quality Luma stills',
+  'flux-3-klein': 'very cheap, fast FLUX 3 at up to 4K; quick drafts and filler, edits with up to 10 refs',
+  'flux-3-klein-base': 'the fuller Klein - more detail and range than Klein, still cheap; up to 4K and 10 refs',
+  'krea-3': 'newest Krea: aesthetic, art-directed photographic looks; keeps characters across up to 8 refs',
   // videos (by plan label)
   'SeeDance 2.5': 'best general motion and acting, native audio; refuses close-ups of realistic faces',
   'SeeDance 2.0': 'multi-reference motion with audio', 'SeeDance 2.0 Fast': 'cheaper SeeDance 2.0',
@@ -1043,6 +1062,9 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'Kandinsky 6 Pro': 'rich 5s shots with generated sound; slow and dear - hero moments',
   'Kandinsky 6 Lite': 'cheap 5s shots with sound; quick drafts and filler',
   'Vidu Q4': 'newest Vidu: 3-16s with native sound, up to 4K; strong anime and stylised motion, holds the start frame closely',
+  'Happy Horse 1.1': 'newer Happy Horse: 3-15s at up to 1080p, lively character animation',
+  'Kling O3': 'Kling O3 standard: 3-15s, expressive motion with optional audio, cheaper than O3 Pro',
+  'H3 Max Camera Controls': 'the scene holds still while the camera moves (orbit, push, crane) - establishing and reveal shots',
 }
 
 /** The planner's menu: one line per model, image ids and video labels. */

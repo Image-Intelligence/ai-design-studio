@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Clapperboard, Download, Loader2, Music, Pause, Play, PenLine, SlidersHorizontal, Ticket, Trash2, Upload, Wand2, X } from "lucide-react"
 import {
-  AUDIO_GROUPS, AUDIO_MODEL_PREFIX, AUDIO_STUDIO_MODELS, audioPriceNote, audioTicketCost, getAudioStudioModel,
+  AUDIO_GROUPS, AUDIO_MODEL_PREFIX, AUDIO_STUDIO_MODELS, audioPriceNote, audioTicketCost, spokenCharCount, getAudioStudioModel,
   type AudioStudioModel,
 } from "@/lib/audio-studio"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
@@ -430,7 +430,7 @@ export function AudioStudio({
 
   // Mirelo Video to Sound stops at the clip's end - priced (as the route charges) on no more than the clip
   const billedSeconds = model.duration ? (model.durationFromInput && audio?.seconds ? Math.max(model.duration.min, Math.min(duration, Math.ceil(audio.seconds))) : duration) : undefined
-  const cost = audioTicketCost(model, { chars: text.length + (lyrics?.length ?? 0), seconds: billedSeconds, inputSeconds: audio?.seconds })
+  const cost = audioTicketCost(model, { chars: text.length + (lyrics?.length ?? 0), spokenChars: spokenCharCount(text + (lyrics ?? '')), seconds: billedSeconds, inputSeconds: audio?.seconds })
   const missing =
     (model.text?.required && !text.trim()) ? `Fill in "${model.text.label}"` :
     (model.lyrics?.required && !lyrics.trim()) ? "Add lyrics" :

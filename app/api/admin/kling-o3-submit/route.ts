@@ -97,8 +97,9 @@ export async function POST(req: Request) {
     const targetUserId: number | null = sessionUser?.id ?? null
     if (!targetUserId) return jsonPrivate({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 
-    // Server-side ticket check — Kling O3: 4 for 4K, 2 otherwise
-    const ticketCost = (resolution as string) === '4K' ? 4 : 2
+    // Server-side ticket check — Kling O3: 4 for 4K, 2 otherwise, per picture: fal bills each one, and the page may ask for several
+    // (a flat price for up to 9 lost money, 2026-10-17)
+    const ticketCost = ((resolution as string) === '4K' ? 4 : 2) * (input.num_images as number)
     const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
     // ── Spam-safe submission order ──
     // 1. ATOMIC user-slot claim (advisory-locked row create) BEFORE charging:
