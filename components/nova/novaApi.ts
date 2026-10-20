@@ -79,6 +79,8 @@ const json = (body: unknown, method = "POST"): RequestInit => ({
   body: JSON.stringify(body),
 })
 
+let prismInFlight: Promise<PrismOverview> | null = null
+
 export const novaApi = {
   overview: () => call<NovaOverview>("/api/nova/chats"),
   createChat: (title?: string) => call<{ chat: NovaChatSummary }>("/api/nova/chats", json(title ? { title } : {})),
@@ -86,7 +88,8 @@ export const novaApi = {
   chat: (id: number, page?: { take?: number; before?: number }) => call<{ chat: NovaChatDetail; messages: NovaMessage[]; hasMore?: boolean; marks?: NovaContextMark[]; refs?: NovaChatRefs; bible?: NovaChatBible | null }>(
     `/api/nova/chats/${id}${page ? `?${new URLSearchParams(Object.entries(page).filter(([, v]) => v).map(([k, v]) => [k, String(v)])).toString()}` : ""}`),
   /** Prism, the site guide: the account's one Prism chat (made on first open), its limits and today's free questions. */
-  prism: () => call<PrismOverview>("/api/prism"),
+  // One request at a time: two at once (the panel mounting twice) used to make two chats
+  prism: () => (prismInFlight ??= call<PrismOverview>("/api/prism").finally(() => { prismInFlight = null })),
   /** Take Prism's context back to its cheapest point. */
   prismContext: (action: "compact" | "clear") => call<{ ok: true; context: PrismContext }>("/api/prism", json({ action })),
   patchChat: (id: number, patch: { title?: string; model?: string; refs?: { assets: number[]; generations: number[] }; bible?: null }) =>

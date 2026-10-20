@@ -9,7 +9,10 @@
 //    addressed as `directId`, billed on that provider's own API key.
 
 import { CHAT_VIDEO_MODELS } from '@/lib/chat-video-catalog'
-import { CHAT_IMAGE_MODELS } from '@/lib/chat-image-catalog'
+import { ADMIN_ONLY_IMAGE_MODELS, CHAT_IMAGE_MODELS } from '@/lib/chat-image-catalog'
+import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
+import { videoTicketCost } from '@/lib/ticket-pricing'
+import { higgsfieldImageTicketCost } from '@/lib/higgsfield-models'
 
 export type ChatHubProvider = 'Anthropic' | 'OpenAI' | 'Google' | 'xAI'
 export type ChatHubRoute = 'gateway' | 'direct'
@@ -161,7 +164,8 @@ export const DIRECT_KEY_ENV: Record<ChatHubProvider, string> = {
 // Per-model configurable settings, mirroring what the model's dedicated
 // scanner prompt box offers (aspect ratio, quality, duration, audio, …)
 export type CreateField = {
-  key: 'aspect' | 'quality' | 'resolution' | 'duration' | 'audio'
+  // factor: an upscaler's; motion: a video model's one extra choice (Pixelcut's subtle / spin)
+  key: 'aspect' | 'quality' | 'resolution' | 'duration' | 'audio' | 'factor' | 'motion'
   label: string
   options: string[]
   def: string
@@ -212,6 +216,15 @@ export function resolveCreateSettings(model: ChatCreateModel, raw: unknown): Cha
 // Ticket cost for the chosen settings — formulas copied from the scanners
 // (config getTicketCost + video/generate + admin submit routes)
 export function computeCreateCost(model: ChatCreateModel, s: ChatCreateSettings): number {
+  // Video: the function the site BILLS with (2026-10-20) - the hand formulas below
+  // had drifted (SeeDance 2.5 at 18/s against the real 6 / 12 / 30), and derived
+  // models were estimated at their 5s default whatever length was asked
+  if (model.kind === 'video') {
+    try {
+      const t = videoTicketCost({ model: model.id, duration: s.duration ?? '5', resolution: s.resolution ?? '720p', generateAudio: s.audio === 'on', ...(s.motion ? { videoChoice: s.motion } : {}) } as Parameters<typeof videoTicketCost>[0])
+      if (Number.isFinite(t) && t > 0) return t
+    } catch { /* the table below */ }
+  }
   const dur = parseInt(s.duration === 'auto' ? '5' : (s.duration ?? '5')) || 5
   const resMult = s.resolution === '1080p' ? 2.25 : s.resolution === '480p' ? 0.5 : 1.0
   switch (model.id) {
@@ -223,6 +236,9 @@ export function computeCreateCost(model: ChatCreateModel, s: ChatCreateSettings)
     case 'seedream-5-lite':    return s.quality === '3k' ? 4 : 2
     case 'seedream-5-pro':     return 10 // flat — public, 2K only
     case 'recraft-v4.1':       return 15 // flat — public
+    // Upscalers: the route prices them by the measured picture; these are its usual figures
+    case 'clarity-upscaler':   return s.factor === '4' ? 26 : 7
+    case 'higgsfield-soul-2': case 'higgsfield-soul': case 'higgsfield-marketing-image': return higgsfieldImageTicketCost(model.id, s.quality)
     case 'gemini-omni-flash':  return Math.min(10, Math.max(3, parseInt(s.duration ?? '8') || 8)) * 4 // lib/ticket-pricing
     case 'gpt-image-2': {
       const size = s.aspect ?? '1024x1024'
@@ -398,6 +414,14 @@ for (const i of CHAT_IMAGE_MODELS) {
     guide: 'Natural, specific sentences — no keyword tags or "masterpiece" boosters. Order: subject → composition → action → location → lighting/style. It handles long prompts well, so spell out wardrobe, props and camera (shot size, angle, lens) when they matter. Text to render goes in "double quotes" with a style note; use 2k+ when text is small. With references, say which ref is which ("the woman from image 1 wearing the jacket from image 2") and state what to PRESERVE ("keep her face and outfit identical").',
   }
 }
+
+/*
+ * Who may use a model is decided by the SITE's gates (the lists /api/generate
+ * and /api/video/generate enforce), never by a flag typed above (2026-10-20:
+ * SeeDance 2.5 went public, but its hand-written entry still said admin, so
+ * Nova / Prism / the connector could not use it for anyone else).
+ */
+for (const m of CHAT_CREATE_MODELS) m.admin = m.kind === 'video' ? ADMIN_ONLY_VIDEO_MODELS.has(m.id) : ADMIN_ONLY_IMAGE_MODELS.has(m.id)
 
 // Ticket cost of the LLM's generate_image tool (NanoBanana Pro at 2K)
 export const CHAT_TOOL_IMAGE_COST = 7

@@ -76,6 +76,11 @@ export const DEDICATED_IMAGE_ROUTES: Record<string, RouteCall> = {
     path: 'wan-27-pro-submit', load: () => import('@/app/api/admin/wan-27-pro-submit/route'),
     body: (prompt, refs, s) => ({ prompt, ...(refs.length ? { image_urls: refs } : {}), aspect_ratio: s.aspect ?? '1:1', num_images: 1, enable_safety_checker: true }),
   },
+  // Higgsfield's exclusives (2026-10-20): their own route and queue; settled by lib/higgsfield
+  ...Object.fromEntries((['higgsfield-soul-2', 'higgsfield-soul', 'higgsfield-marketing-image'] as const).map(id => [id, {
+    path: 'higgsfield/image-submit', load: () => import('@/app/api/admin/higgsfield/image-submit/route'),
+    body: (prompt: string, refs: string[], s: Settings) => ({ model: id, prompt, aspectRatio: s.aspect ?? '1:1', quality: s.quality ?? '1k', referenceImages: refs }),
+  }])),
   'gpt-image-2': {
     path: 'gpt-image-2-submit', load: () => import('@/app/api/admin/gpt-image-2-submit/route'),
     // 1K is medium quality, 2K / 4K high (the page's default)

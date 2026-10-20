@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import type { ChatCreateModel, ChatCreateSettings } from '@/lib/chat-hub-models'
 import { isDedicatedImageModel, submitDedicatedImage } from '@/lib/dedicated-image-submit'
+import { UPSCALER_FACTORS } from '@/lib/chat-image-catalog'
 
 // Chat IMAGE generation, routed through the site's own /api/generate.
 //
@@ -45,6 +46,8 @@ function buildBody(
     outputFormat: settings.format ?? 'png',
     // https refs pass through as URLs — the route fetches them itself
     referenceImages: refs,
+    // The fal upscalers take their picture and factor in fields of their own
+    ...(UPSCALER_FACTORS[spec.id] ? { upscaleImageUrl: refs[0], upscaleFactor: Number(settings.factor) || Number(UPSCALER_FACTORS[spec.id][0]) } : {}),
   }
 }
 
@@ -109,8 +112,14 @@ export async function submitChatImage(
     await new Promise(r => setTimeout(r, POLL_MS))
     // A polled job (Kling, Wan, GPT Image 2) is finished by the harvester - there is no page here to poll it
     if (dedicated && ++polls % 3 === 0) {
-      const { harvestPollingJobs } = await import('@/lib/harvest-polling-jobs')
-      await harvestPollingJobs({ userId, minAgeMs: 0, graceMs: 0, limit: 2, budgetMs: 15_000 }).catch(() => {})
+      if (spec.id.startsWith('higgsfield-')) {
+        // Higgsfield's jobs are settled by its own harvester, not fal's
+        const { harvestHiggsfieldJobs } = await import('@/lib/higgsfield')
+        await harvestHiggsfieldJobs({ userId, limit: 2, budgetMs: 15_000 }).catch(() => {})
+      } else {
+        const { harvestPollingJobs } = await import('@/lib/harvest-polling-jobs')
+        await harvestPollingJobs({ userId, minAgeMs: 0, graceMs: 0, limit: 2, budgetMs: 15_000 }).catch(() => {})
+      }
     }
     const row = await prisma.generationQueue.findUnique({
       where: { id: queueId },

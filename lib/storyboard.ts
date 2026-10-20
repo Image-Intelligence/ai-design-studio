@@ -1127,6 +1127,8 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'flux-3-klein', label: 'FLUX 3 Klein', refs: true },
   { id: 'flux-3-klein-base', label: 'FLUX 3 Klein Base', refs: true },
   { id: 'krea-3', label: 'Krea 3', refs: true },
+  // Public 2026-10-20: the still's aspect picks MOSS's nearest named size (2 tickets)
+  { id: 'moss-image', label: 'MOSS Image', refs: false },
 ]
 // NanoBanana 2.1 since the Studio went public (2026-10-07): Pro 2 is admin-only
 export const DEFAULT_IMAGE_MODEL = 'nano-banana-2.1'
@@ -1199,7 +1201,7 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'nano-banana-2-lite': 'cheap NanoBanana for simple frames', 'mai-image-2.5-pro': 'photoreal people and products',
   'hunyuan-image-3': 'rich detailed illustration', 'hunyuan-image-3-instruct': 'follows complex instructions; edits up to 3 images',
   'krea-2-large': 'aesthetic, art-directed looks; copies a style from refs', 'krea-2-medium': 'art-directed looks, cheaper',
-  'krea-2-medium-turbo': 'fastest Krea look', 'bria-fibo': 'licensed-data, commercially safe imagery', 'bria-fibo-2': 'reasoning-heavy prompts, licensed data, edits up to 4 pictures',
+  'krea-2-medium-turbo': 'fastest Krea look', 'bria-fibo': 'licensed-data, commercially safe imagery', 'moss-image': 'exact Chinese & English lettering, structured layouts', 'bria-fibo-2': 'reasoning-heavy prompts, licensed data, edits up to 4 pictures',
   'luma-photon': 'cinematic, moody photographic frames', 'luma-photon-flash': 'cheap cinematic frames',
   'luma-uni-1': 'stylised scenes with refs', 'luma-uni-1-max': 'highest-quality Luma stills',
   'flux-3-klein': 'very cheap, fast FLUX 3 at up to 4K; quick drafts and filler, edits with up to 10 refs',

@@ -6,6 +6,7 @@ import { resolveChatRefs, resolveBible } from '@/lib/nova/chat-refs'
 import { chatSummary } from '@/lib/nova/summary'
 import { toNovaMessage, sweepStaleTurns } from '@/lib/nova/agent'
 import { resolveNovaModel } from '@/lib/nova/config'
+import { VIDEO_URL_RE } from '@/lib/video-poster'
 
 /**
  * GET    /api/nova/chats/[id] - the chat and its messages (newest 200).
@@ -50,9 +51,21 @@ export async function GET(req: Request, ctx: Ctx) {
   })
   const rows = page.slice(0, take).reverse()
   const s = readChatState(chat.skills)
+  const messages = rows.map(toNovaMessage)
+  /*
+   * Video steps saved with the clip itself as their "poster" (before
+   * 2026-10-20) - or none - get the row's real thumbnail, so the chat shows a
+   * still with a play button (an unplayed <video> is a blank tile on iPhones).
+   */
+  const noStill = messages.flatMap(m => m.steps ?? []).filter(st => (st.kind === 'video' || st.kind === 'cut') && st.generationId && (!st.posterUrl || VIDEO_URL_RE.test(st.posterUrl)))
+  if (noStill.length) {
+    const thumbs = await prisma.generatedImage.findMany({ where: { userId: a.user.id, id: { in: [...new Set(noStill.map(st => st.generationId!))] }, thumbnailUrl: { not: null } }, select: { id: true, thumbnailUrl: true } })
+    const byId = new Map(thumbs.filter(t => t.thumbnailUrl && !VIDEO_URL_RE.test(t.thumbnailUrl)).map(t => [t.id, t.thumbnailUrl!]))
+    for (const st of noStill) { const t = byId.get(st.generationId!); if (t) st.posterUrl = t }
+  }
   return jsonPrivate({
     chat: { ...chatSummary(chat), plan: s.plan ? { total: s.plan.total, spent: s.plan.spent } : null },
-    messages: rows.map(toNovaMessage), hasMore: page.length > take, marks: s.marks ?? [],
+    messages, hasMore: page.length > take, marks: s.marks ?? [],
     refs: await resolveChatRefs(a.user.id, s.refs), bible: await resolveBible(a.user.id, s.bible),
   })
 }

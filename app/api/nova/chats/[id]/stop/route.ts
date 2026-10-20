@@ -9,6 +9,14 @@ import { requireAgentUser } from '@/lib/nova/auth'
  * stops (lib/nova/agent). This is what Stop does now that a turn keeps
  * running when the tab closes (background runs) - the connection is no longer
  * how a turn is stopped. Anything already made is kept.
+ *
+ * It also stops the production CARRYING ON (2026-10-20, owner: "I pressed
+ * stop but the model just kept going"): between turns nothing is running, but
+ * the last reply may be waiting to continue after its renders (or after
+ * running out of steps) - the open studio and the background runner would
+ * start the next turn. That wait is claimed (`continued`) and marked
+ * `stopped`. Renders already submitted still finish and appear in the chat;
+ * Nova just does not act on them until the user writes again.
  */
 export const runtime = 'nodejs'
 
@@ -21,5 +29,10 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   const n = await prisma.$executeRaw`
     UPDATE "ChatMessage" SET metadata = metadata::jsonb || '{"cancel":true}'::jsonb
     WHERE "chatId" = ${chat.id} AND role = 'assistant' AND metadata->>'running' = 'true'`
-  return jsonPrivate({ stopped: n })
+  const waiting = await prisma.$executeRaw`
+    UPDATE "ChatMessage" SET metadata = (metadata::jsonb - 'continueAfterRenders' - 'keepGoing') || '{"continued":true,"stopped":true}'::jsonb
+    WHERE "chatId" = ${chat.id} AND role = 'assistant'
+      AND (metadata::jsonb ? 'continueAfterRenders' OR metadata::jsonb ? 'keepGoing')
+      AND COALESCE(metadata->>'continued', 'false') <> 'true'`
+  return jsonPrivate({ stopped: n + waiting })
 }

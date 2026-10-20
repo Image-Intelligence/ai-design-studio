@@ -2,9 +2,9 @@ import prisma from '@/lib/prisma'
 import { jsonPrivate } from '@/lib/api-json'
 import { requireAgentUser } from '@/lib/nova/auth'
 import { loadNovaBudget, novaBalance } from '@/lib/nova/ledger'
-import { emptyChatState, readChatState } from '@/lib/nova/agent-tools'
+import { readChatState } from '@/lib/nova/agent-tools'
 import { chatSummary } from '@/lib/nova/summary'
-import { DEFAULT_NOVA_MODEL } from '@/lib/nova/config'
+import { prismChat } from '@/lib/nova/prism-chat'
 import { resetChatContext, sweepStaleTurns } from '@/lib/nova/agent'
 import { enhancePlanFor, enhanceUsedToday, ENHANCE_LIMITS } from '@/lib/prompt-enhance'
 
@@ -24,16 +24,6 @@ import { enhancePlanFor, enhanceUsedToday, ENHANCE_LIMITS } from '@/lib/prompt-e
  *      turn is running.
  */
 export const runtime = 'nodejs'
-
-async function prismChat(userId: number) {
-  const select = { id: true, title: true, model: true, updatedAt: true, skills: true, memorySummary: true, summaryUpToId: true } as const
-  // The oldest one, should two first opens ever race
-  const found = await prisma.chat.findFirst({ where: { userId, source: 'prism' }, orderBy: { id: 'asc' }, select })
-  return found ?? prisma.chat.create({
-    data: { userId, title: 'Prism', model: DEFAULT_NOVA_MODEL, source: 'prism', agentMode: 'approved', titleLocked: true, skills: emptyChatState() as object },
-    select,
-  })
-}
 
 async function context(chat: { id: number; memorySummary: string | null; summaryUpToId: number | null; skills: unknown }) {
   // How much the next reply re-reads: messages since the last compact / clear (capped by the replay window) and the summary

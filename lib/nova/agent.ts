@@ -37,6 +37,7 @@ import { makePostTools } from '@/lib/nova/agent-tools-post'
 import { recipeIndex } from '@/lib/nova/recipes'
 import { routeTurn } from '@/lib/nova/router'
 import { loadNovaMemory, type NovaNote } from '@/lib/nova/memory'
+import { loadLessons, recentLessons } from '@/lib/nova/lessons'
 import { userFavouriteModels } from '@/lib/nova/scorecard'
 import { backgroundStatus } from '@/lib/nova/background'
 import { findAsset, storedRefs } from '@/lib/user-assets'
@@ -44,7 +45,7 @@ import { readFilterState } from '@/lib/content-filter'
 import { enhancePlanFor, consumeEnhance, ENHANCE_LIMITS } from '@/lib/prompt-enhance'
 import { siteGuide, SITE_TOPICS } from '@/lib/nova/site-guide'
 import {
-  NOVA_MAX_STEPS, NOVA_TIER_STEPS, NOVA_ROUTES, novaChatUsd, novaTicketsForUsd, novaTurnHold, resolveNovaModel, NOVA_AUTO, NOVA_CRITIC_MODEL, NOVA_MAX_AUTO_TURNS, cleanRunBudget,
+  NOVA_MAX_STEPS, NOVA_TIER_STEPS, NOVA_ROUTES, novaChatUsd, novaChatCostUsd, novaTicketsForUsd, novaTurnHold, resolveNovaModel, NOVA_AUTO, NOVA_CRITIC_MODEL, NOVA_MAX_AUTO_TURNS, cleanRunBudget,
   type NovaMessage, type NovaStep, type NovaPlan, type NovaStreamEvent, type NovaUsage, type NovaMediaKind, type NovaTier, type NovaPersonaId, type NovaContextMark,
 } from '@/lib/nova/config'
 
@@ -53,7 +54,7 @@ const NOVA_HISTORY = 12
 /** Fold older messages once this many have piled up past the window. */
 const COMPACT_AFTER = 6
 const SUMMARY_MODEL = 'gemini-3.5-flash-lite'
-const SUMMARY_MAX = 3000
+const SUMMARY_MAX = 6000
 
 const google = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY })
 
@@ -125,12 +126,18 @@ async function compactChat(chat: { id: number; memorySummary: string | null; sum
   const text = older.map(r => `${r.role.toUpperCase()}: ${clip(digest(toNovaMessage(r)), 900)}`).join('\n\n')
   const prompt = [
     'You keep the running memory of a creative chat between a user and an AI studio assistant (Nova or Prism) that makes images, video, audio and 3D, organises the user\'s library and answers questions about the site.',
-    'Merge the EARLIER SUMMARY and the NEW MESSAGES into one updated summary. Keep: the user\'s goals and preferences, decisions made, every important #id and what it is (characters, products, approved shots, cuts), assets and folders created, plans and their budgets, and what is still to do. Drop chit-chat. Plain text, at most 350 words.',
+    // Two parts (2026-10-20, owner: "remember key things very well" as chats run for months): a fact
+    // list carried forward intact - a single rewritten paragraph lost older #ids a little more each time -
+    // and a short story of where things stand, which is free to shrink.
+    'Merge the EARLIER SUMMARY and the NEW MESSAGES into one updated summary in exactly two parts:',
+    'KEY FACTS: one short line each - the user\'s lasting goals and preferences, brand rules, every important #id and what it is (characters, products, places, approved shots, final cuts), assets and folders created, decisions made. COPY every key fact from the earlier summary unless the new messages change or retire it (then update or drop it); add the new ones; merge duplicates. At most 45 lines - when over, drop the least important (old one-off items first, never brand rules or the main characters / products).',
+    'STORY SO FAR: at most 150 words - what is being worked on now, plans and their budgets, and what is still to do. Drop chit-chat.',
+    'Plain text, the two headings exactly as written.',
     `EARLIER SUMMARY:\n${chat.memorySummary || '(none)'}`,
     `NEW MESSAGES:\n${text}`,
   ].join('\n\n')
   try {
-    const res = await geminiGenerate(SUMMARY_MODEL, { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1200 } }, { signal: AbortSignal.timeout(30_000) })
+    const res = await geminiGenerate(SUMMARY_MODEL, { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 2400 } }, { signal: AbortSignal.timeout(30_000) })
     if (!res.ok) return { summary: chat.memorySummary, usage }
     const data = await res.json() as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }
     const summary = geminiText(data).trim().slice(0, SUMMARY_MAX)
@@ -218,7 +225,7 @@ const siteHelpTool = tool({
 /** The resolved references back as ids (what was actually shown). */
 const chatRefsIds = (r: { assets: { id: number }[]; generations: { id: number }[] }) => ({ assets: r.assets.map(a => a.id), generations: r.generations.map(g => g.id) })
 
-export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean }): string {
+export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean; lessons?: string }): string {
   const plan = o.state.plan
   const prism = o.persona === 'prism'
   return [
@@ -233,20 +240,25 @@ export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean;
     '- CONSISTENCY IS A STEP, NOT A HOPE: anything with 2+ images or shots of the same character, product or place gets a LOOK BIBLE before the first shot (recipe look-bible: character sheet, place plate, style frame -> set_look_bible). Every later generation passes the bible pictures that are in the shot as references. Never make an established character from text alone.',
     '- CHECK AS YOU GO: check_shots compares new stills and clips with the look bible (strong critic model). Run it on keyframes before animating them and on clips before cutting them; redo what drifted (up to 2 tries per shot) before moving on.',
     '- CONTINUITY ACROSS CUTS: when the next shot continues the same moment, extract_frame the LAST frame of the previous clip and use it as the next start_image_id.',
+    '- EVERY OTHER VIDEO MODEL: use_video_tool runs the rest of the site\'s video models by name - upscalers (Topaz, FlashVSR, Flux, Kandinsky), reframes, Luma restyle, extends (PixVerse, H3 Turbo, Veo), translate / dub / subtitles, relight, camera moves, depth, tracking, background removal, audio-to-video (LTX, PixVerse Music Video, HeyGen Avatar), Kling Motion Control, Higgsfield. Image upscalers (Clarity, AuraSR, ESRGAN, DRCT) are image models: generate_image with the picture as the reference and settings {"factor":"2"}. Recordings (voice changer, stem splitter, clean-up, voice cloning, video-to-music) go through generate_audio with input_id.',
     '- CLIPS ARE EDITABLE: edit_clip runs the site\'s clip tools on any clip (upscale, edit with words, recast a face, remove an object, extend, lip-sync, sound effects); talking_head makes a still talk to a voice line; make_loop checks and repairs a loop\'s seam; trim_media trims, speeds up, mutes, fades or levels one clip or sound for free. Fix a clip before re-rendering it from scratch.',
     '- WATCH, DO NOT GUESS: frames miss motion. watch_video lets the strong model watch clips with their sound (a face that morphs, flicker, lips against words, how a cut flows) - use it on anything that moves before you call it done.',
     '- FINISHING A CUT: assemble_cut can match_color (shots from different renders look like one film - use it whenever clips come from different renders), add a look (a grade), overlays (titles, lower thirds, end-card text, a logo ON the video - exact words), and auto_captions (word-timed captions of everything spoken). To change a cut later use recut with only what changes - never rebuild it from memory.',
     '- RESEARCH: web_search finds facts you need (a brand\'s colours or tagline, what a real place or object looks like, a style\'s references). Do not use it to copy someone\'s artwork or a real person\'s likeness.',
     '- LEARN: when you see a model habit (a quirk that would happen again), keep it with learn_about_model; lessons appear when you look the model up. The user\'s uploads arrive as attachments (model nova-upload) - use them like any other item.',
     '- Make exactly what was asked: one image means one generate_image call. Make variations in PARALLEL only when asked or when a plan says so. Always pass the shape the user wants in settings (e.g. {"aspect":"1:1"}).',
-    '- You see every image you make: judge it honestly against the brief. If one is clearly wrong (wrong text, broken anatomy, off-brief, off-model), redo it - up to 2 tries per item within budget - but never silently: say what was wrong, and list EVERY image you made (#ids) with its ticket cost.',
+    // 2026-10-20: most productions went round the critic two or three times - the fixes it asked
+    // for were things a better first prompt avoids. Same checklist the critic judges by.
+    '- GET IT RIGHT FIRST TIME - before each generation, check the prompt against the brief: every required element is IN the prompt (subject and count, setting, aspect via settings, exact on-image text in "quotes" and short, brand colours/rules, mood); the subject has room (not cropped at the edges, nothing important near the frame border; keep text in the middle 80%); hands and faces are simple and visible (avoid tangled or overlapping hands, tiny faces in the distance); one idea per image; for video, one clear motion plus the camera move, and "steady camera" when nothing should move. Pick a model that is strong at the job (text -> a lettering model; a character seen before -> its look-bible pictures as references). Read the model\'s lessons below and avoid them.',
+    '- You see every image you make: judge it honestly against the brief. If one is clearly wrong (wrong text, broken anatomy, off-brief, off-model), fix it - a precise edit_image first, a regeneration only when an edit cannot fix it, up to 2 tries per item within budget - but never silently: say what was wrong, and list EVERY image you made (#ids) with its ticket cost.',
     '- Videos, audio and 3D render in the background. Start everything that can run at once, then write ONE short line telling the user what is rendering and what you will do next, and call wait_for_renders; you will be woken with their ids when they finish, and can then assemble the cut (assemble_cut: clips in order, image cards for titles/end cards, music and voiceover by id).',
     "- When the whole request will clearly cost more than you may spend without asking (see MONEY), your FIRST action is propose_plan - do not start generating and stop half-way. Work that fits inside it needs no plan: just do it.",
     '- FINISH THE JOB: do everything the user asked for (every still, every clip, the cut) without stopping to ask permission for parts they already requested - never end a turn with "Shall I start the videos now?" when they asked for videos. Ask only for something genuinely new, or propose_plan when it costs more than you may spend. If you run out of steps or time, the studio carries on automatically in a new turn - just keep working there.',
-    '- COUNT: make exactly the number of items asked for. If a generation fails or is refused, try once more (rephrase the prompt, or another suitable model); if it still fails, say which ones are missing and why.',
+    '- COUNT: make exactly the number of items asked for. STAY WITH THE MODEL YOU CHOSE (or the user named): when a generation fails, follow the tool\'s `next` - a refusal is rephrased and retried on the SAME model, a technical failure is simply retried - up to 3 tries per item before switching to another suitable model. Never switch models on the first failure; if an item still fails, say which ones are missing and why.',
+    '- THE USER\'S CHOICE WINS: when the user names a model or a feature (e.g. "Pixelcut 360 loop", "use NanoBanana 2.1"), use exactly that - find it with browse_models - and only use something else if it truly cannot do the job, saying so first.',
     '- CHECK YOUR WORK: inspect_media shows you video frames and measures sound (LUFS, clipping, silence) - check clips before cutting them, and check every cut (assemble_cut shows you its frames and levels). Social sound should sit near -14 LUFS with no clipping.',
     '- FIX IT YOURSELF: edit_image does exact pixel work for free (crop, reframe to another aspect, headline/caption text with exact words, a logo placed by id, colour); expand_image paints real scenery to a new aspect; cutout lifts a subject onto transparency. Prefer a precise edit over regenerating.',
-    `- THE CRITIC: before you hand over a production (a final cut, an ad, a set of deliverables), call critique_work on the deliverables. If it says revise, apply the fixes that fit the budget, then deliver and mention what it flagged. Do not run it for a single quick image.`,
+    `- THE CRITIC: before you hand over a production (a final cut, an ad, a set of deliverables), call critique_work on the deliverables - ONCE. "pass" means hand it over (its polish notes are optional next steps, not work to do). "revise" means fix ONLY the blockers, with the cheapest precise tool (edit_image / trim_media / recut before regenerating), in one round; re-run the critic only if you had to regenerate a deliverable. Do not run it for a single quick image.`,
     '- ONE CUT PER VERSION: call assemble_cut once, check what it shows you (and the critic), and only recut to fix something specific.',
     '- DELIVER IN FORMATS: export_formats makes 9:16 / 1:1 / 4:5 / 16:9 versions; save_storyboard turns a shot list into a board the user can open in Storyboard Studio.',
     '- REFERENCES: caption_asset labels an asset\'s pictures, update_asset_notes writes who/what it is, find_similar finds related work in the library.',
@@ -257,14 +269,10 @@ export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean;
     'RECIPES (load_recipe <id>)',
     recipeIndex(),
     '',
+    o.lessons ? `WHAT THE STUDIO HAS LEARNED ABOUT MODELS YOU USE (from this account's past work - write prompts that avoid these):\n${o.lessons}\n` : '',
     o.state.bible ? `LOOK BIBLE (this chat - pass these as references for whoever / wherever is in a shot; check_shots compares against them):\n${[...o.state.bible.characters.map(c => `- character "${c.name}": ${c.ids.map(i => `#${i}`).join(', ')}`), ...o.state.bible.places.map(p => `- place "${p.name}": ${p.ids.map(i => `#${i}`).join(', ')}`)].join('\n')}${o.state.bible.style ? `\n- style: ${o.state.bible.style}` : ''}\n` : '',
     'MONEY - THE USER PAYS IN TICKETS',
-    o.isAdmin ? '- This is an admin account: nothing is charged, but show costs as if it were.' : `- The user has ${o.balance ?? 0} tickets.`,
-    o.allowance.run
-      ? `- The user set this request's budget in the prompt box: you may spend up to ${o.allowance.request} tickets on it without asking, in all (with every turn it carries on by itself). When the WHOLE request will clearly cost more, call propose_plan first (each step with its ticket cost from browse_models), then STOP and wait for approval. A plan that fits inside the budget is approved automatically - you carry straight on.`
-      : `- You may spend up to ${o.allowance.turn} tickets in a turn without asking (a request that carries on by itself over several turns: up to ${o.allowance.request} in all). When the WHOLE request will clearly cost more, call propose_plan first (each step with its ticket cost from browse_models), then STOP and wait for approval. A plan that fits inside that is approved automatically - you carry straight on.`,
-    plan ? `- An approved plan is running: ${plan.spent}/${plan.total} tickets spent. Work inside it; if it runs short, propose_plan again with the extra needed.` : '- No plan is approved right now.',
-    o.room.which ? `- The user's own limit: ${o.room.room} tickets left under ${o.room.which}.` : '',
+    '- Your balance, this request\'s budget and any plan are under RIGHT NOW at the very end.',
     '- A refusal for budget says what the call costs - use THAT number in propose_plan, not a guess.',
     '- Never try to get around a refusal from a tool - explain it to the user. Prefer the cheaper option when quality is equal, and say what things cost in plain words.',
     '',
@@ -280,6 +288,20 @@ export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean;
     o.favourites.length ? `Models this user rates highest: ${o.favourites.join(', ')}.` : '',
     prism ? `This is your one ongoing chat with this user. Today is ${new Date().toISOString().slice(0, 10)}.` : `This chat: "${o.title}". Today is ${new Date().toISOString().slice(0, 10)}.`,
     o.summary ? `\nEARLIER IN THIS CHAT (summary):\n${o.summary}` : '',
+    /*
+     * The figures that change every turn come LAST (2026-10-20): Gemini bills a
+     * request's unchanged opening at a tenth of the price (its implicit cache),
+     * and a balance in the middle cut that opening short before the memory and
+     * the summary on every turn.
+     */
+    '',
+    'RIGHT NOW',
+    o.isAdmin ? '- This is an admin account: nothing is charged, but show costs as if it were.' : `- The user has ${o.balance ?? 0} tickets.`,
+    o.allowance.run
+      ? `- The user set this request's budget in the prompt box: you may spend up to ${o.allowance.request} tickets on it without asking, in all (with every turn it carries on by itself). When the WHOLE request will clearly cost more, call propose_plan first (each step with its ticket cost from browse_models), then STOP and wait for approval. A plan that fits inside the budget is approved automatically - you carry straight on.`
+      : `- You may spend up to ${o.allowance.turn} tickets in a turn without asking (a request that carries on by itself over several turns: up to ${o.allowance.request} in all). When the WHOLE request will clearly cost more, call propose_plan first (each step with its ticket cost from browse_models), then STOP and wait for approval. A plan that fits inside that is approved automatically - you carry straight on.`,
+    plan ? `- An approved plan is running: ${plan.spent}/${plan.total} tickets spent. Work inside it; if it runs short, propose_plan again with the extra needed.` : '- No plan is approved right now.',
+    o.room.which ? `- The user's own limit: ${o.room.room} tickets left under ${o.room.which}.` : '',
   ].filter(s => s !== '').join('\n')
 }
 
@@ -392,7 +414,8 @@ export async function sweepStaleTurns(chatId: number, user: { id: number; email:
      * newest reply, only if the chat has not chained too many turns already.
      */
     const steps = Array.isArray(m.steps) ? closeOpenSteps(m.steps as NovaStep[]) : []
-    const resume = r.id === rows[0].id && readChatState((await prisma.chat.findUnique({ where: { id: chatId }, select: { skills: true } }))?.skills).autoTurns! < NOVA_MAX_AUTO_TURNS
+    // Never resumed when the user stopped it (the Stop button's `cancel`)
+    const resume = r.id === rows[0].id && !m.cancel && readChatState((await prisma.chat.findUnique({ where: { id: chatId }, select: { skills: true } }))?.skills).autoTurns! < NOVA_MAX_AUTO_TURNS
     const pending = steps.some(s => s.status === 'pending')
     const patch = { steps, ...(resume ? (pending ? { continueAfterRenders: true } : { keepGoing: 'time' }) : {}) }
     await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = metadata::jsonb || ${JSON.stringify(patch)}::jsonb WHERE id = ${r.id}`.catch(() => {})
@@ -665,7 +688,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       allowance: novaAllowance(budget, state),
       mediaTickets: 0, unplanned: 0, chainBefore: input.continueRenders ? (state.chainUnplanned ?? 0) : 0, reserved: 0, proposedPlan: null, waitForRenders: false,
       deadline: turnStart + TURN_WAIT_MS,
-      extraUsd: 0, criticRuns: 0, authHeaders: input.background?.headers, brief: system ? (await originalBrief(chat.id)) : userText,
+      extraUsd: 0, criticRuns: 0, modelFailures: {}, authHeaders: input.background?.headers, brief: system ? (await originalBrief(chat.id)) : userText,
       seenIds: new Set([...attachRows.map(r => r.id), ...seenAssetIds]),
     }
     const balanceNow = isAdmin ? null : await novaBalance(user.id)
@@ -673,7 +696,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
     const lean = persona === 'prism' && routed.tier === 'light'
     const allTools = { ...makeNovaTools(ctx), ...makeProTools(ctx), ...makeStudioTools(ctx), ...makePostTools(ctx), ...(persona === 'prism' ? { site_help: siteHelpTool } : {}) }
     const leanTools = Object.fromEntries(Object.entries(allTools).filter(([k]) => (PRISM_LEAN_TOOLS as readonly string[]).includes(k))) as Partial<typeof allTools>
-    const [memory, favourites] = await Promise.all([loadNovaMemory(user.id), userFavouriteModels(user.id)])
+    const [memory, favourites, lessons] = await Promise.all([loadNovaMemory(user.id), userFavouriteModels(user.id), loadLessons(user.id).then(s => recentLessons(s)).catch(() => '')])
     // Admins share one safety switch with the rest of the site (the composer's admin Filter ON/OFF); everyone else is always filtered
     const safetyOff = isAdmin && !(await readFilterState().catch(() => ({ on: true }))).on
 
@@ -686,12 +709,14 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       // The model each step ran on, and what each cost (per-step billing)
       const stepModels: string[] = []
       let stepUsd = 0
+      /** The same steps at what Google bills - cached input at its discount (recorded, not charged on). */
+      let stepCostUsd = 0
       try {
         const result = streamText({
           model: google(model),
           instructions: lean
             ? prismLeanInstructions({ isAdmin, balance: balanceNow != null ? balanceNow + held : null, memory, summary: compact.summary, safetyOff })
-            : novaInstructions({ persona, isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff }),
+            : novaInstructions({ persona, isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff, lessons }),
           messages,
           tools: lean ? leanTools : allTools,
           // A plan the studio approved by itself does not end the turn
@@ -725,8 +750,11 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
         const allSteps = await result.steps
         stepsUsed = allSteps.length
         const u = await result.totalUsage
-        usage = { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0 }
-        allSteps.forEach((s, k) => { stepUsd += novaChatUsd(stepModels[k] ?? model, { inputTokens: s.usage?.inputTokens ?? 0, outputTokens: s.usage?.outputTokens ?? 0 }) })
+        usage = { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0, cachedInputTokens: u.inputTokenDetails?.cacheReadTokens ?? 0 }
+        allSteps.forEach((s, k) => {
+          stepUsd += novaChatUsd(stepModels[k] ?? model, { inputTokens: s.usage?.inputTokens ?? 0, outputTokens: s.usage?.outputTokens ?? 0 })
+          stepCostUsd += novaChatCostUsd(stepModels[k] ?? model, { inputTokens: s.usage?.inputTokens ?? 0, outputTokens: s.usage?.outputTokens ?? 0, cachedInputTokens: s.usage?.inputTokenDetails?.cacheReadTokens ?? 0 })
+        })
       } catch (e: any) {
         if (stopper.signal.aborted) failed = 'Stopped'
         else if (e?.name === 'TimeoutError' || e?.name === 'AbortError') timedOut = true
@@ -737,7 +765,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       ctx.steps = closeOpenSteps(ctx.steps)
 
       // ── pay for the chat: the measured tokens (and the summary's), never more than was held ──
-      usage = { inputTokens: usage.inputTokens + compact.usage.inputTokens, outputTokens: usage.outputTokens + compact.usage.outputTokens }
+      usage = { inputTokens: usage.inputTokens + compact.usage.inputTokens, outputTokens: usage.outputTokens + compact.usage.outputTokens, cachedInputTokens: usage.cachedInputTokens ?? 0 }
       // Every model this turn used, in dollars: the orchestrator, the summary (Flash-Lite), the router and the critic
       // Each step at its own model's rate (falls back to the turn's model when the steps could not be read)
       const orchestratorUsd = stepUsd > 0 ? stepUsd : novaChatUsd(model, { inputTokens: usage.inputTokens - compact.usage.inputTokens, outputTokens: usage.outputTokens - compact.usage.outputTokens })
@@ -763,8 +791,12 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
           // charged = whether the CHAT was billed (admins chat free; the site's routes bill generations by their own rules)
           tickets: { chat: chatTickets, media: ctx.mediaTickets, charged: !isAdmin, ...(free ? { free: true } : {}) },
           usage, model, ...(failed ? { error: failed } : {}),
+          // What the turn really cost us (Google's cache discount applied) - for the owner's numbers; billing uses `usd`
+          costUsd: Math.round((stepCostUsd + novaChatUsd('gemini-3.5-flash-lite', compact.usage) + routerUsd + ctx.extraUsd) * 10000) / 10000,
           // Waiting on renders - including stills the clock handed over as 'pending' - then carrying on
-          ...(pending && (ctx.waitForRenders || keepGoing) ? { continueAfterRenders: true } : {}),
+          // ...unless the user pressed Stop (2026-10-20: a stopped turn with renders cooking
+          // carried on by itself when they landed - "I pressed stop but it kept going")
+          ...(pending && (ctx.waitForRenders || keepGoing) && failed !== 'Stopped' ? { continueAfterRenders: true } : {}),
           ...(keepGoing && !pending ? { keepGoing: cutShort } : {}),
           route: { tier: routed.tier, model, why: routed.why, ...(Object.keys(mix).length > 1 ? { mix } : {}) },
           ...(safetyOff ? { safetyOff: true } : {}),

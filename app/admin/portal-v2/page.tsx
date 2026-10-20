@@ -1,4 +1,5 @@
 "use client"
+import { listenForNewMedia } from "@/lib/feed-events"
 
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
@@ -267,7 +268,7 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "flux-3-klein-base",    apiId: "flux-3-klein-base",        name: "FLUX 3 Klein Base",   aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "krea-3-realtime",      apiId: "krea-3-realtime",          name: "Krea 3 Realtime",     aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isRealtime: true, promptOptional: true },
   { id: "krea-3",               apiId: "krea-3",                   name: "Krea 3",              aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 8, isFal: true, maxImages: 4 },
-  // MOSS Image (2026-10-18, ADMIN ONLY while under test): fal's six named
+  // MOSS Image (2026-10-18, public 2026-10-20): fal's six named
   // sizes plus Custom (W x H inputs beside the picker); steps and guidance in
   // its settings row. Priced per MP of the size sent (mossTicketCost)
   { id: "moss-image",           apiId: "moss-image",               name: "MOSS Image",          aspectRatios: ["square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9", "custom"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
@@ -1901,6 +1902,33 @@ function modelDbKeysForName(name: string): string[] {
   if (!cfg) return []
   return [...new Set([cfg.id, (cfg as { apiId?: string }).apiId].filter((x): x is string => !!x))]
 }
+/** A /api/my-images row as the image / audio feed keeps it. */
+function feedImageFromApi(img: any): ImageItem {
+  return {
+    id: img.id,
+    imageUrl: img.imageUrl,
+    thumbnailUrl: img.thumbnailUrl ?? undefined,
+    prompt: img.prompt,
+    model: img.model,
+    createdAt: img.createdAt,
+    referenceImageUrls: img.referenceImageUrls ?? [],
+    aspectRatio: img.aspectRatio ?? undefined,
+    quality: img.quality ?? undefined,
+    videoMetadata: img.videoMetadata ?? undefined,
+    /*
+     * These were missing, which is why the info panel lost its LoRA
+     * after a reload: the API returns them, the panel reads them off
+     * the item, and this rebuild left them behind.
+     */
+    loraUrl: img.loraUrl ?? undefined,
+    loraName: img.loraName ?? undefined,
+    loraScale: img.loraScale ?? undefined,
+    refStrength: img.refStrength ?? undefined,
+    renderSpeed: img.renderSpeed ?? undefined,
+    promptExpansion: img.promptExpansion ?? undefined,
+    extraLoras: img.extraLoras ?? undefined,
+  } as ImageItem
+}
 const IMAGE_MODEL_GROUPS = [
   { label: "Gemini",            type: "text to image",             accent: "text-blue-400",    dot: "bg-blue-400",    items: ["NanoBanana Pro", "NanoBanana Pro 2", "NanoBanana 2.1", "NanoBanana 2 Lite"] },
   { label: "Kling",             type: "text to image",             accent: "text-orange-400",  dot: "bg-orange-400",  items: ["Kling V3", "Kling O3"] },
@@ -1939,6 +1967,8 @@ const IMAGE_MODEL_GROUPS = [
   // and AuraSR (fal's own GAN upscaler)
   { label: "Clarity AI",        type: "creative upscale · adds detail", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Clarity Upscaler"] },
   { label: "fal",               type: "fast 4x upscale",           accent: "text-pink-300",    dot: "bg-pink-300",    items: ["AuraSR"] },
+  // Public 2026-10-20: OpenMOSS (Fudan / Shanghai Innovation Institute)
+  { label: "OpenMOSS",          type: "text to image · Chinese & English lettering · layouts", accent: "text-lime-300", dot: "bg-lime-300", items: ["MOSS Image"] },
   { label: "Luma",              type: "text to image · modify · reframe", accent: "text-cyan-300", dot: "bg-cyan-300", items: ["Luma Photon", "Luma Photon Flash", "Luma Uni-1", "Luma Uni-1 Max", "Luma Photon Reframe", "Luma Photon Flash Reframe"] },
   // Public 2026-10-13: Higgsfield's own models (not on fal; lib/higgsfield, its own 20-slot queue)
   { label: "Higgsfield",        type: "exclusive · portraits & fashion · campaign images", accent: "text-slate-200", dot: "bg-slate-300", items: ["Soul 2", "Soul", "Marketing Studio Image"] },
@@ -1979,8 +2009,6 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // went public 2026-10-16 (moved to their makers' groups above); the live
   // session stays here while under test
   { label: "Krea",      type: "live editing · every keystroke a new frame", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 3 Realtime"] },
-  // 2026-10-18, under test: OpenMOSS (Fudan / Shanghai Innovation Institute)
-  { label: "OpenMOSS",  type: "text to image · Chinese & English lettering · layouts", accent: "text-lime-300", dot: "bg-lime-300", items: ["MOSS Image"] },
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
@@ -12232,30 +12260,7 @@ function ImageGrid({
             seenUrls.add(img.imageUrl)
             return true
           })
-          .map((img: any) => ({
-            id: img.id,
-            imageUrl: img.imageUrl,
-            thumbnailUrl: img.thumbnailUrl ?? undefined,
-            prompt: img.prompt,
-            model: img.model,
-            createdAt: img.createdAt,
-            referenceImageUrls: img.referenceImageUrls ?? [],
-            aspectRatio: img.aspectRatio ?? undefined,
-            quality: img.quality ?? undefined,
-            videoMetadata: img.videoMetadata ?? undefined,
-            /*
-             * These were missing, which is why the info panel lost its LoRA
-             * after a reload: the API returns them, the panel reads them off
-             * the item, and this rebuild left them behind.
-             */
-            loraUrl: img.loraUrl ?? undefined,
-            loraName: img.loraName ?? undefined,
-            loraScale: img.loraScale ?? undefined,
-            refStrength: img.refStrength ?? undefined,
-            renderSpeed: img.renderSpeed ?? undefined,
-            promptExpansion: img.promptExpansion ?? undefined,
-            extraLoras: img.extraLoras ?? undefined,
-          }))
+          .map(feedImageFromApi)
         return [...prev, ...newItems]
       })
       if (adminFilters) {
@@ -12294,6 +12299,36 @@ function ImageGrid({
     if (signedIn) loadNext()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn, loadNext])
+  /*
+   * Newest rows in at the top (lib/feed-events): Prism and Nova Studio announce
+   * what they finish, and coming back to the tab checks too - the pages above
+   * only ever read backwards, so work made outside this feed waited for a reload.
+   */
+  useEffect(() => {
+    if (!signedIn || adminFilters) return
+    let busy = false
+    const pullNewest = async () => {
+      if (busy) return
+      busy = true
+      const epoch = epochRef.current
+      try {
+        const modelQs = modelFilter && modelFilter.length > 0 ? `&models=${encodeURIComponent(modelFilter.join(","))}` : ""
+        const res = await fetch(`/api/my-images?limit=12&type=${typeFilter}&cursor=1${showHidden ? "&hidden=true" : ""}${modelQs}`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.success || !Array.isArray(data.images) || epoch !== epochRef.current) return
+        setImages(prev => {
+          const ids = new Set(prev.map(i => i.id))
+          const urls = new Set(prev.map(i => i.imageUrl))
+          const fresh = (data.images as any[]).filter(img => !ids.has(img.id) && !urls.has(img.imageUrl)).map(feedImageFromApi)
+          return fresh.length ? [...fresh, ...prev] : prev
+        })
+      } catch { /* the next announcement or visit tries again */ }
+      finally { busy = false }
+    }
+    return listenForNewMedia(typeFilter, () => { void pullNewest() })
+  // modelFilterKey, as loadNext above
+  }, [signedIn, adminFilters, showHidden, modelFilterKey, typeFilter]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!loading) checkSentinel() }, [loading, checkSentinel])
 
   useEffect(() => {
@@ -24464,6 +24499,30 @@ function VideoFeed({
     setDbLoading(false)
     loadNextVideos()
   }, [loadNextVideos])
+  // Newest clips in at the top when Prism / Nova Studio finish one, or the tab comes back (lib/feed-events)
+  useEffect(() => {
+    if (adminFilters) return
+    let busy = false
+    const pullNewest = async () => {
+      if (busy) return
+      busy = true
+      const epoch = videoEpochRef.current
+      try {
+        const modelQs = modelFilter && modelFilter.length > 0 ? `&models=${encodeURIComponent(modelFilter.join(","))}` : ""
+        const res = await fetch(`/api/my-images?limit=12&type=video&cursor=1${showHidden ? "&hidden=true" : ""}${modelQs}`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (!Array.isArray(data.images) || epoch !== videoEpochRef.current) return
+        setDbImages(prev => {
+          const ids = new Set(prev.map(i => i.id))
+          const fresh = (data.images as any[]).filter(img => !ids.has(img.id))
+          return fresh.length ? [...fresh, ...prev] : prev
+        })
+      } catch { /* the next announcement or visit tries again */ }
+      finally { busy = false }
+    }
+    return listenForNewMedia("video", () => { void pullNewest() })
+  }, [showHidden, modelFilterKey, adminFilters]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!dbLoading) {
     if (!videoSentinelRef.current || !videoHasMoreRef.current) return
     const rect = videoSentinelRef.current.getBoundingClientRect()

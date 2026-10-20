@@ -177,6 +177,10 @@ export type NovaTurnCtx = {
   /** What the user asked for (the critic reviews against it). */
   brief: string
   criticRuns: number
+  /** generate_image failures per model this turn (switching models is suggested after 3). */
+  modelFailures: Record<string, number>
+  /** The last critic verdict this turn: a second review only follows a "revise". */
+  lastCriticVerdict?: 'pass' | 'revise'
   /**
    * Set on a BACKGROUND turn (no browser session): the user's own Nova API key
    * header (lib/nova/background), sent on the site's generation routes.
@@ -313,6 +317,11 @@ export async function assemble(body: Record<string, unknown>): Promise<Record<st
 }
 
 // ── The tools ────────────────────────────────────────────────────────────────
+
+/** Failures worth retrying as they are (generate_image retries these itself). */
+const TRANSIENT_ERROR = /couldn.?t be loaded|could not be (loaded|read|fetched)|time(d)? ?out|timeout|try again|busy|temporar|unavailable|overloaded|rate.?limit|\b(429|500|502|503|504)\b|network|ECONN|fetch failed|socket/i
+/** A provider's content checker refusing the prompt or a picture: rephrase, same model. */
+const REFUSAL_ERROR = /content|safety|flagged|refus|policy|moderat|nsfw|bare 422|sensitive/i
 
 const ids = { type: 'array', items: { type: 'integer' }, description: 'My Generations ids (the numbers after #)' } as const
 
@@ -555,11 +564,36 @@ export function makeNovaTools(ctx: NovaTurnCtx): ToolSet {
       const refused = guard(ctx, est)
       if (refused) return { error: refused }
       const step = newStep(ctx, { tool: 'generate_image', kind: 'image', label: `${spec.label}${settings.aspect ? ` · ${settings.aspect}` : ''}`, status: 'running', model: spec.label, prompt: clip(input.prompt, 400), tickets: est })
-      const res = await submitChatImage(spec, clip(input.prompt, 4000), refsRows.map(r => r.imageUrl), settings, uid, { ...(ctx.authHeaders ? { headers: ctx.authHeaders } : {}), waitUntil: ctx.deadline })
+      /*
+       * STAY WITH THE CHOSEN MODEL (2026-10-20, owner: NanoBanana 2.1 failed once,
+       * SeeDream once, and the shoot moved to Kling). A technical failure - a
+       * reference that did not load, a timeout, a busy server - is retried here
+       * with the same model, up to twice, before Nova hears of it (a failed job
+       * is refunded by the site). A content refusal goes back to Nova with the
+       * instruction to rephrase for the SAME model; only after 3 failures of a
+       * model in this turn is switching suggested.
+       */
+      const send = () => submitChatImage(spec, clip(input.prompt, 4000), refsRows.map(r => r.imageUrl), settings, uid, { ...(ctx.authHeaders ? { headers: ctx.authHeaders } : {}), waitUntil: ctx.deadline })
+      let res = await send()
+      for (let retry = 0; !res.ok && retry < 2 && TRANSIENT_ERROR.test(res.error) && Date.now() < (ctx.deadline ?? Infinity) - 30_000; retry++) {
+        update(ctx, step, { note: `retrying ${spec.label} (${retry + 1}/2) - ${clip(res.error, 80)}` })
+        await new Promise(r => setTimeout(r, 2500 * (retry + 1)))
+        res = await send()
+      }
       if (!res.ok) {
         await settleSpend(ctx, est, 0)
         update(ctx, step, { status: 'error', error: res.error, tickets: 0 })
-        return { error: res.error }
+        const fails = (ctx.modelFailures[spec.id] = (ctx.modelFailures[spec.id] ?? 0) + 1)
+        const refusal = REFUSAL_ERROR.test(res.error)
+        return {
+          error: res.error,
+          failuresWithThisModelThisTurn: fails,
+          next: fails >= 3
+            ? `${spec.label} has failed ${fails} times this turn - now switch to another suitable model (say why).`
+            : refusal
+              ? `Its content checker refused it. Rephrase for ${spec.label} - remove or soften what could read as sensitive (body, age, violence, brands, real names), keep the brief - and call generate_image again with the SAME model (try ${fails + 1} of 3). Do not switch models yet.`
+              : `Call generate_image again with the SAME model and settings (try ${fails + 1} of 3)${refsRows.length ? '; if a reference keeps failing, drop or swap that one reference' : ''}. Do not switch models yet.`,
+        }
       }
       await settleSpend(ctx, est, res.ticketCost)
       if ('pending' in res) {
@@ -626,23 +660,32 @@ export function makeNovaTools(ctx: NovaTurnCtx): ToolSet {
   })
 
   const generate_audio = tool({
-    description: 'Make audio: a voiceover (text to speech), music (a song or instrumental from a style), or sound effects. Renders in the background like video.',
-    inputSchema: jsonSchema<{ model: string; text?: string; lyrics?: string; style?: string; voice?: string; duration?: number; instrumental?: boolean }>({
+    description: 'Make audio: a voiceover (text to speech), music (a song or instrumental from a style), or sound effects - or WORK ON A RECORDING: models that take one (voice changer, voice cloning TTS, stem splitter, noise / voice isolation, restyle or extend a track, a score or sound effects for a video) need input_id: the user\'s audio file, or a video for the video-to-music / video-to-sound models. Renders in the background like video.',
+    inputSchema: jsonSchema<{ model: string; text?: string; lyrics?: string; style?: string; voice?: string; duration?: number; instrumental?: boolean; input_id?: number; voice_consent?: boolean }>({
       type: 'object',
       properties: {
         model: { type: 'string', description: 'An audio model id from browse_models' },
         text: { type: 'string', description: 'The words to say, or the prompt for music / effects' },
         lyrics: { type: 'string' }, style: { type: 'string' }, voice: { type: 'string' },
         duration: { type: 'number', description: 'Seconds, where the model has a length' }, instrumental: { type: 'boolean' },
+        input_id: { type: 'integer', description: 'The recording (or video) the model works on - one of the user\'s, by id' },
+        voice_consent: { type: 'boolean', description: 'Voice-cloning models only: true ONLY when the user has said they have the right to use that voice' },
       },
       required: ['model'],
     }),
     execute: async (input) => {
       const spec = novaAudioModels(ctx.isAdmin).find(m => m.id === input.model)
       if (!spec) return { error: `Unknown or unavailable audio model "${input.model}" - call browse_models` }
+      // The recording (or video) a model works on: the user's own, checked
+      let inputRow: Row | undefined
+      if (spec.audioIn) {
+        inputRow = input.input_id ? (await ownedRows(uid, [input.input_id])).find(r => ['audio', 'video', 'cut'].includes(kindOf(r))) : undefined
+        if (spec.audioIn.required && !inputRow) return { error: `${spec.name} works on ${spec.audioIn.label.toLowerCase()}: pass input_id (one of the user's ${/video/i.test(spec.audioIn.label) ? 'videos' : 'audio files'})` }
+        if (spec.audioIn.clonesVoice && inputRow && input.voice_consent !== true) return { error: `${spec.name} clones the voice in that recording - ask the user to confirm they have the right to use it, then pass voice_consent: true` }
+      }
       const text = clip(input.text, spec.text?.max ?? 4000), lyrics = clip(input.lyrics, spec.lyrics?.max ?? 4000)
       const seconds = spec.duration ? Math.min(spec.duration.max, Math.max(spec.duration.min, Number(input.duration) || spec.duration.default)) : undefined
-      const est = audioTicketCost(spec, { chars: text.length + lyrics.length, spokenChars: spokenCharCount(text), seconds })
+      const est = audioTicketCost(spec, { chars: text.length + lyrics.length, spokenChars: spokenCharCount(text), seconds: seconds ?? (inputRow ? secondsOf(inputRow) || undefined : undefined) })
       const refused = guard(ctx, est)
       if (refused) return { error: refused }
       const step = newStep(ctx, { tool: 'generate_audio', kind: 'audio', label: spec.name, status: 'running', model: spec.name, prompt: clip(text || input.style || lyrics, 300), tickets: est })
@@ -650,7 +693,7 @@ export function makeNovaTools(ctx: NovaTurnCtx): ToolSet {
         const { POST } = await import('@/app/api/audio/generate/route')
         const res = await POST(new Request('http://internal/api/audio/generate', {
           method: 'POST', headers: { 'content-type': 'application/json', ...(ctx.authHeaders ?? {}) },
-          body: JSON.stringify({ model: spec.id, text, lyrics: lyrics || undefined, style: input.style, voice: input.voice, duration: seconds, instrumental: input.instrumental === true }),
+          body: JSON.stringify({ model: spec.id, text, lyrics: lyrics || undefined, style: input.style, voice: input.voice, duration: seconds, instrumental: input.instrumental === true, ...(inputRow ? { audioUrl: inputRow.imageUrl, voiceConsent: input.voice_consent === true } : {}) }),
         }))
         const data = await res.json() as Record<string, any>
         if (!res.ok || !data?.requestId) throw new Error(String(data?.error || `Audio failed (${res.status})`))

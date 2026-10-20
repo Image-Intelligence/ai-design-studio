@@ -192,6 +192,8 @@ const MediaCard = memo(function MediaCard({ step }: { step: NovaStep }) {
   const Icon = kindIcon(step.kind)
   const url = step.mediaUrl
   const isGlb = !!url && /\.(glb|gltf)(\?|$)/i.test(url)
+  // A still for a clip: the step's poster, only when it is a picture (older steps carry the mp4 itself)
+  const still = step.posterUrl && !/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(step.posterUrl) ? step.posterUrl : null
 
   let body: React.ReactNode
   if (step.status === "error") {
@@ -227,7 +229,11 @@ const MediaCard = memo(function MediaCard({ step }: { step: NovaStep }) {
           ? <video src={url} controls autoPlay playsInline className="w-full max-h-[480px] bg-black" />
           : (
             <button type="button" onClick={() => { if (!openInViewer?.(step)) setInline(true) }} className="group block w-full relative" aria-label="Play the video">
-              <video src={`${url}#t=0.1`} muted playsInline preload="metadata" className="w-full max-h-[480px] bg-black pointer-events-none" />
+              {/* The clip's still when there is one: an unplayed <video> shows nothing on iPhones (2026-10-20) */}
+              {still
+                // eslint-disable-next-line @next/next/no-img-element
+                ? <img src={still} alt="" loading="lazy" className="w-full max-h-[480px] object-contain bg-black pointer-events-none" />
+                : <video src={`${url}#t=0.1`} muted playsInline preload="metadata" className="w-full max-h-[480px] bg-black pointer-events-none" />}
               <span className="absolute inset-0 flex items-center justify-center">
                 <span className="w-12 h-12 rounded-full flex items-center justify-center bg-black/55 border border-white/25 text-white backdrop-blur-sm group-hover:bg-black/75 transition-colors">
                   <Play size={18} fill="currentColor" className="ml-0.5" />
@@ -527,8 +533,19 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
         {!!rows.length && <div className="mt-2.5 grid gap-1 md:grid-cols-2 max-w-[1100px]">{rows.map(s => <StepRow key={s.id} step={s} />)}</div>}
         {!!critics.length && <div className="mt-2.5 space-y-1.5 max-w-[720px]">{critics.map(s => <CriticCard key={s.id} step={s} />)}</div>}
         {!!media.length && (
-          <div className={`mt-2.5 ${media.length === 1 ? "max-w-[560px]" : media.length === 2 ? "columns-1 min-[480px]:columns-2 gap-2.5 max-w-[900px]" : "columns-1 min-[480px]:columns-2 lg:columns-3 2xl:columns-4 gap-2.5"}`}>
-            {media.map(s => <MediaCard key={s.id} step={s} />)}
+          /*
+           * A grid, not CSS columns (2026-10-20): Safari (iPhone / iPad) paints
+           * animated pieces inside multi-column layout in the wrong place - the
+           * floating figure on a "Making the image..." tile landed on another
+           * tile or over the "still working" banner. Rows come from the cards'
+           * own mb-2.5; items-start keeps a short tile from stretching.
+           * Columns follow the reply's own width (a container query), not the
+           * screen's: Prism's narrow dock gets one column, Nova Studio up to four.
+           */
+          <div className="mt-2.5 @container">
+            <div className={media.length === 1 ? "max-w-[560px]" : media.length === 2 ? "grid grid-cols-1 @sm:grid-cols-2 gap-x-2.5 items-start max-w-[900px]" : "grid grid-cols-1 @sm:grid-cols-2 @3xl:grid-cols-3 @6xl:grid-cols-4 gap-x-2.5 items-start"}>
+              {media.map(s => <MediaCard key={s.id} step={s} />)}
+            </div>
           </div>
         )}
         {message.plan && (

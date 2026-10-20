@@ -89,3 +89,26 @@ export async function makeVideoPoster(videoUrl: string): Promise<Buffer | 'busy'
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
 }
+
+/**
+ * A generation's still: its stored thumbnail (an image), or one made now from
+ * the first frame and saved as its thumbnail. The UNSIGNED url, or null.
+ *
+ * For anything that shows a finished clip as a picture - the ChatGPT / Claude
+ * connector and Nova / Prism's chat (2026-10-20: chat video tiles were handed
+ * the mp4 itself as their "poster" and showed blank on iPhones; the feed's
+ * thumbnail backfill only arrives minutes later).
+ */
+export async function ensureVideoPoster(id: number, videoUrl: string): Promise<string | null> {
+  try {
+    const { default: prisma } = await import('@/lib/prisma')
+    const row = await prisma.generatedImage.findUnique({ where: { id }, select: { thumbnailUrl: true } })
+    if (row?.thumbnailUrl && !VIDEO_URL_RE.test(row.thumbnailUrl)) return row.thumbnailUrl
+    const poster = await makeVideoPoster(videoUrl)
+    if (poster === 'busy') return null
+    const { uploadToR2 } = await import('@/lib/r2')
+    const thumbUrl = await uploadToR2(`thumb/${id}-${Date.now()}.webp`, poster, 'image/webp')
+    await prisma.generatedImage.updateMany({ where: { id, thumbnailUrl: null }, data: { thumbnailUrl: thumbUrl } })
+    return thumbUrl
+  } catch { return null }
+}

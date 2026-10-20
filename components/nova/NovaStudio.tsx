@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  AlertCircle, ArrowUp, Check, Menu, MessageSquarePlus, Paperclip, Pencil, PlayCircle,
+  AlertCircle, ArrowDown, ArrowUp, Check, Menu, MessageSquarePlus, Paperclip, Pencil, PlayCircle,
   ShieldCheck, Square, Ticket, Trash2, X, Loader2, PanelRight, Clapperboard, Image as ImageIcon, FolderTree,
   UserRound, Images, Radio, Mountain, Video, AudioLines, Box, Library, Upload,
 } from "lucide-react"
@@ -16,6 +16,7 @@ import { NOVA_STAGE_CSS, NovaFigure, NovaBar, NovaStudioPanel, UsageChip, derive
 import { NOVA_HERO_ART } from "./novaArt"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import type { NovaStep } from "@/lib/nova/config"
+import { announceNewMedia, feedKindOf, type FeedKind } from "@/lib/feed-events"
 import { NovaBudgetPanel } from "./NovaBudgetPanel"
 import { NovaRunBudget } from "./NovaRunBudget"
 import { NOVA_UI, PRISM_UI, NovaPersonaContext } from "./persona"
@@ -169,6 +170,22 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   const [messages, setMessages] = useState<NovaMessage[]>([])
   const messagesRef = useRef(messages)
   useEffect(() => { messagesRef.current = messages }, [messages])
+  /*
+   * Tell the portal's feeds about every finished generation (lib/feed-events),
+   * so it shows up there without a reload. A chat's history announces once as
+   * it loads - the feeds only fetch their newest page, so that costs a request.
+   */
+  const announcedRef = useRef(new Set<number>())
+  useEffect(() => {
+    const kinds = new Set<FeedKind>()
+    for (const m of messages) for (const s of m.steps ?? []) {
+      const k = feedKindOf(s.kind)
+      if (s.status !== "done" || !s.generationId || !k || announcedRef.current.has(s.generationId)) continue
+      announcedRef.current.add(s.generationId)
+      kinds.add(k)
+    }
+    for (const k of kinds) announceNewMedia(k)
+  }, [messages])
   const [loadingChat, setLoadingChat] = useState(false)
   /** Prism: older messages exist above the loaded page; where the context was compacted / cleared; today's free questions. */
   const [hasMore, setHasMore] = useState(false)
@@ -333,11 +350,25 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     if (!messages.length) { el.scrollTop = 0; return }
     if (nearBottom.current) el.scrollTop = el.scrollHeight
   }, [messages])
+  /*
+   * Scrolled up past a screen of the conversation: a down arrow above the
+   * prompt box jumps back to the newest message (2026-10-20, owner: "so they
+   * don't have to always scroll all the way down").
+   */
+  const [showJump, setShowJump] = useState(false)
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    nearBottom.current = fromBottom < 140
+    setShowJump(prev => (prev ? fromBottom > 140 : fromBottom > Math.max(400, el.clientHeight * 0.6)))
     if (isPrism && el.scrollTop < 80) void loadOlderRef.current()
+  }
+  const jumpToLatest = () => {
+    const el = scrollRef.current
+    if (!el) return
+    nearBottom.current = true
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
   }
   const loadOlderRef = useRef<() => Promise<void>>(async () => {})
 
@@ -435,7 +466,14 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   }
 
   // The server-side stop first: with background runs on, a dropped connection no longer stops the turn
-  const stop = () => { if (chatId !== null) void novaApi.stopChat(chatId).catch(() => {}); abortRef.current?.abort() }
+  const stop = () => {
+    if (chatId !== null) void novaApi.stopChat(chatId).catch(() => {})
+    abortRef.current?.abort()
+    // Nor does the studio carry on by itself after Stop (the server clears the wait too)
+    if (lastAssistantRef.current) continuedFor.current.add(lastAssistantRef.current.id)
+    setReadyToContinue(false)
+    setMessages(ms => ms.map(m => (m.continueAfterRenders || m.keepGoing ? { ...m, continueAfterRenders: undefined, keepGoing: undefined } : m)))
+  }
 
   /* The plan card shows its answer at once - the saved status only arrives with the reloaded chat */
   const markPlan = (messageId: number, status: "approved" | "declined", tickets?: number) =>
@@ -445,6 +483,8 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
 
   // ── renders that finish after the turn ──
   const lastAssistant = useMemo(() => [...messages].reverse().find(m => m.role === "assistant" && m.id > 0) ?? null, [messages])
+  const lastAssistantRef = useRef(lastAssistant)
+  useEffect(() => { lastAssistantRef.current = lastAssistant }, [lastAssistant])
   /*
    * A reply still being written on the server (2026-10-19, owner): the page
    * was reloaded - or opened on another device - while Nova worked. The turn
@@ -900,7 +940,8 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
         </div>
         )}
 
-        {/* Conversation */}
+        {/* Conversation (with the jump-to-latest arrow floating at its foot) */}
+        <div className="relative flex-1 min-h-0 flex flex-col">
         <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
           <div className={isPrism ? "px-3 sm:px-4 py-4 space-y-5" : "max-w-[1500px] mx-auto px-3 sm:px-6 xl:px-10 py-5 sm:py-6 space-y-6"}>
             {loadingChat && (
@@ -989,6 +1030,12 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
               </div>
             )}
           </div>
+        </div>
+        <button type="button" onClick={jumpToLatest} aria-label="Jump to the latest message" title="Jump to the latest message"
+          className={`absolute left-1/2 -translate-x-1/2 bottom-3 z-10 w-9 h-9 rounded-full flex items-center justify-center border border-white/15 bg-[#0d1222]/90 text-slate-100 shadow-[0_6px_18px_-6px_rgba(0,0,0,0.9)] backdrop-blur-sm hover:bg-[#151b30] hover:border-white/30 transition-all duration-200 ${showJump ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"}`}>
+          <ArrowDown size={16} />
+          {working && <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-fuchsia-400 ring-2 ring-[#0d1222] animate-pulse" />}
+        </button>
         </div>
 
         {/* Composer */}

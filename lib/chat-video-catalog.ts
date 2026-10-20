@@ -55,6 +55,12 @@ const REFS: Record<string, { maxRefs: number; needsRef?: boolean; endFrame?: boo
   'ltx-2.5-fast':        { maxRefs: 2, endFrame: true },
   'happy-horse':         { maxRefs: 1, needsRef: true },
   'lipsync-v3':          { maxRefs: 0 },
+  'pixelcut-looping-video': { maxRefs: 1, needsRef: true },
+}
+
+/** A model's one extra choice (the portal's `choice` menu), sent to the route as videoChoice. */
+const CHOICES: Record<string, { key: string; label: string; options: string[]; def: string }> = {
+  'pixelcut-looping-video': { key: 'motion', label: 'Motion', options: ['subtle', 'spin'], def: 'subtle' },
 }
 
 /** Which provider a model belongs to, for grouping in the picker. */
@@ -68,6 +74,7 @@ function groupOf(id: string): string {
   if (id.startsWith('topaz')) return 'Topaz'
   if (id.startsWith('minimax')) return 'MiniMax'
   if (id.startsWith('happy')) return 'Alibaba'
+  if (id.startsWith('pixelcut')) return 'Pixelcut'
   return 'Video'
 }
 
@@ -101,6 +108,7 @@ export const CHAT_VIDEO_MODELS: ChatVideoEntry[] = VIDEO_MODEL_SPECS.map(spec =>
   if (spec.supportsAudio) {
     fields.push({ key: 'audio', label: 'Audio', options: ['off', 'on'], def: 'off' })
   }
+  if (CHOICES[spec.id]) fields.push(CHOICES[spec.id])
 
   return {
     id: spec.id,

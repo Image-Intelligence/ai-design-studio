@@ -154,6 +154,7 @@ export const TOOLS = [
         aspect_ratio: { type: 'string', description: 'e.g. 16:9, 9:16, 1:1' },
         resolution: { type: 'string', description: 'e.g. 720p, 1080p' },
         audio: { type: 'boolean', description: 'Generate sound, on models that can' },
+        motion: { type: 'string', enum: ['subtle', 'spin'], description: 'Pixelcut Looping Video only: "spin" = one full 360-degree turn of the product, "subtle" = gentle ambient motion' },
       },
       required: ['prompt'], additionalProperties: false,
     },
@@ -232,15 +233,9 @@ async function screen(items: Item[]): Promise<Map<Item, { type: 'image'; data: s
 
 /** A clip's first frame, stored as its feed thumbnail (the same recipe as /api/images/[id]); a signed link, or null. */
 async function posterFor(id: number, signedVideoUrl: string): Promise<string | null> {
-  try {
-    const { makeVideoPoster } = await import('@/lib/video-poster')
-    const poster = await makeVideoPoster(signedVideoUrl)
-    if (poster === 'busy') return null
-    const { uploadToR2 } = await import('@/lib/r2')
-    const thumbUrl = await uploadToR2(`thumb/${id}-${Date.now()}.webp`, poster, 'image/webp')
-    await prisma.generatedImage.updateMany({ where: { id, thumbnailUrl: null }, data: { thumbnailUrl: thumbUrl } })
-    return signMediaUrl(thumbUrl)
-  } catch { return null }
+  const { ensureVideoPoster } = await import('@/lib/video-poster')
+  const thumbUrl = await ensureVideoPoster(id, signedVideoUrl)
+  return thumbUrl ? signMediaUrl(thumbUrl) : null
 }
 
 async function results(ctx: ToolCtx, items: Item[], headline: string, extra: Record<string, unknown> = {}): Promise<ToolResult> {
@@ -384,6 +379,7 @@ export async function callTool(ctx: ToolCtx, name: string, args: Record<string, 
       if (args.aspect_ratio) settings.aspect = String(args.aspect_ratio)
       if (args.resolution) settings.resolution = String(args.resolution)
       if (args.audio !== undefined) settings.audio = args.audio ? 'on' : 'off'
+      if (args.motion) settings.motion = String(args.motion)
       const { settings: s } = estimateCreate(spec, settings)
       const startEnd = !!(spec.endFrame && refs.length >= 2 && !spec.needsRef)
       const frames = startEnd ? { imageUrl: refs[0], endImageUrl: refs[1], sd20Mode: 'i2v', referenceImageUrls: [] } : undefined

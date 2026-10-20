@@ -260,7 +260,12 @@ export async function watchableVideo(url: string, maxSec = 30): Promise<{ mime: 
     return await withClip(url, async (file, dir, p) => {
       const out = path.join(dir, 'watch.mp4')
       const scale = p.width >= p.height ? 'scale=-2:480' : 'scale=480:-2'
-      await ffmpeg(['-y', '-i', file, '-t', String(maxSec), '-vf', `${scale},fps=24`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-pix_fmt', 'yuv420p', ...(p.hasAudio ? ['-c:a', 'aac', '-b:a', '64k'] : ['-an']), '-movflags', '+faststart', out])
+      // CRF 23 first (2026-10-20): at CRF 30 the reviewer's copy turned dissolves and wipes blocky
+      // and the critic reported "pixelation at the transitions" that the real cut did not have.
+      // A long clip that would not fit inline falls back to the small encode.
+      const enc = (crf: number, ab: string) => ffmpeg(['-y', '-i', file, '-t', String(maxSec), '-vf', `${scale},fps=24`, '-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf), '-pix_fmt', 'yuv420p', ...(p.hasAudio ? ['-c:a', 'aac', '-b:a', ab] : ['-an']), '-movflags', '+faststart', out])
+      await enc(23, '128k')
+      if (((await readFile(out).catch(() => null))?.length ?? 0) > INLINE_MAX_BYTES) await enc(30, '64k')
       const buf = await readFile(out).catch(() => null)
       if (!buf?.length || buf.length > INLINE_MAX_BYTES) return null
       return { mime: 'video/mp4' as const, data: buf.toString('base64'), seconds: Math.min(maxSec, p.seconds) }

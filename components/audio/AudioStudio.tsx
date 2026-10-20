@@ -15,6 +15,7 @@
  * (/api/my-images?type=audio).
  */
 
+import { listenForNewMedia } from "@/lib/feed-events"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Clapperboard, Download, Loader2, Music, Pause, Play, PenLine, SlidersHorizontal, Ticket, Trash2, Upload, Wand2, X } from "lucide-react"
 import {
@@ -469,6 +470,16 @@ export function AudioStudio({
   }, [cursor, loadingPast, adminFeed])
   // First load, and a fresh list whenever the admin filters change
   useEffect(() => { setCursor(null); loadPast(true) }, [adminKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Newest sounds in at the top when Prism / Nova Studio finish one, or the tab comes back (lib/feed-events)
+  useEffect(() => {
+    if (adminFeed) return
+    return listenForNewMedia("audio", () => {
+      fetch("/api/my-images?type=audio&cursor=1&limit=12").then(r => (r.ok ? r.json() : null)).then(d => {
+        const rows: AudioItem[] = d?.images ?? []
+        if (rows.length) setPast(p => { const fresh = rows.filter(r => !p.some(x => x.id === r.id)); return fresh.length ? [...fresh, ...p] : p })
+      }).catch(() => {})
+    })
+  }, [adminKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Pending runs: restored on load, polled until settled ──
   useEffect(() => { setPending(readPending()) }, [])

@@ -1405,7 +1405,7 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
   // turning it off "requires account authorization".
   'krea-3': krea3Spec('krea-3', 'krea/v3/text-to-image', 'krea-3-edit'),
   'krea-3-edit': krea3Spec('krea-3-edit', 'krea/v3/edit'),
-  // MOSS Image (2026-10-18, admin): OpenMOSS's text-to-image, strong on
+  // MOSS Image (2026-10-18; public 2026-10-20): OpenMOSS's text-to-image, strong on
   // Chinese + English lettering and laid-out compositions. One of fal's six
   // named sizes or a custom W x H (snapped and clamped in mossSize), with the
   // steps and guidance knobs from the portal. $0.05 per MP (mossTicketCost).
@@ -2024,7 +2024,8 @@ function mossSpec(): FalImageModelSpec {
     aspectRatios: null, usesImageSize: true,
     notes: 'image_size = preset or {width,height} in 512-2048, multiples of 16',
     build: (ctx) => {
-      const size = mossSize({ size: ctx.options.mossSize, width: ctx.options.mossWidth, height: ctx.options.mossHeight })
+      // No mossSize (agents, the connector, Storyboard, Image Studio): the plain aspect picks the nearest preset
+      const size = mossSize({ size: ctx.options.mossSize ?? ctx.aspectRatio, width: ctx.options.mossWidth, height: ctx.options.mossHeight })
       // null / '' would read as 0 through Number(): only a real number counts
       const num = (v: unknown) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN)
       const steps = num(ctx.options.mossSteps)
@@ -2129,6 +2130,8 @@ export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
   'bria-fibo', 'bria-fibo-edit',
   // Public 2026-10-20 (fal $0.04 an image -> 2, tested through the portal): Bria Fibo 2.0
   'bria-fibo-2', 'bria-fibo-2-edit',
+  // Public 2026-10-20 (fal $0.05 per billed MP, measured -> 2-5 tickets): MOSS Image
+  'moss-image',
   'nano-banana-2-lite',
   'mai-image-2.5-pro', 'mai-image-2.5-pro-edit',
   'hunyuan-image-3',

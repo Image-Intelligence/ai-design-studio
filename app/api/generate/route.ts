@@ -1145,7 +1145,8 @@ export async function POST(request: Request) {
             // custom one after it is snapped and clamped)
             if (priceAs === 'moss-image') {
               const { mossTicketCost } = await import('@/lib/ticket-pricing')
-              ticketCost = mossTicketCost({ size: body.mossSize, width: body.mossWidth, height: body.mossHeight })
+              // (no mossSize from agents / Storyboard: the aspect ratio picks the preset, as in the spec)
+              ticketCost = mossTicketCost({ size: body.mossSize ?? aspectRatio, width: body.mossWidth, height: body.mossHeight })
             }
             // SeedVR2 bills by OUTPUT megapixels too: the factor on the measured source
             if (priceAs === 'seedvr2-upscale') {

@@ -1105,6 +1105,9 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'kling-v3-turbo',       label: 'Kling V3 Turbo',         kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: false, durationSource: 'none', note: 'fal $0.112/s. Admin only.' },
   { id: 'kling-o3-pro',         label: 'Kling O3 Pro',           kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'fal $0.112/s, $0.14/s with audio. Admin only.' },
   { id: 'kling-o3-4k',          label: 'Kling O3 4K',            kind: 'generator', durations: ['3', '5', '10', '15'], resolutions: [], supportsAudio: true, durationSource: 'none', note: 'fal $0.42/s. Admin only.' },
+  // In this table since 2026-10-20 so the agents (Nova / Prism / the connector) can use it: the
+  // owner asked Prism for "the Pixelcut 360 loop" and got PixVerse - the model was not in their catalog
+  { id: 'pixelcut-looping-video', label: 'Pixelcut Looping Video', kind: 'generator', durations: ['5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15'], resolutions: ['1080p', '768p', '480p'], supportsAudio: true, durationSource: 'none', note: 'ONE product photo (the start image) -> a seamless loop that starts and ends on that photo. Setting "motion": "subtle" (gentle ambient movement) or "spin" (one full 360-degree turn of the product). fal $0.08/s.' },
   { id: 'pixverse-v6',          label: 'PixVerse V6',            kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.025-0.09/s (+audio). Admin only.' },
   { id: 'pixverse-c1',          label: 'PixVerse C1',            kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['360p', '540p', '720p', '1080p'], supportsAudio: true, durationSource: 'none', note: 'fal $0.03-0.095/s (+audio). Admin only.' },
   { id: 'grok-video-1.5',       label: 'Grok Imagine Video 1.5', kind: 'generator', durations: ['5', '6', '10', '15'], resolutions: ['480p', '720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.08/$0.14/$0.25 per s, +$0.01 per image. Admin only.' },
@@ -1354,6 +1357,18 @@ export const MOSS_PRESETS = {
 } as const
 export type MossPreset = keyof typeof MOSS_PRESETS
 export const MOSS_SIZES = [...Object.keys(MOSS_PRESETS), 'custom'] as (MossPreset | 'custom')[]
+/**
+ * A plain aspect ratio -> the nearest named size (all <= 1MP, so all 2
+ * tickets). Agents, the connector, Storyboard and Image Studio only know
+ * ratios; the portal sends the preset itself.
+ */
+const MOSS_RATIO_PRESETS: Record<string, MossPreset> = {
+  '1:1': 'square_hd',
+  '3:4': 'portrait_4_3', '2:3': 'portrait_4_3', '4:5': 'portrait_4_3',
+  '9:16': 'portrait_16_9',
+  '4:3': 'landscape_4_3', '3:2': 'landscape_4_3', '5:4': 'landscape_4_3',
+  '16:9': 'landscape_16_9', '21:9': 'landscape_16_9',
+}
 export const MOSS_MIN_SIDE = 512
 export const MOSS_MAX_SIDE = 2048
 /** One custom side: a number, snapped to 16, held to 512-2048 (1024 when it is not a number). */
@@ -1369,6 +1384,10 @@ export function mossSize(o: { size?: unknown; width?: unknown; height?: unknown 
     return { preset: o.size as MossPreset, width: p.width, height: p.height }
   }
   if (o.size === 'custom') return { preset: null, width: mossSide(o.width), height: mossSide(o.height) }
+  if (typeof o.size === 'string' && o.size in MOSS_RATIO_PRESETS) {
+    const preset = MOSS_RATIO_PRESETS[o.size]
+    return { preset, width: MOSS_PRESETS[preset].width, height: MOSS_PRESETS[preset].height }
+  }
   // "WxH": the aspect a run is saved under, so a retry of a failed tile keeps its size
   const m = typeof o.size === 'string' ? o.size.match(/^(\d+)x(\d+)$/) : null
   if (m) {

@@ -23,14 +23,23 @@ export async function rowForRequest(userId: number, falRequestId: string | null 
   return prisma.generatedImage.findFirst({
     where: { userId, falRequestId, isDeleted: false },
     orderBy: { id: 'desc' },
-    select: { id: true, imageUrl: true, model: true, videoMetadata: true },
+    select: { id: true, imageUrl: true, model: true, videoMetadata: true, thumbnailUrl: true },
   })
 }
 
-function posterOf(meta: unknown): string | undefined {
-  const m = (meta ?? {}) as Record<string, any>
-  const p = m.thumbnailUrl ?? m.threed?.poster ?? m.posterUrl
-  return typeof p === 'string' ? p : undefined
+/**
+ * A finished item's still - always an IMAGE: the row's thumbnail, else the
+ * metadata's (a video row's videoMetadata.thumbnailUrl is often the clip itself,
+ * which the chat then showed as a blank tile), else one made from the first
+ * frame now (lib/video-poster).
+ */
+async function posterOf(row: { id: number; imageUrl: string; videoMetadata: unknown; thumbnailUrl?: string | null } | null): Promise<string | undefined> {
+  if (!row) return undefined
+  const m = (row.videoMetadata ?? {}) as Record<string, any>
+  const { VIDEO_URL_RE, ensureVideoPoster } = await import('@/lib/video-poster')
+  const still = [row.thumbnailUrl, m.thumbnailUrl, m.threed?.poster, m.posterUrl].find(p => typeof p === 'string' && p && !VIDEO_URL_RE.test(p))
+  if (still) return still
+  return VIDEO_URL_RE.test(row.imageUrl) ? (await ensureVideoPoster(row.id, row.imageUrl)) ?? undefined : undefined
 }
 
 /** Settle one queue job of this user's, whatever kind it is. */
@@ -52,7 +61,7 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
     const urls = Array.isArray(p.completedImageUrls) ? p.completedImageUrls : []
     const url = row?.imageUrl ?? (typeof urls[0] === 'string' ? urls[0] : undefined)
     if (!url) return { status: 'pending' } // the feed row is still being written
-    return { status: 'done', url, posterUrl: posterOf(row?.videoMetadata), generationId: row?.id }
+    return { status: 'done', url, posterUrl: await posterOf(row), generationId: row?.id }
   }
 
   if (job.status === 'completed') return finished()
@@ -77,6 +86,19 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
     return { status: 'pending' }
   }
 
+  // Higgsfield's exclusives: its own settler (keeps the output, writes the feed row, refunds a failure)
+  if (p.provider === 'higgsfield') {
+    const { settleHiggsfieldRow, promoteHiggsfieldQueue } = await import('@/lib/higgsfield')
+    if (!job.falRequestId) { await promoteHiggsfieldQueue().catch(() => 0); return { status: 'pending' } }
+    const out = await settleHiggsfieldRow(job).catch(() => null)
+    if (out?.status === 'failed') return { status: 'error', error: out.error }
+    if (out?.status === 'completed') {
+      const done = await finished()
+      return done.status === 'done' || !out.urls[0] ? done : { status: 'done', url: out.urls[0], generationId: out.imageIds[0] }
+    }
+    return { status: 'pending' }
+  }
+
   // Video still rendering: ask fal through the site's status handler, which
   // re-hosts the clip, writes the feed row and refunds a failure
   if (job.modelType === 'video' && job.falRequestId && p.falEndpoint) {
@@ -93,7 +115,7 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
       const data = (await res.json()) as Record<string, any>
       if (data?.status === 'completed' && typeof data.videoUrl === 'string') {
         const row = await rowForRequest(user.id, job.falRequestId)
-        return { status: 'done', url: row?.imageUrl ?? data.videoUrl, posterUrl: posterOf(row?.videoMetadata), generationId: row?.id }
+        return { status: 'done', url: row?.imageUrl ?? data.videoUrl, posterUrl: await posterOf(row), generationId: row?.id }
       }
       if (data?.status === 'failed') return { status: 'error', error: String(data.error || 'Generation failed') }
     } catch { /* try again on the next poll */ }

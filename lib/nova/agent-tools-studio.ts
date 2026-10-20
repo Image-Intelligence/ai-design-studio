@@ -30,6 +30,7 @@ import { videoTicketCost, batch1003TicketCost } from '@/lib/ticket-pricing'
 import { OMNIHUMAN_AUDIO_SEC } from '@/lib/batch-1003-video'
 import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
 import { CLIP_TOOLS, clipTool } from '@/lib/storyboard-tools'
+import { NOVA_VIDEO_TOOLS, novaVideoTool, describeVideoTool } from '@/lib/nova/video-tools'
 import { NOVA_RECIPES, recipeById } from '@/lib/nova/recipes'
 import { withClip, stillAt, measureSeam, makeLoop, seamFrames, padAudio, watchableVideo, type LoopMethod } from '@/lib/nova/video-ops'
 import { checkShots, type ShotRef, type ShotItem } from '@/lib/nova/critic'
@@ -56,11 +57,11 @@ function aspectOf(r: Row): string {
   return '16:9'
 }
 
-/** Submit a body to /api/video/generate as the user (or with the background-run key) - the route bills and gates it. */
-async function submitVideo(ctx: NovaTurnCtx, body: Record<string, unknown>): Promise<{ ok: true; queueId: number; ticketCost: number } | { ok: false; error: string }> {
+/** Submit a body to /api/video/generate (or Higgsfield's route) as the user (or with the background-run key) - the route bills and gates it. */
+async function submitVideo(ctx: NovaTurnCtx, body: Record<string, unknown>, route: 'video' | 'higgsfield' = 'video'): Promise<{ ok: true; queueId: number; ticketCost: number } | { ok: false; error: string }> {
   try {
-    const { POST } = await import('@/app/api/video/generate/route')
-    const res = await POST(new NextRequest('http://internal/api/video/generate', {
+    const { POST } = route === 'higgsfield' ? await import('@/app/api/admin/higgsfield/video-submit/route') : await import('@/app/api/video/generate/route')
+    const res = await POST(new NextRequest(route === 'higgsfield' ? 'http://internal/api/admin/higgsfield/video-submit' : 'http://internal/api/video/generate', {
       method: 'POST', headers: { 'content-type': 'application/json', ...(ctx.authHeaders ?? {}) }, body: JSON.stringify({ adminMode: false, ...body }),
     }))
     const data = await res.json().catch(() => ({})) as Record<string, any>
@@ -232,6 +233,78 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
     },
   })
 
+  // ── every other public video model (lib/nova/video-tools) ──
+  const vtools = NOVA_VIDEO_TOOLS.filter(t => ctx.isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(t.id))
+  const use_video_tool = tool({
+    description: `The site's other video models - upscale, reframe, restyle, extend, translate / dub, subtitles, relight, camera moves, depth, tracking, background removal, audio-driven video, motion transfer, Higgsfield. Renders in the background (call wait_for_renders). Use the one the user names. Tools:\n${vtools.map(describeVideoTool).join('\n')}`,
+    inputSchema: jsonSchema<{ tool: string; video_id?: number; picture_ids?: number[]; audio_id?: number; motion_video_id?: number; prompt?: string; option?: string; seconds?: string; resolution?: string; insert_start?: number; insert_resume?: number }>({
+      type: 'object',
+      properties: {
+        tool: { type: 'string', enum: vtools.map(t => t.id) },
+        video_id: { type: 'integer', description: 'The clip it works on' },
+        picture_ids: { type: 'array', items: { type: 'integer' } },
+        audio_id: { type: 'integer' }, motion_video_id: { type: 'integer' },
+        prompt: { type: 'string' }, option: { type: 'string' }, seconds: { type: 'string' }, resolution: { type: 'string' },
+        insert_start: { type: 'number' }, insert_resume: { type: 'number' },
+      },
+      required: ['tool'],
+    }),
+    execute: async (input) => {
+      const t = novaVideoTool(input.tool)
+      if (!t || !vtools.includes(t)) return { error: `Unknown video tool "${input.tool}"` }
+      const i = t.inputs
+      const rows = await ownedRows(uid, [input.video_id, input.audio_id, input.motion_video_id, ...(input.picture_ids ?? [])].filter((x): x is number => Number.isInteger(Number(x))).map(Number))
+      const byId = (id?: number) => rows.find(r => r.id === Number(id))
+      const src = i.clip ? byId(input.video_id) : undefined
+      if (i.clip && (!src || !isClip(src))) return { error: `${t.label} works on a clip: video_id (one of the user's videos)` }
+      const sec = src ? secondsOf(src) : 0
+      if (src && i.clip?.maxSec && sec > i.clip.maxSec + 0.1) return { error: `${t.label} takes clips up to ${i.clip.maxSec}s (this one is ${sec}s) - trim it first (trim_media)` }
+      if (src && i.clip?.minSec && sec < i.clip.minSec - 0.1) return { error: `${t.label} needs a clip of at least ${i.clip.minSec}s (this one is ${sec}s)` }
+      const pics = i.pictures ? (input.picture_ids ?? []).map(byId).filter((r): r is Row => !!r && kindOf(r) === 'image').slice(0, i.pictures.max) : []
+      if (i.pictures?.required && !pics.length) return { error: `${t.label} needs picture_ids: ${i.pictures.label}` }
+      const audio = i.audio ? byId(input.audio_id) : undefined
+      if (i.audio && audio && kindOf(audio) !== 'audio') return { error: 'audio_id must be one of the user\'s audio files' }
+      if (i.audio?.required && !audio) return { error: `${t.label} needs audio_id: ${i.audio.label}` }
+      const motion = i.motionClip ? byId(input.motion_video_id) : undefined
+      if (i.motionClip && (!motion || !isClip(motion))) return { error: `${t.label} needs motion_video_id: the clip whose movement to copy` }
+      const prompt = clip(input.prompt, 5000)
+      if (t.prompt === 'required' && !prompt) return { error: `${t.label} needs a prompt${t.promptIs ? `: ${t.promptIs}` : ''}` }
+      if (t.id === 'heygen-avatar4' && !prompt && !audio) return { error: 'HeyGen Avatar 4 needs the script (prompt) or the voice line (audio_id)' }
+      const option = t.option ? (t.option.values.includes(String(input.option)) ? String(input.option) : t.option.def) : undefined
+      const seconds = t.seconds ? (t.seconds.values.includes(String(input.seconds)) ? String(input.seconds) : t.seconds.def) : '5'
+      const resolution = t.resolutions ? (t.resolutions.includes(String(input.resolution)) ? String(input.resolution) : t.resolutions[0]) : '1080p'
+      const body: Record<string, unknown> = {
+        model: t.id, prompt, duration: seconds, resolution, generateAudio: true,
+        klingAspectRatio: src ? aspectOf(src) : '16:9',
+        ...(t.option && option ? { [t.option.param]: option } : {}),
+      }
+      if (src) { body.sd20Mode = 'edit'; body.editVideoUrl = src.imageUrl }
+      if (pics.length) {
+        if (i.pictures!.as === 'imageUrl') body.imageUrl = pics[0].imageUrl
+        else body.referenceImageUrls = pics.map(r => r.imageUrl)
+      }
+      if (audio) body.audioUrl = audio.imageUrl
+      if (motion) { body.motionVideoUrl = motion.imageUrl; body.characterOrientation = 'image'; body.keepOriginalSound = true }
+      if (t.insert) {
+        const a = Number(input.insert_start), b = Number(input.insert_resume)
+        if (!Number.isFinite(a) || !Number.isFinite(b) || a < 1.65 || b < a || b > sec - 1.4) return { error: `${t.label} needs insert_start (at least 1.65s) and insert_resume (from insert_start to ${Math.max(0, sec - 1.4).toFixed(1)}s) - where the new shot goes` }
+        body.insertStartSec = a; body.insertResumeSec = b
+      }
+      let est = 0
+      try { est = videoTicketCost({ model: t.id, duration: seconds, resolution, editVideoDurationSec: sec, motionVideoDurationSec: motion ? secondsOf(motion) : undefined, audioDurationSec: audio ? secondsOf(audio) : undefined, videoChoice: option, referenceImageCount: pics.length, promptWords: prompt.split(/\s+/).filter(Boolean).length } as Parameters<typeof videoTicketCost>[0]) } catch { /* the route prices it */ }
+      est = Math.max(1, est || Math.ceil(Math.max(sec, 5) * 3))
+      const refused = guard(ctx, est)
+      if (refused) return { error: refused }
+      const step = newStep(ctx, { tool: 'use_video_tool', kind: 'video', label: `${t.label}${src ? ` on #${src.id}` : ''}`, status: 'running', model: t.label, prompt: prompt || undefined, tickets: est, posterUrl: pics[0]?.imageUrl })
+      const res = await submitVideo(ctx, body, t.route === 'higgsfield' ? 'higgsfield' : 'video')
+      if (!res.ok) { await settleSpend(ctx, est, 0); update(ctx, step, { status: 'error', error: res.error, tickets: 0 }); return { error: res.error } }
+      await settleSpend(ctx, est, res.ticketCost)
+      update(ctx, step, { status: 'pending', queueId: res.queueId, tickets: res.ticketCost })
+      ctx.waitForRenders = true
+      return { status: 'rendering', ticketsCharged: res.ticketCost, note: 'Call wait_for_renders when everything that needs it has been started.' }
+    },
+  })
+
   // ── talking shots ──
   const talking_head = tool({
     description: 'Make a still of a character TALK: one image (face to camera, mouth closed and visible) + one voice line (an audio id) -> a talking video as long as the line. model "minimax-h3-max-lipsync" (1080P, sharp, fast, works on stylised and non-human faces; about 4 tickets per second of the line, 5s minimum = about 21 tickets; shorter lines are padded with silence - trim the tail in assemble_cut) or "omnihuman-v2" (more body and hand movement, a prompt can direct gestures; about 2.6 tickets per second, 4-60s lines). Renders in the background (call wait_for_renders).',
@@ -333,5 +406,5 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
     },
   })
 
-  return { load_recipe, extract_frame, make_loop, edit_clip, talking_head, set_look_bible, check_shots }
+  return { load_recipe, extract_frame, make_loop, edit_clip, use_video_tool, talking_head, set_look_bible, check_shots }
 }

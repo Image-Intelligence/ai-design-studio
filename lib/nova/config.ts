@@ -95,11 +95,25 @@ export const NOVA_USD_PER_TICKET = 0.04
 /** On top of the high rates above: chat is the part of Nova that costs us money with nothing to show for it. */
 export const NOVA_CHAT_MARKUP = 1.5
 
-export type NovaUsage = { inputTokens: number; outputTokens: number }
+/** cachedInputTokens: the part of inputTokens Google served from its cache (billed at a discount). */
+export type NovaUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number }
 
 export function novaChatUsd(model: string, u: NovaUsage): number {
   const r = novaRate(model)
   return (u.inputTokens / 1e6) * r.in + (u.outputTokens / 1e6) * r.out
+}
+
+/**
+ * What Google actually bills for those tokens: cached input reads at a tenth
+ * of the input rate (Gemini's implicit cache - measured 2026-10-20: from a
+ * turn's second step on, ~93% of Flash's input was a cache read; Argon showed
+ * none). Recorded per turn as `costUsd`; the ticket charge still uses
+ * novaChatUsd, the full rate.
+ */
+export function novaChatCostUsd(model: string, u: NovaUsage): number {
+  const r = novaRate(model)
+  const cached = Math.min(u.inputTokens, u.cachedInputTokens ?? 0)
+  return ((u.inputTokens - cached) / 1e6) * r.in + (cached / 1e6) * r.in * 0.1 + (u.outputTokens / 1e6) * r.out
 }
 
 /** Tickets for an amount of model cost (a turn mixes models: router, orchestrator, critic): at least 1, rounded up. */

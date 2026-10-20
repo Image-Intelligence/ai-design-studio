@@ -99,6 +99,7 @@ const TOOL_LINE: Record<string, { line: string; pose: NovaPose }> = {
   make_loop: { line: "Working on the loop's seam…", pose: "creating" },
   check_shots: { line: "Checking the shots stay on-model…", pose: "thinking" },
   edit_clip: { line: "Sending the clip for editing…", pose: "creating" },
+  use_video_tool: { line: "Sending it to the video tool…", pose: "creating" },
   talking_head: { line: "Making the character talk…", pose: "creating" },
 }
 

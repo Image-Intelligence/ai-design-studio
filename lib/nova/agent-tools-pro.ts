@@ -116,7 +116,7 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
 
   // ── 3. pixel fixes ──
   const edit_image = tool({
-    description: 'Pixel-level fixes on one of the user\'s images, free and instant: crop, reframe to another aspect (pad with a blurred copy or a colour, or crop around a focus point), resize, add TEXT (headline, caption - exact words, position and size in % of the canvas, colour, weight, box, outline), place another image on it (a logo or cut-out, by id), adjust brightness/saturation/contrast, vignette, blur a region (behind text). Positions are % of the canvas (x,y = 0-100). Up to 12 ops, applied in order. Saves a new image and shows it to you.',
+    description: 'Pixel-level fixes on one of the user\'s images, free and instant: crop, reframe to another aspect (pad with a blurred copy or a colour, or crop around a focus point), resize, add TEXT (headline, caption - exact words, position and size in % of the canvas, colour, weight, box, outline), place another image on it (a logo or cut-out, by id), adjust brightness/saturation/contrast, vignette, blur a region (behind text). Positions are % of the canvas (x,y = 0-100). Up to 12 ops, applied in order. Saves a new image and shows it to you. TYPE LIKE A DESIGNER (the critic marks meme-style text down): no outline/stroke on headlines; a soft shadow, or a clean colour band in the brand colour with generous padding, only when the background is busy; display or serif for headlines, sans for small text; headline 6-9% tall, at most 2 lines; keep 6%+ margins and line things up with the subject; when the words should be PART of the picture (a sign, a poster, styled lettering), generate them with a lettering model (Ideogram, MOSS Image) instead.',
     inputSchema: jsonSchema<{ id: number; ops: Record<string, unknown>[]; note?: string }>({
       type: 'object',
       properties: {
@@ -205,6 +205,8 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
     inputSchema: jsonSchema<{ ids: number[]; brief?: string }>({ type: 'object', properties: { ids: { ...ids, description: 'The deliverables to review (max 6)' }, brief: { type: 'string', description: 'What was asked, if more than the user\'s message (format, brand rules, plan)' } }, required: ['ids'] }),
     execute: async (input) => {
       if (ctx.criticRuns >= 2) return { error: 'The critic already reviewed this turn twice - hand the work over and say what is left to improve.' }
+      // One revise round: a second review only follows a "revise" (never re-check work that passed)
+      if (ctx.criticRuns >= 1 && ctx.lastCriticVerdict === 'pass') return { error: 'The critic already passed this work - hand it over (mention its polish notes if useful).' }
       const rows = (await ownedRows(uid, input.ids)).slice(0, 6)
       if (!rows.length) return { error: 'None of those ids are the user\'s' }
       const step = newStep(ctx, { tool: 'critique_work', label: `Critic reviewing ${rows.map(r => `#${r.id}`).join(', ')}`, status: 'running' })
@@ -219,17 +221,24 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
           if (k === 'image' && /\.png(\?|$)/i.test(r.imageUrl)) { try { const { default: sharp } = await import('sharp'); const { fetchMedia } = await import('@/lib/media-fetch'); const m = await sharp(Buffer.from(await (await fetchMedia(r.imageUrl)).arrayBuffer())).stats(); if (m.channels.length === 4 && m.channels[3].min < 250) rep.notes.push('Has a transparent background (shown here on white)') } catch { /* fine */ } }
           if (k === '3d') { const poster = posterOf(r); const p = poster ? await imagePart(poster) : null; if (p) pictures = [{ mime: p.mediaType, data: Buffer.from(p.data.data).toString('base64') }] }
           // Clips are WATCHED (motion and sound), the frames stay as a fallback
-          const video = k === 'video' || k === 'cut' ? await watchableVideo(r.imageUrl, 40) : null
+          // 90s: a cut's outro (and its last spoken words) is exactly what must not be missed
+          const video = k === 'video' || k === 'cut' ? await watchableVideo(r.imageUrl, 90) : null
           items.push({ id: r.id, kind: k, model: r.model, prompt: r.prompt, pictures, facts: facts(rep), video })
         }
         const out = await critique({ model: NOVA_CRITIC_MODEL, brief: [ctx.brief, input.brief].filter(Boolean).join('\n'), items })
         ctx.extraUsd += out.usd
         ctx.criticRuns++
+        ctx.lastCriticVerdict = out.critique.verdict
         await recordCritique(uid, rows.map(r => r.id), out.critique, NOVA_CRITIC_MODEL)
         // A model's habit the critic named becomes a lesson for that model (lib/nova/lessons)
         for (const i of out.critique.issues) { const r = rows.find(x => x.id === i.id); if (r && i.lesson) await addLesson(uid, r.model, i.lesson, 'critic').catch(() => {}) }
         update(ctx, step, { status: 'done', label: `Critic: ${out.critique.verdict === 'pass' ? 'pass' : 'revise'} · ${out.critique.score}/10`, note: clip(out.critique.summary, 140) })
-        return out.critique
+        return {
+          ...out.critique,
+          next: out.critique.verdict === 'pass'
+            ? 'PASSED - hand the work over now. Do not revise for the polish notes unless they are free and quick; mention them as optional next steps.'
+            : `Fix ONLY the blocker issues, with the cheapest precise tool (edit_image / trim_media / recut before regenerating), in ONE round. ${ctx.criticRuns < 2 ? 'You may run the critic once more after regenerating a deliverable;' : 'No more critic runs this turn;'} skip it when the fixes were exact edits.`,
+        }
       } catch (e: any) {
         const msg = String(e?.message || e).slice(0, 300)
         update(ctx, step, { status: 'error', error: msg })

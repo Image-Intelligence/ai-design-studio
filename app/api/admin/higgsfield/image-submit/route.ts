@@ -1,5 +1,4 @@
-import { cookies } from 'next/headers'
-import { getUserFromSession } from '@/lib/auth'
+import { generationCaller } from '@/lib/api-key-auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
@@ -28,8 +27,8 @@ const MARKETING_RATIOS = ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:
 
 export async function POST(req: Request) {
   try {
-    const token = (await cookies()).get('session')?.value
-    const user = token ? await getUserFromSession(token) : null
+    // A browser session, or an agent's key (Nova / Prism / the ChatGPT connector - 2026-10-20)
+    const user = await generationCaller(req, 'image')
     if (!user) return jsonPrivate({ error: 'Not authenticated' }, { status: 401 })
     const isAdmin = await checkIsAdmin(user.email)
     if (await isGenerationBlocked(user.email)) return jsonPrivate({ error: 'Generation is temporarily disabled for maintenance.' }, { status: 503 })

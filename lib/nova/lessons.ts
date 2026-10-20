@@ -51,6 +51,21 @@ export async function addLesson(userId: number, model: string, text: string, fro
     WHERE id = ${userId}`
 }
 
+/**
+ * The account's most recently learned lessons, for the turn's instructions
+ * (2026-10-20): they used to appear only when Nova looked a model up, so a
+ * production often walked into a known trap and the critic sent it round
+ * again. Newest models first, a few lessons each - a few hundred tokens.
+ */
+export function recentLessons(store: Store, maxModels = 8, perModel = 3): string {
+  return Object.entries(store)
+    .filter(([, l]) => l?.length)
+    .sort((a, b) => (b[1][0]?.at ?? '').localeCompare(a[1][0]?.at ?? ''))
+    .slice(0, maxModels)
+    .map(([id, l]) => `- ${id}: ${l.slice(0, perModel).map(x => x.text).join(' | ')}`)
+    .join('\n')
+}
+
 /** The learned lessons for some models, as lines for Nova to read. */
 export function lessonsFor(store: Store, ids: string[]): string {
   const out: string[] = []

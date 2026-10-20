@@ -632,7 +632,7 @@ export const AI_MODELS: AIModel[] = [
     isAvailable: true,
     provider: 'fal' as const,
   })),
-  // MOSS Image (2026-10-18, ADMIN ONLY while under test): $0.05 per MP of
+  // MOSS Image (2026-10-18, public 2026-10-20): $0.05 per MP of
   // output, priced per request from the size sent (lib/ticket-pricing
   // mossTicketCost) - this is the Square HD (1024x1024) figure
   {

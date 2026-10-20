@@ -187,9 +187,12 @@ export async function runCut(ctx: NovaTurnCtx, edl: Edl, opts: { label: string; 
     // 2. picture: clips and cards in order, with their transitions
     const clips: Record<string, unknown>[] = []
     for (const [i, { c, r }] of planned.entries()) {
-      const t = i > 0 && c.transition && c.transition !== 'cut' ? { transition: { type: c.transition, durationSec: Math.min(2, Math.max(0.2, Number(c.transition_sec) || 0.5)) } } : {}
+      // Only the listed transitions: the stitch also knows 'pixelize' (it literally pixelates the
+      // join - the critic's "datamoshing"), and a stored edit list or a stray value could reach it
+      const type = (TRANSITIONS as readonly string[]).includes(String(c.transition)) ? String(c.transition) : 'fade'
+      const t = i > 0 && c.transition && c.transition !== 'cut' ? { transition: { type, durationSec: Math.min(2, Math.max(0.2, Number(c.transition_sec) || 0.5)) } } : {}
       if (kindOf(r) === 'image') {
-        const card = await assemble({ op: 'card', imageUrl: r.imageUrl, seconds: Math.min(10, Math.max(1, Number(c.card_seconds) || 3)), width: W, height: H })
+        const card = await assemble({ op: 'card', imageUrl: r.imageUrl, seconds: Math.min(10, Math.max(1, Number(c.card_seconds) || 3)), width: W, height: H, fps: 24 })
         clips.push({ url: card.url, ...t })
       } else {
         clips.push({ url: urlOf.get(r.id) ?? r.imageUrl, ...(Number(c.trim_start) > 0 ? { trimStart: Number(c.trim_start) } : {}), ...(Number(c.trim_end) > 0 ? { trimEnd: Number(c.trim_end) } : {}), ...t })
@@ -211,6 +214,7 @@ export async function runCut(ctx: NovaTurnCtx, edl: Edl, opts: { label: string; 
     if (music.length || voice.length || sfx.length) {
       const mixed = await assemble({ op: 'mux', videoUrl: url, normalize: edl.normalize !== false, ...(music.length ? { music } : {}), ...(voice.length ? { voice } : {}), ...(sfx.length ? { sfx } : {}) })
       url = mixed.url; seconds = Number(mixed.durationSec) || seconds
+      if (Number(mixed.heldSec) > 0) notes.push(`held the last frame ${Number(mixed.heldSec).toFixed(1)}s so the voiceover finishes (place lines earlier, or give the last card more seconds)`)
     }
     // 4. captions: hand-written, or word-timed from what is said in the mix
     let caps = (edl.captions ?? []).filter(c => c.text?.trim()).slice(0, 60).map(c => ({ text: clip(c.text, 200), startSec: Math.max(0, num(c.start_sec, 0)), endSec: Math.max(0.2, num(c.end_sec, num(c.start_sec, 0) + 2)) }))

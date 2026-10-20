@@ -17,6 +17,8 @@
  */
 import { usableCreateModels, computeCreateCost, resolveCreateSettings, type ChatCreateModel, type CreateField } from '@/lib/chat-hub-models'
 import { getFalImageModelSpec } from '@/lib/fal-image-models'
+import { UPSCALER_FACTORS } from '@/lib/chat-image-catalog'
+import { novaVideoTool } from '@/lib/nova/video-tools'
 import { imageModelOpen } from '@/lib/storyboard-access'
 import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
 import { AUDIO_STUDIO_MODELS, audioTicketCost, type AudioStudioModel } from '@/lib/audio-studio'
@@ -37,7 +39,8 @@ export type NovaKind = 'image' | 'video' | 'audio' | '3d'
  */
 const COMMON_ASPECTS = ['1:1', '4:5', '3:4', '2:3', '9:16', '5:4', '4:3', '3:2', '16:9', '21:9']
 function withImageFields(m: ChatCreateModel): ChatCreateModel {
-  if (m.fields?.some(f => f.key === 'aspect')) return m
+  // An upscaler's only setting is its factor - no shape, no quality
+  if (m.fields?.some(f => f.key === 'aspect' || f.key === 'factor')) return m
   const spec = getFalImageModelSpec(m.id)
   const listed = (spec?.aspectRatios ?? []).filter(a => /^\d+:\d+$/.test(a))
   const aspects = listed.length ? listed : COMMON_ASPECTS
@@ -46,7 +49,8 @@ function withImageFields(m: ChatCreateModel): ChatCreateModel {
     fields: [
       ...(m.fields ?? []),
       { key: 'aspect', label: 'AR', options: aspects, def: aspects.includes('1:1') ? '1:1' : aspects[0] },
-      ...(m.fields?.some(f => f.key === 'quality') ? [] : [{ key: 'quality', label: 'Quality', options: ['1k', '2k', '4k'], def: '2k' }]),
+      // MOSS Image has no quality: the aspect picks one of its <=1MP sizes (lib/ticket-pricing mossSize)
+      ...(m.fields?.some(f => f.key === 'quality') || m.id === 'moss-image' ? [] : [{ key: 'quality', label: 'Quality', options: ['1k', '2k', '4k'], def: '2k' }]),
     ] as CreateField[],
   }
 }
@@ -74,7 +78,7 @@ export function novaImageModels(isAdmin: boolean): ChatCreateModel[] {
 }
 
 /** A picture TOOL (cut-out, upscale, vectorize, try-on...): it works on a picture and makes nothing from a prompt alone. */
-export const needsPicture = (id: string) => !!getFalImageModelSpec(id)?.needsImage
+export const needsPicture = (id: string) => !!getFalImageModelSpec(id)?.needsImage || !!UPSCALER_FACTORS[id]
 /*
  * Video TOOLS that work on an existing clip (upscale, edit, extend, relight,
  * subtitles, dubbing, lip sync...): generate_video only sends pictures, so they
@@ -84,10 +88,11 @@ export const needsPicture = (id: string) => !!getFalImageModelSpec(id)?.needsIma
 const VIDEO_IN_TOOL = /upscale|vsr|seedvr|topaz|modify|reframe|-edit|extend|relight|subtitles|translate|sfx|removal|depth|insert|recast|lipsync|animate-replace|dreamactor|lucy|camera|music-video|omnihuman|interpolate|deblur|sdr-to-hdr/
 
 export function novaVideoModels(isAdmin: boolean): ChatCreateModel[] {
-  return usableCreateModels(isAdmin).filter(m => m.kind === 'video' && !m.disabled && !VIDEO_IN_TOOL.test(m.id) && (isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(m.id)))
+  return usableCreateModels(isAdmin).filter(m => m.kind === 'video' && !m.disabled && !VIDEO_IN_TOOL.test(m.id) && !novaVideoTool(m.id) && (isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(m.id)))
 }
 export function novaAudioModels(isAdmin: boolean): AudioStudioModel[] {
-  return AUDIO_STUDIO_MODELS.filter(m => (isAdmin || !m.admin) && !m.hidden && !m.fromSong && !m.audioIn?.required && !m.outputVideo)
+  // Models that need a recording (or a video) in are included since 2026-10-20 - generate_audio takes input_id
+  return AUDIO_STUDIO_MODELS.filter(m => (isAdmin || !m.admin) && !m.hidden && !m.fromSong && !m.outputVideo)
 }
 export function novaThreeDTools(isAdmin: boolean): ThreeDTool[] {
   return THREED_TOOLS.filter(t => (isAdmin || !t.admin) && !t.needs.mesh)

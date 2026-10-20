@@ -44,6 +44,8 @@ function buildBody(
     // lib/ticket-gate anyway. Passing false keeps the route as the single
     // authority on charging, so chat can never double-bill.
     adminMode: false,
+    // A model's extra choice (lib/chat-video-catalog CHOICES - Pixelcut's subtle / spin)
+    ...(settings.motion ? { videoChoice: settings.motion } : {}),
   }
 
   if (spec.needsRef) {

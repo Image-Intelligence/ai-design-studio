@@ -160,7 +160,9 @@ export async function POST(req: NextRequest) {
       const H = Math.round(Math.min(1920, Math.max(320, Number(body.height) || 720)) / 2) * 2
       const img = path.join(dir, 'card.png')
       await fetchTo(img, imageUrl)
-      const fps = 30, frames = Math.round(secs * fps)
+      // The cut's own frame rate when the caller gives it (Nova cuts at 24): a 30fps
+      // card resampled to 24 by the stitch dropped frames across its fades
+      const fps = Math.min(60, Math.max(12, Math.round(Number(body.fps) || 30))), frames = Math.round(secs * fps)
       const fade = Math.min(0.6, secs / 4)
       const out = path.join(dir, 'card.mp4')
       await exec(ffmpegPath as string, [
@@ -540,11 +542,14 @@ export async function POST(req: NextRequest) {
         idx++
       }
 
+      // Where the last spoken word ends: a voiceover must never be cut off by the picture
+      let voiceEnd = 0
       for (let i = 0; i < voices.length; i++) {
         const vf = path.join(dir, `vo${i}.mp3`)
         await fetchTo(vf, voices[i].url)
         inputs.push('-i', vf)
         const at = Math.max(0, Number(voices[i].atSec) || 0)
+        voiceEnd = Math.max(voiceEnd, at + ((await probe(vf)).seconds || 0))
         const gain = Number.isFinite(Number(voices[i].gainDb)) ? Number(voices[i].gainDb) : 0
         const delayMs = Math.round(at * 1000)
         chains.push(`[${idx}:a]adelay=${delayMs}|${delayMs},volume=${gain}dB[vo${i}]`)
@@ -558,21 +563,36 @@ export async function POST(req: NextRequest) {
       // normalize: level the finished mix for social playback (-14 LUFS)
       chains.push(`${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:normalize=0${body.normalize ? ',loudnorm=I=-14:TP=-1.2:LRA=11' : ''}[a]`)
 
+      /*
+       * A voiceover that runs past the picture HOLDS THE LAST FRAME instead of
+       * being cut (2026-10-20: the critic kept hearing the outro line cut off
+       * mid-word - transitions take time off the timeline, so a line placed by
+       * the clips' summed lengths overran the end card, and -shortest chopped
+       * it). Held up to 15s, plus a short breath after the last word.
+       */
+      const hold = voiceEnd > seconds + 0.05 ? Math.min(15, voiceEnd - seconds + 0.4) : 0
+      if (hold > 0) chains.push(`[0:v]tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)}[v]`)
+
       const out = path.join(dir, 'mixed.mp4')
       await exec(ffmpegPath as string, [
         ...inputs,
         '-filter_complex', chains.join(';'),
         // The picture is already correct — copying it avoids a second encode
-        '-map', '0:v', '-c:v', 'copy',
+        // (re-encoded only when the last frame is held for the voice)
+        ...(hold > 0
+          ? ['-map', '[v]', '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-pix_fmt', 'yuv420p']
+          : ['-map', '0:v', '-c:v', 'copy']),
         '-map', '[a]', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
-        '-shortest', '-movflags', '+faststart', out,
+        ...(hold > 0 ? ['-t', (seconds + hold).toFixed(3)] : ['-shortest']), '-movflags', '+faststart', out,
       ], { maxBuffer: 1024 * 1024 * 32 })
 
       const buf = await readFile(out)
       const url = await uploadToR2(`films/film-${crypto.randomUUID()}.mp4`, buf, 'video/mp4')
       return NextResponse.json({
         url,
-        durationSec: Math.round(seconds * 100) / 100,
+        durationSec: Math.round((seconds + hold) * 100) / 100,
+        // Seconds the last frame was held so the voiceover could finish (0 = none)
+        heldSec: Math.round(hold * 100) / 100,
         // How much of the film actually has music under it. A caller that
         // asked for a 30s cue and got 18s of audio needs to know.
         musicCoverSec: Math.round(musicCovered * 100) / 100,
