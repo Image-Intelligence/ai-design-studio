@@ -502,6 +502,34 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     const t = setInterval(() => { void loadChat(id) }, 3000)
     return () => clearInterval(t)
   }, [following, chatId, loadChat])
+  /*
+   * News from the server (2026-10-20, owner: "the user shouldn't have to
+   * refresh the page ever"): a turn the background runner started after the
+   * renders, or a reply sent from another device. The open chat asks for its
+   * newest message id every few seconds - only while the tab and the panel are
+   * on screen - and when the tab comes back, and reloads only when it moved.
+   */
+  useEffect(() => {
+    if (chatId === null || busy) return
+    const id = chatId
+    let stopped = false
+    const check = async () => {
+      if (stopped || document.visibilityState !== "visible" || !scrollRef.current?.offsetParent) return
+      try {
+        const h = await novaApi.head(id)
+        if (stopped) return
+        const localMax = messagesRef.current.reduce((m, x) => Math.max(m, x.id), 0)
+        if (h.lastId > localMax || (h.running && !lastAssistantRef.current?.running)) {
+          await loadChat(id)
+          void loadOverview()
+        }
+      } catch { /* the next check tries again */ }
+    }
+    const t = setInterval(check, 8000)
+    const onVisible = () => { if (document.visibilityState === "visible") void check() }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => { stopped = true; clearInterval(t); document.removeEventListener("visibilitychange", onVisible) }
+  }, [chatId, busy, loadChat, loadOverview])
   // When a followed reply lands: the new balance, spend and anything Nova remembered
   const wasFollowing = useRef(false)
   useEffect(() => {

@@ -18,7 +18,7 @@
 import { usableCreateModels, computeCreateCost, resolveCreateSettings, type ChatCreateModel, type CreateField } from '@/lib/chat-hub-models'
 import { getFalImageModelSpec } from '@/lib/fal-image-models'
 import { UPSCALER_FACTORS } from '@/lib/chat-image-catalog'
-import { novaVideoTool } from '@/lib/nova/video-tools'
+import { novaVideoTool, NOVA_VIDEO_TOOLS } from '@/lib/nova/video-tools'
 import { imageModelOpen } from '@/lib/storyboard-access'
 import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
 import { AUDIO_STUDIO_MODELS, audioTicketCost, type AudioStudioModel } from '@/lib/audio-studio'
@@ -99,6 +99,35 @@ export function novaThreeDTools(isAdmin: boolean): ThreeDTool[] {
 }
 
 const clip = (s: string | undefined, n: number) => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
+
+/**
+ * The models the user NAMED in their request (2026-10-20, owner: "I clearly
+ * asked for Pixelcut Looping Video (360 spin) and Prism used PixVerse").
+ * Names are matched with spaces and punctuation ignored ("pixel cut looping
+ * video" = "Pixelcut Looping Video"); the longest names win, so "Kling V3
+ * Motion" is not also read as "Kling V3". Short or generic names (Soul, Pika)
+ * need the whole word. The turn's instructions then say to use exactly these.
+ */
+export function namedModels(text: string, isAdmin: boolean): { id: string; label: string; via: string }[] {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9.]+/g, '')
+  const hay = norm(text)
+  if (!hay) return []
+  const cands: { id: string; label: string; via: string }[] = [
+    ...novaImageModels(isAdmin).map(m => ({ id: m.id, label: m.label, via: 'generate_image' })),
+    ...novaVideoModels(isAdmin).map(m => ({ id: m.id, label: m.label, via: 'generate_video' })),
+    ...NOVA_VIDEO_TOOLS.filter(t => isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(t.id)).map(t => ({ id: t.id, label: t.label, via: 'use_video_tool' })),
+    // The portal's own names where a tool's label differs
+    ...(isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has('kling-v3-motion') ? [{ id: 'kling-v3-motion', label: 'Kling V3 Motion', via: 'use_video_tool' }] : []),
+    ...novaAudioModels(isAdmin).map(m => ({ id: m.id, label: m.name, via: 'generate_audio' })),
+  ].filter(c => norm(c.label).length >= 4)
+  const words = ` ${text.toLowerCase().replace(/[^a-z0-9.]+/g, ' ')} `
+  const hits = cands
+    .filter(c => (norm(c.label).length >= 8 ? hay.includes(norm(c.label)) : words.includes(` ${c.label.toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim()} `)))
+    .sort((a, b) => norm(b.label).length - norm(a.label).length)
+  const out: typeof hits = []
+  for (const h of hits) if (!out.some(o => norm(o.label).includes(norm(h.label)))) out.push(h)
+  return out.slice(0, 4)
+}
 
 /**
  * The catalog of one kind, for the model (asked per kind, so the system prompt

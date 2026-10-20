@@ -145,7 +145,18 @@ export const novaAllowance = (budget: NovaBudget, state: NovaChatState): NovaAll
   ? { turn: state.runBudget, request: state.runBudget, run: true }
   : { turn: budget.askAbove, request: budget.askAbove * NOVA_CHAIN_ASK_MULTIPLE, run: false }
 
+/**
+ * The model name a Nova / Prism-made file is saved under (2026-10-20, owner:
+ * Prism's edits showed in the feed as "nova-edit"): "prism-edit" from Prism's
+ * chat, "nova-edit" from Nova Studio. The feed shows them as "Prism edit" /
+ * "Nova edit" (portal getModelDisplayName).
+ */
+export const agentModel = (ctx: { persona?: 'nova' | 'prism' }, what: string) => `${ctx.persona === 'prism' ? 'prism' : 'nova'}-${what}`
+export const agentName = (ctx: { persona?: 'nova' | 'prism' }) => (ctx.persona === 'prism' ? 'Prism' : 'Nova')
+
 export type NovaTurnCtx = {
+  /** Whose turn this is: Prism's chat or Nova Studio's (names the files it saves). */
+  persona?: 'nova' | 'prism'
   user: { id: number; email: string }
   isAdmin: boolean
   chatId: number
@@ -249,7 +260,7 @@ export function kindOf(r: { imageUrl: string; model: string; videoMetadata?: unk
   if (r.model.startsWith('3d:') || m.threed) return '3d'
   if (r.model.startsWith('audio:') || m.isAudio) return 'audio'
   // Edited films of any studio: Nova's, Storyboard's Final Cut, the ad cuts filed as storyboard-final-cut
-  if (r.model === 'nova-final-cut' || r.model.endsWith('final-cut')) return 'cut'
+  if (r.model.endsWith('final-cut')) return 'cut'
   const url = r.imageUrl.split('?')[0].toLowerCase()
   if (VIDEO_MODELS.has(r.model) || m.isVideo || VIDEO_FILE_EXTS.some(e => url.endsWith(e))) return 'video'
   return 'image'

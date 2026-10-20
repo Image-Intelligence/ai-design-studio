@@ -40,6 +40,7 @@ import { NOVA_CRITIC_MODEL, novaCutTickets } from '@/lib/nova/config'
 import {
   guard, settleSpend, newStep, update, ownedRows, kindOf, withPictures, clip, secondsOf, imagePart, cleanBible, bibleIds,
   type NovaTurnCtx, type Row,
+  agentModel, agentName,
 } from '@/lib/nova/agent-tools'
 
 const FOREVER = () => new Date(Date.now() + 100 * 365 * 864e5)
@@ -113,7 +114,7 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
         const { png, atSec, size } = await withClip(src.imageUrl, async (file, dir, p) => ({ ...(await stillAt(file, dir, p, at)), size: `${p.width}x${p.height}` }))
         const url = await uploadToR2(`nova-frame-${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`, png, 'image/png')
         const row = await prisma.generatedImage.create({
-          data: { userId: uid, prompt: clip(`Frame at ${atSec}s of #${src.id}: ${src.prompt}`, 900), imageUrl: url, model: 'nova-frame', ticketCost: 0, referenceImageUrls: [src.imageUrl], expiresAt: FOREVER(), folderId: ctx.state.folderId, aspectRatio: aspectOf(src) },
+          data: { userId: uid, prompt: clip(`Frame at ${atSec}s of #${src.id}: ${src.prompt}`, 900), imageUrl: url, model: agentModel(ctx, 'frame'), ticketCost: 0, referenceImageUrls: [src.imageUrl], expiresAt: FOREVER(), folderId: ctx.state.folderId, aspectRatio: aspectOf(src) },
           select: { id: true },
         })
         ctx.seenIds.add(row.id)
@@ -147,7 +148,7 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
       const est = novaCutTickets(secondsOf(src))
       const refused = guard(ctx, est)
       if (refused) return { error: refused }
-      const step = newStep(ctx, { tool: 'make_loop', kind: 'video', label: `Loop of #${src.id} (${method.replace('_', ' ')})`, status: 'running', model: 'Nova loop', tickets: est })
+      const step = newStep(ctx, { tool: 'make_loop', kind: 'video', label: `Loop of #${src.id} (${method.replace('_', ' ')})`, status: 'running', model: `${agentName(ctx)} loop`, tickets: est })
       try {
         const made = await withClip(src.imageUrl, async (file, dir, p) => {
           const r = await makeLoop(file, dir, p, method, Number(input.blend_sec) || undefined, Number(input.min_sec) || undefined)
@@ -161,7 +162,7 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
         await settleSpend(ctx, est, ctx.isAdmin ? actual : charged)
         const row = await prisma.generatedImage.create({
           data: {
-            userId: uid, prompt: clip(`Seamless loop (${method}) of #${src.id}: ${src.prompt}`, 900), imageUrl: url, model: 'nova-loop', ticketCost: charged,
+            userId: uid, prompt: clip(`Seamless loop (${method}) of #${src.id}: ${src.prompt}`, 900), imageUrl: url, model: agentModel(ctx, 'loop'), ticketCost: charged,
             referenceImageUrls: [], expiresAt: FOREVER(), aspectRatio: aspectOf(src), folderId: ctx.state.folderId,
             videoMetadata: { isVideo: true, duration: String(Math.round(made.seconds)), width: made.width, height: made.height, aspectW: made.width, aspectH: made.height, novaLoop: { of: src.id, method, seamBefore: made.before.ratio, seamAfter: made.after.ratio } },
           },

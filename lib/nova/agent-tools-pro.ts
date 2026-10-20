@@ -39,6 +39,7 @@ import { NOVA_CRITIC_MODEL, novaCutTickets } from '@/lib/nova/config'
 import {
   guard, settleSpend, newStep, update, ownedRows, kindOf, withPictures, assemble, clip, brief, posterOf, secondsOf, imagePart,
   type NovaTurnCtx, type Row,
+  agentModel, agentName,
 } from '@/lib/nova/agent-tools'
 
 const ids = { type: 'array', items: { type: 'integer' }, description: 'My Generations ids (the numbers after #)' } as const
@@ -57,7 +58,7 @@ function facts(r: MediaReport): string[] {
 const framesToParts = (r: MediaReport) => (r.frames ?? []).map(fr => ({ type: 'file' as const, data: { type: 'data' as const, data: fr.jpeg }, mediaType: 'image/jpeg' }))
 
 /** Save an edited picture as the user's generation, in the chat's folder. */
-async function saveEdit(ctx: NovaTurnCtx, png: Buffer, prompt: string, source: Row, aspect?: string, model = 'nova-edit'): Promise<{ id: number; url: string }> {
+async function saveEdit(ctx: NovaTurnCtx, png: Buffer, prompt: string, source: Row, aspect?: string, model = agentModel(ctx, 'edit')): Promise<{ id: number; url: string }> {
   const url = await uploadToR2(`nova-edit-${ctx.user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`, png, 'image/png')
   const row = await prisma.generatedImage.create({
     data: { userId: ctx.user.id, prompt: clip(prompt, 900), imageUrl: url, model, ticketCost: 0, referenceImageUrls: [source.imageUrl], expiresAt: FOREVER(), folderId: ctx.state.folderId, ...(aspect ? { aspectRatio: aspect } : {}) },
@@ -142,7 +143,7 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
         }
         ops.push(o as EditOp)
       }
-      const step = newStep(ctx, { tool: 'edit_image', kind: 'image', label: `Edited #${src.id}: ${ops.map(o => o.op).join(', ')}`, status: 'running', model: 'Nova edit', tickets: 0, posterUrl: src.imageUrl })
+      const step = newStep(ctx, { tool: 'edit_image', kind: 'image', label: `Edited #${src.id}: ${ops.map(o => o.op).join(', ')}`, status: 'running', model: `${agentName(ctx)} edit`, tickets: 0, posterUrl: src.imageUrl })
       try {
         const out = await editImage(src.imageUrl, ops)
         const saved = await saveEdit(ctx, out.png, input.note || `Edit of #${src.id}: ${out.applied.join(', ')}`, src)
@@ -376,7 +377,7 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
           }
           const out = await editImage(src.imageUrl, [{ op: 'reframe', aspect, fill: 'blur', mode: input.mode === 'crop' ? 'crop' : 'pad' } as EditOp])
           const saved = await saveEdit(ctx, out.png, `#${src.id} as ${aspect}`, src, aspect)
-          newStep(ctx, { tool: 'export_formats', kind: 'image', label: `#${src.id} as ${aspect}`, status: 'done', mediaUrl: saved.url, generationId: saved.id, tickets: 0, model: 'Nova reframe' })
+          newStep(ctx, { tool: 'export_formats', kind: 'image', label: `#${src.id} as ${aspect}`, status: 'done', mediaUrl: saved.url, generationId: saved.id, tickets: 0, model: `${agentName(ctx)} reframe` })
           made.push({ aspect, id: saved.id })
           const p = await imagePart(saved.url); if (p) pictures.push(p)
         } else if (k === 'video' || k === 'cut') {
@@ -390,7 +391,7 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
             if (!ctx.isAdmin) { const paid = await deductGenerationTickets(uid, ctx.user.email, est); charged = paid.ok ? est : 0 }
             await settleSpend(ctx, est, ctx.isAdmin ? est : charged)
             const row = await prisma.generatedImage.create({
-              data: { userId: uid, prompt: `#${src.id} as ${aspect}`, imageUrl: out.url, model: 'nova-final-cut', ticketCost: charged, referenceImageUrls: [], expiresAt: FOREVER(), aspectRatio: aspect, folderId: ctx.state.folderId, videoMetadata: { isVideo: true, duration: String(Math.round(secondsOf(src))), width: out.width, height: out.height, aspectW: out.width, aspectH: out.height, novaExportOf: src.id } },
+              data: { userId: uid, prompt: `#${src.id} as ${aspect}`, imageUrl: out.url, model: agentModel(ctx, 'final-cut'), ticketCost: charged, referenceImageUrls: [], expiresAt: FOREVER(), aspectRatio: aspect, folderId: ctx.state.folderId, videoMetadata: { isVideo: true, duration: String(Math.round(secondsOf(src))), width: out.width, height: out.height, aspectW: out.width, aspectH: out.height, novaExportOf: src.id } },
               select: { id: true },
             })
             ctx.seenIds.add(row.id)

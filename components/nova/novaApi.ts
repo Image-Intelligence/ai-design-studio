@@ -101,6 +101,8 @@ export const novaApi = {
   forgetNote: (id: string) => call<NovaSettings>(`/api/nova/settings?note=${encodeURIComponent(id)}`, { method: "DELETE" }),
   setBackground: (on: boolean) => call<NovaSettings>("/api/nova/settings", json({ background: on }, "PUT")),
   /** Stop the running reply on the server (it no longer stops when the connection drops). */
+  /** The newest message id and whether a reply is being written - cheap, for the open chat's check for news. */
+  head: (id: number) => call<{ lastId: number; running: boolean }>(`/api/nova/chats/${id}/head`),
   stopChat: (id: number) => call<{ stopped: number }>(`/api/nova/chats/${id}/stop`, json({})),
 }
 

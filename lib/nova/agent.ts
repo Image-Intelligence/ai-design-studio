@@ -38,6 +38,7 @@ import { recipeIndex } from '@/lib/nova/recipes'
 import { routeTurn } from '@/lib/nova/router'
 import { loadNovaMemory, type NovaNote } from '@/lib/nova/memory'
 import { loadLessons, recentLessons } from '@/lib/nova/lessons'
+import { namedModels } from '@/lib/nova/catalog'
 import { userFavouriteModels } from '@/lib/nova/scorecard'
 import { backgroundStatus } from '@/lib/nova/background'
 import { findAsset, storedRefs } from '@/lib/user-assets'
@@ -225,7 +226,7 @@ const siteHelpTool = tool({
 /** The resolved references back as ids (what was actually shown). */
 const chatRefsIds = (r: { assets: { id: number }[]; generations: { id: number }[] }) => ({ assets: r.assets.map(a => a.id), generations: r.generations.map(g => g.id) })
 
-export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean; lessons?: string }): string {
+export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean; lessons?: string; named?: { id: string; label: string; via: string }[] }): string {
   const plan = o.state.plan
   const prism = o.persona === 'prism'
   return [
@@ -294,6 +295,7 @@ export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean;
      * and a balance in the middle cut that opening short before the memory and
      * the summary on every turn.
      */
+    o.named?.length ? `\nTHE USER NAMED THESE MODELS - use exactly these for that part of the work (a carry-on turn included), with the settings they asked for; anything else only if one truly cannot do it, and say so first:\n${o.named.map(n => `- ${n.label}: ${n.via} with "${n.id}"`).join('\n')}` : '',
     '',
     'RIGHT NOW',
     o.isAdmin ? '- This is an admin account: nothing is charged, but show costs as if it were.' : `- The user has ${o.balance ?? 0} tickets.`,
@@ -682,7 +684,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       }, 2000)
     }
     const ctx: NovaTurnCtx = {
-      user, isAdmin, chatId: chat.id, state, budget, spend,
+      user, isAdmin, chatId: chat.id, state, budget, spend, persona,
       steps: [], emit: step => { send({ t: 'step', step: { ...step } }); saveSteps() },
       // A turn that carries on by itself keeps counting the request's spend against its allowance
       allowance: novaAllowance(budget, state),
@@ -716,7 +718,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
           model: google(model),
           instructions: lean
             ? prismLeanInstructions({ isAdmin, balance: balanceNow != null ? balanceNow + held : null, memory, summary: compact.summary, safetyOff })
-            : novaInstructions({ persona, isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff, lessons }),
+            : novaInstructions({ persona, isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff, lessons, named: namedModels(ctx.brief, isAdmin) }),
           messages,
           tools: lean ? leanTools : allTools,
           // A plan the studio approved by itself does not end the turn

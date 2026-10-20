@@ -396,7 +396,12 @@ function seedream5LiteImageSize(quality: Quality, aspectRatio: AspectRatio): Rec
 }
 
 function getModelDisplayName(apiId: string): string {
-  return IMAGE_MODEL_CONFIGS.find((m) => m.apiId === apiId)?.name ?? apiId
+  const cfg = IMAGE_MODEL_CONFIGS.find((m) => m.apiId === apiId)?.name
+  if (cfg) return cfg
+  // Nova Studio's / Prism's own files (edits, cuts, trims, frames, loops): "nova-edit" -> "Nova edit"
+  const agent = /^(?:audio:)?(nova|prism)-(.+)$/.exec(apiId)
+  if (agent) return `${agent[1] === "prism" ? "Prism" : "Nova"} ${agent[2].replace(/-/g, " ")}`
+  return apiId
 }
 
 // --- PROMPT TABS ---
@@ -9325,7 +9330,22 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
   const displaySrc = imageId && imageId > 0 && !adminThumb && !isVideo && !shownFrame ? `/api/images/${imageId}?display=tile` : null
   const midSrc = !spanBoost ? fullSrc
     : displaySrc ?? (fullSrc.startsWith("https://") ? `/_next/image?url=${encodeURIComponent(fullSrc)}&w=1080&q=75` : fullSrc)
-  const renderedSrc = fullWidth && fullRes ? (displaySrc ?? fullSrc) : spanBoost ? midSrc : thumbSrc
+  const baseSrc = fullWidth && fullRes ? (displaySrc ?? fullSrc) : spanBoost ? midSrc : thumbSrc
+  /*
+   * A picture that fails to load is tried again (2026-10-20, owner: new tiles
+   * "don't always load until I refresh"): a brand-new row's thumbnail is made
+   * on its first request, and while the server is busy making others it
+   * answers 503 - the tile then shimmered until a reload. Retries at 2 / 5 / 10
+   * / 20s, then the full picture itself.
+   */
+  const [loadTry, setLoadTry] = useState(0)
+  const [useFull, setUseFull] = useState(false)
+  useEffect(() => { setLoadTry(0); setUseFull(false) }, [baseSrc])
+  const retryLoad = () => {
+    if (loadTry >= 4) { if (!useFull && fullSrc !== baseSrc) setUseFull(true); return }
+    setTimeout(() => setLoadTry(t => t + 1), [2000, 5000, 10000, 20000][loadTry])
+  }
+  const renderedSrc = useFull ? fullSrc : loadTry ? `${baseSrc}${baseSrc.includes("?") ? "&" : "?"}r=${loadTry}` : baseSrc
   const [loaded, setLoaded] = useState(() => seenTileSrcs.has(renderedSrc) || (spanBoost ? seenTileSrcs.has(thumbSrc) : false))
   // Locked at mount: recomputing per render would rewrite animation-delay on
   // the running rim sweep and jump its phase
@@ -9363,6 +9383,7 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
           muted
           playsInline
           preload="metadata"
+          onError={retryLoad}
           onLoadedData={(e) => {
             seenTileSrcs.add(renderedSrc)
             const v = e.currentTarget
@@ -9387,6 +9408,7 @@ function GridImage({ src, alt, onClick, imageId, directUrl, thumbUrl, aspectRati
           // in the browser cache — lazy-loading them again just adds visible
           // shimmer time on top of the decode. Only never-seen sources defer.
           loading={loaded ? "eager" : "lazy"}
+          onError={retryLoad}
           // data-nat-ar: the decoded file's TRUE width:height, stamped on the
           // tile root for FeedMasonry. Span decisions come only from this —
           // box measurements lied for un-decoded and height-capped tiles

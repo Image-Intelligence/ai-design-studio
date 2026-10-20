@@ -36,6 +36,7 @@ import { NOVA_CRITIC_MODEL, NOVA_ROUTES, novaCutTickets, novaChatUsd } from '@/l
 import {
   guard, settleSpend, newStep, update, ownedRows, kindOf, withPictures, assemble, clip, secondsOf,
   type NovaTurnCtx, type Row,
+  agentModel, agentName,
 } from '@/lib/nova/agent-tools'
 
 fal.config({ credentials: process.env.FAL_KEY })
@@ -266,7 +267,7 @@ export async function runCut(ctx: NovaTurnCtx, edl: Edl, opts: { label: string; 
     await settleSpend(ctx, est, ctx.isAdmin ? actual : charged)
     const row = await prisma.generatedImage.create({
       data: {
-        userId: uid, prompt: `Nova final cut: ${clip(edl.title, 200)}`, imageUrl: url, model: 'nova-final-cut', ticketCost: charged,
+        userId: uid, prompt: `${agentName(ctx)} final cut: ${clip(edl.title, 200)}`, imageUrl: url, model: agentModel(ctx, 'final-cut'), ticketCost: charged,
         referenceImageUrls: [], expiresAt: FOREVER(), aspectRatio: aspect, quality: '720p', folderId: ctx.state.folderId,
         videoMetadata: {
           isVideo: true, duration: String(Math.round(seconds)), aspectW: W, aspectH: H, width: W, height: H, audioEnabled: !!(music.length || voice.length || sfx.length),
@@ -327,7 +328,7 @@ export function makePostTools(ctx: NovaTurnCtx): ToolSet {
       const [src] = await ownedRows(uid, [input.id])
       const k = src ? kindOf(src) : null
       if (!src || !(k === 'video' || k === 'cut' || k === 'audio')) return { error: 'That is not one of the user\'s videos or sound files' }
-      const step = newStep(ctx, { tool: 'trim_media', kind: k === 'audio' ? 'audio' : 'video', label: `Edited #${src.id}`, status: 'running', model: 'Nova trim', tickets: 0 })
+      const step = newStep(ctx, { tool: 'trim_media', kind: k === 'audio' ? 'audio' : 'video', label: `Edited #${src.id}`, status: 'running', model: `${agentName(ctx)} trim`, tickets: 0 })
       try {
         const out = await withMedia(src.imageUrl, (file, dir, p) => trimMedia(file, dir, p, { start: input.start, end: input.end, speed: input.speed, mute: input.mute, fadeIn: input.fade_in, fadeOut: input.fade_out, gainDb: input.gain_db, normalize: input.normalize }))
         const audio = out.mime.startsWith('audio/')
@@ -337,7 +338,7 @@ export function makePostTools(ctx: NovaTurnCtx): ToolSet {
           data: {
             userId: uid, prompt: clip(`${out.done.join(', ')} - from #${src.id}: ${src.prompt}`, 900), imageUrl: url,
             // Sound stays sound (the audio: prefix is how the library knows it), a clip stays a clip
-            model: audio ? (src.model.startsWith('audio:') ? src.model : 'audio:nova-trim') : 'nova-trim', ticketCost: 0,
+            model: audio ? (src.model.startsWith('audio:') ? src.model : `audio:${agentModel(ctx, 'trim')}`) : agentModel(ctx, 'trim'), ticketCost: 0,
             referenceImageUrls: [], expiresAt: FOREVER(), folderId: ctx.state.folderId,
             videoMetadata: audio ? { isAudio: true, duration: String(out.seconds), novaTrimOf: src.id } : { isVideo: true, duration: String(Math.round(out.seconds)), width: m.width, height: m.height, aspectW: m.aspectW ?? m.width, aspectH: m.aspectH ?? m.height, novaTrimOf: src.id },
           },
