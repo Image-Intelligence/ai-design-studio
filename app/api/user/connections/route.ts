@@ -2,6 +2,8 @@ import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { disconnect, listConnections } from '@/lib/mcp/oauth'
+import { checkIsAdmin } from '@/lib/admin-check'
+import { CONNECTOR_ADMIN_ONLY } from '@/lib/nova/config'
 
 /**
  * The apps connected to this account through the connector (ChatGPT, Claude -
@@ -10,7 +12,10 @@ import { disconnect, listConnections } from '@/lib/mcp/oauth'
  */
 async function me() {
   const t = (await cookies()).get('session')?.value
-  return t ? getUserFromSession(t) : null
+  const user = t ? await getUserFromSession(t) : null
+  // Admin-only until the connector is public (CONNECTOR_ADMIN_ONLY)
+  if (user && CONNECTOR_ADMIN_ONLY && !(await checkIsAdmin(user.email))) return null
+  return user
 }
 
 export async function GET() {

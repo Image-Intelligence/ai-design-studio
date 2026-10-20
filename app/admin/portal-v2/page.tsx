@@ -10,7 +10,7 @@ import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAll
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import { PrismGuide, PrismLauncher, setPrismVisible, usePrism } from "@/components/prism/PrismGuide"
-import { PRISM_ADMIN_ONLY } from "@/lib/nova/config"
+import { CONNECTOR_ADMIN_ONLY, PRISM_ADMIN_ONLY } from "@/lib/nova/config"
 import ChatHub from "@/components/chat-hub"
 import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes, Radio, Plug } from "lucide-react"
 import { NewsManager } from "@/components/NewsManager"
@@ -5944,15 +5944,17 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                   <Images size={13} className="text-slate-300 shrink-0" />
                   <span className="flex-1 text-left">My Generations</span>
                 </Link>
-                {/* The ChatGPT / Claude connector: how to add it, and the connected apps */}
-                <Link
-                  href="/connect"
-                  onClick={() => setOpen(false)}
-                  className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  <Plug size={13} className="text-slate-300 shrink-0" />
-                  <span className="flex-1 text-left">Use in ChatGPT &amp; Claude</span>
-                </Link>
+                {/* The ChatGPT / Claude connector: how to add it, and the connected apps (admins only while CONNECTOR_ADMIN_ONLY) */}
+                {(isAdminAccount || !CONNECTOR_ADMIN_ONLY) && (
+                  <Link
+                    href="/connect"
+                    onClick={() => setOpen(false)}
+                    className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                  >
+                    <Plug size={13} className="text-slate-300 shrink-0" />
+                    <span className="flex-1 text-left">Use in ChatGPT &amp; Claude</span>
+                  </Link>
+                )}
                 {fsAvailable && (
                   <button
                     onClick={() => { void toggleFullscreen(); setOpen(false) }}

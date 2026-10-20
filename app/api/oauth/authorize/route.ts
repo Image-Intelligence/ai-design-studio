@@ -1,6 +1,8 @@
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { authRedirect, consentTokenOk, issueCode, parseAuthRequest, siteOrigin } from '@/lib/mcp/oauth'
+import { checkIsAdmin } from '@/lib/admin-check'
+import { CONNECTOR_ADMIN_ONLY } from '@/lib/nova/config'
 
 /**
  * POST /api/oauth/authorize - the consent form's answer (app/oauth/authorize).
@@ -24,6 +26,8 @@ export async function POST(req: Request) {
   if (!consentTokenOk(session, r, String(form.get('consent') ?? ''))) return go(`/oauth/authorize?${q.toString()}`)
 
   const state: Record<string, string> = r.state ? { state: r.state } : {}
+  // Admin-only until the connector is public (CONNECTOR_ADMIN_ONLY)
+  if (CONNECTOR_ADMIN_ONLY && !(await checkIsAdmin(user.email))) return go(authRedirect(r.redirectUri, origin, { error: 'access_denied', error_description: 'AI Design Studio in ChatGPT and Claude is not available yet', ...state }))
   if (form.get('decision') !== 'approve') return go(authRedirect(r.redirectUri, origin, { error: 'access_denied', error_description: 'The user cancelled', ...state }))
   const code = await issueCode(user.id, r)
   return go(authRedirect(r.redirectUri, origin, { code, ...state }))

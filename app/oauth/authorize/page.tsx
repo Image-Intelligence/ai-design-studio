@@ -3,8 +3,10 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Check, ImageIcon, Library, Ticket, Video, X } from 'lucide-react'
 import { getUserFromSession } from '@/lib/auth'
-import { consentToken, friendlyClientName, parseAuthRequest } from '@/lib/mcp/oauth'
+import { authRedirect, consentToken, friendlyClientName, parseAuthRequest } from '@/lib/mcp/oauth'
 import { SiteBrandHero } from '@/components/SitePageHeader'
+import { checkIsAdmin } from '@/lib/admin-check'
+import { CONNECTOR_ADMIN_ONLY } from '@/lib/nova/config'
 
 /*
  * "Connect AI Design Studio" (2026-10-20): the page ChatGPT / Claude send the
@@ -32,6 +34,10 @@ export default async function AuthorizePage({ searchParams }: { searchParams: Pr
   const session = (await cookies()).get('session')?.value
   const user = session ? await getUserFromSession(session) : null
   if (parsed.ok && (!session || !user)) redirect(`/login?next=${encodeURIComponent(`/oauth/authorize?${q.toString()}`)}`)
+  // Admin-only until the connector is public (CONNECTOR_ADMIN_ONLY): the app gets access_denied
+  if (parsed.ok && CONNECTOR_ADMIN_ONLY && user && !(await checkIsAdmin(user.email))) {
+    redirect(authRedirect(parsed.req.redirectUri, origin, { error: 'access_denied', error_description: 'AI Design Studio in ChatGPT and Claude is not available yet', ...(parsed.req.state ? { state: parsed.req.state } : {}) }))
+  }
 
   return (
     <div className="min-h-[100dvh] bg-[#050810] text-white flex items-center justify-center px-4 py-10">

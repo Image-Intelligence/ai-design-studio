@@ -190,6 +190,14 @@ export type NovaPersonaId = 'nova' | 'prism'
  * switch to admins only. Opening it to everyone is this one flag.
  */
 export const PRISM_ADMIN_ONLY = true
+/**
+ * The ChatGPT / Claude connector is admin-only until the owner makes it
+ * public (2026-10-20): the /connect page, the profile menu's "Use in ChatGPT
+ * & Claude", the Connected apps list, and the sign-in that creates a
+ * connection (/oauth/authorize) are for admins. The connector's discovery
+ * documents stay up (they reveal nothing), so the apps can still be tested.
+ */
+export const CONNECTOR_ADMIN_ONLY = true
 /** Where the user compacted or cleared the context (shown as a divider after that message). */
 export type NovaContextMark = { afterId: number; kind: 'compact' | 'clear'; at: string }
 
