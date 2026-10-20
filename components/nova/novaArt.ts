@@ -31,3 +31,21 @@ export const NOVA_POSE_ORDER: NovaPose[] = ["portrait", "thinking", "creating", 
 
 /** Nova in a night studio with her media orbiting her (the Studios card). */
 export const NOVA_HERO_ART = `${BASE}/nova-96a57f0f-3de5-4045-98ea-918f496592e7.webp`
+
+/*
+ * Prism, the site guide (2026-10-20): the same five poses, rendered from the
+ * Prism mascot (#112090 / #112087, the spiral-tail redesign) with NB2.1 edit
+ * on flat grey and cut out with BiRefNet - Prism is opaque, so a subject mask
+ * gives clean edges (an unscreen is only for glass and glow like Nova's).
+ * Renders: portrait 113004, thinking 113005, creating 113006, rendering
+ * 113007, done 113008 (Studio Cards folder). `face` is a head-and-shoulders
+ * crop of the portrait for avatar sizes, where the full figure is too small.
+ */
+export const PRISM_POSES: Record<NovaPose, string> = {
+  portrait: `${BASE}/prism/portrait-a7c31e90.webp`,
+  thinking: `${BASE}/prism/thinking-a7c31e90.webp`,
+  creating: `${BASE}/prism/creating-a7c31e90.webp`,
+  rendering: `${BASE}/prism/rendering-a7c31e90.webp`,
+  done: `${BASE}/prism/done-a7c31e90.webp`,
+}
+export const PRISM_FACE = `${BASE}/prism/face-a7c31e90.webp`

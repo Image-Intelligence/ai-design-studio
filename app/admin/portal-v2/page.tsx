@@ -9,9 +9,9 @@ import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
 import { createPortal } from "react-dom"
 import Link from "next/link"
-import ChatWidget from "@/components/ChatWidget"
+import { PrismGuide, PrismLauncher, setPrismVisible, usePrism } from "@/components/prism/PrismGuide"
 import ChatHub from "@/components/chat-hub"
-import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes, Radio } from "lucide-react"
+import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes, Radio, Plug } from "lucide-react"
 import { NewsManager } from "@/components/NewsManager"
 import { HomeView } from "@/components/home/HomeView"
 import { AudioStudio } from "@/components/audio/AudioStudio"
@@ -24,7 +24,7 @@ import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/empl
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
 import { Studio3D } from "@/components/studio3d/Studio3D"
 import { WorldsStudio } from "@/components/worlds/WorldsStudio"
-import { NovaStudio } from "@/components/nova/NovaStudio"
+import { NovaStudio, type NovaViewerRow } from "@/components/nova/NovaStudio"
 import { StoryboardWorkspace } from "@/components/employees/StoryboardWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
@@ -4119,8 +4119,6 @@ function FeedDropdown({
   adminFilterCount = 0,
   adminFilters = null,
   onApplyAdminFilters,
-  aiGuideEnabled = true,
-  onAiGuideChange,
   imageModelGroups,
   videoModelGroups,
   adminImageModelGroups = [],
@@ -4162,9 +4160,6 @@ function FeedDropdown({
   adminFilterCount?: number
   adminFilters?: AdminFeedFilters | null
   onApplyAdminFilters?: (filters: AdminFeedFilters | null) => void
-  /** Site-wide AI Guide switch - admin only, applies to every account. */
-  aiGuideEnabled?: boolean
-  onAiGuideChange?: (on: boolean) => void
   // Per-model feed filter (taskbar model lists; exclusion-based).
   // admin* lists are passed ONLY for admin accounts — regular users never see
   // models they can't use.
@@ -4183,6 +4178,8 @@ function FeedDropdown({
   const ref = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, z: 1 })
+  // Prism, the guide: shown or hidden per account (components/prism/PrismGuide)
+  const prism = usePrism()
 
   // --- Inline admin feed filters (previously the AdminFeedFilterPanel modal) ---
   // Starts expanded — admins use it constantly
@@ -4408,6 +4405,9 @@ function FeedDropdown({
                   <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">View</span>
                   <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={showHidden} onChange={onShowHiddenChange} accent="amber" />
                   {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
+                  {/* Prism, the guide (2026-10-20): each account shows or hides it for itself */}
+                  <FeedToggleRow label="Prism guide" icon={<Sparkles size={11} />} on={!prism.hidden} onChange={on => setPrismVisible(on)} />
+                  <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">{prism.hidden ? "Hidden for your account." : "Your guide, in the header beside your tickets. Only changes your account."}</p>
                 </section>
               </div>
 
@@ -4493,18 +4493,6 @@ function FeedDropdown({
                       </div>
                     ) : (
                       <>
-                        {/* Site-wide switches, behind the admin unlock with the filters
-                            (2026-10-12 - they sat above it, outside the lock) */}
-                        {onAiGuideChange && (
-                          <div className="rounded-lg bg-black/20 border border-white/10 p-2.5 space-y-1">
-                            <FeedToggleRow label="AI Guide" icon={<Sparkles size={11} />} on={aiGuideEnabled} onChange={onAiGuideChange} />
-                            <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">
-                              {aiGuideEnabled
-                                ? "Shown to every account."
-                                : "Off for every account — hidden everywhere, and its chat is refused."}
-                            </p>
-                          </div>
-                        )}
                         {/* Border STYLE stays admin-only — every user can switch
                             borders on/off in the Display section above, but which
                             style they get is a sitewide call */}
@@ -5952,6 +5940,15 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                 >
                   <Images size={13} className="text-slate-300 shrink-0" />
                   <span className="flex-1 text-left">My Generations</span>
+                </Link>
+                {/* The ChatGPT / Claude connector: how to add it, and the connected apps */}
+                <Link
+                  href="/connect"
+                  onClick={() => setOpen(false)}
+                  className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  <Plug size={13} className="text-slate-300 shrink-0" />
+                  <span className="flex-1 text-left">Use in ChatGPT &amp; Claude</span>
                 </Link>
                 {fsAvailable && (
                   <button
@@ -27411,6 +27408,16 @@ export default function PortalV2Page() {
   }, [])
   const handleBalanceChange = useCallback((balance: number) =>
     setUser(u => u ? { ...u, ticketBalance: balance } : u), [])
+  // Nova Studio's and Prism's pictures and clips open in the feed's own viewers; the arrows walk the chat's
+  const openAgentMedia = useCallback((kind: "image" | "video", row: NovaViewerRow, list: NovaViewerRow[]) => {
+    if (kind === "image") { setViewerNav(list as ImageItem[]); setSelectedImage(row as ImageItem); return }
+    const asVideo = (img: NovaViewerRow): VideoDetailData => {
+      const vm = (img.videoMetadata ?? {}) as Record<string, any>
+      return { id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio || undefined, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }
+    }
+    setVideoViewerNav(list.map(asVideo))
+    setSelectedVideo(asVideo(row))
+  }, [])
   // A live session's clips were swapped for fal's full-quality recording (the
   // tiles already in the feed take the sharp file), or a whole session was saved
   const handleLiveUpgraded = useCallback((model: string, r: { upgraded: { id: number; url: string; thumbnailUrl: string | null }[]; added: { id: number; url: string; thumbnailUrl: string | null; durationSec: number }[] }) => {
@@ -30835,29 +30842,6 @@ export default function PortalV2Page() {
     })
   }, [])
 
-  // AI Guide — global flag, admin-toggled from the Feed dropdown. The widget
-  // reads the server itself; this copy only drives the toggle's state.
-  const [aiGuideEnabled, setAiGuideEnabledState] = useState(true)
-  useEffect(() => {
-    fetch("/api/site/ai-guide", { cache: "no-store" }).then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setAiGuideEnabledState(d.enabled !== false) }).catch(() => {})
-  }, [])
-  const handleAiGuideChange = useCallback((on: boolean) => {
-    setAiGuideEnabledState(on)
-    window.dispatchEvent(new CustomEvent("ai-guide-changed", { detail: on }))
-    fetch("/api/site/ai-guide", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: on }),
-    }).then(r => {
-      // Not saved: put the switch and the widget back the way they were.
-      if (!r.ok) {
-        setAiGuideEnabledState(!on)
-        window.dispatchEvent(new CustomEvent("ai-guide-changed", { detail: !on }))
-      }
-    }).catch(() => {})
-  }, [])
-
   // Shop dropdown animations — global flag, admin-toggled from inside the dropdown
   const [shopEffects, setShopEffects] = useState(true)
   const handleToggleShopEffects = useCallback(() => {
@@ -31426,7 +31410,7 @@ function employeePending(
       {/* One-time ID verification before any upload (CCBill) - every file input calls gateFileInput */}
       <IdVerificationHost />
       {/* Taskbar — user-scalable via Feed → Taskbar Size (CSS zoom reflows layout) */}
-      <div ref={taskbarRef} className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: taskbarZoom }}>
+      <div ref={taskbarRef} data-prism-anchor className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: taskbarZoom }}>
 
         {/* Mobile-only top row: branding + queue + tickets + profile + dashboard */}
         <div className="flex sm:hidden items-center justify-between px-3 h-9 border-b border-white/5">
@@ -31437,6 +31421,8 @@ function employeePending(
             <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
           </div>
           <div className="flex items-center gap-1.5">
+            {/* Prism, the guide - opens its panel (hidden when the account switched it off) */}
+            {user && <PrismLauncher compact />}
             {/* Plan accounts: the silver recharge ring; tap for the station */}
             <TicketPill balance={user?.ticketBalance} iconSize={10} className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 bg-black font-mono text-[10px]" textClassName="text-white tabular-nums" />
             <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
@@ -31630,8 +31616,6 @@ function employeePending(
               adminFilterCount={adminFeedFilterCount}
               adminFilters={adminFeedFilters}
               onApplyAdminFilters={applyAdminFeedFilters}
-              aiGuideEnabled={aiGuideEnabled}
-              onAiGuideChange={isAdminAccount ? handleAiGuideChange : undefined}
               imageModelGroups={IMAGE_MODEL_GROUPS}
               videoModelGroups={VIDEO_MODEL_GROUPS}
               adminImageModelGroups={isAdminAccount ? ADMIN_IMAGE_MODEL_GROUPS : []}
@@ -31658,6 +31642,8 @@ function employeePending(
               <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
               <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
             </div>
+            {/* Prism, the guide - opens its panel docked on the right */}
+            {user && <PrismLauncher />}
             {/* Plan accounts: the silver recharge ring; click for the station */}
             <TicketPill balance={user?.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" textClassName="text-white tabular-nums tracking-wider" />
             <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
@@ -31940,16 +31926,7 @@ function employeePending(
             // Nova Studio (2026-10-18, admin): a Gemini agent chat that works on
             // the account's library and generates with the site's models
             // Its pictures and clips open in the feed's own viewers; the arrows walk the chat's
-            <NovaStudio isAdmin={isAdminAccount} onBalanceChange={handleBalanceChange}
-              onOpenMedia={(kind, row, list) => {
-                if (kind === "image") { setViewerNav(list as ImageItem[]); setSelectedImage(row as ImageItem); return }
-                const asVideo = (img: typeof row): VideoDetailData => {
-                  const vm = (img.videoMetadata ?? {}) as Record<string, any>
-                  return { id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio || undefined, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }
-                }
-                setVideoViewerNav(list.map(asVideo))
-                setSelectedVideo(asVideo(row))
-              }} />
+            <NovaStudio isAdmin={isAdminAccount} onBalanceChange={handleBalanceChange} onOpenMedia={openAgentMedia} />
           ) : activeEmployee === "image-studio" ? (
             // Layered editing: the Refs library is where images come from and
             // where exports can go (new, or replacing the one it was opened from)
@@ -32583,8 +32560,8 @@ function employeePending(
           } : undefined}
         />
       )}
-      {/* Guide widget hidden in chat mode — its launcher overlapped the composer on phones */}
-      {scannerMode !== "chat" && <ChatWidget sideTabOnly={scannerMode !== "image"} />}
+      {/* Prism, the guide (2026-10-20 - replaced the AI Guide widget): its panel; the header button opens it */}
+      {user && <PrismGuide isAdmin={isAdminAccount} onBalanceChange={handleBalanceChange} onOpenMedia={openAgentMedia} />}
     </div>
   )
 }

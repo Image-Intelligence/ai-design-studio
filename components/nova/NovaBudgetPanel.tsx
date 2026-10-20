@@ -6,6 +6,7 @@ import { Bookmark, KeyRound, Loader2, ShieldCheck, X } from "lucide-react"
 import { DEFAULT_NOVA_BUDGET, sanitizeNovaBudget, type NovaBudget, type NovaSpend } from "@/lib/nova/config"
 import { BrandButton } from "@/components/employees/StudioBrand"
 import type { NovaBackground, NovaNote } from "./novaApi"
+import { usePersona } from "./persona"
 
 /*
  * The user's own Nova spending limits (2026-10-18): per chat, per day, per
@@ -17,10 +18,10 @@ import type { NovaBackground, NovaNote } from "./novaApi"
  * (DELETE /api/nova/settings?note=<id>). Nova follows them in every chat.
  */
 const FIELDS: { key: keyof NovaBudget; label: string; help: string }[] = [
-  { key: "askAbove", label: "Default run budget", help: "Where the budget in the prompt box starts: how much Nova may spend on one request without asking. You can change it for each run in the prompt box. Anything bigger comes to you as a plan to approve." },
+  { key: "askAbove", label: "Default run budget", help: "Where the budget in the prompt box starts: how much it may spend on one request without asking. You can change it for each run in the prompt box. Anything bigger comes to you as a plan to approve." },
   { key: "perChat", label: "Per chat", help: "The most one chat may spend in total, chat and generations together." },
-  { key: "daily", label: "Per day", help: "The most Nova may spend across all your chats in one day (UTC)." },
-  { key: "monthly", label: "Per month", help: "The most Nova may spend in one calendar month." },
+  { key: "daily", label: "Per day", help: "The most that may be spent across all your chats in one day (UTC)." },
+  { key: "monthly", label: "Per month", help: "The most that may be spent in one calendar month." },
 ]
 
 export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForget, focusMemory, background, onToggleBackground }: {
@@ -36,6 +37,7 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
   background?: NovaBackground | null
   onToggleBackground?: (on: boolean) => Promise<void>
 }) {
+  const { name } = usePersona()
   const [bgBusy, setBgBusy] = useState(false)
   const toggleBg = async (on: boolean) => {
     if (!onToggleBackground) return
@@ -77,15 +79,15 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
 
   if (typeof document === "undefined") return null
   return createPortal(
-    <div className="fixed inset-0 z-[10055] flex items-start justify-center bg-black/70 backdrop-blur-sm p-3 pt-[6dvh]" onClick={onClose}>
+    <div data-prism-modal className="fixed inset-0 z-[10055] flex items-start justify-center bg-black/70 backdrop-blur-sm p-3 pt-[6dvh]" onClick={onClose}>
       <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto overscroll-contain rounded-2xl silver-edge bg-[#070b14] p-4 sm:p-5" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-1">
           <ShieldCheck size={16} className="text-emerald-300" />
-          <p className="text-sm font-bold text-white">Nova budget</p>
+          <p className="text-sm font-bold text-white">{name} budget</p>
           <button onClick={onClose} className="ml-auto p-1 text-slate-500 hover:text-white" aria-label="Close"><X size={16} /></button>
         </div>
         <p className="text-[11.5px] text-slate-400 leading-relaxed mb-4">
-          Limits in tickets. <span className="text-slate-300">0 means no limit.</span> The per chat, day and month limits are hard stops: Nova stops and tells you when one is reached, even inside an approved plan.
+          Limits in tickets. <span className="text-slate-300">0 means no limit.</span> The per chat, day and month limits are hard stops: Nova stops and tells you when one is reached, even inside an approved plan.{name === "Prism" ? " Quick questions that come out of your free daily allowance do not count." : ""}
         </p>
         <div className="space-y-3.5">
           {FIELDS.map(f => (
@@ -123,7 +125,7 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
               </button>
             </div>
             <p className="text-[10.5px] text-slate-500 leading-snug">
-              Lets a production carry on after you close the tab - Nova finishes the renders, assembles the cut and marks the chat as new.
+              Lets a production carry on after you close the tab - {name} finishes the renders, assembles the cut and marks the chat as new.
               It works with an API key of your own (spending tickets, making images and video) that only the server holds, encrypted. Turn it off to delete the key.
             </p>
             {background.enabled && background.keyPrefix && (
@@ -136,10 +138,10 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
           <div ref={memRef} className="mt-5 pt-4 border-t border-white/[0.07] scroll-mt-2">
             <div className="flex items-center gap-2 mb-1">
               <Bookmark size={14} className="text-violet-300" />
-              <p className="text-[13px] font-bold text-white">What Nova remembers</p>
+              <p className="text-[13px] font-bold text-white">What {name} remembers</p>
               {!!memory.length && <span className="ml-auto text-[10.5px] text-slate-500 tabular-nums">{memory.length}</span>}
             </div>
-            <p className="text-[10.5px] text-slate-500 leading-snug mb-2.5">Nova follows these in every chat. Remove anything that is wrong or out of date.</p>
+            <p className="text-[10.5px] text-slate-500 leading-snug mb-2.5">{name} follows these in every chat. Remove anything that is wrong or out of date.</p>
             {memory.length ? (
               <ul className="space-y-1.5">
                 {memory.map(n => (
@@ -163,7 +165,7 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
               </ul>
             ) : (
               <p className="px-2.5 py-3 rounded-lg border border-dashed border-white/10 text-[11px] text-slate-500 leading-snug">
-                Nova saves your preferences and brand rules here when you tell her (e.g. &lsquo;remember: never show prices&rsquo;).
+                {name} saves your preferences and brand rules here when you say so (e.g. &lsquo;remember: never show prices&rsquo;).
               </p>
             )}
           </div>

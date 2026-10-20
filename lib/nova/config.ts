@@ -178,6 +178,15 @@ export function sanitizeNovaBudget(raw: unknown): NovaBudget {
 export type NovaSpend = { today: number; month: number }
 
 /**
+ * The agent's two personas (2026-10-20): Nova Studio (many chats, admin-only
+ * for now) and Prism, the site guide every user has - one continuous chat per
+ * account (Chat.source 'prism'). Same engine, tools, budgets and billing.
+ */
+export type NovaPersonaId = 'nova' | 'prism'
+/** Where the user compacted or cleared the context (shown as a divider after that message). */
+export type NovaContextMark = { afterId: number; kind: 'compact' | 'clear'; at: string }
+
+/**
  * A run budget (2026-10-19, owner): set in the prompt box for each request -
  * the most Nova may spend on that request (with every turn it carries on by
  * itself) without asking. Requests sent without one fall back to askAbove a
@@ -251,7 +260,8 @@ export type NovaMessage = {
   plan?: NovaPlan
   model?: string
   /** Tickets this turn cost: chat tokens and generations, and what it WOULD have cost an admin (who pays nothing). */
-  tickets?: { chat: number; media: number; charged: boolean }
+  /** `free`: a Prism quick question paid from the daily free AI-text allowance. */
+  tickets?: { chat: number; media: number; charged: boolean; free?: boolean }
   /** Nova asked to be woken when its renders finish. */
   continueAfterRenders?: boolean
   /** The turn ran out of steps or time before the work was done: it carries on by itself. */

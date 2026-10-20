@@ -68,7 +68,9 @@ export default function SignupPage() {
 
       if (res.ok) {
         // Success! Redirect to dashboard
-        router.push('/dashboard')
+        // A new account made while connecting ChatGPT / Claude goes back to the consent page (same-site paths only)
+        const next = new URLSearchParams(window.location.search).get('next')
+        router.push(next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard')
       } else {
         setError(data.error || 'Signup failed')
       }

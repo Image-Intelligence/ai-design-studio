@@ -20,7 +20,7 @@ import type { NovaStep } from '@/lib/nova/config'
 
 /** Settle every pending step of a chat's recent replies; say whether the last one is ready to carry on. */
 export async function settleChatJobs(user: { id: number; email: string }, chatId: number, headers?: Record<string, string>): Promise<{ updates: { messageId: number; step: NovaStep }[]; pending: number; readyToContinue: boolean }> {
-  const chat = await prisma.chat.findFirst({ where: { id: chatId, userId: user.id, source: 'nova' }, select: { skills: true } })
+  const chat = await prisma.chat.findFirst({ where: { id: chatId, userId: user.id, source: { in: ['nova', 'prism'] } }, select: { skills: true } })
   const folderId = readChatState(chat?.skills).folderId
   const rows = await prisma.chatMessage.findMany({ where: { chatId, role: 'assistant' }, orderBy: { id: 'desc' }, take: 8, select: { id: true, metadata: true } })
   const updates: { messageId: number; step: NovaStep }[] = []
@@ -63,7 +63,7 @@ export async function novaSweep(baseUrl: string): Promise<{ checked: number; sta
   const rows = await prisma.$queryRaw<{ id: number; chatId: number; userId: number; metadata: any }[]>`
     SELECT DISTINCT ON (m."chatId") m.id, m."chatId", c."userId", m.metadata
     FROM "ChatMessage" m JOIN "Chat" c ON c.id = m."chatId"
-    WHERE c.source = 'nova' AND m.role = 'assistant' AND m."createdAt" > now() - interval '24 hours'
+    WHERE c.source IN ('nova', 'prism') AND m.role = 'assistant' AND m."createdAt" > now() - interval '24 hours'
     ORDER BY m."chatId", m.id DESC`
   const waiting = rows.filter(r => (r.metadata?.continueAfterRenders || r.metadata?.keepGoing) && !r.metadata?.continued && !r.metadata?.running).slice(0, 20)
   let started = 0
@@ -90,7 +90,7 @@ export async function novaSweep(baseUrl: string): Promise<{ checked: number; sta
 
 /** One carry-on turn for a chat, with nobody watching: run it and read its stream to the end. */
 export async function runBackgroundTurn(chatId: number): Promise<string> {
-  const chat = await prisma.chat.findFirst({ where: { id: chatId, source: 'nova' }, select: { id: true, userId: true } })
+  const chat = await prisma.chat.findFirst({ where: { id: chatId, source: { in: ['nova', 'prism'] } }, select: { id: true, userId: true } })
   if (!chat) return 'no chat'
   const user = await prisma.user.findUnique({ where: { id: chat.userId }, select: { id: true, email: true } })
   if (!user?.email) return 'no user'
@@ -99,7 +99,7 @@ export async function runBackgroundTurn(chatId: number): Promise<string> {
   const { checkIsAdmin } = await import('@/lib/admin-check')
   const { runNovaTurn } = await import('@/lib/nova/agent')
   const out = await runNovaTurn({
-    user: { id: user.id, email: user.email }, isAdmin: await checkIsAdmin(user.email), chatId: chat.id,
+    user: { id: user.id, email: user.email }, isAdmin: await checkIsAdmin(user.email), sources: ['nova', 'prism'], chatId: chat.id,
     text: '', attachmentIds: [], attachmentUrls: [], continueRenders: true, background: { headers },
   })
   if ('json' in out) return `not started: ${String(out.json.error ?? out.status)}`

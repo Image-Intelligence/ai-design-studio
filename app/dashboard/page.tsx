@@ -4,7 +4,8 @@ import { useState, useEffect } from "react"
 import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Terminal, Sparkles, ArrowRight, ShieldCheck, KeyRound, X, Eye, EyeOff, AlertTriangle, FileText, Mail, FolderOpen } from "lucide-react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import ChatWidget from "@/components/ChatWidget"
+import { PrismGuide, PrismLauncher } from "@/components/prism/PrismGuide"
+import { LibraryPickerHost } from "@/components/feed/LibraryPicker"
 import { IdVerificationHost } from "@/components/id-verification/IdVerificationGate"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
 import { FEATURED_MODELS, TALL_CARDS } from "@/components/home/featured"
@@ -246,7 +247,7 @@ export default function DashboardPage() {
         )}
 
         {/* Header row: brand + user actions */}
-        <div className="shrink-0 flex items-center justify-between gap-2">
+        <div data-prism-anchor className="shrink-0 flex items-center justify-between gap-2">
           <div className="flex items-center gap-5 min-w-0">
             <SiteBrandMark size={38} />
             <p className="hidden xl:block text-sm font-semibold text-white truncate">
@@ -254,6 +255,8 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Prism, the guide - its panel docks on the right */}
+            <PrismLauncher />
             <TicketPill balance={user.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-black/40 font-mono text-xs" textClassName="text-white tabular-nums" />
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg border border-white/8 bg-white/3">
               {/* Profile picture — synced account-wide (same avatarUrl as the portal-v2 bubble) */}
@@ -595,8 +598,11 @@ export default function DashboardPage() {
       </div>
     </div>
 
-    <ChatWidget />
-    {/* The guide's picture attachments need an ID-verified account (CCBill) */}
+    {/* Prism, the guide (replaced the AI Guide widget 2026-10-20); the header button opens it */}
+    <PrismGuide isAdmin={isAdmin} onBalanceChange={b => setUser(u => (u ? { ...u, ticketBalance: b } : u))} />
+    {/* Prism attaches from the library */}
+    <LibraryPickerHost />
+    {/* Uploads need an ID-verified account (CCBill) */}
     <IdVerificationHost />
 
     {/* Change Password Modal */}

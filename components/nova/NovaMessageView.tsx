@@ -12,6 +12,7 @@ import { NovaMarkdown } from "./NovaMarkdown"
 import { BrandButton } from "@/components/employees/StudioBrand"
 import { NovaFigure, seenAt, fmtElapsed, useNow } from "./NovaStage"
 import type { NovaPose } from "./novaArt"
+import { usePersona } from "./persona"
 import { AudioCardArt } from "@/components/home/AudioCardArt"
 
 /*
@@ -356,11 +357,12 @@ function PlanCard({ plan, actionable, busy, onApprove, onDecline }: {
   onApprove: (tickets: number) => void
   onDecline: () => void
 }) {
+  const { name } = usePersona()
   const [tickets, setTickets] = useState(String(plan.totalTickets))
   const n = Math.max(0, Math.round(Number(tickets) || 0))
   const chip = plan.status === "approved"
     ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300"
-        title={plan.auto ? "It fitted inside this run's budget, so Nova went straight on" : undefined}>
+        title={plan.auto ? `It fitted inside this run's budget, so ${name} went straight on` : undefined}>
         <CheckCircle2 size={10} /> {plan.auto ? "Within your budget" : "Approved"}{plan.approvedTickets !== undefined ? ` · ${plan.approvedTickets} tickets` : ""}
       </span>
     : plan.status === "declined"
@@ -372,7 +374,7 @@ function PlanCard({ plan, actionable, busy, onApprove, onDecline }: {
     <div className="mt-3 rounded-xl silver-edge bg-[#0b0f1a] p-3.5">
       <div className="flex items-center gap-2 mb-2">
         <ClipboardList size={14} className="text-slate-300" />
-        <p className="text-[12px] font-bold text-white">Nova&apos;s plan</p>
+        <p className="text-[12px] font-bold text-white">{name}&apos;s plan</p>
         <span className="ml-auto">{chip}</span>
       </div>
       <p className="text-[12.5px] text-slate-300 leading-relaxed mb-2.5">{plan.summary}</p>
@@ -407,7 +409,7 @@ function PlanCard({ plan, actionable, busy, onApprove, onDecline }: {
             </BrandButton>
           </div>
           {n !== plan.totalTickets && n > 0 && (
-            <p className="w-full text-[10.5px] text-slate-500">Nova will work within {n} tickets and check back if it needs more.</p>
+            <p className="w-full text-[10.5px] text-slate-500">{name} will work within {n} tickets and check back if it needs more.</p>
           )}
         </div>
       )}
@@ -448,6 +450,7 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
   onDeclinePlan: (messageId: number) => void
   onOpenAttachment?: (url: string) => void
 }) {
+  const { name } = usePersona()
   const [viewing, setViewing] = useState<string | null>(null)
 
   if (message.role === "user") {
@@ -512,7 +515,7 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
       <NovaFigure pose={streaming ? (livePose ?? "thinking") : "portrait"} size={40} busy={streaming} animated={!!streaming} glow={!!streaming} className="-mt-1" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-[12.5px] font-black tracking-tight silver-shimmer-text">Nova</span>
+          <span className="text-[12.5px] font-black tracking-tight silver-shimmer-text">{name}</span>
           {streaming && <span className="inline-flex items-center gap-1 text-[10px] text-fuchsia-200"><span className="w-1 h-1 rounded-full bg-fuchsia-300 animate-pulse" />working</span>}
           {message.route ? <RouteChip route={message.route} /> : message.model && <span className="text-[10px] font-mono text-slate-600">{message.model}</span>}
         </div>
@@ -540,8 +543,10 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
             <span>Done</span>
             {settledMedia > 0 && <span>· {settledMedia} media</span>}
             <span>· {total} ticket{total === 1 ? "" : "s"}</span>
-            <span className="text-slate-500">(chat {t.chat} · media {t.media})</span>
-            {!t.charged && <span className="text-slate-500">(chat free for admins)</span>}
+            {t.free
+              ? <span className="text-slate-500">(free quick question{t.media ? ` · media ${t.media}` : ""})</span>
+              : <span className="text-slate-500">(chat {t.chat} · media {t.media})</span>}
+            {!t.charged && !t.free && <span className="text-slate-500">(chat free for admins)</span>}
           </div>
         )}
       </div>

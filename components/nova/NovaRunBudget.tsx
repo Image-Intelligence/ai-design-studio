@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Check, Gauge, Loader2, SlidersHorizontal } from "lucide-react"
 import { NOVA_RUN_BUDGET_PRESETS, cleanRunBudget } from "@/lib/nova/config"
+import { usePersona } from "./persona"
 
 /*
  * The run budget, in the prompt box (2026-10-19, owner): how much Nova may
@@ -22,6 +23,7 @@ export function NovaRunBudget({ value, accountDefault, onChange, onSaveDefault, 
   onOpenLimits: () => void
   disabled?: boolean
 }) {
+  const { name } = usePersona()
   const [open, setOpen] = useState(false)
   const [custom, setCustom] = useState("")
   const [saving, setSaving] = useState(false)
@@ -43,7 +45,7 @@ export function NovaRunBudget({ value, accountDefault, onChange, onSaveDefault, 
   return (
     <div ref={wrap} className="relative shrink-0">
       <button type="button" onClick={() => setOpen(o => !o)} disabled={disabled}
-        title={`Budget for this run: Nova may spend up to ${value} tickets on your next request without asking`}
+        title={`Budget for this run: ${name} may spend up to ${value} tickets on your next request without asking`}
         aria-label={`Budget for this run, ${value} tickets`} aria-expanded={open}
         className={`h-10 inline-flex items-center gap-1 px-2 rounded-xl border text-[11.5px] font-semibold tabular-nums transition-colors disabled:opacity-40 ${open
           ? "border-white/30 bg-white/[0.08] text-white"
@@ -61,7 +63,7 @@ export function NovaRunBudget({ value, accountDefault, onChange, onSaveDefault, 
             <p className="text-[13px] font-bold text-white">Budget for this run</p>
           </div>
           <p className="mt-1 text-[10.5px] text-slate-400 leading-snug">
-            Nova may spend up to this on your next request without asking, including the renders it carries on with by itself.
+            {name} may spend up to this on your next request without asking, including the renders it carries on with by itself.
             Bigger jobs come to you as a plan first; plans that fit are approved automatically.
           </p>
           <div className="mt-3 grid grid-cols-3 gap-1.5">

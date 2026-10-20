@@ -109,11 +109,12 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
 const ROOT_FOLDER = 'Nova Studio'
 
 /** The chat's own folder: My Generations / Nova Studio / <chat title>, made on first use. */
-export async function ensureChatFolder(userId: number, title: string): Promise<number> {
+/** A chat's folder: "<title>" under the Nova Studio folder - or, with `parent` null, a top-level "<title>" (Prism's single folder). */
+export async function ensureChatFolder(userId: number, title: string, parent: string | null = ROOT_FOLDER): Promise<number> {
   const find = async (name: string, parentId: number | null) =>
     (await prisma.userGenerationFolder.findFirst({ where: { userId, name, parentId }, select: { id: true } }))?.id
     ?? (await prisma.userGenerationFolder.create({ data: { userId, name, parentId }, select: { id: true } })).id
-  const root = await find(ROOT_FOLDER, null)
+  const root = parent === null ? null : await find(parent, null)
   const name = (title || 'Untitled chat').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Untitled chat'
   return find(name, root)
 }

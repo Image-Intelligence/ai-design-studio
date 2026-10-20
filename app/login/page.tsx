@@ -41,8 +41,10 @@ export default function LoginPage() {
       const data = await res.json()
 
       if (res.ok) {
-        // Success! Redirect to dashboard
-        router.push('/dashboard')
+        // Back to where sign-in was asked for (the connector's consent page), else the dashboard.
+        // Only a path on this site - never another origin.
+        const next = new URLSearchParams(window.location.search).get('next')
+        router.push(next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard')
       } else {
         setError(data.error || 'Login failed')
       }
@@ -131,7 +133,7 @@ export default function LoginPage() {
 
             <p className="text-center text-[12px] text-slate-500">
               Don&apos;t have an account?{' '}
-              <Link href="/signup" className="text-white font-semibold hover:underline">
+              <Link href="/signup" onClick={e => { const n = new URLSearchParams(window.location.search).get("next"); if (n) { e.preventDefault(); router.push(`/signup?next=${encodeURIComponent(n)}`) } }} className="text-white font-semibold hover:underline">
                 Create one
               </Link>
             </p>

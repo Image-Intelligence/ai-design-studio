@@ -21,7 +21,7 @@
  * site's routes as they run. Admins are charged nothing, but every price is
  * still worked out and recorded, so the studio can be tested end to end.
  */
-import { streamText, stepCountIs, hasToolCall, type ModelMessage } from 'ai'
+import { streamText, stepCountIs, hasToolCall, tool, jsonSchema, type ModelMessage } from 'ai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import prisma from '@/lib/prisma'
 import { signPayload } from '@/lib/media-url'
@@ -41,9 +41,11 @@ import { userFavouriteModels } from '@/lib/nova/scorecard'
 import { backgroundStatus } from '@/lib/nova/background'
 import { findAsset, storedRefs } from '@/lib/user-assets'
 import { readFilterState } from '@/lib/content-filter'
+import { enhancePlanFor, consumeEnhance, ENHANCE_LIMITS } from '@/lib/prompt-enhance'
+import { siteGuide, SITE_TOPICS } from '@/lib/nova/site-guide'
 import {
   NOVA_MAX_STEPS, NOVA_TIER_STEPS, NOVA_ROUTES, novaChatUsd, novaTicketsForUsd, novaTurnHold, resolveNovaModel, NOVA_AUTO, NOVA_CRITIC_MODEL, NOVA_MAX_AUTO_TURNS, cleanRunBudget,
-  type NovaMessage, type NovaStep, type NovaPlan, type NovaStreamEvent, type NovaUsage, type NovaMediaKind, type NovaTier,
+  type NovaMessage, type NovaStep, type NovaPlan, type NovaStreamEvent, type NovaUsage, type NovaMediaKind, type NovaTier, type NovaPersonaId, type NovaContextMark,
 } from '@/lib/nova/config'
 
 /** Messages replayed word for word; older ones live in the summary. */
@@ -110,18 +112,19 @@ export function digest(m: NovaMessage): string {
  * enough has piled up (so it runs every ~6 messages, not every turn). Returns
  * the tokens it used - they are billed with the turn.
  */
-async function compactChat(chat: { id: number; memorySummary: string | null; summaryUpToId: number | null }, windowStartId: number | null): Promise<{ summary: string | null; usage: NovaUsage }> {
+async function compactChat(chat: { id: number; memorySummary: string | null; summaryUpToId: number | null }, windowStartId: number | null, opts: { min?: number; take?: number; newest?: boolean } = {}): Promise<{ summary: string | null; usage: NovaUsage }> {
   const usage = { inputTokens: 0, outputTokens: 0 }
   if (!windowStartId) return { summary: chat.memorySummary, usage }
-  const older = await prisma.chatMessage.findMany({
+  const rows = await prisma.chatMessage.findMany({
     where: { chatId: chat.id, id: { lt: windowStartId, ...(chat.summaryUpToId ? { gt: chat.summaryUpToId } : {}) } },
-    orderBy: { id: 'asc' }, take: 40,
+    orderBy: { id: opts.newest ? 'desc' : 'asc' }, take: opts.take ?? 40,
     select: { id: true, role: true, content: true, model: true, metadata: true, createdAt: true },
   })
-  if (older.length < COMPACT_AFTER) return { summary: chat.memorySummary, usage }
+  const older = opts.newest ? rows.reverse() : rows
+  if (older.length < (opts.min ?? COMPACT_AFTER)) return { summary: chat.memorySummary, usage }
   const text = older.map(r => `${r.role.toUpperCase()}: ${clip(digest(toNovaMessage(r)), 900)}`).join('\n\n')
   const prompt = [
-    'You keep the running memory of a creative chat between a user and Nova, an AI studio assistant that makes images, video, audio and 3D and organises the user\'s library.',
+    'You keep the running memory of a creative chat between a user and an AI studio assistant (Nova or Prism) that makes images, video, audio and 3D, organises the user\'s library and answers questions about the site.',
     'Merge the EARLIER SUMMARY and the NEW MESSAGES into one updated summary. Keep: the user\'s goals and preferences, decisions made, every important #id and what it is (characters, products, approved shots, cuts), assets and folders created, plans and their budgets, and what is still to do. Drop chit-chat. Plain text, at most 350 words.',
     `EARLIER SUMMARY:\n${chat.memorySummary || '(none)'}`,
     `NEW MESSAGES:\n${text}`,
@@ -141,15 +144,86 @@ async function compactChat(chat: { id: number; memorySummary: string | null; sum
   }
 }
 
+/**
+ * Compact / clear on request (2026-10-20, owner: Prism is one chat that goes
+ * on for months, and the user should be able to take it back to its cheapest
+ * point). Both move the replay window's floor (summaryUpToId) up to the newest
+ * message, so the next turn replays NOTHING word for word:
+ *  - compact: everything not yet summarised is folded into the summary first
+ *    (Flash-Lite, a fraction of a cent - not billed);
+ *  - clear: the summary goes too, and the chat's working state (plan, look
+ *    bible, the request's spend) - a fresh start.
+ * What the user asked to be remembered (lib/nova/memory) stays either way, and
+ * the messages stay on screen; a mark in the chat state shows where it happened.
+ */
+export async function resetChatContext(chatId: number, mode: 'compact' | 'clear'): Promise<{ marks: NovaContextMark[] }> {
+  const chat = await prisma.chat.findUnique({ where: { id: chatId }, select: { id: true, memorySummary: true, summaryUpToId: true, skills: true } })
+  if (!chat) throw new Error('Chat not found')
+  const last = await prisma.chatMessage.findFirst({ where: { chatId }, orderBy: { id: 'desc' }, select: { id: true } })
+  let summary = mode === 'clear' ? null : chat.memorySummary
+  // Fold the unsummarised tail (its newest 60 - anything older was folded by the turns already)
+  if (mode === 'compact' && last) summary = (await compactChat(chat, last.id + 1, { min: 1, take: 60, newest: true })).summary
+  const state = readChatState(chat.skills)
+  if (mode === 'clear') { state.plan = null; state.bible = null; state.chainUnplanned = 0; state.autoTurns = 0; state.runBudget = undefined }
+  state.marks = [...(state.marks ?? []), ...(last ? [{ afterId: last.id, kind: mode, at: new Date().toISOString() }] : [])].slice(-30)
+  await prisma.chat.update({ where: { id: chatId }, data: { memorySummary: summary, ...(last ? { summaryUpToId: last.id } : {}), skills: state as object } })
+  return { marks: state.marks }
+}
+
+// ── Prism, the site guide (2026-10-20) ───────────────────────────────────────
+
+const PRISM_INTRO = [
+  'You are Prism, the guide inside AI Design Studio - a friendly, playful iridescent chameleon, the site\'s mascot for colour and style. You live in the guide panel on every page, in ONE ongoing conversation with this user that lasts for weeks and months.',
+  '',
+  'YOUR TWO JOBS',
+  '1. GUIDE: answer questions about the site - where things are, how a feature works, what tickets and plans cost, which model suits a job - and help with prompts. For site facts call site_help(topic); for models and their live ticket prices use recommend_models / browse_models. Never invent a feature, page or price; if you are not sure, say so.',
+  '2. MAKE: when the user asks, make and edit images, video, audio and 3D, organise their library and cut films - the whole studio, described below.',
+  '',
+  'KEEP IT CHEAP: most messages are quick questions. Answer them directly in a few short sentences, without tools unless a fact needs checking. Do not search the library or make anything unless asked.',
+  'LONG-TERM MEMORY: this chat lasts. When the user tells you something lasting (their brand, style, projects, how they like answers), save it with remember. Older parts of the conversation are kept as a short summary; the user can Compact or Clear it from your menu to keep you cheap.',
+  'The user may be new to the site: be welcoming, explain plainly, and end with one useful next step.',
+].join('\n')
+
+/**
+ * Prism's quick questions run LEAN (2026-10-20): the first live question
+ * ("how do tickets work?") re-sent Nova's whole studio prompt and all ~40
+ * tool definitions on each of its two steps - 26k input tokens, $0.04, for
+ * an answer that is meant to be free. A light Prism turn gets this short
+ * prompt and only the tools a question needs; a request to MAKE something is
+ * routed past light (lib/nova/router) and gets the full studio.
+ */
+const PRISM_LEAN_TOOLS = ['site_help', 'browse_models', 'recommend_models', 'search_library', 'list_folders', 'list_assets', 'view_media', 'remember', 'forget'] as const
+function prismLeanInstructions(o: { isAdmin: boolean; balance: number | null; memory: NovaNote[]; summary: string | null; safetyOff?: boolean }): string {
+  return [
+    PRISM_INTRO,
+    '',
+    'THIS TURN IS A QUICK ANSWER: you have site_help (site facts), recommend_models / browse_models (models and live prices), the library lookups and remember / forget. You cannot make or edit anything in this turn - if the user wants something made, say in one or two lines what you would make (model, rough ticket cost) and ask them to say go; their next message runs in making mode.',
+    '- Answer in a few short sentences or bullets; markdown is fine. Prices come from the tools, never from memory.',
+    o.isAdmin ? '- This is an admin account: nothing is charged.' : `- The user has ${o.balance ?? 0} tickets.`,
+    o.safetyOff ? '' : '- Follow the site\'s content rules: no sexual content, nothing harmful involving minors, no real people\'s likeness without consent.',
+    o.memory.length ? `WHAT YOU KNOW ABOUT THIS USER (remembered - follow it; forget(note_id) if they say it is wrong):\n${o.memory.map(n => `- [${n.id}] ${n.text}`).join('\n')}` : '',
+    `This is your one ongoing chat with this user. Today is ${new Date().toISOString().slice(0, 10)}.`,
+    o.summary ? `\nEARLIER IN THIS CHAT (summary):\n${o.summary}` : '',
+  ].filter(x => x !== '').join('\n')
+}
+
+const siteHelpTool = tool({
+  description: `Facts about the site for answering the user's questions: where things are and what they do, tickets, plans, studios, the library, references, uploads, troubleshooting and Prism itself. Topics: ${SITE_TOPICS.join(', ')}. Model prices: use browse_models.`,
+  inputSchema: jsonSchema<{ topic: string }>({ type: 'object', properties: { topic: { type: 'string', enum: [...SITE_TOPICS] } }, required: ['topic'] }),
+  execute: async ({ topic }) => ({ topic, facts: siteGuide(topic) }),
+})
+
 // ── Instructions ─────────────────────────────────────────────────────────────
 
 /** The resolved references back as ids (what was actually shown). */
 const chatRefsIds = (r: { assets: { id: number }[]; generations: { id: number }[] }) => ({ assets: r.assets.map(a => a.id), generations: r.generations.map(g => g.id) })
 
-export function novaInstructions(o: { isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean }): string {
+export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean }): string {
   const plan = o.state.plan
+  const prism = o.persona === 'prism'
   return [
-    'You are Nova, the creative partner inside AI Design Studio. You talk with the user and make what they want with the studio\'s AI models - images, video, audio, 3D - using their own library (My Generations, folders and Assets), then organise it and edit final cuts. You work like a professional creative producer: understand the goal, plan, make, check your work, assemble, deliver.',
+    ...(prism ? [PRISM_INTRO, '', 'MAKING THINGS (when the user asks you to make, change or organise something - the same studio Nova Studio runs):'] : []),
+    prism ? 'You make what the user wants with the studio\'s AI models - images, video, audio, 3D - using their own library (My Generations, folders and Assets), then organise it and edit final cuts, like a professional creative producer: understand the goal, plan, make, check your work, assemble, deliver.' : 'You are Nova, the creative partner inside AI Design Studio. You talk with the user and make what they want with the studio\'s AI models - images, video, audio, 3D - using their own library (My Generations, folders and Assets), then organise it and edit final cuts. You work like a professional creative producer: understand the goal, plan, make, check your work, assemble, deliver.',
     '',
     'HOW YOU WORK',
     '- Understand the goal first. Ask ONE short question only when something essential is missing (the product, the format, the length); otherwise make sensible choices and say what you chose.',
@@ -204,7 +278,7 @@ export function novaInstructions(o: { isAdmin: boolean; balance: number | null; 
     '',
     o.memory.length ? `WHAT YOU KNOW ABOUT THIS USER (remembered - follow it; forget(note_id) if they say it is wrong):\n${o.memory.map(n => `- [${n.id}] ${n.text}`).join('\n')}` : '',
     o.favourites.length ? `Models this user rates highest: ${o.favourites.join(', ')}.` : '',
-    `This chat: "${o.title}". Today is ${new Date().toISOString().slice(0, 10)}.`,
+    prism ? `This is your one ongoing chat with this user. Today is ${new Date().toISOString().slice(0, 10)}.` : `This chat: "${o.title}". Today is ${new Date().toISOString().slice(0, 10)}.`,
     o.summary ? `\nEARLIER IN THIS CHAT (summary):\n${o.summary}` : '',
   ].filter(s => s !== '').join('\n')
 }
@@ -340,6 +414,8 @@ async function originalBrief(chatId: number): Promise<string> {
 export type NovaTurnInput = {
   user: { id: number; email: string }
   isAdmin: boolean
+  /** Which personas' chats this caller may open (lib/nova/auth requireAgentUser); default Nova's. */
+  sources?: ('nova' | 'prism')[]
   chatId: number
   text: string
   attachmentIds: number[]
@@ -360,8 +436,10 @@ export type NovaTurnInput = {
 /** Errors before streaming starts come back as a JSON status; then it is an NDJSON stream. */
 export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: number; json: Record<string, unknown> } | { stream: ReadableStream<Uint8Array> }> {
   const { user, isAdmin } = input
-  const chat = await prisma.chat.findFirst({ where: { id: input.chatId, userId: user.id, source: 'nova' } })
+  const chat = await prisma.chat.findFirst({ where: { id: input.chatId, userId: user.id, source: { in: input.sources ?? ['nova'] } } })
   if (!chat) return { status: 404, json: { error: 'Chat not found' } }
+  const persona: NovaPersonaId = chat.source === 'prism' ? 'prism' : 'nova'
+  const personaName = persona === 'prism' ? 'Prism' : 'Nova'
   // A turn cut off by a crash or deploy is closed (and its hold refunded); a
   // turn still running blocks a second one, so two can never spend at once
   if (await sweepStaleTurns(chat.id, user, isAdmin)) return { status: 409, json: { error: 'Nova is still working on the last message - wait for it, or press Stop.' } }
@@ -435,10 +513,23 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
   const hold = mixed
     ? Math.max(novaTurnHold(FAST_MODEL, true, maxSteps), novaTurnHold(STRONG_MODEL, true, Math.ceil(maxSteps / 2)))
     : novaTurnHold(model, routed.tier === 'production' || routed.tier === 'run', maxSteps)
+  /*
+   * Prism's quick questions are free (2026-10-20): a light turn the user typed
+   * (no attachments) takes one action from the daily free AI-text allowance
+   * that Enhance and Storyboard share (lib/prompt-enhance), instead of a hold.
+   * A light turn is Flash for a handful of steps - a cent or so at most - and
+   * this is what the old guide was: free help. Past the allowance, and for any
+   * turn that works (create / production), the chat is billed like Nova's.
+   */
+  let free = false
+  if (persona === 'prism' && !isAdmin && !system && routed.tier === 'light' && !input.attachmentIds.length && !input.attachmentUrls.length) {
+    const plan = await enhancePlanFor(user)
+    free = (await consumeEnhance(user.id, ENHANCE_LIMITS[plan])) !== null
+  }
   let held = 0
-  if (!isAdmin) {
+  if (!isAdmin && !free) {
     const paid = await deductGenerationTickets(user.id, user.email, hold)
-    if (!paid.ok) return { status: 402, json: { error: `A turn with Nova holds up to ${hold} tickets while it works (you only pay what it uses) - you have ${paid.have}.`, needTickets: true } }
+    if (!paid.ok) return { status: 402, json: { error: `A turn with ${personaName} holds up to ${hold} tickets while it works (you only pay what it uses) - you have ${paid.have}.`, needTickets: true } }
     held = hold
   }
 
@@ -469,7 +560,8 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
     const chatRefs = await resolveChatRefs(user.id, state.refs)
     const refsNew = refsKey(chatRefsIds(chatRefs)) !== (state.refsShown ?? '')
     const attachments = attachRows.map(r => ({ id: r.id, url: r.imageUrl, kind: kindOf(r) as NovaMediaKind }))
-    if (!state.folderId) state.folderId = await ensureChatFolder(user.id, chat.title === 'New chat' ? (clip(userText, 60) || 'New chat') : chat.title)
+    // Prism files what it makes in one top-level "Prism" folder; each Nova chat gets its own under "Nova Studio"
+    if (!state.folderId) state.folderId = persona === 'prism' ? await ensureChatFolder(user.id, 'Prism', null) : await ensureChatFolder(user.id, chat.title === 'New chat' ? (clip(userText, 60) || 'New chat') : chat.title)
     const userRow = await prisma.chatMessage.create({
       data: { chatId: chat.id, role: 'user', content: userText, metadata: { ...(attachments.length ? { attachments } : {}), ...(assetMeta.length ? { assets: assetMeta } : {}), ...(system ? { system: true } : {}) } as object, imageUrls: attachments.map(a => a.url) },
       select: { id: true },
@@ -482,7 +574,8 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
 
     // ── history: the window word for word, older folded into the summary ──
     const recent = (await prisma.chatMessage.findMany({
-      where: { chatId: chat.id, id: { lt: userRow.id } }, orderBy: { id: 'desc' }, take: NOVA_HISTORY,
+      // Nothing at or before summaryUpToId is replayed: that is in the summary (or was cleared)
+      where: { chatId: chat.id, id: { lt: userRow.id, ...(chat.summaryUpToId ? { gt: chat.summaryUpToId } : {}) } }, orderBy: { id: 'desc' }, take: NOVA_HISTORY,
       select: { id: true, role: true, content: true, model: true, metadata: true, createdAt: true },
     })).reverse()
     const compact = await compactChat(chat, recent[0]?.id ?? null)
@@ -576,6 +669,10 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       seenIds: new Set([...attachRows.map(r => r.id), ...seenAssetIds]),
     }
     const balanceNow = isAdmin ? null : await novaBalance(user.id)
+    // Prism's quick questions: a short prompt and the few tools a question needs (see PRISM_LEAN_TOOLS)
+    const lean = persona === 'prism' && routed.tier === 'light'
+    const allTools = { ...makeNovaTools(ctx), ...makeProTools(ctx), ...makeStudioTools(ctx), ...makePostTools(ctx), ...(persona === 'prism' ? { site_help: siteHelpTool } : {}) }
+    const leanTools = Object.fromEntries(Object.entries(allTools).filter(([k]) => (PRISM_LEAN_TOOLS as readonly string[]).includes(k))) as Partial<typeof allTools>
     const [memory, favourites] = await Promise.all([loadNovaMemory(user.id), userFavouriteModels(user.id)])
     // Admins share one safety switch with the rest of the site (the composer's admin Filter ON/OFF); everyone else is always filtered
     const safetyOff = isAdmin && !(await readFilterState().catch(() => ({ on: true }))).on
@@ -592,15 +689,17 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       try {
         const result = streamText({
           model: google(model),
-          instructions: novaInstructions({ isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff }),
+          instructions: lean
+            ? prismLeanInstructions({ isAdmin, balance: balanceNow != null ? balanceNow + held : null, memory, summary: compact.summary, safetyOff })
+            : novaInstructions({ persona, isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff }),
           messages,
-          tools: { ...makeNovaTools(ctx), ...makeProTools(ctx), ...makeStudioTools(ctx), ...makePostTools(ctx) },
+          tools: lean ? leanTools : allTools,
           // A plan the studio approved by itself does not end the turn
           stopWhen: [stepCountIs(maxSteps), () => !!ctx.proposedPlan, hasToolCall('wait_for_renders'), () => { if (outOfTime()) timedOut = true; return timedOut }],
           // Old pictures out of the context; the last allowed step is reserved for the summary,
           // so a turn that used its steps on work still tells the user what it did
           prepareStep: ({ stepNumber, messages, steps }) => {
-            const m = stepModel({ tier: routed.tier, pinned: pinned === NOVA_AUTO ? null : pinned, stepNumber, maxSteps, lastTools: (steps.at(-1)?.toolCalls ?? []).map(c => c.toolName), hasBible: !!state.bible })
+            const m = stepModel({ tier: routed.tier, pinned: pinned === NOVA_AUTO ? null : pinned, stepNumber, maxSteps, lastTools: (steps.at(-1)?.toolCalls ?? []).map(c => c?.toolName ?? ''), hasBible: !!state.bible })
             stepModels[stepNumber] = m
             return {
               model: google(m),
@@ -645,7 +744,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       const turnUsd = orchestratorUsd + novaChatUsd('gemini-3.5-flash-lite', compact.usage) + routerUsd + ctx.extraUsd
       const mix: Record<string, number> = {}
       for (const m of stepModels.filter(Boolean)) mix[shortName(m)] = (mix[shortName(m)] ?? 0) + 1
-      const chatTickets = turnUsd > 0 ? Math.min(hold, novaTicketsForUsd(turnUsd)) : 0
+      const chatTickets = free ? 0 : turnUsd > 0 ? Math.min(hold, novaTicketsForUsd(turnUsd)) : 0
       let balance: number | null = null
       try {
         if (!isAdmin && held > chatTickets) await refundGenerationTickets(user.id, user.email, held - chatTickets)
@@ -662,7 +761,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
         const meta = {
           steps: ctx.steps, ...(plan ? { plan } : ctx.autoPlan ? { plan: ctx.autoPlan } : {}),
           // charged = whether the CHAT was billed (admins chat free; the site's routes bill generations by their own rules)
-          tickets: { chat: chatTickets, media: ctx.mediaTickets, charged: !isAdmin },
+          tickets: { chat: chatTickets, media: ctx.mediaTickets, charged: !isAdmin, ...(free ? { free: true } : {}) },
           usage, model, ...(failed ? { error: failed } : {}),
           // Waiting on renders - including stills the clock handed over as 'pending' - then carrying on
           ...(pending && (ctx.waitForRenders || keepGoing) ? { continueAfterRenders: true } : {}),

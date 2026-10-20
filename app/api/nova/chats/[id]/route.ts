@@ -1,6 +1,6 @@
 import prisma from '@/lib/prisma'
 import { jsonPrivate } from '@/lib/api-json'
-import { requireNovaUser } from '@/lib/nova/auth'
+import { requireAgentUser } from '@/lib/nova/auth'
 import { readChatState, cleanChatRefs } from '@/lib/nova/agent-tools'
 import { resolveChatRefs, resolveBible } from '@/lib/nova/chat-refs'
 import { chatSummary } from '@/lib/nova/summary'
@@ -22,32 +22,45 @@ import { resolveNovaModel } from '@/lib/nova/config'
 export const runtime = 'nodejs'
 type Ctx = { params: Promise<{ id: string }> }
 
-async function own(userId: number, ctx: Ctx) {
+async function own(userId: number, ctx: Ctx, sources: string[]) {
   const id = Number((await ctx.params).id)
   if (!Number.isInteger(id)) return null
-  return prisma.chat.findFirst({ where: { id, userId, source: 'nova' }, select: { id: true, title: true, model: true, updatedAt: true, skills: true } })
+  return prisma.chat.findFirst({ where: { id, userId, source: { in: sources } }, select: { id: true, title: true, model: true, updatedAt: true, skills: true, source: true, memorySummary: true, summaryUpToId: true } })
 }
 
-export async function GET(_req: Request, ctx: Ctx) {
-  const a = await requireNovaUser()
+export async function GET(req: Request, ctx: Ctx) {
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
-  const chat = await own(a.user.id, ctx)
+  const chat = await own(a.user.id, ctx, a.sources)
   if (!chat) return jsonPrivate({ error: 'Chat not found' }, { status: 404 })
   await sweepStaleTurns(chat.id, a.user, a.isAdmin)
   // Opened: a background turn's "new" mark goes (only that key, so a turn finishing now is not overwritten)
   if (readChatState(chat.skills).unread) await prisma.$executeRaw`UPDATE "Chat" SET skills = COALESCE(skills::jsonb, '{}'::jsonb) || '{"unread":false}'::jsonb WHERE id = ${chat.id}`
-  const rows = (await prisma.chatMessage.findMany({
-    where: { chatId: chat.id }, orderBy: { id: 'desc' }, take: 200,
+  /*
+   * A page of messages: the newest `take` (default 200), or with ?before=<id>
+   * the ones before it - Prism's chat goes on for months, so its panel loads
+   * the latest and fetches older pages as the user scrolls up.
+   */
+  const q = new URL(req.url).searchParams
+  const take = Math.min(200, Math.max(1, Number(q.get('take')) || 200))
+  const before = Number(q.get('before')) || 0
+  const page = await prisma.chatMessage.findMany({
+    where: { chatId: chat.id, ...(before > 0 ? { id: { lt: before } } : {}) }, orderBy: { id: 'desc' }, take: take + 1,
     select: { id: true, role: true, content: true, model: true, metadata: true, createdAt: true },
-  })).reverse()
+  })
+  const rows = page.slice(0, take).reverse()
   const s = readChatState(chat.skills)
-  return jsonPrivate({ chat: { ...chatSummary(chat), plan: s.plan ? { total: s.plan.total, spent: s.plan.spent } : null }, messages: rows.map(toNovaMessage), refs: await resolveChatRefs(a.user.id, s.refs), bible: await resolveBible(a.user.id, s.bible) })
+  return jsonPrivate({
+    chat: { ...chatSummary(chat), plan: s.plan ? { total: s.plan.total, spent: s.plan.spent } : null },
+    messages: rows.map(toNovaMessage), hasMore: page.length > take, marks: s.marks ?? [],
+    refs: await resolveChatRefs(a.user.id, s.refs), bible: await resolveBible(a.user.id, s.bible),
+  })
 }
 
 export async function PATCH(req: Request, ctx: Ctx) {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
-  const chat = await own(a.user.id, ctx)
+  const chat = await own(a.user.id, ctx, a.sources)
   if (!chat) return jsonPrivate({ error: 'Chat not found' }, { status: 404 })
   const body = await req.json().catch(() => ({})) as { title?: unknown; model?: unknown; refs?: unknown; bible?: unknown }
   const data: { title?: string; titleLocked?: boolean; model?: string } = {}
@@ -75,10 +88,12 @@ export async function PATCH(req: Request, ctx: Ctx) {
 }
 
 export async function DELETE(_req: Request, ctx: Ctx) {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
-  const chat = await own(a.user.id, ctx)
+  const chat = await own(a.user.id, ctx, a.sources)
   if (!chat) return jsonPrivate({ error: 'Chat not found' }, { status: 404 })
+  // Prism's one chat is not deleted - Clear context (POST /api/prism) is its fresh start
+  if (chat.source === 'prism') return jsonPrivate({ error: "Prism's chat cannot be deleted - use Clear context instead" }, { status: 400 })
   await prisma.chat.delete({ where: { id: chat.id } })
   return jsonPrivate({ ok: true })
 }

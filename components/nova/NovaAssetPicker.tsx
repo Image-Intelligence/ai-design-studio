@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { usePersona } from "./persona"
 import { createPortal } from "react-dom"
 import { Check, Library, Loader2, Search, X } from "lucide-react"
 import { BrandButton } from "@/components/employees/StudioBrand"
@@ -18,6 +19,7 @@ type AssetRow = { id: number; kind: string; name: string; notes: string; refs: {
 export const NOVA_MAX_ASSETS = 6
 
 export function NovaAssetPicker({ selected, onDone, onClose }: { selected: PickedAsset[]; onDone: (a: PickedAsset[]) => void; onClose: () => void }) {
+  const { name } = usePersona()
   const [rows, setRows] = useState<AssetRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [q, setQ] = useState("")
@@ -44,14 +46,14 @@ export function NovaAssetPicker({ selected, onDone, onClose }: { selected: Picke
 
   if (typeof document === "undefined") return null
   return createPortal(
-    <div className="fixed inset-0 z-[10055] flex items-start justify-center bg-black/70 backdrop-blur-sm p-3 pt-[6dvh]" onClick={onClose}>
+    <div data-prism-modal className="fixed inset-0 z-[10055] flex items-start justify-center bg-black/70 backdrop-blur-sm p-3 pt-[6dvh]" onClick={onClose}>
       <div className="w-full max-w-2xl max-h-[86dvh] flex flex-col rounded-2xl silver-edge bg-[#070b14] p-4" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-1">
           <Library size={16} className="text-fuchsia-300" />
-          <p className="text-sm font-bold text-white">Tell Nova which assets you mean</p>
+          <p className="text-sm font-bold text-white">Tell {name} which assets you mean</p>
           <button onClick={onClose} className="ml-auto p-1 text-slate-500 hover:text-white" aria-label="Close"><X size={16} /></button>
         </div>
-        <p className="text-[11.5px] text-slate-400 mb-3">Nova gets each asset's pictures and notes, and keeps the character, product or place consistent with them. Up to {NOVA_MAX_ASSETS}.</p>
+        <p className="text-[11.5px] text-slate-400 mb-3">{name} gets each asset&apos;s pictures and notes, and keeps the character, product or place consistent with them. Up to {NOVA_MAX_ASSETS}.</p>
         <div className="relative mb-3">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search your assets" autoFocus
@@ -60,7 +62,7 @@ export function NovaAssetPicker({ selected, onDone, onClose }: { selected: Picke
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
           {error && <p className="text-[12px] text-red-300">{error}</p>}
           {!rows && !error && <div className="py-10 flex justify-center text-slate-500"><Loader2 size={18} className="animate-spin" /></div>}
-          {rows && !rows.length && <p className="py-8 text-center text-[12px] text-slate-500">No assets yet. Make one in My Generations (Assets), or ask Nova to save a character as an asset.</p>}
+          {rows && !rows.length && <p className="py-8 text-center text-[12px] text-slate-500">No assets yet. Make one in My Generations (Assets), or ask {name} to save a character as an asset.</p>}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {shown.map(a => {
               const on = pick.some(x => x.id === a.id)

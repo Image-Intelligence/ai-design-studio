@@ -60,6 +60,9 @@ const nextConfig: NextConfig = {
     '/api/nova/chats/[id]': ['./node_modules/ffmpeg-static/**'],
     '/api/nova/runner': ['./node_modules/ffmpeg-static/**'],
     '/api/nova/uploads': ['./node_modules/ffmpeg-static/**'],
+    // The ChatGPT / Claude connector makes a poster for a clip that has none,
+    // to check it before showing it in the chat (lib/mcp/tools)
+    '/api/mcp': ['./node_modules/ffmpeg-static/**'],
   },
   // Routes importing lib/video-clip get their trace exploded to the ENTIRE
   // project dir (AI/ training junk, .git, uploads — 14GB locally, 401MB of

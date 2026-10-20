@@ -1,12 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle, ArrowUp, Check, Menu, MessageSquarePlus, Paperclip, Pencil, PlayCircle,
   ShieldCheck, Square, Ticket, Trash2, X, Loader2, PanelRight, Clapperboard, Image as ImageIcon, FolderTree,
   UserRound, Images, Radio, Mountain, Video, AudioLines, Box, Library, Upload,
 } from "lucide-react"
-import { NOVA_AUTO, NOVA_MODELS, cleanRunBudget, type NovaBudget, type NovaChatSummary, type NovaMessage, type NovaSpend } from "@/lib/nova/config"
+import { NOVA_AUTO, NOVA_MODELS, cleanRunBudget, type NovaContextMark, type NovaPersonaId, type NovaBudget, type NovaChatSummary, type NovaMessage, type NovaSpend } from "@/lib/nova/config"
 import { promptModelLabel } from "@/lib/prompt-models"
 import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
@@ -18,9 +18,11 @@ import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import type { NovaStep } from "@/lib/nova/config"
 import { NovaBudgetPanel } from "./NovaBudgetPanel"
 import { NovaRunBudget } from "./NovaRunBudget"
+import { NOVA_UI, PRISM_UI, NovaPersonaContext } from "./persona"
+import { PrismHeader, PrismWelcome, ContextDivider, contextLoad } from "@/components/prism/PrismParts"
 import { NovaAssetPicker, type PickedAsset } from "./NovaAssetPicker"
 import { NovaReferences, type RefIds } from "./NovaReferences"
-import { NovaError, novaApi, novaSend, upsertStep, type NovaBackground, type NovaChatDetail, type NovaChatRefs, type NovaChatBible, type NovaNote, type NovaSendBody } from "./novaApi"
+import { NovaError, novaApi, novaSend, upsertStep, type NovaBackground, type NovaChatDetail, type NovaChatRefs, type NovaChatBible, type NovaNote, type NovaSendBody, type PrismContext } from "./novaApi"
 
 /*
  * Nova Studio (2026-10-18, ADMIN ONLY while under test): a chat with Nova, a
@@ -57,6 +59,8 @@ const CAPABILITIES: { label: string; icon: typeof ImageIcon }[] = [
 ]
 
 const STREAM_ID = -2
+/** Messages per page in Prism's chat. */
+const PRISM_PAGE = 40
 const USER_TEMP_ID = -1
 const MAX_ATTACH = 6
 
@@ -92,8 +96,9 @@ export type NovaViewerRow = { id: number; imageUrl: string; thumbnailUrl?: strin
  *    which stops the focus zoom - iOS still lets the user pinch-zoom.
  * Everything is undone when the studio closes.
  */
-function usePageLock() {
+function usePageLock(active = true) {
   useEffect(() => {
+    if (!active) return
     const root = document.documentElement
     const vv = window.visualViewport
     root.classList.add("nova-page-lock")
@@ -130,23 +135,47 @@ function usePageLock() {
       window.removeEventListener("focusout", settle)
       if (meta && before !== null) meta.setAttribute("content", before)
     }
-  }, [])
+  }, [active])
 }
 
-export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
+export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "nova", active = true, onClose, onHide, onWorkingChange }: {
   isAdmin: boolean
   onBalanceChange?: (b: number) => void
   /** Open a finished picture / clip in the portal's feed viewer; its arrows walk the chat's others of that kind. */
   onOpenMedia?: (kind: "image" | "video", row: NovaViewerRow, list: NovaViewerRow[]) => void
+  /**
+   * "prism" (2026-10-20): Prism, the site guide - the same studio as ONE
+   * continuous chat in a compact panel (components/prism/PrismGuide): no chat
+   * list or side panel, its own header (context, compact / clear, budget,
+   * memory, hide) and welcome; history pages in as the user scrolls up.
+   */
+  persona?: NovaPersonaId
+  /** Prism's panel is kept mounted while closed (a reply keeps streaming): the page lock follows it. */
+  active?: boolean
+  onClose?: () => void
+  /** Prism's "Hide Prism" (the per-account switch, also in the Feed menu). */
+  onHide?: () => void
+  /** Told when a reply starts / ends (Prism's header button shows it at work). */
+  onWorkingChange?: (working: boolean) => void
 }) {
-  usePageLock()
+  const isPrism = persona === "prism"
+  const P = isPrism ? PRISM_UI : NOVA_UI
+  usePageLock(active)
   const [chats, setChats] = useState<NovaChatSummary[]>([])
   const [ov, setOv] = useState<Overview | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [chatId, setChatId] = useState<number | null>(null)
   const [chat, setChat] = useState<NovaChatDetail | null>(null)
   const [messages, setMessages] = useState<NovaMessage[]>([])
+  const messagesRef = useRef(messages)
+  useEffect(() => { messagesRef.current = messages }, [messages])
   const [loadingChat, setLoadingChat] = useState(false)
+  /** Prism: older messages exist above the loaded page; where the context was compacted / cleared; today's free questions. */
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [marks, setMarks] = useState<NovaContextMark[]>([])
+  const [contextBusy, setContextBusy] = useState<false | "compact" | "clear">(false)
+  const [prismInfo, setPrismInfo] = useState<{ freeLeft: number | null; freeLimit: number | null; context: PrismContext } | null>(null)
 
   const [text, setText] = useState("")
   const [attach, setAttach] = useState<PickedItem[]>([])
@@ -222,6 +251,16 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
   // ── loading ──
   const loadOverview = useCallback(async () => {
     try {
+      if (isPrism) {
+        // Prism has one chat: the overview IS that chat (made on first open)
+        const o = await novaApi.prism()
+        setChats([o.chat])
+        setOv({ isAdmin: o.isAdmin, budget: o.budget, spend: o.spend, balance: o.balance })
+        setPrismInfo({ freeLeft: o.freeLeft, freeLimit: o.freeLimit, context: o.context })
+        setMarks(o.context.marks)
+        setLoadError(null)
+        return { chats: [o.chat], isAdmin: o.isAdmin, budget: o.budget, spend: o.spend, balance: o.balance }
+      }
       const o = await novaApi.overview()
       setChats(o.chats)
       setOv({ isAdmin: o.isAdmin, budget: o.budget, spend: o.spend, balance: o.balance })
@@ -231,13 +270,20 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
       setLoadError(String(e?.message || e))
       return null
     }
-  }, [])
+  }, [isPrism])
 
+  /*
+   * Prism's chat loads its newest page; older pages come in as the user
+   * scrolls up and stay when the newest page is reloaded after a reply.
+   */
   const loadChat = useCallback(async (id: number) => {
     try {
-      const d = await novaApi.chat(id)
+      const d = await novaApi.chat(id, isPrism ? { take: PRISM_PAGE } : undefined)
       setChat(d.chat)
-      setMessages(d.messages)
+      const first = d.messages[0]?.id
+      const keepsOlder = isPrism && first !== undefined && messagesRef.current.some(m => m.id > 0 && m.id < first)
+      setMessages(prev => (isPrism && first !== undefined ? [...prev.filter(m => m.id > 0 && m.id < first), ...d.messages] : d.messages))
+      if (isPrism) { setMarks(d.marks ?? []); if (!keepsOlder) setHasMore(!!d.hasMore) }
       if (d.refs) setChatRefs(d.refs)
       setChatBible(d.bible ?? null)
       return d
@@ -248,7 +294,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
       } else setError({ msg: String(e?.message || e), needTickets: false })
       return null
     }
-  }, [])
+  }, [isPrism])
 
   const loadMemory = useCallback(async () => {
     try { const st = await novaApi.settings(); setMemory(st.memory ?? []); setBackgroundState(st.background ?? null) } catch { /* the panel shows nothing yet */ }
@@ -259,24 +305,25 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
     void (async () => {
       const o = await loadOverview()
       if (!o) return
+      if (isPrism) { setChatId(o.chats[0]?.id ?? null); return }
       let last: number | null = null
       try { last = Number(localStorage.getItem("nova-chat")) || null } catch {}
       if (last && o.chats.some(c => c.id === last)) setChatId(last)
     })()
-  }, [loadOverview])
+  }, [loadOverview, isPrism])
 
   useEffect(() => {
     setRefsError(null)
     // Another chat's references never show on this one (a chat just made by the panel gets its own from the save)
     if (freshChatRef.current !== chatId) { setChatRefs({ assets: [], generations: [] }); setChatBible(null) }
     if (chatId === null) { setChat(null); setMessages([]); return }
-    try { localStorage.setItem("nova-chat", String(chatId)) } catch {}
+    if (!isPrism) { try { localStorage.setItem("nova-chat", String(chatId)) } catch {} }
     setAutoContinue(readAuto(chatId))
     setReadyToContinue(false)
     if (freshChatRef.current === chatId) { freshChatRef.current = null; return }
     setLoadingChat(true)
     void loadChat(chatId).finally(() => setLoadingChat(false))
-  }, [chatId, loadChat])
+  }, [chatId, loadChat, isPrism])
 
   // Keep the newest message in view while the user is at the bottom
   useEffect(() => {
@@ -288,8 +335,11 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
   }, [messages])
   const onScroll = () => {
     const el = scrollRef.current
-    if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+    if (!el) return
+    nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+    if (isPrism && el.scrollTop < 80) void loadOlderRef.current()
   }
+  const loadOlderRef = useRef<() => Promise<void>>(async () => {})
 
   // ── sending ──
   const send = useCallback(async (body: NovaSendBody, opts?: { optimisticText?: string; targetChat?: number }) => {
@@ -405,6 +455,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
    */
   const following = !busy && !!lastAssistant?.running
   const working = busy || following
+  useEffect(() => { onWorkingChange?.(working) }, [working, onWorkingChange])
   useEffect(() => {
     if (!following || chatId === null) return
     const id = chatId
@@ -603,6 +654,42 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
     setOv(o => (o ? { ...o, budget: r.budget, spend: r.spend, balance: r.balance } : o))
   }
   const pickRunBudget = (n: number) => { setRunBudget(n); writeRunBudget(n) }
+
+  /** Prism: Compact / Clear context (POST /api/prism) - the divider appears after the newest message. */
+  const resetContext = async (mode: "compact" | "clear") => {
+    if (contextBusy || working) return
+    setContextBusy(mode)
+    try {
+      const r = await novaApi.prismContext(mode)
+      setMarks(r.context.marks)
+      setPrismInfo(i => (i ? { ...i, context: r.context } : i))
+      nearBottom.current = true
+      if (mode === "clear") { setChatBible(null); setChat(c => (c ? { ...c, plan: null } : c)) }
+      // Down to the new divider
+      requestAnimationFrame(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight })
+    } catch (e: any) {
+      setError({ msg: String(e?.message || e), needTickets: false })
+    } finally { setContextBusy(false) }
+  }
+  /** Prism: the page of messages before the oldest one on screen, kept in place (the view does not jump). */
+  const loadOlder = async () => {
+    const first = messages.find(m => m.id > 0)?.id
+    if (!isPrism || chatId === null || loadingOlder || !hasMore || !first) return
+    setLoadingOlder(true)
+    const el = scrollRef.current
+    const fromBottom = el ? el.scrollHeight - el.scrollTop : 0
+    try {
+      const d = await novaApi.chat(chatId, { take: PRISM_PAGE, before: first })
+      nearBottom.current = false
+      setHasMore(!!d.hasMore)
+      setMessages(ms => [...d.messages.filter(m => !ms.some(x => x.id === m.id)), ...ms])
+      requestAnimationFrame(() => { if (el) el.scrollTop = el.scrollHeight - fromBottom })
+    } catch (e: any) {
+      setError({ msg: String(e?.message || e), needTickets: false })
+    } finally { setLoadingOlder(false) }
+  }
+  // The scroll handler pages in through a ref, so it always calls the latest loadOlder
+  useEffect(() => { loadOlderRef.current = loadOlder })
   /** The header's usage ring: below 2xl it opens the panel; from 2xl the panel is already on screen, so its gauge is brought into view and glows. */
   const showUsage = () => {
     if (!window.matchMedia("(min-width: 1536px)").matches) { setPanelOpen(true); return }
@@ -624,8 +711,6 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
   // (or clips) are fetched as their My Generations rows, so the viewer shows
   // the real model, prompt and settings and its arrows step through the chat.
   // A row that does not load (deleted, still saving) opens from the card itself.
-  const messagesRef = useRef(messages)
-  useEffect(() => { messagesRef.current = messages }, [messages])
   const openInViewer = useCallback((step: NovaStep): boolean => {
     if (!onOpenMedia || !step.generationId || !step.mediaUrl) return false
     const kind: "image" | "video" = step.kind === "image" ? "image" : "video"
@@ -752,13 +837,14 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
   )
 
   return (
+    <NovaPersonaContext.Provider value={P}>
     <NovaOpenMediaContext.Provider value={onOpenMedia ? openInViewer : null}>
     <div className="relative h-full flex bg-[#070b14] text-slate-200 overflow-hidden">
       <style>{NOVA_STAGE_CSS}</style>
 
-      {/* Chats: a column from lg, a slide-over below */}
-      <aside className="hidden lg:block w-64 xl:w-72 2xl:w-[19rem] shrink-0 border-r border-white/[0.06]">{sidebar}</aside>
-      {drawer && (
+      {/* Chats: a column from lg, a slide-over below (Prism has one chat - no list) */}
+      {!isPrism && <aside className="hidden lg:block w-64 xl:w-72 2xl:w-[19rem] shrink-0 border-r border-white/[0.06]">{sidebar}</aside>}
+      {drawer && !isPrism && (
         <div className="lg:hidden absolute inset-0 z-40 flex">
           <div className="w-[min(19rem,86vw)] h-full border-r border-white/[0.08] shadow-2xl">{sidebar}</div>
           <button className="flex-1 bg-black/60" onClick={() => setDrawer(false)} aria-label="Close chats" />
@@ -767,6 +853,11 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
 
       <main className="flex-1 min-w-0 flex flex-col">
         {/* Header */}
+        {isPrism ? (
+          <PrismHeader live={live} working={working} balance={ov ? ov.balance : undefined} context={contextLoad(messages, marks)}
+            onCompact={() => void resetContext("compact")} onClear={() => void resetContext("clear")} contextBusy={contextBusy}
+            onBudget={() => setBudgetOpen("budget")} onMemory={() => setBudgetOpen("memory")} onHide={onHide} onClose={onClose} />
+        ) : (
         <div className="shrink-0 border-b border-white/[0.06] px-3 sm:px-4 py-2 flex items-center gap-2 bg-[#070b14]/95">
           <button onClick={() => setDrawer(true)} className="lg:hidden p-1.5 -ml-1 text-slate-400 hover:text-white" aria-label="Chats"><Menu size={17} /></button>
           <div className="min-w-0 flex-1">
@@ -798,24 +889,34 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
             <PanelRight size={17} />
           </button>
         </div>
+        )}
 
-        {/* Nova, live - below 2xl (from 2xl she has the side panel) */}
+        {/* Nova, live - below 2xl (from 2xl she has the side panel; Prism's header shows its own) */}
+        {!isPrism && (
         <div className="2xl:hidden shrink-0">
           <NovaBar live={live} onOpenPanel={() => setPanelOpen(true)} chips={
             <span className={`${chip} md:hidden text-[10px]`}><Ticket size={10} /> {balanceText}</span>
           } />
         </div>
+        )}
 
         {/* Conversation */}
         <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
-          <div className="max-w-[1500px] mx-auto px-3 sm:px-6 xl:px-10 py-5 sm:py-6 space-y-6">
+          <div className={isPrism ? "px-3 sm:px-4 py-4 space-y-5" : "max-w-[1500px] mx-auto px-3 sm:px-6 xl:px-10 py-5 sm:py-6 space-y-6"}>
             {loadingChat && (
               <div className="flex flex-col items-center justify-center gap-3 py-20 text-slate-500">
                 <NovaFigure pose="thinking" size={72} busy />
                 <span className="text-[12px]">Opening the chat…</span>
               </div>
             )}
-            {empty && (
+            {empty && isPrism && <PrismWelcome onPick={t => void submit(t)} disabled={busy} freeLeft={prismInfo?.freeLeft} />}
+            {isPrism && hasMore && !loadingChat && (
+              <button onClick={() => void loadOlder()} disabled={loadingOlder}
+                className="mx-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] text-[11px] text-slate-400 hover:text-white disabled:opacity-60">
+                {loadingOlder ? <Loader2 size={11} className="animate-spin" /> : <ArrowUp size={11} />} Earlier messages
+              </button>
+            )}
+            {empty && !isPrism && (
               <div className="space-y-5">
                 {/* Welcome hero: Nova's studio art beside her introduction (one Nova, not two) */}
                 <div className="relative rounded-3xl overflow-hidden border border-white/[0.06] bg-[radial-gradient(ellipse_at_80%_50%,rgba(99,102,241,0.16),transparent_60%),#080c17] grid md:grid-cols-[1fr_1.05fr]">
@@ -861,23 +962,27 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
               </div>
             )}
             {!loadingChat && messages.map(m => (
-              <NovaMessageView key={m.id} message={m} streaming={m.id === STREAM_ID || (following && m.id === lastAssistant?.id)} livePose={m.id === STREAM_ID || (following && m.id === lastAssistant?.id) ? live.pose : undefined}
-                isLatestAssistant={m.role === "assistant" && (m.id === STREAM_ID || m.id === lastAssistant?.id)}
-                busy={working} onApprovePlan={approvePlan} onDeclinePlan={declinePlan} />
+              <Fragment key={m.id}>
+                <NovaMessageView message={m} streaming={m.id === STREAM_ID || (following && m.id === lastAssistant?.id)} livePose={m.id === STREAM_ID || (following && m.id === lastAssistant?.id) ? live.pose : undefined}
+                  isLatestAssistant={m.role === "assistant" && (m.id === STREAM_ID || m.id === lastAssistant?.id)}
+                  busy={working} onApprovePlan={approvePlan} onDeclinePlan={declinePlan} />
+                {/* Where the user compacted / cleared Prism's context */}
+                {marks.filter(k => k.afterId === m.id).slice(-1).map(k => <ContextDivider key={k.at} mark={k} />)}
+              </Fragment>
             ))}
             {following && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.05] text-[11.5px] text-fuchsia-100">
-                <Loader2 size={12} className="animate-spin" /> Nova is still working on this - it updates here as she goes.
+                <Loader2 size={12} className="animate-spin" /> {P.name} is still working on this - it updates here as it goes.
               </div>
             )}
             {busy && carryingOn && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.05] text-[11.5px] text-fuchsia-100">
-                <Loader2 size={12} className="animate-spin" /> Nova is carrying on with the plan…
+                <Loader2 size={12} className="animate-spin" /> {P.name} is carrying on with the plan…
               </div>
             )}
             {!working && lastAssistant && wantsToContinue && (readyToContinue || (lastAssistant.keepGoing && !hasPending)) && !continuedFor.current.has(lastAssistant.id) && !autoContinue && (
               <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.06] text-[12px] text-emerald-200">
-                <Check size={13} /> {lastAssistant.keepGoing ? "Nova paused mid-plan - she can carry on." : "The renders are ready."}
+                <Check size={13} /> {lastAssistant.keepGoing ? `${P.name} paused mid-plan and can carry on.` : "The renders are ready."}
                 <button onClick={continueNow} className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-white font-semibold">
                   <PlayCircle size={12} /> Continue
                 </button>
@@ -887,12 +992,12 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
         </div>
 
         {/* Composer */}
-        <div className="shrink-0 border-t border-white/[0.06] bg-[linear-gradient(0deg,#070b14,rgba(7,11,20,0.92))] px-3 sm:px-6 pt-2.5 pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-3">
-          <div className="max-w-[1100px] mx-auto">
+        <div className={`shrink-0 border-t border-white/[0.06] bg-[linear-gradient(0deg,#070b14,rgba(7,11,20,0.92))] ${isPrism ? "px-3 pt-2.5 pb-[calc(0.75rem+env(safe-area-inset-bottom))]" : "px-3 sm:px-6 pt-2.5 pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-3"}`}>
+          <div className={isPrism ? "" : "max-w-[1100px] mx-auto"}>
             {error && (
               <div className={`mb-2 flex items-start gap-2 px-3 py-2 rounded-lg border text-[12px] ${error.cont ? "border-sky-400/25 bg-sky-500/[0.06] text-sky-100" : error.needTickets ? "border-amber-400/30 bg-amber-500/[0.07] text-amber-100" : "border-red-500/25 bg-red-500/[0.07] text-red-200"}`}>
                 {error.cont ? <PlayCircle size={13} className="shrink-0 mt-0.5" /> : <AlertCircle size={13} className="shrink-0 mt-0.5" />}
-                <span className="flex-1">{error.cont ? "Nova has carried on by herself for a while and paused so you can check in." : error.msg}</span>
+                <span className="flex-1">{error.cont ? `${P.name} has carried on alone for a while and paused so you can check in.` : error.msg}</span>
                 {error.cont && (
                   <button onClick={() => { setError(null); void submit("Continue") }} disabled={busy}
                     className="shrink-0 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-white font-semibold disabled:opacity-50">
@@ -939,7 +1044,8 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
                 ))}
               </div>
             )}
-            <div className="flex items-end gap-2 rounded-2xl silver-edge bg-[#0b0f1a] p-2 shadow-[0_10px_40px_-20px_rgba(0,0,0,0.9)]">
+            {/* Prism's panel is narrow: the text box gets its own row and the buttons sit under it */}
+            <div className={`flex ${isPrism ? "flex-wrap items-center gap-x-1.5 gap-y-1" : "items-end gap-2"} rounded-2xl silver-edge bg-[#0b0f1a] p-2 shadow-[0_10px_40px_-20px_rgba(0,0,0,0.9)]`}>
               <button onClick={() => void pickAttachments()} disabled={busy || attach.length >= MAX_ATTACH}
                 className="shrink-0 p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-40" title="Attach from My Generations or Assets" aria-label="Attach">
                 <Paperclip size={17} />
@@ -952,14 +1058,15 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
                 onChange={e => { void uploadFiles(e.target.files); e.target.value = "" }} />
               <button onClick={() => setAssetPickerOpen(true)} disabled={busy}
                 className={`shrink-0 -ml-1 p-2 rounded-xl hover:bg-white/[0.06] disabled:opacity-40 ${pickedAssets.length ? "text-fuchsia-300" : "text-slate-400 hover:text-white"}`}
-                title="Pick your Assets - tell Nova which character, product or place you mean" aria-label="Pick assets">
+                title={`Pick your Assets - tell ${P.name} which character, product or place you mean`} aria-label="Pick assets">
                 <Library size={17} />
               </button>
               <textarea ref={taRef} value={text} onChange={e => setText(e.target.value)} rows={1}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submit() } }}
-                placeholder={working ? "Nova is working…" : chat ? "Tell Nova what to make…" : "Start a chat - tell Nova what to make…"}
-                className="flex-1 min-w-0 resize-none max-h-40 min-h-[40px] px-1.5 py-2 bg-transparent text-[14px] text-white placeholder:text-slate-600 focus:outline-none field-sizing-content" />
+                placeholder={working ? `${P.name} is working…` : isPrism ? "Ask Prism anything, or say what to make…" : chat ? "Tell Nova what to make…" : "Start a chat - tell Nova what to make…"}
+                className={`${isPrism ? "order-first basis-full" : "flex-1"} min-w-0 resize-none max-h-40 min-h-[40px] px-1.5 py-2 bg-transparent text-[14px] text-white placeholder:text-slate-600 focus:outline-none field-sizing-content`} />
               {/* The budget for this request - set per run, right where it is sent */}
+              {isPrism && <span className="flex-1" />}
               <NovaRunBudget value={runValue} accountDefault={ov?.budget.askAbove} onChange={pickRunBudget}
                 onSaveDefault={ov ? n => saveBudget({ ...ov.budget, askAbove: n }) : undefined}
                 onOpenLimits={() => setBudgetOpen("budget")} disabled={!ov} />
@@ -974,9 +1081,9 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
               )}
             </div>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-slate-500">
-              <span>Chat and generations cost tickets · Nova asks first if a request needs more than {runValue}</span>
+              <span>{isPrism && prismInfo?.freeLeft != null ? `${prismInfo.freeLeft} free quick question${prismInfo.freeLeft === 1 ? "" : "s"} left today · ` : ""}{isPrism ? "Making things costs tickets" : "Chat and generations cost tickets"} · {P.name} asks first above {runValue}</span>
               {chat && (
-                <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer select-none" title="When Nova is waiting on renders or paused mid-plan, carry on by herself">
+                <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer select-none" title={`When ${P.name} is waiting on renders or paused mid-plan, carry on automatically`}>
                   <input type="checkbox" checked={autoContinue} onChange={e => { setAutoContinue(e.target.checked); if (chat) writeAuto(chat.id, e.target.checked) }} className="accent-fuchsia-400" />
                   Auto-continue after renders
                 </label>
@@ -986,11 +1093,11 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
         </div>
       </main>
 
-      {/* The Studio panel: a column from 2xl, a slide-over below */}
-      <aside className="hidden 2xl:block w-[22rem] min-[1900px]:w-[25rem] shrink-0 border-l border-white/[0.06] overflow-y-auto overscroll-contain p-3 bg-[linear-gradient(180deg,#080c17,#070b14)]">
+      {/* The Studio panel: a column from 2xl, a slide-over below (not in Prism's compact panel) */}
+      {!isPrism && <aside className="hidden 2xl:block w-[22rem] min-[1900px]:w-[25rem] shrink-0 border-l border-white/[0.06] overflow-y-auto overscroll-contain p-3 bg-[linear-gradient(180deg,#080c17,#070b14)]">
         {panel}
-      </aside>
-      {panelOpen && (
+      </aside>}
+      {panelOpen && !isPrism && (
         <div className="2xl:hidden absolute inset-0 z-40 flex justify-end">
           <button className="flex-1 bg-black/60" onClick={() => setPanelOpen(false)} aria-label="Close the studio panel" />
           <div className="relative w-[min(24rem,92vw)] h-full overflow-y-auto overscroll-contain border-l border-white/[0.08] shadow-2xl p-3 pb-[calc(6rem+env(safe-area-inset-bottom))] bg-[#070b14]">
@@ -1009,5 +1116,6 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia }: {
       {assetPickerOpen && <NovaAssetPicker selected={pickedAssets} onClose={() => setAssetPickerOpen(false)} onDone={a => { setPickedAssets(a); setAssetPickerOpen(false); setTimeout(() => taRef.current?.focus(), 50) }} />}
     </div>
     </NovaOpenMediaContext.Provider>
+    </NovaPersonaContext.Provider>
   )
 }

@@ -1,6 +1,6 @@
 import prisma from '@/lib/prisma'
 import { jsonPrivate } from '@/lib/api-json'
-import { requireNovaUser } from '@/lib/nova/auth'
+import { requireAgentUser } from '@/lib/nova/auth'
 import { requireIdVerified } from '@/lib/id-verification'
 import { canonicalMediaUrl, isOurMedia, signMediaUrl } from '@/lib/media-url'
 import { probeRemoteMediaSeconds } from '@/lib/video-probe'
@@ -30,7 +30,7 @@ const KIND: Record<string, 'image' | 'video' | 'audio'> = {
 }
 
 export async function POST(req: Request) {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
   const idGate = await requireIdVerified(a.user)
   if (idGate) return idGate
@@ -49,7 +49,7 @@ export async function POST(req: Request) {
   let folderId: number | null = null
   const chatId = Number(body.chatId)
   if (Number.isInteger(chatId) && chatId > 0) {
-    const chat = await prisma.chat.findFirst({ where: { id: chatId, userId: a.user.id, source: 'nova' }, select: { skills: true } })
+    const chat = await prisma.chat.findFirst({ where: { id: chatId, userId: a.user.id, source: { in: a.sources } }, select: { skills: true } })
     folderId = readChatState(chat?.skills).folderId
   }
   const seconds = kind === 'image' ? null : await probeRemoteMediaSeconds(signMediaUrl(stored)).catch(() => null)

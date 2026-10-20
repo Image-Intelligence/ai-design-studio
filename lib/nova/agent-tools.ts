@@ -31,7 +31,7 @@ import { deductGenerationTickets } from '@/lib/ticket-gate'
 import { describeModels, novaImageModels, novaVideoModels, novaAudioModels, novaThreeDTools, estimateCreate, type NovaKind } from '@/lib/nova/catalog'
 import { rowForRequest, fileGeneration } from '@/lib/nova/jobs'
 import { addNovaSpend, roomLeft } from '@/lib/nova/ledger'
-import { cleanRunBudget, novaCutTickets, type NovaBudget, type NovaSpend, type NovaStep, type NovaPlan, type NovaMediaKind } from '@/lib/nova/config'
+import { cleanRunBudget, novaCutTickets, type NovaContextMark, type NovaBudget, type NovaSpend, type NovaStep, type NovaPlan, type NovaMediaKind } from '@/lib/nova/config'
 import sharp from 'sharp'
 import { fetchMedia } from '@/lib/media-fetch'
 
@@ -64,6 +64,8 @@ export type NovaChatState = {
    * writes; absent = the older askAbove rule (see NovaAllowance).
    */
   runBudget?: number
+  /** Where the user compacted / cleared the context (lib/nova/agent resetChatContext). */
+  marks?: NovaContextMark[]
   /** A background turn finished while the user was away: shown as new until the chat is opened. */
   unread?: boolean
   /**
@@ -125,6 +127,7 @@ export function readChatState(raw: unknown): NovaChatState {
     autoTurns: Math.max(0, Number(o.autoTurns) || 0),
     chainUnplanned: Math.max(0, Number(o.chainUnplanned) || 0),
     runBudget: cleanRunBudget(o.runBudget),
+    marks: Array.isArray(o.marks) ? o.marks.filter(m => m && Number.isInteger(m.afterId) && (m.kind === 'compact' || m.kind === 'clear')).slice(-30) : undefined,
     unread: o.unread === true,
     refs: cleanChatRefs(o.refs),
     refsShown: typeof o.refsShown === 'string' ? o.refsShown.slice(0, 400) : undefined,

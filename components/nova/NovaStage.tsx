@@ -5,7 +5,8 @@ import type { NovaMediaKind } from "@/lib/nova/config"
 import { AudioLines, Bookmark, Box, Clapperboard, ClipboardList, Image as ImageIcon, ShieldCheck, Ticket, Video } from "lucide-react"
 import type { NovaBudget, NovaMessage, NovaSpend, NovaStep } from "@/lib/nova/config"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
-import { NOVA_POSES, NOVA_POSE_ORDER, type NovaPose } from "./novaArt"
+import { NOVA_POSE_ORDER, type NovaPose } from "./novaArt"
+import { usePersona } from "./persona"
 
 /*
  * Nova on screen (2026-10-18): the mascot as the studio's assistant, not a
@@ -158,6 +159,9 @@ export function NovaFigure({ pose, size, busy, animated = true, glow = true, cla
   glow?: boolean
   className?: string
 }) {
+  const persona = usePersona()
+  // Avatar sizes show the persona's face crop when it has one (Prism's full figure is too small there)
+  const face = size <= 40 && persona.face ? persona.face : null
   const accent = pose === "creating" ? "rgba(232,121,249,0.55)" : pose === "rendering" ? "rgba(56,189,248,0.5)" : pose === "done" ? "rgba(250,204,21,0.45)" : "rgba(129,140,248,0.45)"
   return (
     <div className={`relative shrink-0 ${className}`} style={{ width: size, height: size }} aria-hidden>
@@ -178,12 +182,15 @@ export function NovaFigure({ pose, size, busy, animated = true, glow = true, cla
         </div>
       )}
       <div className={`absolute inset-0 ${animated ? `nova-float ${busy ? "nova-float-fast" : ""}` : ""}`}>
-        {NOVA_POSE_ORDER.map(p => (
+        {face
           // eslint-disable-next-line @next/next/no-img-element
-          <img key={p} src={NOVA_POSES[p]} alt="" draggable={false} decoding="async"
-            className="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
-            style={{ opacity: p === pose ? 1 : 0, transition: "opacity 500ms ease" }} />
-        ))}
+          ? <img src={face} alt="" draggable={false} decoding="async" className="absolute inset-0 w-full h-full object-cover rounded-full select-none pointer-events-none" />
+          : NOVA_POSE_ORDER.map(p => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img key={p} src={persona.poses[p]} alt="" draggable={false} decoding="async"
+              className="absolute inset-0 w-full h-full object-contain select-none pointer-events-none"
+              style={{ opacity: p === pose ? 1 : 0, transition: "opacity 500ms ease" }} />
+          ))}
       </div>
     </div>
   )
@@ -267,7 +274,7 @@ const USAGE_PARTS: { key: string; label: string; color: string }[] = [
   { key: "video", label: "Video", color: "#f0abfc" },
   { key: "audio", label: "Audio", color: "#c4b5fd" },
   { key: "other", label: "3D & cuts", color: "#fcd34d" },
-  { key: "chat", label: "Nova chat", color: "#e2e8f0" },
+  { key: "chat", label: "Chat", color: "#e2e8f0" },
 ]
 
 /** Where this chat's tickets went, from its messages (generations by kind; the chat's own tokens). */

@@ -1,5 +1,5 @@
 import { jsonPrivate } from '@/lib/api-json'
-import { requireNovaUser } from '@/lib/nova/auth'
+import { requireAgentUser } from '@/lib/nova/auth'
 import { loadNovaBudget, saveNovaBudget, novaBalance } from '@/lib/nova/ledger'
 import { sanitizeNovaBudget } from '@/lib/nova/config'
 import { loadNovaMemory, removeNovaNote } from '@/lib/nova/memory'
@@ -22,13 +22,13 @@ async function out(userId: number, isAdmin: boolean) {
 }
 
 export async function GET() {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
   return jsonPrivate(await out(a.user.id, a.isAdmin))
 }
 
 export async function PUT(req: Request) {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
   const body = await req.json().catch(() => ({})) as { budget?: unknown; background?: unknown }
   if (body.budget !== undefined) await saveNovaBudget(a.user.id, sanitizeNovaBudget(body.budget))
@@ -39,7 +39,7 @@ export async function PUT(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
   const id = new URL(req.url).searchParams.get('note')
   if (id) await removeNovaNote(a.user.id, id)

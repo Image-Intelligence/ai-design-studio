@@ -41,6 +41,9 @@ export async function authenticateApiKey(request: Request): Promise<ApiKeyAuth |
     include: { user: { include: { tickets: true } } },
   })
   if (!row || row.disabled) return 'invalid'
+  // A connector's key (lib/mcp/oauth) is an OAuth access token: it expires, and its app refreshes it
+  const oauth = (row.permissions as { oauth?: { accessExp?: number } } | null)?.oauth
+  if (oauth && (Number(oauth.accessExp) || 0) < Date.now()) return 'invalid'
 
   // Throttled fire-and-forget lastUsedAt (at most one write per minute per key)
   if (!row.lastUsedAt || Date.now() - row.lastUsedAt.getTime() > 60_000) {

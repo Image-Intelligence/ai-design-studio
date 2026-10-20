@@ -1,5 +1,5 @@
 import { jsonPrivate } from '@/lib/api-json'
-import { requireNovaUser } from '@/lib/nova/auth'
+import { requireAgentUser } from '@/lib/nova/auth'
 import { runNovaTurn } from '@/lib/nova/agent'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { canonicalisePayload } from '@/lib/media-url'
@@ -21,7 +21,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const a = await requireNovaUser()
+  const a = await requireAgentUser()
   if (!a.ok) return a.res
   const chatId = Number((await ctx.params).id)
   if (!Number.isInteger(chatId)) return jsonPrivate({ error: 'Bad chat id' }, { status: 400 })
@@ -34,7 +34,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   }
   const num = (v: unknown) => Number.isInteger(Number(v)) ? Number(v) : NaN
   const out = await runNovaTurn({
-    user: a.user, isAdmin: a.isAdmin, chatId, text,
+    user: a.user, isAdmin: a.isAdmin, sources: a.sources, chatId, text,
     attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds.map(num).filter((n: number) => n > 0).slice(0, 8) : [],
     assetIds: Array.isArray(body.assetIds) ? body.assetIds.map(num).filter((n: number) => n > 0).slice(0, 6) : [],
     attachmentUrls: Array.isArray(body.attachmentUrls) ? body.attachmentUrls.filter((u: unknown): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 4) : [],

@@ -1,6 +1,6 @@
 "use client"
 
-import type { NovaBudget, NovaChatSummary, NovaMessage, NovaSpend, NovaStep, NovaStreamEvent } from "@/lib/nova/config"
+import type { NovaBudget, NovaChatSummary, NovaContextMark, NovaMessage, NovaSpend, NovaStep, NovaStreamEvent } from "@/lib/nova/config"
 
 /*
  * Nova Studio's calls to /api/nova (2026-10-18). Thin wrappers, so the studio
@@ -36,6 +36,20 @@ export type NovaSendBody = {
   runBudget?: number
 }
 
+/** How much Prism's next reply re-reads: messages since the last compact / clear, and whether there is a summary. */
+export type PrismContext = { messages: number; summary: boolean; marks: NovaContextMark[] }
+export type PrismOverview = {
+  chat: NovaChatSummary
+  isAdmin: boolean
+  budget: NovaBudget
+  spend: NovaSpend
+  balance: number | null
+  /** Free quick questions left today (null = unmetered, an admin). */
+  freeLeft: number | null
+  freeLimit: number | null
+  context: PrismContext
+}
+
 export class NovaError extends Error {
   status: number
   needTickets: boolean
@@ -51,7 +65,7 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const j = await r.json().catch(() => ({} as Record<string, unknown>))
   if (!r.ok) {
     const msg = typeof (j as any).error === "string" ? (j as any).error
-      : r.status === 401 ? "Sign in to use Nova Studio"
+      : r.status === 401 ? "Sign in first"
       : r.status === 403 ? "Nova Studio is admin-only while it is being tested"
       : `Request failed (${r.status})`
     throw new NovaError(msg, r.status, (j as any).needTickets === true)
@@ -68,7 +82,13 @@ const json = (body: unknown, method = "POST"): RequestInit => ({
 export const novaApi = {
   overview: () => call<NovaOverview>("/api/nova/chats"),
   createChat: (title?: string) => call<{ chat: NovaChatSummary }>("/api/nova/chats", json(title ? { title } : {})),
-  chat: (id: number) => call<{ chat: NovaChatDetail; messages: NovaMessage[]; refs?: NovaChatRefs; bible?: NovaChatBible | null }>(`/api/nova/chats/${id}`),
+  /** A chat and a page of its messages: the newest `take`, or those before message `before` (older pages). */
+  chat: (id: number, page?: { take?: number; before?: number }) => call<{ chat: NovaChatDetail; messages: NovaMessage[]; hasMore?: boolean; marks?: NovaContextMark[]; refs?: NovaChatRefs; bible?: NovaChatBible | null }>(
+    `/api/nova/chats/${id}${page ? `?${new URLSearchParams(Object.entries(page).filter(([, v]) => v).map(([k, v]) => [k, String(v)])).toString()}` : ""}`),
+  /** Prism, the site guide: the account's one Prism chat (made on first open), its limits and today's free questions. */
+  prism: () => call<PrismOverview>("/api/prism"),
+  /** Take Prism's context back to its cheapest point. */
+  prismContext: (action: "compact" | "clear") => call<{ ok: true; context: PrismContext }>("/api/prism", json({ action })),
   patchChat: (id: number, patch: { title?: string; model?: string; refs?: { assets: number[]; generations: number[] }; bible?: null }) =>
     call<{ chat: NovaChatSummary; refs?: NovaChatRefs }>(`/api/nova/chats/${id}`, json(patch, "PATCH")),
   deleteChat: (id: number) => call<{ ok: true }>(`/api/nova/chats/${id}`, { method: "DELETE" }),
