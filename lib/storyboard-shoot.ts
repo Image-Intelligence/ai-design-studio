@@ -122,6 +122,68 @@ export async function submitShots(user: User, board: Board, ids: string[], resol
   return out
 }
 
+/**
+ * A Shot edit (2026-10-19): one of the site's video-to-video tools run on a
+ * shot's current clip (lib/storyboard-tools CLIP_TOOLS). It goes through
+ * /api/video/generate like every render - the route measures the clip,
+ * prices it, charges it, gates admin-only tools and checks the media is the
+ * account's own - and lands on the slot as a rendering `video`, so the
+ * shoot route's polling settles it into a new take (settleShots) exactly as
+ * a shot. The clip it edits stays one of the slot's takes.
+ *
+ * The source is the clip as the model rendered it (`rawUrl`) when there is
+ * one: that is the file saved in My Generations (the ownership check reads
+ * those), and the result is conformed to the board's frame on settling anyway.
+ */
+export async function submitClipTool(
+  user: User,
+  board: Board,
+  shotId: string,
+  tool: { id: string; label: string; prompt?: string; refs?: string[]; settings?: Record<string, unknown>; seconds?: number; line?: { id: string; url: string } },
+): Promise<{ video: ShotVideo; ticketCost: number } | { error: string; status?: number }> {
+  const shots = sanitizeShots(board.shots)
+  const shot = shots.find(s => s.id === shotId)
+  if (!shot) return { error: 'No such shot' }
+  const cur = shot.video
+  if (cur?.status === 'rendering') return { error: 'This shot is still rendering - wait for it first' }
+  if (cur?.status !== 'done' || !cur.url) return { error: 'Shoot this shot first - the tools work on its clip' }
+  const src = cur.rawUrl || cur.url
+  const prompt = (tool.prompt ?? '').trim().slice(0, 2000)
+  const body: Record<string, unknown> = {
+    model: tool.id, prompt, adminMode: false,
+    duration: tool.seconds ? String(tool.seconds) : '5',
+    resolution: '1080p', klingAspectRatio: board.aspect,
+    ...(tool.settings ?? {}),
+  }
+  if (tool.line) {
+    body.lipsyncVideoUrl = src
+    body.lipsyncAudioUrl = tool.line.url
+    body.lipsyncSyncMode = 'cut_off'
+  } else {
+    body.editVideoUrl = src
+    if (tool.refs?.length) body.referenceImageUrls = tool.refs
+  }
+  const { POST } = await import('@/app/api/video/generate/route')
+  const res = await POST(new NextRequest('http://internal/api/video/generate', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }))
+  const data = await res.json().catch(() => ({})) as Record<string, any>
+  if (!res.ok || data?.success === false) return { error: String(data?.error || `The ${tool.label} failed to start (${res.status})`).slice(0, 400), status: res.status === 402 ? 402 : res.status === 403 ? 403 : 400 }
+  const queueId = Number(data?.queueJobId ?? data?.queueId ?? 0)
+  if (!Number.isInteger(queueId) || queueId <= 0) return { error: 'The render was not queued' }
+  const v: ShotVideo = {
+    queueId, status: 'rendering', url: null, error: null, model: tool.id,
+    // An extend adds its seconds; the rest keep the clip's length
+    seconds: Math.round(((cur.seconds || shot.duration) + (tool.id.includes('extend') ? Number(tool.seconds) || 0 : 0)) * 10) / 10,
+    // Still the same shot: an edit never makes it "out of date" with its still
+    fromStill: cur.fromStill, fromPrompt: cur.fromPrompt, at: Date.now(),
+    // A lip-synced line stays "in the clip" through later edits (an upscale of it still speaks it)
+    edit: { tool: tool.id, label: tool.label, of: cur.url, ...(prompt ? { prompt } : {}), ...(tool.line ? { lineId: tool.line.id } : cur.edit?.lineId ? { lineId: cur.edit.lineId } : {}) },
+  }
+  await writeVideos(board.id, { [shot.id]: v })
+  return { video: v, ticketCost: Number(data?.ticketCost ?? 0) }
+}
+
 /** A clip in the board's frame (crop, or fit over a blurred fill) - /api/video/assemble's conform op. */
 async function conform(url: string, aspect: string): Promise<{ url: string; srcSize: string | null }> {
   const { POST } = await import('@/app/api/video/assemble/route')
@@ -165,7 +227,14 @@ export async function settleShots(user: User, board: Board): Promise<Record<stri
       const fitted = await conform(url, board.aspect).catch(() => null)
       if (fitted && fitted.url !== url) { rawUrl = url; rawSize = fitted.srcSize; url = fitted.url }
     }
-    const v: ShotVideo = { ...shot.video, status: url ? 'done' : 'failed', url, rawUrl, rawSize, error: url ? null : (error ?? 'The render failed') }
+    let v: ShotVideo = { ...shot.video, status: url ? 'done' : 'failed', url, rawUrl, rawSize, error: url ? null : (error ?? 'The render failed') }
+    // A Shot edit that failed puts the clip it was editing back on the slot
+    // (with the reason), so the board stays ready for the Final Cut
+    if (!url && shot.video.edit) {
+      const ofKey = stillKey(shot.video.edit.of)
+      const back = (shot.videos ?? []).find(t => t.url && stillKey(t.url) === ofKey)
+      if (back) v = { ...back, error: `${shot.video.edit.label} failed: ${(error ?? 'the render failed').slice(0, 300)}` }
+    }
     changed[shot.id] = v
     videos[shot.id] = v
     // File the clip with the board's stills

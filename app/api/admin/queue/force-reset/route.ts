@@ -1,3 +1,4 @@
+import { releaseReservedTickets } from '@/lib/ticket-gate'
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { syncActiveCounters } from '../stats/route'
@@ -40,10 +41,7 @@ export async function POST(request: Request) {
 
     await Promise.all(
       Array.from(reservationsByUser.entries()).map(([userId, totalReserved]) =>
-        prisma.ticket.update({
-          where: { userId },
-          data: { reserved: { decrement: totalReserved } },
-        })
+        releaseReservedTickets(userId, totalReserved)
       )
     )
 

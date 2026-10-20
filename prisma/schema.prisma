@@ -157,6 +157,10 @@ model CompositionCanvas {
 // TICKET SYSTEM (for AI generation)
 // ============================================
 
+// The database also enforces CHECK ("Ticket_balance_nonnegative": balance >= 0),
+// added out-of-band 2026-10-19 (Prisma cannot express CHECK constraints): any
+// write that would take a balance below 0 fails. Spend through lib/ticket-gate
+// (atomic, guarded) so a short balance is refused cleanly instead.
 model Ticket {
   id          Int      @id @default(autoincrement())
   userId      Int      @unique

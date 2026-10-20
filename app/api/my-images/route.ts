@@ -303,6 +303,30 @@ export async function GET(request: Request) {
 // Body: { ids: number[], hidden: boolean }
 // Hides or unhides the specified generations. Fully reversible — the DB row and
 // the stored file are untouched; only the isHidden flag changes.
+/*
+ * The selection's ids, plus the rows behind any `paths` (2026-10-18).
+ *
+ * A generation that has just finished sits in the portal feed under the id its
+ * status poll gave it, which is not always the saved row's id - so hiding or
+ * deleting it from select mode matched no row and quietly did nothing. The
+ * portal now also sends each selected tile's object path (the url without host
+ * or signature), and the rows of THIS user whose stored url ends in one of
+ * those paths join the selection. Paths are plain object keys only, so nothing
+ * odd reaches the LIKE.
+ */
+async function selectionIds(userId: number, body: { ids?: unknown; paths?: unknown }): Promise<number[]> {
+  const ids = Array.isArray(body.ids) ? body.ids.filter((n: unknown): n is number => typeof n === 'number') : []
+  const paths = Array.isArray(body.paths)
+    ? [...new Set(body.paths.filter((p: unknown): p is string => typeof p === 'string' && p.length >= 8 && p.length <= 300 && /^[\w\-./]+$/.test(p)))].slice(0, 200)
+    : []
+  if (!paths.length) return ids
+  const rows = await prisma.generatedImage.findMany({
+    where: { userId, isDeleted: false, OR: paths.map(p => ({ imageUrl: { endsWith: `/${p}` } })) },
+    select: { id: true },
+  })
+  return [...new Set([...ids, ...rows.map(r => r.id)])]
+}
+
 export async function PATCH(request: Request) {
   try {
     const resolved = await resolveRequestUser(request)
@@ -314,9 +338,12 @@ export async function PATCH(request: Request) {
     }
 
     const body = await request.json()
-    const ids: number[] = Array.isArray(body.ids)
-      ? body.ids.filter((n: unknown) => typeof n === 'number')
-      : []
+    // Folder actions act on saved tiles, which always carry their row id; hide
+    // and unhide also take `paths` for tiles that have just finished
+    const isFolderAction = body.action === 'move' || body.action === 'add' || body.action === 'remove'
+    const ids: number[] = isFolderAction
+      ? (Array.isArray(body.ids) ? body.ids.filter((n: unknown) => typeof n === 'number') : [])
+      : await selectionIds(user.id, body)
 
     if (ids.length === 0) {
       return jsonPrivate({ error: 'No image IDs provided' }, { status: 400 })
@@ -389,7 +416,7 @@ export async function PATCH(request: Request) {
 }
 
 // DELETE /api/my-images
-// Body: { ids: number[] }
+// Body: { ids: number[], paths?: string[] } (paths: see selectionIds)
 // Soft-deletes the specified images after verifying they belong to the user.
 export async function DELETE(request: Request) {
   try {
@@ -402,9 +429,9 @@ export async function DELETE(request: Request) {
     }
 
     const body = await request.json()
-    const ids: number[] = body.ids
+    const ids: number[] = await selectionIds(user.id, body)
 
-    if (!Array.isArray(ids) || ids.length === 0) {
+    if (ids.length === 0) {
       return jsonPrivate({ error: 'No image IDs provided' }, { status: 400 })
     }
 

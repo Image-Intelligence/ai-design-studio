@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
+import { authenticateApiKey, invalidKeyResponse, requireScopes } from '@/lib/api-key-auth'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { canonicalisePayload } from '@/lib/media-url'
@@ -42,8 +43,14 @@ const params_fileName = (body: any) => (typeof body?.audioName === 'string' ? bo
 
 export async function POST(req: Request) {
   try {
-    const token = (await cookies()).get('session')?.value
-    const user = token ? await getUserFromSession(token) : null
+    // A personal API key (lib/api-key-auth - the same keys /api/generate and
+    // /api/video/generate take, e.g. Nova Studio's background-run key) or the
+    // browser session. A key must be allowed to spend tickets.
+    const keyed = await authenticateApiKey(req)
+    if (keyed === 'invalid') return invalidKeyResponse()
+    if (keyed) { const denied = requireScopes(keyed, 'tickets:spend'); if (denied) return denied }
+    const token = keyed ? null : (await cookies()).get('session')?.value
+    const user = keyed ? keyed.user : token ? await getUserFromSession(token) : null
     if (!user?.email) return jsonPrivate({ error: 'Unauthorized' }, { status: 401 })
 
     const body = canonicalisePayload(await req.json().catch(() => ({})))

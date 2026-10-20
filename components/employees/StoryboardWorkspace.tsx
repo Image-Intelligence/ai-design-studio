@@ -10,6 +10,7 @@ import {
   Pencil, type LucideIcon,
 } from "lucide-react"
 import { storyboardDraftTickets } from "@/lib/ai-text-pricing"
+import { PROMPT_MODELS, DEFAULT_STORYBOARD_TEXT_MODEL, promptModelLabel } from "@/lib/prompt-models"
 import { BoardToAsset } from "@/components/employees/BoardToAsset"
 import { SceneRefs } from "@/components/employees/SceneRefs"
 import { StillThumbs, AddStillThumbs, thumbFrom, useThumb, mergeThumbs } from "@/components/employees/still-thumbs"
@@ -20,8 +21,8 @@ import {
   newShot, totalSeconds, fmtRuntime, imageModelLabel, stillKey, MAX_STILL_VERSIONS, type StoryboardDoc, type StoryboardShot, type ShotVideo,
   stillModelSpec, stillTickets, stillSettingValue, newAsset, newAssetRef, MAX_ASSET_REFS, type StoryAsset, type AssetKind,
   BOARD_MODES, boardMode, frameLabel, type BoardModeId, MAX_DRAFT_SHOTS, TARGET_LENGTHS, runtimeRange, lengthLabel,
-  FINAL_CUT_PHASES, FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS, NARRATOR_VOICES, DEFAULT_FINAL_CUT_OPTIONS,
-  type FinalCutState, type FinalCutOptions,
+  FINAL_CUT_PHASES, FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS, NARRATOR_VOICES, DEFAULT_FINAL_CUT_OPTIONS, FINAL_CUT_FORMATS,
+  type FinalCutState, type FinalCutOptions, type ReviseDraft,
   newScene, orderByScenes, ensureScenes, sceneShots, shotRefs, MAX_SCENES, type StoryScene,
   FRAMINGS, isFraming, type FramingId, liveStillJob, mergeStills, pickRefs, autoShotRefs, type ShotRef,
   stillRefUrls, editSource, SHOT_ASPECTS, finalCutExtraTickets,
@@ -34,6 +35,8 @@ import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
+import { StillEditTools, ClipEditTools, AudioLane, RevisePanel } from "@/components/employees/StoryboardWorkflow"
+import { WORKFLOW_PHASES, isWorkflowPhase, type WorkflowPhase } from "@/lib/storyboard-tools"
 
 /**
  * Storyboard Studio - see the cut before any motion is shot.
@@ -162,6 +165,15 @@ export function StoryboardWorkspace({
   const setPrefImage = (v: string) => { setPrefImageState(v); try { localStorage.setItem("pv2-storyboard-pref-image", v) } catch {} }
   const setPrefVideo = (v: string) => { setPrefVideoState(v); try { localStorage.setItem("pv2-storyboard-pref-video", v) } catch {} }
   /*
+   * The Gemini model that writes - Draft with AI and Edit with AI (2026-10-18).
+   * Admins only, to compare models; everyone else runs the default and the
+   * server ignores the field from them. Remembered on this device.
+   */
+  const [textModel, setTextModelState] = useState<string>(() => {
+    try { const v = localStorage.getItem("pv2-storyboard-text-model"); return v && PROMPT_MODELS.some(m => m.id === v) ? v : DEFAULT_STORYBOARD_TEXT_MODEL } catch { return DEFAULT_STORYBOARD_TEXT_MODEL }
+  })
+  const setTextModel = (v: string) => { setTextModelState(v); try { localStorage.setItem("pv2-storyboard-text-model", v) } catch {} }
+  /*
    * Cast & sets, "Build the cast first" (2026-10-11): after a draft that names
    * new recurring characters / places / things, offer to make them as assets
    * with their pictures (one price, one click), then match every shot's
@@ -169,6 +181,13 @@ export function StoryboardWorkspace({
    */
   const [castFirst, setCastFirstState] = useState<boolean>(() => { try { return localStorage.getItem("pv2-storyboard-cast-first") === "1" } catch { return false } })
   const setCastFirst = (v: boolean) => { setCastFirstState(v); try { localStorage.setItem("pv2-storyboard-cast-first", v ? "1" : "0") } catch {} }
+  /*
+   * Also fill the audio lane (2026-10-19, owner): the draft writes each shot's
+   * voice lines and where the music changes, with a voice per speaker - ready
+   * to record on the lane (recording is priced there). Remembered per browser.
+   */
+  const [fillAudio, setFillAudioState] = useState<boolean>(() => { try { return localStorage.getItem("pv2-storyboard-fill-audio") === "1" } catch { return false } })
+  const setFillAudio = (v: boolean) => { setFillAudioState(v); try { localStorage.setItem("pv2-storyboard-fill-audio", v ? "1" : "0") } catch {} }
   const [castOffer, setCastOffer] = useState<string[] | null>(null) // the suggested assets' names
   const [castBuilding, setCastBuilding] = useState<string | null>(null)
   const [drafting, setDrafting] = useState<false | DraftMode>(false)
@@ -201,6 +220,14 @@ export function StoryboardWorkspace({
   // The shot whose still is open in the Image Studio popup
   const [studioShot, setStudioShot] = useState<string | null>(null)
   const [fcOptions, setFcOptions] = useState<FinalCutOptions>(DEFAULT_FINAL_CUT_OPTIONS)
+  /*
+   * The workflow phase being worked in (2026-10-19): stills -> still edits ->
+   * shots -> shot edits -> Final Cut -> revise. It picks the tools under each
+   * shot and what the board shows on top; the audio lane is there throughout.
+   * Remembered on this device.
+   */
+  const [phase, setPhaseState] = useState<WorkflowPhase>(() => { try { const v = localStorage.getItem("pv2-storyboard-phase"); return isWorkflowPhase(v) ? v : "stills" } catch { return "stills" } })
+  const setPhase = (p: WorkflowPhase) => { setPhaseState(p); try { localStorage.setItem("pv2-storyboard-phase", p) } catch {} }
   const [fcError, setFcError] = useState<string | null>(null)
   const [fcVersion, setFcVersion] = useState<number | null>(null)
   // Scenes: how many a new board is planned in, which are folded away, and
@@ -679,6 +706,12 @@ export function StoryboardWorkspace({
     })()
     return () => { stop = true }
   }, [fcRunning, boardId, mergeVideos])
+  // A board with recorded music cues defaults the Final Cut to them
+  useEffect(() => {
+    if (fcOpen && boardRef.current?.shots.some(s => s.music?.status === "done") && (fcOptions.score ?? "ai") === "ai") setFcOptions(o => ({ ...o, score: "board" }))
+  // only when the dialog opens
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fcOpen])
   const fcAction = async (action: "start" | "resume" | "cancel") => {
     const b = boardRef.current
     if (!b) return
@@ -692,6 +725,149 @@ export function StoryboardWorkspace({
     if (!r?.ok) { setFcError(j.error || "Could not start the Final Cut"); return }
     setFinalCut(j.finalCut)
     if (action === "start") setFcOpen(false)
+  }
+
+  // ── the workflow's new phases (2026-10-19): still edits, shot edits, the audio lane, revise ──
+  /** Pending edits saved first - the routes work on what is SAVED. */
+  const flushNow = async () => { if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() } }
+  const note = (msg: string) => { setBoardNote(msg); setTimeout(() => setBoardNote(x => (x === msg ? null : x)), 7000) }
+  /** A still tool on a shot's still: the result lands as a new take (the route writes it too). */
+  const runStillEdit = async (shot: StoryboardShot, body: Record<string, unknown>): Promise<string | null> => {
+    const b = boardRef.current
+    if (!b) return "No board"
+    await flushNow()
+    setBusy(x => ({ ...x, [shot.id]: true }))
+    setShotError(e => { const n = { ...e }; delete n[shot.id]; return n })
+    try {
+      const r = await getJson<{ url?: string; error?: string; aspect?: string | null; tickets?: number }>(`/api/employees/storyboards/${b.id}/still-edit`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shotId: shot.id, ...body }),
+      })
+      if (!r.ok || !r.data?.url) return r.data?.error || (r.status === 409 ? "This still is being made already" : "The edit failed")
+      const url = r.data.url
+      if (boardRef.current?.id === b.id) setBoard(cur => cur && ({
+        ...cur,
+        shots: cur.shots.map(s => s.id !== shot.id ? s : {
+          ...s, stillUrl: url, stillJob: null, stills: mergeStills(s.stills, [{ url, prompt: String(body.prompt || body.op), model: String(body.op), at: Date.now() }]),
+          ...(r.data!.aspect !== undefined ? { aspect: r.data!.aspect ?? undefined } : {}),
+        }),
+      }))
+      return null
+    } finally {
+      setBusy(x => { const n = { ...x }; delete n[shot.id]; return n })
+    }
+  }
+  /** A clip tool on a shot's clip: it renders like a shot (the shoot polling settles it into a new take). */
+  const runClipEdit = async (shot: StoryboardShot, body: Record<string, unknown>): Promise<string | null> => {
+    const b = boardRef.current
+    if (!b) return "No board"
+    await flushNow()
+    setBusy(x => ({ ...x, [shot.id]: true }))
+    try {
+      const r = await getJson<{ video?: ShotVideo; takes?: Record<string, ShotVideo[]>; ticketCost?: number; error?: string }>(`/api/employees/storyboards/${b.id}/clip-edit`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shotId: shot.id, ...body }),
+      })
+      if (!r.ok || !r.data?.video) return r.data?.error || "The tool could not start"
+      if (boardRef.current?.id === b.id) mergeVideos({ [shot.id]: r.data.video }, r.data.takes)
+      note(`${r.data.video.edit?.label ?? "Shot edit"} started on shot ${b.shots.findIndex(s => s.id === shot.id) + 1}${r.data.ticketCost ? ` - ${r.data.ticketCost} tickets` : ""}. It lands as a new clip take.`)
+      return null
+    } finally {
+      setBusy(x => { const n = { ...x }; delete n[shot.id]; return n })
+    }
+  }
+  // Line / cue ids this page is recording
+  const [recording, setRecording] = useState<Record<string, boolean>>({})
+  /** Merge one recorded line / cue into the page (the server already stored it). */
+  const mergeAudio = (shotId: string, patch: { line?: StoryboardShot["lines"] extends (infer L)[] | undefined ? L : never; cue?: StoryboardShot["music"] }) =>
+    setBoard(cur => cur && ({
+      ...cur,
+      shots: cur.shots.map(s => {
+        if (s.id !== shotId) return s
+        if (patch.line) { const l = patch.line; const has = (s.lines ?? []).some(x => x.id === l.id); return { ...s, lines: has ? (s.lines ?? []).map(x => (x.id === l.id ? { ...x, ...l, text: x.text, speaker: x.speaker, offset: x.offset } : x)) : [...(s.lines ?? []), l] } }
+        if (patch.cue) return { ...s, music: s.music && s.music.id === patch.cue.id ? { ...s.music, ...patch.cue, prompt: s.music.prompt, gainDb: s.music.gainDb } : patch.cue }
+        return s
+      }),
+    }))
+  const recordAudio = async (shotId: string, body: Record<string, unknown>, id: string): Promise<string | null> => {
+    const b = boardRef.current
+    if (!b) return "No board"
+    await flushNow()
+    setRecording(x => ({ ...x, [id]: true }))
+    try {
+      const r = await getJson<{ line?: any; cue?: any; error?: string }>(`/api/employees/storyboards/${b.id}/audio`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shotId, ...body }),
+      })
+      if (boardRef.current?.id === b.id && (r.data?.line || r.data?.cue)) mergeAudio(shotId, { line: r.data.line, cue: r.data.cue })
+      if (!r.ok) {
+        // The failure is on the shot too (the route wrote it) - show it here as well
+        const fresh = await getJson<{ storyboard?: StoryboardDoc }>(`/api/employees/storyboards/${b.id}`)
+        const s = fresh.data?.storyboard?.shots.find(x => x.id === shotId)
+        if (s && boardRef.current?.id === b.id) {
+          const l = s.lines?.find(x => x.id === id)
+          if (l) mergeAudio(shotId, { line: l })
+          if (s.music?.id === id) mergeAudio(shotId, { cue: s.music })
+        }
+        return r.data?.error || "Recording failed"
+      }
+      return null
+    } finally {
+      setRecording(x => { const n = { ...x }; delete n[id]; return n })
+    }
+  }
+  // ── Revise ──
+  const [reviseErr, setReviseErr] = useState<string | null>(null)
+  const [reviseRunning, setReviseRunning] = useState(false)
+  const reviseCall = async (body: Record<string, unknown>) => {
+    const b = boardRef.current
+    if (!b) return null
+    const r = await getJson<{ finalCut?: FinalCutState; error?: string }>(`/api/employees/storyboards/${b.id}/final-cut`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    })
+    if (r.data?.finalCut && boardRef.current?.id === b.id) setFinalCut(r.data.finalCut)
+    return r
+  }
+  const writeRevision = async (from: number, notes: string) => {
+    setReviseErr(null)
+    const r = await reviseCall({ action: "revise-plan", from, notes })
+    if (!r?.ok) setReviseErr(r?.data?.error || "Could not write the edits")
+  }
+  const reviseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const updateRevision = (rev: ReviseDraft | null) => {
+    setFinalCut(fc => ({ ...fc, revision: rev }))
+    // Kept on the board, debounced (toggling and rewording an edit)
+    if (reviseTimer.current) clearTimeout(reviseTimer.current)
+    reviseTimer.current = setTimeout(() => { void reviseCall({ action: "revise-update", revision: rev }) }, rev ? 800 : 0)
+  }
+  const runRevision = async (rev: ReviseDraft) => {
+    const b = boardRef.current
+    if (!b) return
+    setReviseErr(null)
+    setReviseRunning(true)
+    try {
+      await flushNow()
+      const base = finalCut.versions.find(v => v.n === rev.from)
+      const sceneId = base?.scene ? b.scenes.find((c, k) => base.scene === `Scene ${k + 1}` || base.scene!.startsWith(`Scene ${k + 1} ·`))?.id ?? null : null
+      const r = await reviseCall({
+        action: "start", sceneId,
+        options: { ...(base?.options ?? fcOptions), resolution: shootRes },
+        revise: { from: rev.from, notes: rev.notes, rescore: rev.rescore, edits: rev.edits.filter(e => e.on && e.text.trim()).map(e => `${e.shot ? `Shot ${e.shot}: ` : ""}${e.text.trim()}`) },
+      })
+      if (!r?.ok) setReviseErr(r?.data?.error || "Could not start the revision")
+    } finally {
+      setReviseRunning(false)
+    }
+  }
+  const reviseTickets = (rev: ReviseDraft) => {
+    const b = boardRef.current
+    const base = finalCut.versions.find(v => v.n === rev.from)
+    const o = base?.options ?? fcOptions
+    return b ? finalCutExtraTickets(o, base?.durationSec ?? totalSeconds(b.shots), { score: !rev.rescore && !!base?.parts?.musicUrl }) : 0
+  }
+  /** Scroll a shot's card into view (the Revise list's "shot 3"). */
+  const goToShot = (n: number) => {
+    const s = boardRef.current?.shots[n - 1]
+    if (!s) return
+    document.getElementById(`sb-shot-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+    setFlashIds([s.id]); setTimeout(() => setFlashIds([]), 2200)
   }
 
   // ── drafting with AI ──
@@ -720,6 +896,8 @@ export function StoryboardWorkspace({
         body: JSON.stringify({
           mode, boardMode: b.mode, framing, premise: sc ? sc.direction : premise, shots: Number(shotCount), targetSeconds: Number(targetLen), shotIds,
           ...(prefImage ? { preferredImageModel: prefImage } : {}), ...(prefVideo ? { preferredVideoModel: prefVideo } : {}),
+          ...(isAdmin ? { textModel } : {}),
+          ...(fillAudio && mode !== "refs" ? { audio: true } : {}),
           extendCount: sc ? sc.count : Number(extendCount), scenes: Number(sceneCount), sceneId: sc?.sceneId,
           // A scene draft sees its cast; otherwise the server shows the planner every asset
           refs: sc ? shotRefs(b, { sceneId: sc.sceneId }).slice(0, 4).map(x => x.url) : [],
@@ -769,11 +947,27 @@ export function StoryboardWorkspace({
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
     const r = await fetch(`/api/employees/storyboards/${b.id}/shot-edit`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ shotId: shot.id, instruction, scope }),
+      body: JSON.stringify({ shotId: shot.id, instruction, scope, ...(isAdmin ? { textModel } : {}) }),
     }).catch(() => null)
     const j = r ? await r.json().catch(() => ({})) : {}
     if (!r?.ok) return { error: j.error || "The edit failed" }
     if (boardRef.current?.id === b.id) setShot(shot.id, j.patch)
+    return { patch: j.patch, note: j.note }
+  }
+
+  // The audio lane's Edit with AI: one shot's lines and / or music cue (the
+  // lane applies the patch and keeps the old values for its Undo)
+  const aiEditAudio = async (shotId: string, instruction: string, scope: "voice" | "music" | "audio"): Promise<{ patch?: Partial<StoryboardShot>; note?: string; error?: string }> => {
+    const b = boardRef.current
+    if (!b) return { error: "No board open" }
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
+    const r = await fetch(`/api/employees/storyboards/${b.id}/shot-edit`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shotId, instruction, scope, ...(isAdmin ? { textModel } : {}) }),
+    }).catch(() => null)
+    const j = r ? await r.json().catch(() => ({})) : {}
+    if (!r?.ok) return { error: j.error || "The edit failed" }
+    if (boardRef.current?.id === b.id) setShot(shotId, j.patch)
     return { patch: j.patch, note: j.note }
   }
 
@@ -867,7 +1061,10 @@ export function StoryboardWorkspace({
   // fal cost a ticket covers (lib/ticket-pricing's margin rule)
   const fcShootTickets = Math.round(fcShootUsd / 0.04)
   // The route charges exactly this at the start (lib/storyboard finalCutExtraTickets)
-  const fcExtraTickets = finalCutExtraTickets(fcOptions, fcSeconds)
+  // The audio lane: recorded cues and lines (a board with no cues is scored by the AI)
+  const laneCues = board ? board.shots.filter(s => s.music?.status === "done" && s.music.url).length : 0
+  const laneLines = board ? fcShots.reduce((k, s) => k + (s.lines ?? []).filter(l => l.status === "done" && l.url).length, 0) : 0
+  const fcExtraTickets = finalCutExtraTickets(fcOptions.score === "board" && !laneCues ? { ...fcOptions, score: "ai" } : fcOptions, fcSeconds)
   const fcTickets = fcShootTickets + fcExtraTickets
   const cutAScene = board && board.scenes.length > 1 && !fcSceneDoc ? " - cut it a scene at a time" : ""
   const fcBlocked = board ? (fcShots.length === 0 ? (fcSceneDoc ? "This scene has no shots yet" : "Add shots first")
@@ -959,7 +1156,7 @@ export function StoryboardWorkspace({
       setDraftError(failed[0]?.j.error || "The pictures could not be made")
     }
   }
-  const draftPrice = (mode: DraftMode) => mode === "extend" ? storyboardDraftTickets("extend", Number(extendCount) || 2) : storyboardDraftTickets(mode, pickedN)
+  const draftPrice = (mode: DraftMode) => mode === "extend" ? storyboardDraftTickets("extend", Number(extendCount) || 2, { withAudio: fillAudio }) : storyboardDraftTickets(mode, pickedN, { withAudio: fillAudio })
   const draftBtn = (mode: DraftMode, label: string, title: string) =>
     brandBtn({ onClick: () => draft(mode), disabled: !!drafting, busy: drafting === mode, label: <>{label}<TicketChip n={draftPrice(mode)} /></>, title: `${title} - ${draftPrice(mode)} ticket${draftPrice(mode) === 1 ? "" : "s"}`, className: "flex-1 min-w-0" })
   const shotsN = Number(shotCount) || 1
@@ -1016,7 +1213,7 @@ export function StoryboardWorkspace({
         primary: true,
         className: "w-full",
         size: "md",
-        label: <>{confirmReplace ? `Replace ${board.shots.length} shots?` : board.shots.length ? "Draft new board" : "Draft the board"}<TicketChip n={storyboardDraftTickets("replace", outfitMode ? Math.min(36, shotsN * Math.max(1, outfitAssets.length)) : shotsN, { withImages: outfitMode && outfitAssets.length > 0 })} /></>,
+        label: <>{confirmReplace ? `Replace ${board.shots.length} shots?` : board.shots.length ? "Draft new board" : "Draft the board"}<TicketChip n={storyboardDraftTickets("replace", outfitMode ? Math.min(36, shotsN * Math.max(1, outfitAssets.length)) : shotsN, { withImages: outfitMode && outfitAssets.length > 0, withAudio: fillAudio })} /></>,
       })}
     </div>
   )
@@ -1090,9 +1287,28 @@ export function StoryboardWorkspace({
                     options={[{ value: "", label: "No preference" }, ...videoOptions(isAdmin)]} />
                 </div>
               </div>
+              {/* The board's frame (2026-10-19, owner: moved here from the Film section, beside the other menus) -
+                  every still, clip and the Final Cut use it; admins also pick the Gemini model that writes */}
+              <div className={`grid gap-1.5 ${isAdmin ? "grid-cols-[minmax(0,0.6fr)_minmax(0,1.4fr)]" : "grid-cols-2"}`}>
+                <div className="min-w-0">
+                  <span className="block text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-0.5">Frame</span>
+                  <Dropdown value={board.aspect} options={ASPECT_OPTIONS} onChange={v => update(b => ({ ...b, aspect: v }))} className="w-full" />
+                </div>
+                {isAdmin && (
+                  <div className="min-w-0">
+                    <span className="block text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-0.5">AI model <span className="text-violet-300/70 normal-case tracking-normal">· admin · also Edit with AI</span></span>
+                    <Dropdown value={textModel} onChange={setTextModel} className="w-full"
+                      options={PROMPT_MODELS.map(m => ({ value: m.id, label: promptModelLabel(m, DEFAULT_STORYBOARD_TEXT_MODEL) }))} />
+                  </div>
+                )}
+              </div>
               <label className="flex items-start gap-2 text-[10px] leading-snug text-slate-400 cursor-pointer" title="After a draft, offer to make the new characters, places and things it uses as assets with pictures - then every still keeps them consistent">
                 <input type="checkbox" checked={castFirst} onChange={e => setCastFirst(e.target.checked)} className="mt-0.5 accent-violet-400" />
                 <span><span className="font-semibold text-slate-200">Build the cast first</span> - make the plan&apos;s characters, places and outfits as assets with pictures, then match every shot to them</span>
+              </label>
+              <label className="flex items-start gap-2 text-[10px] leading-snug text-slate-400 cursor-pointer" title="The draft also writes each shot's voice lines and music cues into the audio lane - record them there">
+                <input type="checkbox" checked={fillAudio} onChange={e => setFillAudio(e.target.checked)} className="mt-0.5 accent-violet-400" />
+                <span><span className="font-semibold text-slate-200">Also fill the audio lane</span> - voice lines (with a voice per speaker) and music cues for the shots it writes, ready to record (a little extra on the draft price; recording is priced on the lane)</span>
               </label>
               {(prefImage || prefVideo) && (
                 <p className="-mt-0.5 text-[9.5px] leading-snug text-slate-500">
@@ -1208,6 +1424,10 @@ export function StoryboardWorkspace({
   const nextStep: "story" | "stills" | "shots" | "cut" | null = !board ? null
     : n === 0 ? "story" : !stillsDone ? "stills" : !shotsDone ? "shots" : finalCut.versions.length === 0 ? "cut" : null
   const setRes = (v: string) => { setShootRes(v); try { localStorage.setItem("pv2-storyboard-res", v) } catch {} }
+  // Shots touched in the edit phases: a still take made by a still tool, a clip take made by a clip tool
+  const EDIT_NOTE = /^(Edit:|New background:|Background removed|Expanded|Upscaled|Edited in the Image Studio|edit$|background$|cutout$|expand$|upscale$)/
+  const stillEdited = board ? board.shots.filter(s => (s.stills ?? []).some(v => v.model === "image-studio-edit" || EDIT_NOTE.test(v.prompt) || EDIT_NOTE.test(v.model))).length : 0
+  const clipEdited = board ? board.shots.filter(s => !!s.video?.edit || (s.videos ?? []).some(v => !!v.edit)).length : 0
 
   return (
     <StillThumbs.Provider value={thumbs}>
@@ -1266,14 +1486,18 @@ export function StoryboardWorkspace({
             </div>
 
             <div className="flex items-stretch gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden -mx-3 px-3 sm:mx-0 sm:px-0 pb-0.5">
-              <Step n={1} label="Stills" value={`${stillCount}/${n}`} done={stillsDone} next={nextStep === "stills"}>
+              <Step n={1} label="Stills" value={`${stillCount}/${n}`} done={stillsDone} next={nextStep === "stills"} active={phase === "stills"} onSelect={() => setPhase("stills")} title={WORKFLOW_PHASES[0].hint}>
                 <BrandButton onClick={() => generateMissing()} disabled={batch || missing === 0} busy={batch} primary={nextStep === "stills"} size="xs">
                   {missing ? `Make ${missing}` : stillsMaking ? `Making ${stillsMaking}` : "All made"}
                   {missing > 0 && <Tix n={missingTickets} className="text-slate-300" />}
                 </BrandButton>
               </Step>
               <StepArrow />
-              <Step n={2} label="Shots" value={`${shotCountDone}/${n}${renderingCount ? ` · ${renderingCount} shooting` : ""}`} done={shotsDone} next={nextStep === "shots"}>
+              <Step n={2} label="Still edits" value={stillEdited ? `${stillEdited} shot${stillEdited === 1 ? "" : "s"} edited` : "optional"} done={false} next={false} active={phase === "still-edits"} onSelect={() => setPhase("still-edits")} title={WORKFLOW_PHASES[1].hint}>
+                <BrandButton onClick={() => setPhase("still-edits")} disabled={stillCount === 0} size="xs" primary={phase === "still-edits"}>{phase === "still-edits" ? "Open" : "Edit"}</BrandButton>
+              </Step>
+              <StepArrow />
+              <Step n={3} label="Shots" value={`${shotCountDone}/${n}${renderingCount ? ` · ${renderingCount} shooting` : ""}`} done={shotsDone} next={nextStep === "shots"} active={phase === "shots"} onSelect={() => setPhase("shots")} title={WORKFLOW_PHASES[2].hint}>
                 <Dropdown value={shootRes} options={RES_OPTIONS} onChange={setRes} className="w-[72px]" />
                 <BrandButton
                   onClick={shootAll}
@@ -1289,8 +1513,15 @@ export function StoryboardWorkspace({
                 </BrandButton>
               </Step>
               <StepArrow />
+              <Step n={4} label="Shot edits" value={clipEdited ? `${clipEdited} shot${clipEdited === 1 ? "" : "s"} edited` : "optional"} done={false} next={false} active={phase === "shot-edits"} onSelect={() => setPhase("shot-edits")} title={WORKFLOW_PHASES[3].hint}>
+                <BrandButton onClick={() => setPhase("shot-edits")} disabled={shotCountDone === 0} size="xs" primary={phase === "shot-edits"}>{phase === "shot-edits" ? "Open" : "Edit"}</BrandButton>
+              </Step>
+              <StepArrow />
               <Step
-                n={3}
+                n={5}
+                active={phase === "final"}
+                onSelect={() => setPhase("final")}
+                title={WORKFLOW_PHASES[4].hint}
                 label="Final Cut"
                 value={fcRunning ? (finalCut.job?.message ?? "Cutting") : finalCut.versions.length ? `Cut ${finalCut.versions.at(-1)!.n} · ${fmtRuntime(finalCut.versions.at(-1)!.durationSec)}` : "Not cut yet"}
                 done={finalCut.versions.length > 0 && !fcRunning}
@@ -1300,6 +1531,10 @@ export function StoryboardWorkspace({
                   {fcRunning ? "Cutting…" : finalCut.versions.length ? "New cut" : "Make it"}
                   {!fcRunning && n > 0 && <Tix n={fcTickets} approx className="text-slate-300" />}
                 </BrandButton>
+              </Step>
+              <StepArrow />
+              <Step n={6} label="Revise" value={finalCut.revision ? `${finalCut.revision.edits.filter(e => e.on).length} edits ready` : finalCut.versions.length ? "say what to change" : "after a cut"} done={false} next={false} active={phase === "revise"} onSelect={() => setPhase("revise")} title={WORKFLOW_PHASES[5].hint}>
+                <BrandButton onClick={() => setPhase("revise")} disabled={!finalCut.versions.length} size="xs" primary={phase === "revise"}>Revise</BrandButton>
               </Step>
               <button
                 onClick={() => setAnimatic(0)}
@@ -1370,10 +1605,6 @@ export function StoryboardWorkspace({
                   className="sb-input"
                 />
               </Field>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Frame</span>
-                <Dropdown value={board.aspect} options={ASPECT_OPTIONS} onChange={v => update(b => ({ ...b, aspect: v }))} className="w-24" />
-              </div>
               </section>
 
               {/* the cut's assets: characters, vehicles, props, places - each a set of refs */}
@@ -1400,6 +1631,48 @@ export function StoryboardWorkspace({
             {/* ── the board ── */}
             {/* the bottom padding clears iOS Safari's floating toolbar */}
             <main className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto p-3 sm:p-4 pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-6">
+              {/* the audio lane runs along the board in every phase */}
+              {n > 0 && (
+                <AudioLane
+                  board={board}
+                  onChangeShot={setShot}
+                  onRecordLine={(shotId, line) => recordAudio(shotId, { kind: "line", line }, line.id)}
+                  onRecordCue={(shotId, cue) => recordAudio(shotId, { kind: "music", cue }, cue.id)}
+                  onPlay={k => setAnimatic(k)}
+                  recording={recording}
+                  onAiEdit={aiEditAudio}
+                />
+              )}
+              {phase === "revise" && (
+                <RevisePanel
+                  finalCut={finalCut}
+                  version={shownVersion}
+                  onPickVersion={setFcVersion}
+                  onWrite={writeRevision}
+                  onUpdate={updateRevision}
+                  onRun={runRevision}
+                  onGoToShot={goToShot}
+                  running={reviseRunning}
+                  error={reviseErr}
+                  runTickets={reviseTickets}
+                />
+              )}
+              {(phase === "still-edits" || phase === "shot-edits") && n > 0 && (
+                <p className="mb-3 text-[11px] text-slate-400">
+                  {phase === "still-edits"
+                    ? "Still edits: each shot's picture tools are under it. Every result is a new take of the still - flip back with the arrows on the still. Re-shoot a shot after editing its still."
+                    : "Shot edits: video-to-video tools under each shot. Every result is a new clip take; the Final Cut uses whichever take a shot plays."}
+                </p>
+              )}
+              {phase === "final" && !fcRunning && finalCut.versions.length === 0 && n > 0 && (
+                <section className="silver-edge rounded-2xl p-4 mb-4 flex flex-wrap items-center gap-3">
+                  <div className="flex-1 min-w-[200px]">
+                    <p className="text-[12px] font-bold text-white">Final Cut</p>
+                    <p className="text-[11px] text-slate-400">Plans the edit from the footage, lays the audio lane&apos;s voice lines and music (or scores it with AI), adds the cards, mixes and saves a version.</p>
+                  </div>
+                  <BrandButton primary onClick={() => { setFcScene(null); setFcOpen(true) }}>Make the Final Cut <Tix n={fcTickets} approx className="text-slate-300" /></BrandButton>
+                </section>
+              )}
               {(finalCut.job || finalCut.versions.length > 0) && (
                 <ScreeningRoom
                   board={board}
@@ -1408,6 +1681,7 @@ export function StoryboardWorkspace({
                   aspectCss={aspectCss}
                   onPick={setFcVersion}
                   onAction={fcAction}
+                  onRevise={n => { setFcVersion(n); setPhase("revise") }}
                 />
               )}
 
@@ -1417,9 +1691,11 @@ export function StoryboardWorkspace({
                 // One card, wherever it sits: the flat board and every scene use it
                 const cardFor = (shot: StoryboardShot, label?: string, nextLabel?: string) => {
                   const i = board.shots.indexOf(shot)
+                  const stillRunning = !!busy[shot.id] || jobOf(shot)?.status === "making" || jobOf(shot)?.status === "queued"
                   return (
+                    <div key={shot.id} id={`sb-shot-${shot.id}`} className="min-w-0 space-y-2">
                     <ShotCard
-                      key={shot.id}
+                      prefer={phase === "still-edits" ? "still" : phase === "shot-edits" ? "video" : undefined}
                       index={i}
                       label={label}
                       nextLabel={nextLabel}
@@ -1470,6 +1746,15 @@ export function StoryboardWorkspace({
                       onDragEnd={() => setDragFrom(null)}
                       onDrop={() => { if (dragFrom !== null) moveShot(dragFrom, i); setDragFrom(null) }}
                     />
+                    {/* the edit phases' tools, under the shot they work on */}
+                    {phase === "still-edits" && (
+                      <StillEditTools board={board} shot={shot} isAdmin={isAdmin} running={stillRunning}
+                        onRun={body => runStillEdit(shot, body)} onStudio={() => setStudioShot(shot.id)} />
+                    )}
+                    {phase === "shot-edits" && (
+                      <ClipEditTools board={board} shot={shot} running={!!busy[shot.id]} onRun={body => runClipEdit(shot, body)} />
+                    )}
+                    </div>
                   )
                 }
                 /* As many columns as fit, with card widths that grow with the
@@ -1616,6 +1901,7 @@ export function StoryboardWorkspace({
                             drafting={draftScene === c.id}
                             draftLocked={!!drafting}
                             onDraft={(direction, count) => draft("scene", { sceneId: c.id, count, direction })}
+                            withAudio={fillAudio}
                           />
                           {!folded && (
                             <div className="grid gap-3 items-start mt-3" style={gridStyle}>
@@ -1672,18 +1958,72 @@ export function StoryboardWorkspace({
             />
             <p className="text-[11.5px] text-slate-400 leading-relaxed">
               Shoots any slot that has no clip yet, then plans the edit from the footage (which seconds of each clip to keep and how each cut lands),
-              adds the cards, scores music to the picture, mixes and saves a new version.
+              adds the cards, lays the audio lane&apos;s lines and music (or scores it), mixes and saves a new version. Then Revise it as often as you like.
             </p>
-            <label className="flex items-center gap-2 text-[12px] text-slate-200 cursor-pointer">
-              <input type="checkbox" className="accent-slate-300" checked={fcOptions.cards} onChange={e => setFcOptions(o => ({ ...o, cards: e.target.checked }))} />
-              Title & end cards <span className="text-slate-500 text-[11px]">· lettered by Recraft v4.1</span>
-            </label>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-[12px] text-slate-200 cursor-pointer">
+                <input type="checkbox" className="accent-slate-300" checked={fcOptions.cards} onChange={e => setFcOptions(o => ({ ...o, cards: e.target.checked }))} />
+                Title & end cards
+              </label>
+              {fcOptions.cards && (
+                <Dropdown value={fcOptions.cardStyle ?? "designed"} className="w-40 ml-auto"
+                  options={[{ value: "designed", label: "Designed (AI lettering)" }, { value: "exact", label: "Exact text on a still" }]}
+                  onChange={v => setFcOptions(o => ({ ...o, cardStyle: v === "exact" ? "exact" : "designed" }))} />
+              )}
+            </div>
+            {fcOptions.cards && (
+              <p className="-mt-1 text-[10.5px] text-slate-500 leading-snug">
+                {fcOptions.cardStyle === "exact"
+                  ? "Your words set in type on a darkened still from the film - free, and never misspelled."
+                  : "Lettered by Recraft v4.1; if that fails, an exact-text card is used instead of none."}
+              </p>
+            )}
+            <div className="flex items-center gap-2 text-[12px] text-slate-200">
+              Music
+              <Dropdown value={fcOptions.score ?? "ai"} className="w-56 ml-auto" onChange={v => setFcOptions(o => ({ ...o, score: v === "board" || v === "none" ? v : "ai" }))}
+                options={[
+                  { value: "board", label: laneCues ? `The audio lane's cues (${laneCues})` : "The audio lane's cues (none yet)" },
+                  { value: "ai", label: "AI score to the cut (Sonilo)" },
+                  { value: "none", label: "No music" },
+                ]} />
+            </div>
+            {fcOptions.score === "board" && !laneCues && <p className="-mt-2 text-[10.5px] text-amber-300/90">No cues are recorded on the audio lane yet - the AI will score it instead.</p>}
+            {laneLines > 0 && (
+              <label className="flex items-center gap-2 text-[12px] text-slate-200 cursor-pointer">
+                <input type="checkbox" className="accent-slate-300" checked={fcOptions.lines !== false} onChange={e => setFcOptions(o => ({ ...o, lines: e.target.checked }))} />
+                Voice lines from the audio lane <span className="text-slate-500 text-[11px]">({laneLines}, placed on their shots)</span>
+              </label>
+            )}
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-2 text-[12px] text-slate-200 cursor-pointer">
                 <input type="checkbox" className="accent-slate-300" checked={fcOptions.narration} onChange={e => setFcOptions(o => ({ ...o, narration: e.target.checked }))} />
-                Narration
+                AI narration
               </label>
               {fcOptions.narration && <Dropdown value={fcOptions.voice} options={NARRATOR_VOICES.map(v => ({ value: v, label: v }))} onChange={v => setFcOptions(o => ({ ...o, voice: v }))} className="w-32 ml-auto" />}
+            </div>
+            {(fcOptions.narration || (laneLines > 0 && fcOptions.lines !== false)) && (
+              <label className="flex items-center gap-2 text-[12px] text-slate-200 cursor-pointer pl-5">
+                <input type="checkbox" className="accent-slate-300" checked={!!fcOptions.captions} onChange={e => setFcOptions(o => ({ ...o, captions: e.target.checked }))} />
+                Burn the speech in as captions
+              </label>
+            )}
+            <label className="flex items-start gap-2 text-[12px] text-slate-200 cursor-pointer">
+              <input type="checkbox" className="accent-slate-300 mt-0.5" checked={fcOptions.review !== false} onChange={e => setFcOptions(o => ({ ...o, review: e.target.checked }))} />
+              <span>Critic review &amp; one automatic fix
+                <span className="block text-[10.5px] text-slate-500 leading-snug">A second AI (Gemini 4 Argon) watches the finished cut against your story; if it asks for changes, the edit is revised once - trims, timing, cards, narration - and checked again.</span>
+              </span>
+            </label>
+            <div className="flex items-center gap-2 flex-wrap text-[12px] text-slate-200">
+              <span>Also deliver as</span>
+              {FINAL_CUT_FORMATS.filter(f => f !== board.aspect).map(f => {
+                const on = (fcOptions.formats ?? []).includes(f)
+                return (
+                  <button key={f} type="button" onClick={() => setFcOptions(o => ({ ...o, formats: on ? (o.formats ?? []).filter(x => x !== f) : [...(o.formats ?? []), f] }))}
+                    className={`px-2 py-0.5 rounded-md border text-[11px] font-mono transition-colors ${on ? "border-slate-200 bg-white/15 text-white" : "border-white/10 text-slate-400 hover:text-white"}`}>
+                    {f}
+                  </button>
+                )
+              })}
             </div>
             <div className="flex items-center gap-2 text-[12px] text-slate-200">
               Shoot missing shots at
@@ -1691,7 +2031,7 @@ export function StoryboardWorkspace({
             </div>
             <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-[11.5px] text-slate-300 space-y-0.5">
               <div className="flex justify-between"><span>Shots still to shoot</span><span className="font-mono">{fcShootTickets} tickets</span></div>
-              <div className="flex justify-between"><span>Edit, cards, score{fcOptions.narration ? ", narration" : ""}</span><span className="font-mono">~{fcExtraTickets} tickets</span></div>
+              <div className="flex justify-between"><span>Edit, cards{(fcOptions.score ?? "ai") === "ai" || (fcOptions.score === "board" && !laneCues) ? ", score" : ""}{fcOptions.narration ? ", narration" : ""}{fcOptions.review !== false ? ", critic" : ""}{fcOptions.formats?.length ? ", formats" : ""}</span><span className="font-mono">~{fcExtraTickets} tickets</span></div>
               <div className="flex justify-between font-bold text-white pt-1 border-t border-white/10"><span>About</span><span className="font-mono">{fcTickets} tickets</span></div>
             </div>
             {(fcBlocked || fcError) && <p className="text-[11px] text-red-300">{fcBlocked || fcError}</p>}
@@ -2024,16 +2364,19 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 /** One step of the pipeline bar. The next step to take glows. */
-function Step({ n, label, value, done, next, children }: { n: number; label: string; value: string; done: boolean; next: boolean; children: React.ReactNode }) {
+function Step({ n, label, value, done, next, active, onSelect, title, children }: { n: number; label: string; value: string; done: boolean; next: boolean; active?: boolean; onSelect?: () => void; title?: string; children: React.ReactNode }) {
   return (
-    <div className={`shrink-0 flex items-center gap-2.5 pl-2 pr-1.5 py-1.5 rounded-xl border transition-colors ${next ? "border-white/40 bg-white/[0.06] shadow-[0_0_22px_-6px_rgba(226,232,240,0.45)]" : "border-white/10 bg-black/20"}`}>
-      <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${done ? "bg-emerald-400/90 text-black" : next ? "bg-slate-100 text-black" : "bg-white/10 text-slate-400"}`}>
-        {done ? <Check size={11} strokeWidth={3} /> : n}
-      </span>
-      <div className="min-w-0 max-w-[150px]">
-        <div className="text-[10px] uppercase tracking-wider font-bold text-slate-300 leading-none">{label}</div>
-        <div className="text-[10px] font-mono text-slate-500 truncate mt-0.5">{value}</div>
-      </div>
+    <div className={`shrink-0 flex items-center gap-2.5 pl-2 pr-1.5 py-1.5 rounded-xl border transition-colors ${active ? "border-slate-100/80 bg-white/[0.1] ring-1 ring-slate-100/40" : next ? "border-white/40 bg-white/[0.06] shadow-[0_0_22px_-6px_rgba(226,232,240,0.45)]" : "border-white/10 bg-black/20"}`}>
+      {/* the number and label pick the phase (its tools under every shot) */}
+      <button type="button" onClick={onSelect} title={title} className="flex items-center gap-2.5 text-left min-w-0">
+        <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${done ? "bg-emerald-400/90 text-black" : next || active ? "bg-slate-100 text-black" : "bg-white/10 text-slate-400"}`}>
+          {done ? <Check size={11} strokeWidth={3} /> : n}
+        </span>
+        <span className="min-w-0 max-w-[150px]">
+          <span className={`block text-[10px] uppercase tracking-wider font-bold leading-none ${active ? "text-white" : "text-slate-300"}`}>{label}</span>
+          <span className="block text-[10px] font-mono text-slate-500 truncate mt-0.5">{value}</span>
+        </span>
+      </button>
       <div className="flex items-center gap-1">{children}</div>
     </div>
   )
@@ -2047,13 +2390,15 @@ function StepArrow() {
  * film is capped by height, not stretched to the panel's width), its versions
  * as posters, and - only while a cut is running or has stopped - its steps.
  */
-function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction }: {
+function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction, onRevise }: {
   board: StoryboardDoc
   finalCut: FinalCutState
   shown: FinalCutState["versions"][number] | null
   aspectCss: string
   onPick: (n: number) => void
   onAction: (a: "start" | "resume" | "cancel") => void
+  /** Open the Revise phase on this version. */
+  onRevise?: (n: number) => void
 }) {
   const job = finalCut.job
   const showSteps = !!job && job.status !== "done"
@@ -2092,6 +2437,27 @@ function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction }: 
                 </a>
               </div>
               <p className="text-[10.5px] text-slate-500 mt-1">{shown.note}</p>
+              {onRevise && job?.status !== "running" && (
+                <button onClick={() => onRevise(shown.n)} className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-white/15 text-[10.5px] font-semibold text-slate-200 hover:text-white hover:border-white/35">
+                  <Pencil size={10} /> Revise this cut
+                </button>
+              )}
+              {shown.review && (
+                <div className={`mt-1.5 rounded-lg border px-2.5 py-1.5 text-[10.5px] leading-snug ${shown.review.verdict === "pass" ? "border-emerald-400/25 bg-emerald-500/[0.07] text-emerald-100" : "border-amber-400/25 bg-amber-500/[0.07] text-amber-100"}`}>
+                  <span className="font-semibold">Critic: {shown.review.verdict === "pass" ? "ready to share" : "could be better"} · {shown.review.score}/10</span>
+                  {shown.review.revised && <span className="text-slate-400"> · revised once from its notes</span>}
+                  <span className="block text-slate-300/90 mt-0.5">{shown.review.summary}</span>
+                </div>
+              )}
+              {!!shown.formats?.length && (
+                <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10.5px] text-slate-400">
+                  Also in
+                  {shown.formats.map(f => (
+                    <a key={f.aspect} href={f.url} target="_blank" rel="noreferrer" download={`${board.title} - Final Cut ${shown.n} (${f.aspect}).mp4`}
+                      className="px-1.5 py-0.5 rounded-md border border-white/10 font-mono text-slate-200 hover:bg-white/5">{f.aspect}</a>
+                  ))}
+                </div>
+              )}
               <p className="text-[10px] text-slate-600">Saved to My Generations › Storyboards › {board.title}</p>
             </div>
           )}
@@ -2156,7 +2522,7 @@ function ScreeningRoom({ board, finalCut, shown, aspectCss, onPick, onAction }: 
  */
 function ShotCard({
   index, label, nextLabel, shot, aspectCss, busy, queued = false, error, last, dragging, shootTickets,
-  onChange, onGenerate, onShoot, onMove, onDuplicate, onInsert, canInsert, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef,
+  onChange, onGenerate, onShoot, onMove, onDuplicate, onInsert, canInsert, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef, prefer,
   stillCost, refsInfo, assets, onAddToAsset, selecting, picked, onPick, flash, onFocus, onOpen, opening, onAiEdit, onPickVideo,
   refList, refsAuto, onRefsChange, refLibrary, boardStills, editChoices, editFrom, boardAspect, onEditInStudio, isAdmin,
 }: {
@@ -2190,6 +2556,8 @@ function ShotCard({
   onDragStart: () => void
   onDragEnd: () => void
   onDrop: () => void
+  /** The workflow phase's view: Still edits shows the still, Shot edits the clip. */
+  prefer?: "still" | "video"
   /** This still is one of the active references already. */
   inRefs: boolean
   onAddRef?: () => Promise<{ added: number; limitHit: boolean; reason?: string | null }>
@@ -2278,7 +2646,8 @@ function ShotCard({
   // A shot with a finished clip opens on the clip; the still is one tap away
   const [view, setView] = useState<"still" | "video">(done ? "video" : "still")
   const lastUrl = useRef(v?.url)
-  useEffect(() => { if (v?.url && v.url !== lastUrl.current) { lastUrl.current = v.url; setView("video") } }, [v?.url])
+  useEffect(() => { if (v?.url && v.url !== lastUrl.current) { lastUrl.current = v.url; setView(prefer === "still" ? "still" : "video") } }, [v?.url]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (prefer) setView(prefer) }, [prefer])
   const showVideo = done && view === "video"
   // A conformed clip keeps its original (say Kling's 9:16 on a 3:4 board):
   // the card can play either. The Final Cut always uses the board's frame.
@@ -2763,7 +3132,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
 function SceneHeader({
   scene, n, shots, assets, refCount, collapsed, onToggle, onChange, onMove, first, last, prevName, canRemove, onRemove,
   missing, missingTickets, making, onMakeStills, toShoot, shootTickets, shootRes, onShoot, onPlay, onCut, cutBusy,
-  room, drafting, draftLocked, onDraft,
+  room, drafting, draftLocked, onDraft, withAudio,
 }: {
   scene: StoryScene
   n: number
@@ -2798,6 +3167,8 @@ function SceneHeader({
   drafting: boolean
   draftLocked: boolean
   onDraft: (direction: string, count: number) => Promise<string | null>
+  /** The draft also writes the audio lane (priced in). */
+  withAudio?: boolean
 }) {
   const [confirmDel, setConfirmDel] = useState(false)
   const [confirmShoot, setConfirmShoot] = useState(false)
@@ -2942,7 +3313,7 @@ function SceneHeader({
               <div className="flex items-center gap-1.5">
                 <NumberStepper value={Math.min(count, Math.max(1, room))} min={1} max={Math.max(1, Math.min(MAX_DRAFT_SHOTS, room))} prefix="+" onChange={setCount} className="w-[104px] shrink-0" />
                 <BrandButton onClick={runDraft} disabled={draftLocked || (!direction.trim() && !scene.summary && !shots.length)} busy={drafting} primary size="xs" className="flex-1">
-                  {drafting ? "Drafting…" : <>{`Draft ${Math.min(count, Math.max(1, room))} shot${count === 1 ? "" : "s"}`}<TicketChip n={storyboardDraftTickets("scene", Math.min(count, Math.max(1, room)))} /></>}
+                  {drafting ? "Drafting…" : <>{`Draft ${Math.min(count, Math.max(1, room))} shot${count === 1 ? "" : "s"}`}<TicketChip n={storyboardDraftTickets("scene", Math.min(count, Math.max(1, room)), { withAudio })} /></>}
                 </BrandButton>
               </div>
               <p className="text-[9.5px] text-slate-500 leading-snug">Written for this scene - its summary, its cast and the shots around it. Free (no tickets).</p>
@@ -3017,6 +3388,40 @@ function Animatic({ board, start, aspectCss, onClose }: { board: StoryboardDoc; 
     if (!playing && !el.paused) el.pause()
   })
   const goTo = (k: number) => { setT(starts[Math.max(0, Math.min(shots.length - 1, k))]); last.current = null }
+
+  /*
+   * The audio lane, on the playhead (2026-10-19): each recorded line at its
+   * shot's start + offset, each music cue from its shot to the next cue -
+   * kept in sync with the playhead like the clips, paused with it.
+   */
+  const sounds = useMemo(() => {
+    const out: { key: string; url: string; from: number; to: number; volume: number }[] = []
+    shots.forEach((s, k) => {
+      for (const l of s.lines ?? []) if (l.status === "done" && l.url && l.id !== s.video?.edit?.lineId) out.push({ key: l.id, url: l.url, from: starts[k] + l.offset, to: starts[k] + l.offset + (l.seconds || 2), volume: 1 })
+      if (s.music?.status === "done" && s.music.url) {
+        let end = total
+        for (let j = k + 1; j < shots.length; j++) if (shots[j].music) { end = starts[j]; break }
+        out.push({ key: s.music.id, url: s.music.url, from: starts[k], to: Math.min(end, starts[k] + (s.music.seconds || end)), volume: Math.max(0.05, Math.min(1, Math.pow(10, ((s.music.gainDb ?? -10) + 4) / 20))) })
+      }
+    })
+    return out
+  }, [shots, starts, total])
+  const players = useRef<Map<string, HTMLAudioElement>>(new Map())
+  useEffect(() => () => { for (const a of players.current.values()) a.pause(); players.current.clear() }, [])
+  useEffect(() => {
+    for (const snd of sounds) {
+      const live = playing && t >= snd.from && t < snd.to
+      let a = players.current.get(snd.key)
+      if (!a && !live) continue
+      if (!a) { a = new Audio(snd.url); a.preload = "auto"; players.current.set(snd.key, a) }
+      a.volume = snd.volume
+      if (live) {
+        const want = t - snd.from
+        if (Math.abs(a.currentTime - want) > 0.35) a.currentTime = want
+        if (a.paused) a.play().catch(() => {})
+      } else if (!a.paused) a.pause()
+    }
+  })
 
   return (
     <div className="fixed inset-0 z-[10000] bg-black/95 flex flex-col">

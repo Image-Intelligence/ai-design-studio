@@ -49,6 +49,17 @@ const nextConfig: NextConfig = {
     '/api/images/[id]': ['./node_modules/ffmpeg-static/**'],
     // Storyboard Final Cut calls /api/video/assemble's handler as a function
     '/api/employees/storyboards/[id]/final-cut': ['./node_modules/ffmpeg-static/**'],
+    // ...and the audio lane and stills cut measure and mix sound the same way
+    '/api/employees/storyboards/[id]/audio': ['./node_modules/ffmpeg-static/**'],
+    '/api/employees/storyboards/[id]/stills-cut': ['./node_modules/ffmpeg-static/**'],
+    // Nova Studio runs ffmpeg in-process (lib/nova/video-ops, media-inspect:
+    // frames, loops, trims, colour match, cuts) wherever a turn runs - the
+    // browser's send, the background runner - and where renders are settled
+    '/api/nova/chats/[id]/send': ['./node_modules/ffmpeg-static/**'],
+    '/api/nova/chats/[id]/jobs': ['./node_modules/ffmpeg-static/**'],
+    '/api/nova/chats/[id]': ['./node_modules/ffmpeg-static/**'],
+    '/api/nova/runner': ['./node_modules/ffmpeg-static/**'],
+    '/api/nova/uploads': ['./node_modules/ffmpeg-static/**'],
   },
   // Routes importing lib/video-clip get their trace exploded to the ENTIRE
   // project dir (AI/ training junk, .git, uploads — 14GB locally, 401MB of

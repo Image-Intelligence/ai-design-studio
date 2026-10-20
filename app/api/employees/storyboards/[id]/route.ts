@@ -3,7 +3,7 @@ import prisma from '@/lib/prisma'
 import { requireStoryboardUser, scrubBoardMedia } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
-import { STORYBOARD_ASPECTS, sanitizeShots, mergeStills, sanitizeAssets, sanitizeScenes, ensureScenes, isBoardMode, stillKey, migrateActiveRefs } from '@/lib/storyboard'
+import { STORYBOARD_ASPECTS, sanitizeShots, mergeStills, mergeLines, mergeCue, sanitizeAssets, sanitizeScenes, ensureScenes, isBoardMode, stillKey, migrateActiveRefs } from '@/lib/storyboard'
 import { withShotsLock } from '@/lib/storyboard-store'
 import { ensureThumbnail } from '@/lib/thumbnail'
 
@@ -114,7 +114,8 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
      * routes write shots too, and a read-then-write here could put back an
      * array from a moment ago over a still or clip that just landed.
      *
-     * The server owns: `video` / `videos` (the shoot route), `stillJob` (the
+     * The server owns: `video` / `videos` (the shoot route), each voice line's
+     * and music cue's recording (the audio route), `stillJob` (the
      * still route), and every still take (the stored list plus the page's -
      * a stale autosave never drops a take). And a still the server put on a
      * slot that THIS page has not seen yet (it is not among the page's
@@ -128,12 +129,14 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
       const stored = new Map(current.map(s => [s.id, s]))
       const doc = ensureScenes({ scenes, shots: sanitizeShots(body.shots).map(s => {
         const old = stored.get(s.id)
-        if (!old) return s
+        // The audio lane's recordings are the audio route's: a new slot starts unrecorded
+        if (!old) return { ...s, lines: mergeLines(undefined, s.lines), music: mergeCue(undefined, s.music) }
         const knew = seen.get(s.id)
         const unseen = !!old.stillUrl && old.stillUrl !== s.stillUrl && !knew?.has(stillKey(old.stillUrl))
         return {
           ...s, video: old.video ?? null, videos: old.videos, stillJob: old.stillJob ?? null,
           stills: mergeStills(old.stills, s.stills),
+          lines: mergeLines(old.lines, s.lines), music: mergeCue(old.music, s.music),
           ...(unseen ? { stillUrl: old.stillUrl } : {}),
         }
       }) })

@@ -53,7 +53,12 @@ export async function submitChatImage(
   refs: string[],
   settings: ChatCreateSettings,
   userId: number,
-  opts?: { noWait?: boolean },
+  /** headers: e.g. Nova Studio's background-run API key (lib/nova/background) when there is no browser session. */
+  opts?: {
+    noWait?: boolean; headers?: Record<string, string>
+    /** Stop waiting at this time (epoch ms) even before WAIT_MS - Nova's turn time limit. */
+    waitUntil?: number
+  },
 ): Promise<ChatImageResult> {
   let queueId: number | null = null
   let ticketCost = 0
@@ -62,7 +67,7 @@ export async function submitChatImage(
     const { POST } = await import('@/app/api/generate/route')
     const res = await POST(new NextRequest('http://internal/api/generate', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(opts?.headers ?? {}) },
       body: JSON.stringify(buildBody(spec, prompt, refs, settings, userId)),
     }))
     const data = (await res.json()) as Record<string, any>
@@ -90,7 +95,7 @@ export async function submitChatImage(
   if (opts?.noWait) return { ok: true, pending: true, queueId, ticketCost }
 
   // ── wait for it, so the agent can still see and judge its own image ──
-  const deadline = Date.now() + WAIT_MS
+  const deadline = Math.min(Date.now() + WAIT_MS, opts?.waitUntil ?? Infinity)
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, POLL_MS))
     const row = await prisma.generationQueue.findUnique({

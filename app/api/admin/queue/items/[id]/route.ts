@@ -24,13 +24,7 @@ export async function DELETE(
 
     // Refund tickets
     if (item.status === 'queued') {
-      await prisma.ticket.update({
-        where: { userId: item.userId },
-        data: {
-          balance: { increment: item.ticketCost },
-          reserved: { decrement: item.ticketCost }
-        }
-      });
+      await prisma.$executeRaw`UPDATE "Ticket" SET balance = balance + ${item.ticketCost}, reserved = GREATEST(0, COALESCE(reserved, 0) - ${item.ticketCost}) WHERE "userId" = ${item.userId}`;
     }
 
     // Update item status

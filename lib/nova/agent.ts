@@ -1,0 +1,702 @@
+/**
+ * Nova Studio - one chat turn (server only, 2026-10-18).
+ *
+ * KEEPING A TURN CHEAP
+ * Most of a turn's cost is INPUT tokens, re-sent on every tool step: the
+ * instructions, the history and any pictures. So:
+ *  - the instructions are short; the model catalog is a tool (browse_models),
+ *    fetched per kind only when needed, not pasted into every step;
+ *  - history is the newest NOVA_HISTORY messages as plain text, each step
+ *    reduced to one line ("made image #112450 with NanoBanana 2.1");
+ *    everything older is folded into a running summary by Flash-Lite
+ *    (compactChat) - so a chat's 200th message costs about what its 20th did;
+ *  - pictures are only inlined when they matter: the ones the user attached
+ *    to THIS message, and the ones a tool just made (so Nova can judge them),
+ *    shrunk to 768px. Old pictures are referred to by id, never re-sent.
+ *
+ * BILLING
+ * The turn's chat is paid by holding novaTurnHold tickets before it starts
+ * and giving back what the measured tokens did not use (novaChatTickets,
+ * priced from Google's own token counts). Generations are charged by the
+ * site's routes as they run. Admins are charged nothing, but every price is
+ * still worked out and recorded, so the studio can be tested end to end.
+ */
+import { streamText, stepCountIs, hasToolCall, type ModelMessage } from 'ai'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
+import prisma from '@/lib/prisma'
+import { signPayload } from '@/lib/media-url'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { geminiGenerate, geminiText } from '@/lib/gemini-generate'
+import { loadNovaBudget, addNovaSpend, roomLeft, novaBalance } from '@/lib/nova/ledger'
+import { ensureChatFolder } from '@/lib/nova/jobs'
+import { makeNovaTools, novaAllowance, readChatState, ownedRows, kindOf, imagePart, refsKey, type NovaTurnCtx, type NovaChatState, type NovaAllowance } from '@/lib/nova/agent-tools'
+import { resolveChatRefs, chatRefsText } from '@/lib/nova/chat-refs'
+import { makeProTools } from '@/lib/nova/agent-tools-pro'
+import { makeStudioTools } from '@/lib/nova/agent-tools-studio'
+import { makePostTools } from '@/lib/nova/agent-tools-post'
+import { recipeIndex } from '@/lib/nova/recipes'
+import { routeTurn } from '@/lib/nova/router'
+import { loadNovaMemory, type NovaNote } from '@/lib/nova/memory'
+import { userFavouriteModels } from '@/lib/nova/scorecard'
+import { backgroundStatus } from '@/lib/nova/background'
+import { findAsset, storedRefs } from '@/lib/user-assets'
+import { readFilterState } from '@/lib/content-filter'
+import {
+  NOVA_MAX_STEPS, NOVA_TIER_STEPS, NOVA_ROUTES, novaChatUsd, novaTicketsForUsd, novaTurnHold, resolveNovaModel, NOVA_AUTO, NOVA_CRITIC_MODEL, NOVA_MAX_AUTO_TURNS, cleanRunBudget,
+  type NovaMessage, type NovaStep, type NovaPlan, type NovaStreamEvent, type NovaUsage, type NovaMediaKind, type NovaTier,
+} from '@/lib/nova/config'
+
+/** Messages replayed word for word; older ones live in the summary. */
+const NOVA_HISTORY = 12
+/** Fold older messages once this many have piled up past the window. */
+const COMPACT_AFTER = 6
+const SUMMARY_MODEL = 'gemini-3.5-flash-lite'
+const SUMMARY_MAX = 3000
+
+const google = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY })
+
+const clip = (s: string | null | undefined, n: number) => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
+
+// ── Stored rows → what the screen and the model see ──────────────────────────
+
+type DbMsg = { id: number; role: string; content: string; model: string | null; metadata: unknown; createdAt: Date }
+
+export function toNovaMessage(r: DbMsg): NovaMessage {
+  const m = (r.metadata ?? {}) as Record<string, any>
+  return {
+    id: r.id,
+    role: r.role === 'user' ? 'user' : 'assistant',
+    content: r.content,
+    createdAt: r.createdAt.toISOString(),
+    ...(m.attachments ? { attachments: m.attachments } : {}),
+    ...(m.assets ? { assets: m.assets } : {}),
+    ...(m.system ? { system: true } : {}),
+    ...(Array.isArray(m.steps) ? { steps: m.steps } : {}),
+    ...(m.plan ? { plan: m.plan } : {}),
+    ...(r.model ? { model: r.model } : {}),
+    ...(m.tickets ? { tickets: m.tickets } : {}),
+    ...(m.continueAfterRenders ? { continueAfterRenders: true } : {}),
+    ...(m.keepGoing ? { keepGoing: true } : {}),
+    ...(m.running ? { running: true } : {}),
+    ...(m.route ? { route: m.route } : {}),
+  }
+}
+
+/** One line per step, for history and summaries. */
+function stepLine(s: NovaStep): string {
+  const what = s.kind ? `${s.kind}${s.model ? ` (${s.model})` : ''}` : s.tool
+  const where = s.generationId ? ` #${s.generationId}` : ''
+  const state = s.status === 'done' ? (s.kind ? 'made' : 'did') : s.status === 'pending' ? 'started (rendering)' : s.status === 'error' ? `FAILED: ${clip(s.error, 80)}` : 'running'
+  const cost = s.kind && s.status !== 'error' ? ` [${s.tickets ?? 0} tickets]` : ''
+  return `- ${state} ${what}${where}${cost}: ${clip(s.label, 80)}${s.prompt ? ` - "${clip(s.prompt, 120)}"` : ''}${s.note ? ` (${s.note})` : ''}`
+}
+
+export function digest(m: NovaMessage): string {
+  if (m.role === 'user') {
+    const att = (m.attachments ?? []).map(a => `#${a.id} (${a.kind})`).join(', ')
+    const ast = (m.assets ?? []).map(a => `asset ${a.id} "${a.name}" (${a.kind})`).join(', ')
+    return `${m.system ? '[system] ' : ''}${m.content}${att ? `\n[attached: ${att}]` : ''}${ast ? `\n[assets: ${ast}]` : ''}`
+  }
+  const lines = [m.content.trim()]
+  for (const s of m.steps ?? []) lines.push(stepLine(s))
+  if (m.plan) lines.push(`[plan ${m.plan.status}: ${clip(m.plan.summary, 160)} - ${m.plan.approvedTickets ?? m.plan.totalTickets} tickets]`)
+  return lines.filter(Boolean).join('\n')
+}
+
+// ── Compaction ───────────────────────────────────────────────────────────────
+
+/**
+ * Fold everything older than the replay window into the chat's summary, once
+ * enough has piled up (so it runs every ~6 messages, not every turn). Returns
+ * the tokens it used - they are billed with the turn.
+ */
+async function compactChat(chat: { id: number; memorySummary: string | null; summaryUpToId: number | null }, windowStartId: number | null): Promise<{ summary: string | null; usage: NovaUsage }> {
+  const usage = { inputTokens: 0, outputTokens: 0 }
+  if (!windowStartId) return { summary: chat.memorySummary, usage }
+  const older = await prisma.chatMessage.findMany({
+    where: { chatId: chat.id, id: { lt: windowStartId, ...(chat.summaryUpToId ? { gt: chat.summaryUpToId } : {}) } },
+    orderBy: { id: 'asc' }, take: 40,
+    select: { id: true, role: true, content: true, model: true, metadata: true, createdAt: true },
+  })
+  if (older.length < COMPACT_AFTER) return { summary: chat.memorySummary, usage }
+  const text = older.map(r => `${r.role.toUpperCase()}: ${clip(digest(toNovaMessage(r)), 900)}`).join('\n\n')
+  const prompt = [
+    'You keep the running memory of a creative chat between a user and Nova, an AI studio assistant that makes images, video, audio and 3D and organises the user\'s library.',
+    'Merge the EARLIER SUMMARY and the NEW MESSAGES into one updated summary. Keep: the user\'s goals and preferences, decisions made, every important #id and what it is (characters, products, approved shots, cuts), assets and folders created, plans and their budgets, and what is still to do. Drop chit-chat. Plain text, at most 350 words.',
+    `EARLIER SUMMARY:\n${chat.memorySummary || '(none)'}`,
+    `NEW MESSAGES:\n${text}`,
+  ].join('\n\n')
+  try {
+    const res = await geminiGenerate(SUMMARY_MODEL, { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1200 } }, { signal: AbortSignal.timeout(30_000) })
+    if (!res.ok) return { summary: chat.memorySummary, usage }
+    const data = await res.json() as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }
+    const summary = geminiText(data).trim().slice(0, SUMMARY_MAX)
+    if (!summary) return { summary: chat.memorySummary, usage }
+    usage.inputTokens = data.usageMetadata?.promptTokenCount ?? 0
+    usage.outputTokens = (data.usageMetadata?.candidatesTokenCount ?? 0) + (data.usageMetadata?.thoughtsTokenCount ?? 0)
+    await prisma.chat.update({ where: { id: chat.id }, data: { memorySummary: summary, summaryUpToId: older[older.length - 1].id } })
+    return { summary, usage }
+  } catch {
+    return { summary: chat.memorySummary, usage }
+  }
+}
+
+// ── Instructions ─────────────────────────────────────────────────────────────
+
+/** The resolved references back as ids (what was actually shown). */
+const chatRefsIds = (r: { assets: { id: number }[]; generations: { id: number }[] }) => ({ assets: r.assets.map(a => a.id), generations: r.generations.map(g => g.id) })
+
+export function novaInstructions(o: { isAdmin: boolean; balance: number | null; state: NovaChatState; allowance: NovaAllowance; room: { room: number; which: string | null }; summary: string | null; title: string; memory: NovaNote[]; favourites: string[]; tier: NovaTier; safetyOff?: boolean }): string {
+  const plan = o.state.plan
+  return [
+    'You are Nova, the creative partner inside AI Design Studio. You talk with the user and make what they want with the studio\'s AI models - images, video, audio, 3D - using their own library (My Generations, folders and Assets), then organise it and edit final cuts. You work like a professional creative producer: understand the goal, plan, make, check your work, assemble, deliver.',
+    '',
+    'HOW YOU WORK',
+    '- Understand the goal first. Ask ONE short question only when something essential is missing (the product, the format, the length); otherwise make sensible choices and say what you chose.',
+    '- When the user mentions existing work ("my logo", "the fox from yesterday"), find it with search_library / list_assets / asset_pictures before making anything new. Media is always referred to by id: #123.',
+    '- Pick models with recommend_models (the studio scorecard for the job: photoreal, product, text, logo, consistency, video-premium, video-budget, voiceover, music-bed...) and browse_models (exact settings). Write each prompt the way that model is best prompted: subject, setting, composition, lighting, style, camera; for video: motion, camera move, pacing, sound.',
+    '- RECIPES: for a job that matches one of the recipes below, call load_recipe FIRST and follow it - it is the studio\'s proven method (models, prompts, checks).',
+    '- CONSISTENCY IS A STEP, NOT A HOPE: anything with 2+ images or shots of the same character, product or place gets a LOOK BIBLE before the first shot (recipe look-bible: character sheet, place plate, style frame -> set_look_bible). Every later generation passes the bible pictures that are in the shot as references. Never make an established character from text alone.',
+    '- CHECK AS YOU GO: check_shots compares new stills and clips with the look bible (strong critic model). Run it on keyframes before animating them and on clips before cutting them; redo what drifted (up to 2 tries per shot) before moving on.',
+    '- CONTINUITY ACROSS CUTS: when the next shot continues the same moment, extract_frame the LAST frame of the previous clip and use it as the next start_image_id.',
+    '- CLIPS ARE EDITABLE: edit_clip runs the site\'s clip tools on any clip (upscale, edit with words, recast a face, remove an object, extend, lip-sync, sound effects); talking_head makes a still talk to a voice line; make_loop checks and repairs a loop\'s seam; trim_media trims, speeds up, mutes, fades or levels one clip or sound for free. Fix a clip before re-rendering it from scratch.',
+    '- WATCH, DO NOT GUESS: frames miss motion. watch_video lets the strong model watch clips with their sound (a face that morphs, flicker, lips against words, how a cut flows) - use it on anything that moves before you call it done.',
+    '- FINISHING A CUT: assemble_cut can match_color (shots from different renders look like one film - use it whenever clips come from different renders), add a look (a grade), overlays (titles, lower thirds, end-card text, a logo ON the video - exact words), and auto_captions (word-timed captions of everything spoken). To change a cut later use recut with only what changes - never rebuild it from memory.',
+    '- RESEARCH: web_search finds facts you need (a brand\'s colours or tagline, what a real place or object looks like, a style\'s references). Do not use it to copy someone\'s artwork or a real person\'s likeness.',
+    '- LEARN: when you see a model habit (a quirk that would happen again), keep it with learn_about_model; lessons appear when you look the model up. The user\'s uploads arrive as attachments (model nova-upload) - use them like any other item.',
+    '- Make exactly what was asked: one image means one generate_image call. Make variations in PARALLEL only when asked or when a plan says so. Always pass the shape the user wants in settings (e.g. {"aspect":"1:1"}).',
+    '- You see every image you make: judge it honestly against the brief. If one is clearly wrong (wrong text, broken anatomy, off-brief, off-model), redo it - up to 2 tries per item within budget - but never silently: say what was wrong, and list EVERY image you made (#ids) with its ticket cost.',
+    '- Videos, audio and 3D render in the background. Start everything that can run at once, then write ONE short line telling the user what is rendering and what you will do next, and call wait_for_renders; you will be woken with their ids when they finish, and can then assemble the cut (assemble_cut: clips in order, image cards for titles/end cards, music and voiceover by id).',
+    "- When the whole request will clearly cost more than you may spend without asking (see MONEY), your FIRST action is propose_plan - do not start generating and stop half-way. Work that fits inside it needs no plan: just do it.",
+    '- FINISH THE JOB: do everything the user asked for (every still, every clip, the cut) without stopping to ask permission for parts they already requested - never end a turn with "Shall I start the videos now?" when they asked for videos. Ask only for something genuinely new, or propose_plan when it costs more than you may spend. If you run out of steps or time, the studio carries on automatically in a new turn - just keep working there.',
+    '- COUNT: make exactly the number of items asked for. If a generation fails or is refused, try once more (rephrase the prompt, or another suitable model); if it still fails, say which ones are missing and why.',
+    '- CHECK YOUR WORK: inspect_media shows you video frames and measures sound (LUFS, clipping, silence) - check clips before cutting them, and check every cut (assemble_cut shows you its frames and levels). Social sound should sit near -14 LUFS with no clipping.',
+    '- FIX IT YOURSELF: edit_image does exact pixel work for free (crop, reframe to another aspect, headline/caption text with exact words, a logo placed by id, colour); expand_image paints real scenery to a new aspect; cutout lifts a subject onto transparency. Prefer a precise edit over regenerating.',
+    `- THE CRITIC: before you hand over a production (a final cut, an ad, a set of deliverables), call critique_work on the deliverables. If it says revise, apply the fixes that fit the budget, then deliver and mention what it flagged. Do not run it for a single quick image.`,
+    '- ONE CUT PER VERSION: call assemble_cut once, check what it shows you (and the critic), and only recut to fix something specific.',
+    '- DELIVER IN FORMATS: export_formats makes 9:16 / 1:1 / 4:5 / 16:9 versions; save_storyboard turns a shot list into a board the user can open in Storyboard Studio.',
+    '- REFERENCES: caption_asset labels an asset\'s pictures, update_asset_notes writes who/what it is, find_similar finds related work in the library.',
+    '- MEMORY: when the user states a lasting preference or brand rule, save it with remember (one sentence). Follow everything under WHAT YOU KNOW ABOUT THIS USER.',
+    '- Everything you make is filed in this chat\'s folder automatically; use create_folder / file_items when the user wants things organised differently.',
+    '- After a production, end with a short summary: what you made (#ids), what each generation cost - ONLY the ticket numbers the tools and the history report (marked [N tickets]); never estimate or round them, and never state a chat cost (it is billed separately and the studio shows it) - and one or two useful next steps.',
+    '',
+    'RECIPES (load_recipe <id>)',
+    recipeIndex(),
+    '',
+    o.state.bible ? `LOOK BIBLE (this chat - pass these as references for whoever / wherever is in a shot; check_shots compares against them):\n${[...o.state.bible.characters.map(c => `- character "${c.name}": ${c.ids.map(i => `#${i}`).join(', ')}`), ...o.state.bible.places.map(p => `- place "${p.name}": ${p.ids.map(i => `#${i}`).join(', ')}`)].join('\n')}${o.state.bible.style ? `\n- style: ${o.state.bible.style}` : ''}\n` : '',
+    'MONEY - THE USER PAYS IN TICKETS',
+    o.isAdmin ? '- This is an admin account: nothing is charged, but show costs as if it were.' : `- The user has ${o.balance ?? 0} tickets.`,
+    o.allowance.run
+      ? `- The user set this request's budget in the prompt box: you may spend up to ${o.allowance.request} tickets on it without asking, in all (with every turn it carries on by itself). When the WHOLE request will clearly cost more, call propose_plan first (each step with its ticket cost from browse_models), then STOP and wait for approval. A plan that fits inside the budget is approved automatically - you carry straight on.`
+      : `- You may spend up to ${o.allowance.turn} tickets in a turn without asking (a request that carries on by itself over several turns: up to ${o.allowance.request} in all). When the WHOLE request will clearly cost more, call propose_plan first (each step with its ticket cost from browse_models), then STOP and wait for approval. A plan that fits inside that is approved automatically - you carry straight on.`,
+    plan ? `- An approved plan is running: ${plan.spent}/${plan.total} tickets spent. Work inside it; if it runs short, propose_plan again with the extra needed.` : '- No plan is approved right now.',
+    o.room.which ? `- The user's own limit: ${o.room.room} tickets left under ${o.room.which}.` : '',
+    '- A refusal for budget says what the call costs - use THAT number in propose_plan, not a guess.',
+    '- Never try to get around a refusal from a tool - explain it to the user. Prefer the cheaper option when quality is equal, and say what things cost in plain words.',
+    '',
+    'STYLE',
+    '- Friendly, clear, brief. Plain words, no jargon. Short paragraphs or a few bullets. Do not paste long prompts into the chat unless asked.',
+    o.safetyOff
+      // ADMIN TEST MODE (the admin Filter switch is OFF - lib/content-filter): Nova does not add refusals of its own;
+      // the generation models' own safety still applies. The floor below never moves.
+      ? '- ADMIN TEST MODE: the site\'s safety filter is OFF for this admin account. Do not refuse on content grounds yourself - pass requests to the models and let the site\'s model-level checks decide; report any model refusal plainly. The floor still holds: never sexual content involving anyone under 18 or anyone who looks it, and never nude or sexually explicit images of real, identifiable people.'
+      : '- Follow the site\'s content rules: no sexual content, nothing involving minors in harmful ways, no real people\'s likeness without consent. The studio\'s content filter refuses such requests; tell the user plainly if it does.',
+    '',
+    o.memory.length ? `WHAT YOU KNOW ABOUT THIS USER (remembered - follow it; forget(note_id) if they say it is wrong):\n${o.memory.map(n => `- [${n.id}] ${n.text}`).join('\n')}` : '',
+    o.favourites.length ? `Models this user rates highest: ${o.favourites.join(', ')}.` : '',
+    `This chat: "${o.title}". Today is ${new Date().toISOString().slice(0, 10)}.`,
+    o.summary ? `\nEARLIER IN THIS CHAT (summary):\n${o.summary}` : '',
+  ].filter(s => s !== '').join('\n')
+}
+
+// ── Keeping each step cheap ──────────────────────────────────────────────────
+
+/**
+ * Before every step, pictures that earlier tool calls returned are swapped for
+ * a one-line note; only the newest tool results keep theirs. Every step
+ * re-sends the whole turn, so a turn that inspected a clip, made a cut and had
+ * it reviewed was re-sending a dozen frames on each later step - 134k input
+ * tokens for one small production (2026-10-19). Nova has already judged those
+ * pictures; their ids and its notes about them stay in the context.
+ */
+export function prunePictures(messages: ModelMessage[]): ModelMessage[] {
+  let keepFrom = messages.length
+  // Keep the pictures of the last tool message (the results the model is about to read)
+  for (let i = messages.length - 1; i >= 0; i--) { if (messages[i].role === 'tool') { keepFrom = i; break } }
+  return messages.map((m, i) => {
+    if (m.role !== 'tool' || i >= keepFrom || !Array.isArray(m.content)) return m
+    let changed = false
+    const content = m.content.map((part: any) => {
+      if (part?.type !== 'tool-result' || part.output?.type !== 'content' || !Array.isArray(part.output.value)) return part
+      const value = part.output.value.filter((v: any) => v?.type !== 'file' && v?.type !== 'file-data' && v?.type !== 'image-data')
+      if (value.length === part.output.value.length) return part
+      changed = true
+      return { ...part, output: { ...part.output, value: [...value, { type: 'text', text: `[${part.output.value.length - value.length} picture(s) shown earlier - removed to save cost]` }] } }
+    })
+    return changed ? ({ ...m, content } as ModelMessage) : m
+  })
+}
+
+// ── Which model runs each STEP (2026-10-19) ──────────────────────────────────
+
+/*
+ * The owner: "use Argon where it needs to (consistency, etc) and delegate to
+ * Flash to save money for things it doesn't need to". A turn is many steps -
+ * look up models, read assets, make a still, LOOK at it, file it, start the
+ * clips - and only some need the strong model. Each step picks:
+ *  - Argon (the STRONG model): the planning step of a production, and any step
+ *    that follows a tool which showed pictures or a check result - that step
+ *    judges the work (is it on-model, is the seam clean, what to redo);
+ *  - Flash: steps after mechanical tools (lookups, saving, filing, starting a
+ *    render, recipes) and the closing summary.
+ * Light turns stay on Flash; a create turn escalates only once the chat has a
+ * look bible (consistency is then the job). Each step is billed at its own
+ * model's rate. An admin who pins a model gets it on every step.
+ */
+const STRONG_MODEL = NOVA_ROUTES.production
+const FAST_MODEL = NOVA_ROUTES.run
+/** Tools whose results the next step must JUDGE: pictures, frames, measurements, verdicts. */
+const JUDGE_TOOLS = new Set([
+  'generate_image', 'edit_image', 'expand_image', 'cutout', 'view_media', 'asset_pictures', 'inspect_media', 'watch_video',
+  'extract_frame', 'make_loop', 'assemble_cut', 'recut', 'export_formats', 'check_shots', 'critique_work', 'trim_media',
+])
+export function stepModel(o: { tier: NovaTier; pinned: string | null; stepNumber: number; maxSteps: number; lastTools: string[]; hasBible: boolean }): string {
+  if (o.pinned) return o.pinned
+  if (o.tier === 'light') return FAST_MODEL
+  if (o.stepNumber === 0) return o.tier === 'production' ? STRONG_MODEL : FAST_MODEL
+  // The last step only writes the summary
+  if (o.stepNumber >= o.maxSteps - 1) return FAST_MODEL
+  const judging = o.lastTools.some(t => JUDGE_TOOLS.has(t))
+  if (!judging) return FAST_MODEL
+  return o.tier === 'production' || o.tier === 'run' || o.hasBible ? STRONG_MODEL : FAST_MODEL
+}
+/** "Argon ×3 + Flash ×5" for the route chip. */
+const shortName = (id: string) => id.replace(/^gemini-[\d.]+-?/, '').replace(/-preview$/, '').replace(/^./, c => c.toUpperCase()) || id
+
+// ── Interrupted turns ────────────────────────────────────────────────────────
+
+/** Longer than any turn can run (the route's limit is 300s). */
+const STALE_TURN_MS = 6 * 60_000
+/** No new step starts after this... */
+const TURN_SOFT_MS = 200_000
+/** ...and picture waits end here, well inside the 285s hard stop (the final write needs a few seconds). */
+const TURN_WAIT_MS = 240_000
+
+/**
+ * A reply that ended (finished, stopped, timed out or was cut off) cannot leave
+ * steps "running" - the studio would show "Making the image..." forever. A
+ * render that was already submitted (it has its queue job) is handed to the
+ * jobs route to settle like any other; anything else is marked as cut off.
+ */
+export function closeOpenSteps(steps: NovaStep[]): NovaStep[] {
+  return steps.map(s => s.status !== 'running' ? s
+    : s.queueId ? { ...s, status: 'pending' as const }
+    : { ...s, status: 'error' as const, error: s.kind ? 'Cut off before it finished - if it rendered, it is in My Generations' : 'Cut off before it finished' })
+}
+
+/**
+ * Close replies left running by a crash, a deploy or a killed function: they
+ * keep the steps they saved, get a note, and their whole chat hold goes back
+ * (a broken turn's tokens are on us). Returns true while a turn is genuinely
+ * still running.
+ */
+export async function sweepStaleTurns(chatId: number, user: { id: number; email: string }, isAdmin: boolean): Promise<boolean> {
+  const rows = await prisma.chatMessage.findMany({ where: { chatId, role: 'assistant' }, orderBy: { id: 'desc' }, take: 3, select: { id: true, content: true, metadata: true } })
+  let busy = false
+  for (const r of rows) {
+    const m = (r.metadata ?? {}) as Record<string, any>
+    if (!m.running) continue
+    if (Date.now() - (Number(m.startedAt) || 0) < STALE_TURN_MS) { busy = true; continue }
+    const held = Math.max(0, Number(m.held) || 0)
+    // Claim it first, so two sweeps can never refund twice
+    const claimed = await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = (metadata::jsonb - 'running') || '{"interrupted":true}'::jsonb WHERE id = ${r.id} AND metadata->>'running' = 'true'`
+    if (!claimed) continue
+    /*
+     * Its open steps are closed (a submitted render is settled later), and the
+     * production is marked to carry on - by the open studio, or by the cron
+     * with background runs on - like a turn that ran out of time. Only the
+     * newest reply, only if the chat has not chained too many turns already.
+     */
+    const steps = Array.isArray(m.steps) ? closeOpenSteps(m.steps as NovaStep[]) : []
+    const resume = r.id === rows[0].id && readChatState((await prisma.chat.findUnique({ where: { id: chatId }, select: { skills: true } }))?.skills).autoTurns! < NOVA_MAX_AUTO_TURNS
+    const pending = steps.some(s => s.status === 'pending')
+    const patch = { steps, ...(resume ? (pending ? { continueAfterRenders: true } : { keepGoing: 'time' }) : {}) }
+    await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = metadata::jsonb || ${JSON.stringify(patch)}::jsonb WHERE id = ${r.id}`.catch(() => {})
+    if (!isAdmin && held) await refundGenerationTickets(user.id, user.email, held).catch(() => {})
+    if (!r.content) await prisma.chatMessage.update({ where: { id: r.id }, data: { content: 'This reply was interrupted before it finished. Anything it made is saved in My Generations and shown above.' } }).catch(() => {})
+  }
+  return busy
+}
+
+/** The user's last real (typed) message - what a wake-up or plan approval is still working towards. */
+async function originalBrief(chatId: number): Promise<string> {
+  const rows = await prisma.chatMessage.findMany({ where: { chatId, role: 'user' }, orderBy: { id: 'desc' }, take: 12, select: { content: true, metadata: true } })
+  const real = rows.find(r => !((r.metadata ?? {}) as Record<string, any>).system)
+  return real?.content ?? ''
+}
+
+// ── The turn ─────────────────────────────────────────────────────────────────
+
+export type NovaTurnInput = {
+  user: { id: number; email: string }
+  isAdmin: boolean
+  chatId: number
+  text: string
+  attachmentIds: number[]
+  /** Assets the user picked for this message (their notes and pictures go to Nova). */
+  assetIds?: number[]
+  attachmentUrls: string[]
+  model?: string
+  approvePlan?: { messageId: number; tickets: number }
+  declinePlan?: { messageId: number }
+  continueRenders?: boolean
+  /** The run budget set in the prompt box for this request (lib/nova/config cleanRunBudget). */
+  runBudget?: number
+  signal?: AbortSignal
+  /** A turn the cron runs with nobody watching (lib/nova/runner): the user's background-run key header. */
+  background?: { headers: Record<string, string> }
+}
+
+/** Errors before streaming starts come back as a JSON status; then it is an NDJSON stream. */
+export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: number; json: Record<string, unknown> } | { stream: ReadableStream<Uint8Array> }> {
+  const { user, isAdmin } = input
+  const chat = await prisma.chat.findFirst({ where: { id: input.chatId, userId: user.id, source: 'nova' } })
+  if (!chat) return { status: 404, json: { error: 'Chat not found' } }
+  // A turn cut off by a crash or deploy is closed (and its hold refunded); a
+  // turn still running blocks a second one, so two can never spend at once
+  if (await sweepStaleTurns(chat.id, user, isAdmin)) return { status: 409, json: { error: 'Nova is still working on the last message - wait for it, or press Stop.' } }
+  const state = readChatState(chat.skills)
+  const pinned = resolveNovaModel(input.model ?? chat.model, isAdmin)
+  const { budget, spend } = await loadNovaBudget(user.id)
+  const room = roomLeft(budget, spend, state.spent)
+  if (room.room < 1) return { status: 402, json: { error: `Nova has reached ${room.which}. Raise it in Budget to keep going.`, limit: true } }
+
+  // ── what this turn is: a message, a plan decision, or a wake-up ──
+  let userText = clip(input.text, 8000)
+  let system = false
+  if (input.approvePlan || input.declinePlan) {
+    const mid = (input.approvePlan ?? input.declinePlan)!.messageId
+    const row = await prisma.chatMessage.findFirst({ where: { id: mid, chatId: chat.id, role: 'assistant' }, select: { id: true, metadata: true } })
+    const meta = (row?.metadata ?? {}) as Record<string, any>
+    const plan = meta.plan as NovaPlan | undefined
+    if (!row || !plan || plan.status !== 'proposed') return { status: 400, json: { error: 'That plan is no longer open' } }
+    if (input.approvePlan) {
+      const tickets = Math.max(1, Math.min(100_000, Math.round(Number(input.approvePlan.tickets) || plan.totalTickets)))
+      if (!isAdmin) {
+        const have = await novaBalance(user.id)
+        if (have < tickets) return { status: 402, json: { error: `This plan needs ${tickets} tickets - you have ${have}.`, needTickets: true } }
+      }
+      plan.status = 'approved'; plan.approvedTickets = tickets
+      // A new plan replaces what was left of the last one
+      state.plan = { messageId: row.id, total: tickets, spent: 0 }
+      userText = `[Plan approved with a budget of ${tickets} tickets${tickets !== plan.totalTickets ? ` (you asked for ${plan.totalTickets} - fit the work to this)` : ''}. Go ahead.]${userText ? ` ${userText}` : ''}`
+    } else {
+      plan.status = 'declined'
+      userText = `[Plan declined.]${userText ? ` ${userText}` : ' Ask what they would like instead.'}`
+    }
+    await prisma.chatMessage.update({ where: { id: row.id }, data: { metadata: { ...meta, plan } as object } })
+    system = true
+  } else if (input.continueRenders) {
+    const last = await prisma.chatMessage.findFirst({ where: { chatId: chat.id, role: 'assistant' }, orderBy: { id: 'desc' }, select: { id: true, metadata: true } })
+    const meta = (last?.metadata ?? {}) as Record<string, any>
+    if (!last || !(meta.continueAfterRenders || meta.keepGoing) || meta.continued) return { status: 400, json: { error: 'Nothing is waiting to continue' } }
+    if ((state.autoTurns ?? 0) >= NOVA_MAX_AUTO_TURNS) return { status: 400, json: { error: `Nova has carried on by itself ${NOVA_MAX_AUTO_TURNS} times - send a message to keep going.` } }
+    const steps = (meta.steps ?? []) as NovaStep[]
+    if (steps.some(s => s.status === 'pending')) return { status: 400, json: { error: 'Renders are still running' } }
+    // Claimed atomically: an open tab and another poller can never both continue it
+    const claimed = await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = metadata::jsonb || '{"continued":true}'::jsonb WHERE id = ${last.id} AND COALESCE(metadata->>'continued', 'false') <> 'true'`
+    if (!claimed) return { status: 409, json: { error: 'Already continuing' } }
+    state.autoTurns = (state.autoTurns ?? 0) + 1
+    const finished = steps.filter(s => s.kind).map(s => s.status === 'done' ? `#${s.generationId ?? '?'} ${s.kind} (${s.model ?? s.tool}, ${s.tickets ?? 0} tickets) ready` : `${s.kind} (${s.model ?? s.tool}) failed and was refunded: ${clip(s.error, 80)}`)
+    const brief = clip(await originalBrief(chat.id), 600)
+    userText = meta.continueAfterRenders
+      ? `[Your renders finished: ${finished.join('; ') || 'nothing'}. Continue with what you planned.]`
+      : `[Your last turn ran out of ${meta.keepGoing === 'time' ? 'time' : 'steps'} before the work was done. Carry on from where you left off - do not redo finished work${state.plan ? ', and stay inside the approved plan' : ''}.${brief ? ` The request: "${brief}"` : ''}]`
+    system = true
+  }
+  if (!userText && !input.attachmentIds.length && !input.assetIds?.length) return { status: 400, json: { error: 'Say something to Nova' } }
+  if (!system) state.autoTurns = 0
+  // A new request takes the prompt box's budget (or none); approvals and wake-ups keep the request's
+  if (!system) state.runBudget = cleanRunBudget(input.runBudget)
+
+  // ── which model runs this turn: an admin's pinned model, else the router ──
+  const lastReply = (await prisma.chatMessage.findFirst({ where: { chatId: chat.id, role: 'assistant' }, orderBy: { id: 'desc' }, select: { content: true } }))?.content ?? ''
+  const routed = pinned === NOVA_AUTO
+    ? await routeTurn(userText, { planActive: !!state.plan, continuing: !!input.continueRenders, attachments: input.attachmentIds.length, lastReply })
+    : { tier: 'production' as NovaTier, model: pinned, usage: { inputTokens: 0, outputTokens: 0 }, why: 'pinned by an admin' }
+  const model = routed.model
+  const routerUsd = novaChatUsd('gemini-3.5-flash-lite', routed.usage)
+
+  // ── hold the chat's price (refunded down to the real cost after) ──
+  // Steps for this kind of turn (production and run turns need room to make, check and redo)
+  const maxSteps = NOVA_TIER_STEPS[routed.tier] ?? NOVA_MAX_STEPS
+  // Steps may run on the strong model (judging) or Flash: the hold assumes up to half on the strong one
+  const mixed = pinned === NOVA_AUTO && routed.tier !== 'light'
+  const hold = mixed
+    ? Math.max(novaTurnHold(FAST_MODEL, true, maxSteps), novaTurnHold(STRONG_MODEL, true, Math.ceil(maxSteps / 2)))
+    : novaTurnHold(model, routed.tier === 'production' || routed.tier === 'run', maxSteps)
+  let held = 0
+  if (!isAdmin) {
+    const paid = await deductGenerationTickets(user.id, user.email, hold)
+    if (!paid.ok) return { status: 402, json: { error: `A turn with Nova holds up to ${hold} tickets while it works (you only pay what it uses) - you have ${paid.have}.`, needTickets: true } }
+    held = hold
+  }
+
+  try {
+    // ── the user's message ──
+    const attachRows = (await ownedRows(user.id, input.attachmentIds)).slice(0, 8)
+    /*
+     * Assets the user picked (2026-10-19, owner): "this is the character /
+     * product I mean". Each one's name, kind and notes go to Nova as text, its
+     * pictures become My Generations ids Nova can pass as references, and the
+     * first pictures are shown to it. Only the user's own assets are read.
+     */
+    const picked = (await Promise.all((input.assetIds ?? []).slice(0, 6).map(id => findAsset(user.id, id)))).filter((a): a is NonNullable<typeof a> => !!a)
+    const assetInfo = await Promise.all(picked.map(async a => {
+      const refs = storedRefs(a.refs)
+      const rows = refs.length ? await prisma.generatedImage.findMany({ where: { userId: user.id, isDeleted: false, imageUrl: { in: refs.map(r => r.url) } }, select: { id: true, imageUrl: true, thumbnailUrl: true } }) : []
+      const ids = refs.map(r => rows.find(x => x.imageUrl === r.url)?.id).filter((v): v is number => !!v)
+      return { a, refs, ids, thumb: rows[0]?.thumbnailUrl ?? refs[0]?.thumb ?? refs[0]?.url ?? null }
+    }))
+    const assetMeta = assetInfo.map(x => ({ id: x.a.id, name: x.a.name, kind: x.a.kind, thumb: x.thumb }))
+    const seenAssetIds: number[] = []
+    /*
+     * The chat's references (the studio panel's switches): told to Nova every
+     * turn, their pictures shown again only when the set changed since Nova
+     * last saw it - showing them on every turn would bill the same pictures
+     * over and over.
+     */
+    const chatRefs = await resolveChatRefs(user.id, state.refs)
+    const refsNew = refsKey(chatRefsIds(chatRefs)) !== (state.refsShown ?? '')
+    const attachments = attachRows.map(r => ({ id: r.id, url: r.imageUrl, kind: kindOf(r) as NovaMediaKind }))
+    if (!state.folderId) state.folderId = await ensureChatFolder(user.id, chat.title === 'New chat' ? (clip(userText, 60) || 'New chat') : chat.title)
+    const userRow = await prisma.chatMessage.create({
+      data: { chatId: chat.id, role: 'user', content: userText, metadata: { ...(attachments.length ? { attachments } : {}), ...(assetMeta.length ? { assets: assetMeta } : {}), ...(system ? { system: true } : {}) } as object, imageUrls: attachments.map(a => a.url) },
+      select: { id: true },
+    })
+    let title = chat.title
+    if (title === 'New chat' && !system && userText) {
+      title = clip(userText.replace(/\[.*?\]/g, ''), 48) || 'New chat'
+      await prisma.chat.update({ where: { id: chat.id }, data: { title } })
+    }
+
+    // ── history: the window word for word, older folded into the summary ──
+    const recent = (await prisma.chatMessage.findMany({
+      where: { chatId: chat.id, id: { lt: userRow.id } }, orderBy: { id: 'desc' }, take: NOVA_HISTORY,
+      select: { id: true, role: true, content: true, model: true, metadata: true, createdAt: true },
+    })).reverse()
+    const compact = await compactChat(chat, recent[0]?.id ?? null)
+    const messages: ModelMessage[] = recent.map(r => {
+      const m = toNovaMessage(r)
+      return m.role === 'user' ? { role: 'user' as const, content: digest(m) } : { role: 'assistant' as const, content: digest(m) || '(no reply)' }
+    })
+    const assetText = assetInfo.map(x => `- Asset ${x.a.id} "${x.a.name}" (${x.a.kind})${x.a.notes ? ` - notes: ${clip(x.a.notes, 500)}` : ''}\n  pictures (use as reference_ids, most representative first): ${x.ids.length ? x.ids.map(i => `#${i}`).join(', ') : 'none in My Generations'}${x.refs.length > x.ids.length ? ` (+${x.refs.length - x.ids.length} uploaded straight into the asset - shown, not usable as references)` : ''}`).join('\n')
+    const refsText = chatRefsText(chatRefs)
+    const parts: any[] = [{ type: 'text', text: `${userText}${attachments.length ? `\n[attached: ${attachments.map(a => `#${a.id} (${a.kind})`).join(', ')}]` : ''}${assetText ? `\n[The user picked these Assets - this is what they mean; keep them consistent with these pictures and notes:\n${assetText}]` : ''}${refsText ? `\n${refsText}` : ''}` }]
+    // The pictures attached to THIS message are shown, so Nova can see what the user means
+    for (const a of attachRows.filter(r => kindOf(r) === 'image').slice(0, 4)) { const p = await imagePart(a.imageUrl); if (p) parts.push(p) }
+    for (const url of input.attachmentUrls.slice(0, 2)) { const p = await imagePart(url); if (p) parts.push(p) }
+    // The picked assets' first pictures (two each, four in all), so Nova sees who / what they are
+    for (const x of assetInfo) for (const r of x.refs.slice(0, 2)) { if (parts.filter(p => p.type === 'file').length >= 6) break; const p = await imagePart(r.url); if (p) parts.push(p) }
+    for (const x of assetInfo) seenAssetIds.push(...x.ids)
+    // The chat's references: newly switched on -> their first pictures, so Nova sees them (six pictures in all at most)
+    if (refsNew) {
+      const pics = [...chatRefs.assets.flatMap(a => a.pictures.slice(0, 1).map(p => p.url)), ...chatRefs.generations.filter(g => g.kind === 'image').map(g => g.url)]
+      for (const u of pics) { if (parts.filter(p => p.type === 'file').length >= 6) break; const p = await imagePart(u); if (p) parts.push(p) }
+    }
+    for (const a of chatRefs.assets) seenAssetIds.push(...a.ids)
+    seenAssetIds.push(...chatRefs.generations.map(g => g.id))
+    if (input.attachmentUrls.length) parts.push({ type: 'text', text: '(The last picture(s) are from an asset and are not in My Generations: look at them, but they cannot be passed as references.)' })
+    messages.push({ role: 'user', content: parts.map(p => p.type === 'file' ? { type: 'file', data: p.data.data, mediaType: p.mediaType } : p) as any })
+
+    // ── run ──
+    const enc = new TextEncoder()
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c } })
+    const send = (e: NovaStreamEvent) => { try { controller.enqueue(enc.encode(JSON.stringify(signPayload(e)) + '\n')) } catch { /* closed */ } }
+
+    // The reply's row exists from the start (metadata.running), and its steps
+    // are saved as they happen: a turn cut off mid-way still leaves what it
+    // made on record, and sweepStaleTurns can refund its hold
+    const asst = await prisma.chatMessage.create({
+      data: { chatId: chat.id, role: 'assistant', content: '', model, metadata: { running: true, held, startedAt: Date.now(), steps: [] } as object },
+      select: { id: true },
+    })
+    /*
+     * How the turn can be stopped. With background runs on, closing the tab
+     * must NOT kill a production, so the connection is not what stops it: the
+     * Stop button sets `cancel` on this reply (POST .../stop) and the turn
+     * checks it every few seconds. Without background runs, a closed
+     * connection still stops the turn, as before.
+     */
+    const stopper = new AbortController()
+    /*
+     * The turn's clock (2026-10-19): the route has 300s, and a production of a
+     * dozen 4K stills used to run into the hard limit while it waited on them -
+     * the turn died silently, short of what was asked. Now no new step starts
+     * after TURN_SOFT_MS, picture waits end at TURN_WAIT_MS (a still that is
+     * not ready yet is settled later like a video), and a turn stopped by the
+     * clock carries on by itself.
+     */
+    const turnStart = Date.now()
+    const outOfTime = () => Date.now() - turnStart > TURN_SOFT_MS
+    const detached = !!input.background || (await backgroundStatus(user.id).catch(() => ({ enabled: false }))).enabled
+    if (!detached && input.signal) input.signal.addEventListener('abort', () => stopper.abort(), { once: true })
+    const cancelPoll = setInterval(() => {
+      void prisma.chatMessage.findUnique({ where: { id: asst.id }, select: { metadata: true } }).then(r => {
+        if (((r?.metadata ?? {}) as Record<string, any>).cancel) stopper.abort()
+      }).catch(() => {})
+    }, 3000)
+    let saveTimer: ReturnType<typeof setTimeout> | null = null
+    /*
+     * Progress is saved every couple of seconds (the steps AND the text so far),
+     * so a page reloaded mid-turn shows where Nova is. Once the turn has written
+     * its final row nothing more is saved: a tool still finishing after a stop
+     * or a timeout used to write `running` back over the finished reply, and
+     * the reply then read as "interrupted" with its steps stuck on "Making...".
+     */
+    let closed = false
+    const live = { text: '' }
+    const saveSteps = () => {
+      if (saveTimer || closed) return
+      saveTimer = setTimeout(() => {
+        saveTimer = null
+        if (closed) return
+        void prisma.chatMessage.update({ where: { id: asst.id }, data: { content: live.text, metadata: { running: true, held, startedAt: turnStart, steps: ctx.steps } as object } }).catch(() => {})
+      }, 2000)
+    }
+    const ctx: NovaTurnCtx = {
+      user, isAdmin, chatId: chat.id, state, budget, spend,
+      steps: [], emit: step => { send({ t: 'step', step: { ...step } }); saveSteps() },
+      // A turn that carries on by itself keeps counting the request's spend against its allowance
+      allowance: novaAllowance(budget, state),
+      mediaTickets: 0, unplanned: 0, chainBefore: input.continueRenders ? (state.chainUnplanned ?? 0) : 0, reserved: 0, proposedPlan: null, waitForRenders: false,
+      deadline: turnStart + TURN_WAIT_MS,
+      extraUsd: 0, criticRuns: 0, authHeaders: input.background?.headers, brief: system ? (await originalBrief(chat.id)) : userText,
+      seenIds: new Set([...attachRows.map(r => r.id), ...seenAssetIds]),
+    }
+    const balanceNow = isAdmin ? null : await novaBalance(user.id)
+    const [memory, favourites] = await Promise.all([loadNovaMemory(user.id), userFavouriteModels(user.id)])
+    // Admins share one safety switch with the rest of the site (the composer's admin Filter ON/OFF); everyone else is always filtered
+    const safetyOff = isAdmin && !(await readFilterState().catch(() => ({ on: true }))).on
+
+    void (async () => {
+      let text = ''
+      let usage: NovaUsage = { inputTokens: 0, outputTokens: 0 }
+      let failed: string | null = null
+      let stepsUsed = 0
+      let timedOut = false
+      // The model each step ran on, and what each cost (per-step billing)
+      const stepModels: string[] = []
+      let stepUsd = 0
+      try {
+        const result = streamText({
+          model: google(model),
+          instructions: novaInstructions({ isAdmin, balance: balanceNow != null ? balanceNow + held : null, state, allowance: ctx.allowance, room: roomLeft(budget, spend, state.spent), summary: compact.summary, title, memory, favourites, tier: routed.tier, safetyOff }),
+          messages,
+          tools: { ...makeNovaTools(ctx), ...makeProTools(ctx), ...makeStudioTools(ctx), ...makePostTools(ctx) },
+          // A plan the studio approved by itself does not end the turn
+          stopWhen: [stepCountIs(maxSteps), () => !!ctx.proposedPlan, hasToolCall('wait_for_renders'), () => { if (outOfTime()) timedOut = true; return timedOut }],
+          // Old pictures out of the context; the last allowed step is reserved for the summary,
+          // so a turn that used its steps on work still tells the user what it did
+          prepareStep: ({ stepNumber, messages, steps }) => {
+            const m = stepModel({ tier: routed.tier, pinned: pinned === NOVA_AUTO ? null : pinned, stepNumber, maxSteps, lastTools: (steps.at(-1)?.toolCalls ?? []).map(c => c.toolName), hasBible: !!state.bible })
+            stepModels[stepNumber] = m
+            return {
+              model: google(m),
+              messages: prunePictures(messages),
+              ...(stepNumber >= maxSteps - 1 ? { toolChoice: 'none' as const } : {}),
+            }
+          },
+          maxOutputTokens: 8192,
+          abortSignal: AbortSignal.any([stopper.signal, AbortSignal.timeout(285_000)]),
+          providerOptions: { google: {
+            thinkingConfig: model.startsWith('gemini-2.5') ? { thinkingBudget: 1024 } : { thinkingLevel: 'low' },
+            // Admin test mode: Gemini's own blocking relaxed to high-risk only (never off) - the
+            // generation models' checks and the floor in the instructions still apply
+            ...(safetyOff ? { safetySettings: ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT'].map(category => ({ category, threshold: 'BLOCK_ONLY_HIGH' })) } : {}),
+          } } as any,
+        })
+        for await (const part of result.fullStream) {
+          if (part.type === 'text-delta') { text += part.text; live.text = text; send({ t: 'text', d: part.text }); saveSteps() }
+          else if (part.type === 'error') failed = String((part as any).error?.message ?? (part as any).error ?? 'error').slice(0, 300)
+          // A stop or the hard time limit ends the stream with an 'abort' part (no error is thrown)
+          else if (part.type === 'abort') { if (stopper.signal.aborted) failed = 'Stopped'; else timedOut = true }
+        }
+        const allSteps = await result.steps
+        stepsUsed = allSteps.length
+        const u = await result.totalUsage
+        usage = { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0 }
+        allSteps.forEach((s, k) => { stepUsd += novaChatUsd(stepModels[k] ?? model, { inputTokens: s.usage?.inputTokens ?? 0, outputTokens: s.usage?.outputTokens ?? 0 }) })
+      } catch (e: any) {
+        if (stopper.signal.aborted) failed = 'Stopped'
+        else if (e?.name === 'TimeoutError' || e?.name === 'AbortError') timedOut = true
+        else failed = String(e?.message || e).slice(0, 300)
+      }
+      closed = true
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+      ctx.steps = closeOpenSteps(ctx.steps)
+
+      // ── pay for the chat: the measured tokens (and the summary's), never more than was held ──
+      usage = { inputTokens: usage.inputTokens + compact.usage.inputTokens, outputTokens: usage.outputTokens + compact.usage.outputTokens }
+      // Every model this turn used, in dollars: the orchestrator, the summary (Flash-Lite), the router and the critic
+      // Each step at its own model's rate (falls back to the turn's model when the steps could not be read)
+      const orchestratorUsd = stepUsd > 0 ? stepUsd : novaChatUsd(model, { inputTokens: usage.inputTokens - compact.usage.inputTokens, outputTokens: usage.outputTokens - compact.usage.outputTokens })
+      const turnUsd = orchestratorUsd + novaChatUsd('gemini-3.5-flash-lite', compact.usage) + routerUsd + ctx.extraUsd
+      const mix: Record<string, number> = {}
+      for (const m of stepModels.filter(Boolean)) mix[shortName(m)] = (mix[shortName(m)] ?? 0) + 1
+      const chatTickets = turnUsd > 0 ? Math.min(hold, novaTicketsForUsd(turnUsd)) : 0
+      let balance: number | null = null
+      try {
+        if (!isAdmin && held > chatTickets) await refundGenerationTickets(user.id, user.email, held - chatTickets)
+        if (chatTickets) { state.spent += chatTickets; await addNovaSpend(user.id, chatTickets) }
+        if (state.plan && state.plan.spent >= state.plan.total) state.plan = null
+        // A turn nobody watched: the chat shows as new until it is opened
+        if (input.background) state.unread = true
+        state.chainUnplanned = (ctx.chainBefore ?? 0) + ctx.unplanned
+        const plan = ctx.proposedPlan
+        const pending = ctx.steps.some(s => s.status === 'pending')
+        // Out of steps or time with the work unfinished (and nobody asked to stop): carry on by itself
+        const cutShort = timedOut ? 'time' : stepsUsed >= maxSteps ? 'steps' : null
+        const keepGoing = !!cutShort && !failed && !plan && (state.autoTurns ?? 0) < NOVA_MAX_AUTO_TURNS
+        const meta = {
+          steps: ctx.steps, ...(plan ? { plan } : ctx.autoPlan ? { plan: ctx.autoPlan } : {}),
+          // charged = whether the CHAT was billed (admins chat free; the site's routes bill generations by their own rules)
+          tickets: { chat: chatTickets, media: ctx.mediaTickets, charged: !isAdmin },
+          usage, model, ...(failed ? { error: failed } : {}),
+          // Waiting on renders - including stills the clock handed over as 'pending' - then carrying on
+          ...(pending && (ctx.waitForRenders || keepGoing) ? { continueAfterRenders: true } : {}),
+          ...(keepGoing && !pending ? { keepGoing: cutShort } : {}),
+          route: { tier: routed.tier, model, why: routed.why, ...(Object.keys(mix).length > 1 ? { mix } : {}) },
+          ...(safetyOff ? { safetyOff: true } : {}),
+          usd: Math.round(turnUsd * 10000) / 10000,
+        }
+        const content = text.trim() || (failed ? (failed === 'Stopped' ? 'Stopped. Anything already made is kept above.' : `Something went wrong: ${failed}`) : plan ? 'Here is my plan.' : cutShort ? 'Still working on it - carrying on…' : '')
+        const row = await prisma.chatMessage.update({
+          where: { id: asst.id },
+          data: { content, model, metadata: meta as object, imageUrls: ctx.steps.map(s => s.mediaUrl).filter((u): u is string => !!u) },
+          select: { id: true, role: true, content: true, model: true, metadata: true, createdAt: true },
+        })
+        // The references are the panel's: whatever it set during the turn stays; the set shown this turn counts as seen
+        state.refs = readChatState((await prisma.chat.findUnique({ where: { id: chat.id }, select: { skills: true } }))?.skills).refs
+        state.refsShown = refsKey(chatRefsIds(chatRefs))
+        await prisma.chat.update({ where: { id: chat.id }, data: { skills: state as object, model: pinned, updatedAt: new Date() } })
+        const fresh = await loadNovaBudget(user.id)
+        if (!isAdmin) balance = await novaBalance(user.id)
+        console.log(`[ai-usage] nova tier=${routed.tier} model=${model} usd=${turnUsd.toFixed(4)} critic=${ctx.criticRuns} in=${usage.inputTokens} out=${usage.outputTokens} chatTickets=${chatTickets} media=${ctx.mediaTickets} steps=${ctx.steps.length}${isAdmin ? ' (admin, not charged)' : ''}`)
+        if (failed && !text.trim() && !ctx.steps.length) send({ t: 'error', error: failed })
+        send({ t: 'done', message: toNovaMessage(row), balance, spend: fresh.spend, chatSpent: state.spent })
+      } catch (e: any) {
+        send({ t: 'error', error: String(e?.message || e).slice(0, 300) })
+      } finally {
+        clearInterval(cancelPoll)
+        try { controller.close() } catch { /* already closed */ }
+      }
+    })()
+
+    return { stream }
+  } catch (e) {
+    if (held) await refundGenerationTickets(user.id, user.email, held).catch(() => {})
+    throw e
+  }
+}

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, Layers, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart, Globe2 } from "lucide-react"
+import { Clapperboard, ScanFace, Lock, ArrowLeft, UsersRound, Box, Film, ShieldAlert, GalleryHorizontalEnd, Layers, ArrowRight, ArrowDown, Images, Sparkles, FolderHeart, Globe2, MessageSquareText } from "lucide-react"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/employees"
 import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { LoopVideo } from "@/components/shop/ShopKit"
@@ -135,6 +135,18 @@ export const SITE_EMPLOYEES: EmployeeDef[] = [
     icon: Globe2,
     accent: "sky",
     highlights: ["Live, as you move", "Change the world with words", "Record walks to your feed"],
+  },
+  {
+    id: "nova",
+    name: "Nova Studio",
+    tagline: "Your creative partner - talk it through, Nova makes it",
+    blurb:
+      "Chat with Nova about what you want to make. It works with your generations and assets, creates images, video, "
+      + "audio and 3D with the site's models, files everything into My Generations and cuts it into a finished piece - "
+      + "with a plan you approve before any big spend.",
+    icon: MessageSquareText,
+    accent: "fuchsia",
+    highlights: ["Chat to create", "Your library", "Plans & budgets", "Final cuts"],
   },
 ]
 
@@ -367,8 +379,15 @@ export const STUDIO_MEDIA: Partial<Record<EmployeeId, { poster: string; video?: 
   "3d-studio": { poster: `${STUDIO_MEDIA_BASE}/3d-studio-2d5c8730-4355-4b96-8024-5ac23f6aa77d.webp`, video: `${STUDIO_MEDIA_BASE}/3d-studio-loop-eaab7f08-ebef-47dd-8c40-26be58f3f544.mp4` },
   frames: { poster: `${STUDIO_MEDIA_BASE}/frames-1acc0c90-15f6-4072-8661-eb6703f62d21.webp`, video: `${STUDIO_MEDIA_BASE}/frames-loop-9e1a0281-d591-4a42-8354-99523afb40b4.mp4` },
   storyboard: { poster: `${STUDIO_MEDIA_BASE}/storyboard-e04d364e-8058-4658-9423-23059fe8a9d3.webp`, video: `${STUDIO_MEDIA_BASE}/storyboard-loop-24fc505b-c45d-47b0-a86f-ac6ab4f2c5cb.mp4` },
-  // 2026-10-06: still only for now (feed 109208); a loop can follow
-  "image-studio": { poster: `${STUDIO_MEDIA_BASE}/image-studio-364f42ef-babc-4606-bca7-5f9b4c7dafb7.webp` },
+  // 2026-10-18: Prism & Nova's lakeside artwork as five layer panes that collapse into
+  // the finished picture and fan back out (feed 112405 still, 112406 loop). Rendered
+  // from the real layers, so the panes always add up to the artwork. Replaced the
+  // 2026-10-06 fox still (feed 109208), whose last two panes weren't part of the picture.
+  "image-studio": { poster: `${STUDIO_MEDIA_BASE}/image-studio-bacc01d8-0d08-4b1c-9026-dfd128b9746f.webp`, video: `${STUDIO_MEDIA_BASE}/image-studio-loop-f72d383d-8ffd-429f-8fb6-b65f29a9e23d.mp4` },
+  // 2026-10-18: still only for now (feed 112386)
+  worlds: { poster: `${STUDIO_MEDIA_BASE}/worlds-6dc23ad9-f0d6-418b-81d1-e0fa1ea23561.webp` },
+  // 2026-10-18: Nova (the brand mascot) in a night studio, chat bubble and media orbiting her (feed 112460)
+  nova: { poster: `${STUDIO_MEDIA_BASE}/nova-96a57f0f-3de5-4045-98ea-918f496592e7.webp` },
 }
 
 function prefersReducedMotion() {

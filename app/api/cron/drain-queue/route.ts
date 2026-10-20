@@ -398,7 +398,12 @@ export async function GET(request: Request) {
     // closed never lands in the feed - or, if it failed, never refunds.
     const audioSettled = await settleAbandonedAudioRuns().catch(e => { console.error('[cron-drain] audio:', e); return 0 })
 
-    return NextResponse.json({ success: true, staleReset, harvested, promoted, autofillKicked: stuckAutofillJobs.length, autofillPromoted, audioSettled })
+    // Nova Studio productions waiting on renders (or mid-plan) for users with
+    // background runs on: settle them and hand ready chats to /api/nova/runner
+    // (lib/nova/runner) - so a closed tab no longer stalls a production
+    const nova = await (await import('@/lib/nova/runner')).novaSweep(getBaseUrl(request)).catch(e => { console.error('[cron-drain] nova:', e); return null })
+
+    return NextResponse.json({ success: true, staleReset, harvested, promoted, autofillKicked: stuckAutofillJobs.length, autofillPromoted, audioSettled, nova })
   } catch (error) {
     console.error('[cron-drain] Error:', error)
     return NextResponse.json({ error: 'Drain failed' }, { status: 500 })

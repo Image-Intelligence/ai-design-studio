@@ -12,7 +12,7 @@
  * app/api/generate/route.ts (ADMIN_ONLY_IMAGE_MODELS).
  */
 
-import { gptImage25DefaultEffort, kleinSize, krea3Size } from './ticket-pricing'
+import { gptImage25DefaultEffort, kleinSize, krea3Size, mossSize } from './ticket-pricing'
 
 export interface FalImageBuildContext {
   /** User prompt (already trimmed). May be '' for promptless models. */
@@ -1358,6 +1358,13 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
   // turning it off "requires account authorization".
   'krea-3': krea3Spec('krea-3', 'krea/v3/text-to-image', 'krea-3-edit'),
   'krea-3-edit': krea3Spec('krea-3-edit', 'krea/v3/edit'),
+  // MOSS Image (2026-10-18, admin): OpenMOSS's text-to-image, strong on
+  // Chinese + English lettering and laid-out compositions. One of fal's six
+  // named sizes or a custom W x H (snapped and clamped in mossSize), with the
+  // steps and guidance knobs from the portal. $0.05 per MP (mossTicketCost).
+  // Safety checker left at fal's default (on): turning it off "requires
+  // account authorization", as with Krea 3.
+  'moss-image': mossSpec(),
   'hunyuan-image-3': {
     id: 'hunyuan-image-3', endpoint: 'fal-ai/hunyuan-image/v3/text-to-image',
     needsImage: false, imageParam: null, maxInputImages: 0,
@@ -1954,6 +1961,35 @@ function krea3Spec(id: string, endpoint: string, editVariant?: string): FalImage
       image_size: krea3Size(ctx.aspectRatio, ctx.quality, ctx.options.refDims),
       output_format: 'png',
     }),
+  }
+}
+
+/**
+ * MOSS Image. Knobs (all optional, all re-checked here): mossSize (a fal preset
+ * name or 'custom'), mossWidth / mossHeight (custom only), mossSteps (1-100,
+ * fal's default 50), mossGuidance (0-10, default 3).
+ */
+function mossSpec(): FalImageModelSpec {
+  return {
+    id: 'moss-image', endpoint: 'fal-ai/moss-image',
+    needsImage: false, imageParam: null, maxInputImages: 0,
+    promptRequired: true, promptMin: 1, promptMax: 16384,
+    aspectRatios: null, usesImageSize: true,
+    notes: 'image_size = preset or {width,height} in 512-2048, multiples of 16',
+    build: (ctx) => {
+      const size = mossSize({ size: ctx.options.mossSize, width: ctx.options.mossWidth, height: ctx.options.mossHeight })
+      // null / '' would read as 0 through Number(): only a real number counts
+      const num = (v: unknown) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN)
+      const steps = num(ctx.options.mossSteps)
+      const guidance = num(ctx.options.mossGuidance)
+      return {
+        prompt: ctx.prompt,
+        image_size: size.preset ?? { width: size.width, height: size.height },
+        num_inference_steps: Number.isFinite(steps) ? Math.min(100, Math.max(1, Math.round(steps))) : 50,
+        guidance_scale: Number.isFinite(guidance) ? Math.min(10, Math.max(0, Math.round(guidance * 10) / 10)) : 3,
+        output_format: 'png',
+      }
+    },
   }
 }
 

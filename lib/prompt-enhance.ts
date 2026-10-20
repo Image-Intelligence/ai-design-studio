@@ -17,9 +17,9 @@
  * compete. If a model does hit a limit, the next in ENHANCE_MODEL_CHAIN takes
  * the request - each has its own quota.
  */
-import { GoogleGenerativeAI } from '@google/generative-ai'
 import prisma from '@/lib/prisma'
 import { resolvePromptModel, DEFAULT_PROMPT_MODEL } from '@/lib/prompt-models'
+import { geminiGenerate, geminiText } from '@/lib/gemini-generate'
 
 // ── Daily allowance per plan ────────────────────────────────────────────────
 
@@ -140,7 +140,8 @@ export async function refundEnhance(userId: number): Promise<void> {
 // ── The rewrite itself ──────────────────────────────────────────────────────
 
 /** Tried in order: a limit or outage on one model falls through to the next. */
-export const ENHANCE_MODEL_CHAIN = [DEFAULT_PROMPT_MODEL, 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest']
+// 2.5 Flash Lite left the chain 2026-10-18: Google now answers 404 "no longer available to new users"
+export const ENHANCE_MODEL_CHAIN = [DEFAULT_PROMPT_MODEL, 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest']
 
 /** One-tap style directions offered as chips. */
 export const ENHANCE_STYLES = ['Cinematic', 'Photoreal', 'Anime', 'Illustration', 'Product shot', 'Logo', 'Fantasy', 'Moody'] as const
@@ -198,8 +199,6 @@ IDEA: ${idea}${styles.length ? `\nSTYLE: ${styles.join(', ')}` : ''}
 ${rules}`
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '')
-
 /**
  * Run the rewrite. Admins may pick the Gemini model; everyone else gets the
  * chain. Returns the model that answered, for logging.
@@ -210,16 +209,32 @@ export async function runEnhance(input: EnhanceInput, adminModel?: string | null
   let lastErr: unknown = null
   for (const model of [...new Set(chain)]) {
     try {
-      const res = await genAI.getGenerativeModel({ model, generationConfig: { temperature: 0.7, maxOutputTokens: 400 } }).generateContent(text)
-      const out = res.response.text().trim().replace(/^["'`]+|["'`]+$/g, '').trim()
+      /*
+       * Thinking tokens count against maxOutputTokens: with the old cap of 400,
+       * every model that thinks (all of Flash and Pro) spent ~380 of it
+       * thinking and was cut off mid-sentence (measured 2026-10-18). Low
+       * thinking and room to finish; the prompt itself still asks for one
+       * prompt, so the answer stays short. Flash-Lite is left alone: it does
+       * not think by default, and asking for "low" switches thinking ON for
+       * 3.1 Flash Lite (+130 tokens, +0.5s).
+       */
+      const res = await geminiGenerate(model, {
+        contents: [{ role: 'user', parts: [{ text }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048, ...(model.includes('flash-lite') ? {} : { thinkingConfig: { thinkingLevel: 'low' } }) },
+      }, { signal: AbortSignal.timeout(60_000) })
+      if (!res.ok) {
+        lastErr = Object.assign(new Error(`Gemini ${res.status} on ${model}`), { status: res.status })
+        // A bad request will fail on every model alike - stop; a limit or an
+        // outage on this one may not affect the next
+        if (res.status < 500 && res.status !== 429 && res.status !== 404) break
+        continue
+      }
+      const out = geminiText(await res.json()).trim().replace(/^["'`]+|["'`]+$/g, '').trim()
       if (out) return { prompt: out, model }
       lastErr = new Error('empty response')
     } catch (e) {
+      // A timeout or network failure - try the next model
       lastErr = e
-      const status = (e as { status?: number })?.status
-      // A bad request will fail on every model alike - stop; a limit or an
-      // outage on this one may not affect the next
-      if (status && status < 500 && status !== 429 && status !== 404) break
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error('Enhancement failed')

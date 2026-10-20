@@ -75,6 +75,8 @@ export async function submitChatVideo(
   refs: string[],
   settings: ChatCreateSettings,
   meta?: Record<string, unknown>,
+  /** headers: e.g. Nova Studio's background-run API key (lib/nova/background) when there is no browser session. */
+  opts?: { headers?: Record<string, string> },
 ): Promise<ChatVideoSubmission> {
   // Oversized refs are fitted by /api/video/generate itself, which covers the
   // portal and the scanners too — nothing to do here.
@@ -86,7 +88,7 @@ export async function submitChatVideo(
     const { POST } = await import('@/app/api/video/generate/route')
     const req = new NextRequest('http://internal/api/video/generate', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(opts?.headers ?? {}) },
       body: JSON.stringify(body),
     })
     const res = await POST(req)

@@ -167,13 +167,7 @@ export async function completeGeneration(
     if (!item) return;
 
     // Move reserved tickets to used
-    await prisma.ticket.update({
-      where: { userId: item.userId },
-      data: {
-        reserved: { decrement: item.ticketCost },
-        totalUsed: { increment: item.ticketCost }
-      }
-    });
+    await prisma.$executeRaw`UPDATE "Ticket" SET reserved = GREATEST(0, COALESCE(reserved, 0) - ${item.ticketCost}), "totalUsed" = "totalUsed" + ${item.ticketCost} WHERE "userId" = ${item.userId}`;
 
     // Update queue item
     await prisma.generationQueue.update({
@@ -213,13 +207,7 @@ export async function failGeneration(
     if (!item) return;
 
     // Refund reserved tickets
-    await prisma.ticket.update({
-      where: { userId: item.userId },
-      data: {
-        balance: { increment: item.ticketCost },
-        reserved: { decrement: item.ticketCost }
-      }
-    });
+    await prisma.$executeRaw`UPDATE "Ticket" SET balance = balance + ${item.ticketCost}, reserved = GREATEST(0, COALESCE(reserved, 0) - ${item.ticketCost}) WHERE "userId" = ${item.userId}`;
 
     // Update queue item
     await prisma.generationQueue.update({

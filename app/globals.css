@@ -335,3 +335,13 @@
 html[data-refs-open] [data-prompt-dock] {
   z-index: 50;
 }
+
+/* Nova Studio (2026-10-19, owner, iPad): the page itself never scrolls while
+   it is open - only its chat, chat list and side panel do. overscroll-behavior
+   stops a swipe that reaches the end of one of them from carrying on into the
+   page (and the rubber-band bounce on iOS). Set by NovaStudio's usePageLock. */
+html.nova-page-lock,
+html.nova-page-lock body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}

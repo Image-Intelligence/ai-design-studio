@@ -9,7 +9,7 @@ import { checkIsAdmin } from '@/lib/admin-check'
 import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, clarityUpscaleTicketCost, flux1DevTicketCost, flux2TicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
-import { reserveGenerationTickets } from '@/lib/ticket-gate'
+import { releaseReservedTickets, reserveGenerationTickets, settleReservedTickets } from '@/lib/ticket-gate'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
@@ -843,7 +843,7 @@ export async function POST(request: Request) {
           })
           if (!predRes.ok) {
             const errText = await predRes.text()
-            if (!skipTickets) await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
+            if (!skipTickets) await releaseReservedTickets(user.id, supirCost)
             if (predRes.status === 429) {
               return jsonPrivate({ error: 'SUPIR is rate limited — only 1 prediction at a time on your Replicate plan. Add credit to your Replicate account to increase the limit.' }, { status: 429 })
             }
@@ -903,7 +903,7 @@ export async function POST(request: Request) {
                   })
                   await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'completed' } })
                   if (!skipTickets) {
-                    await prisma.ticket.update({ where: { userId: user.id }, data: { balance: { decrement: supirCost }, reserved: { decrement: supirCost } } })
+                    await settleReservedTickets(user.id, supirCost)
                   }
                   break
                 } else if (pred.status === 'failed' || pred.status === 'canceled') {
@@ -912,13 +912,13 @@ export async function POST(request: Request) {
                     ? 'GPU out of memory — try a smaller image or lower upscale factor'
                     : rawErr.slice(0, 120)
                   await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: friendlyErr } })
-                  if (!skipTickets) await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
+                  if (!skipTickets) await releaseReservedTickets(user.id, supirCost)
                   break
                 }
               }
               if (attempt >= maxAttempts) {
                 await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: 'SUPIR timed out' } })
-                if (!skipTickets) await prisma.ticket.update({ where: { userId: user.id }, data: { reserved: { decrement: supirCost } } })
+                if (!skipTickets) await releaseReservedTickets(user.id, supirCost)
               }
             } catch (err) {
               console.error('[supir] background worker error:', err)
@@ -1140,6 +1140,12 @@ export async function POST(request: Request) {
             if (priceAs === 'krea-3') {
               const { krea3TicketCost } = await import('@/lib/ticket-pricing')
               ticketCost = krea3TicketCost({ quality, aspectRatio, refDims, refs: falImageUrls.length })
+            }
+            // MOSS Image: $0.05 per MP of the size really sent (a preset, or the
+            // custom one after it is snapped and clamped)
+            if (priceAs === 'moss-image') {
+              const { mossTicketCost } = await import('@/lib/ticket-pricing')
+              ticketCost = mossTicketCost({ size: body.mossSize, width: body.mossWidth, height: body.mossHeight })
             }
             // SeedVR2 bills by OUTPUT megapixels too: the factor on the measured source
             if (priceAs === 'seedvr2-upscale') {
@@ -1487,7 +1493,7 @@ export async function POST(request: Request) {
               UPDATE "Ticket"
               SET balance = balance - ${ticketCost}, "totalUsed" = "totalUsed" + ${ticketCost}
               WHERE "userId" = ${user.id}
-                AND (balance - COALESCE(reserved, 0)) >= ${ticketCost}
+                AND (balance - GREATEST(0, COALESCE(reserved, 0))) >= ${ticketCost}
             `
             if (affected === 0) {
               return jsonPrivate(
@@ -1692,10 +1698,7 @@ export async function POST(request: Request) {
         // If the reservation was made before the error, release it so tickets
         // aren't stuck in "reserved" state from a job that will never complete.
         if (reservationMade) {
-          await prisma.ticket.update({
-            where: { userId: user.id },
-            data: { reserved: { decrement: ticketCost } }
-          }).catch(e => console.error('Failed to release reservation on error:', e))
+          await releaseReservedTickets(user.id, ticketCost)
         }
         return jsonPrivate(
           { error: `FAL.ai submission failed: ${error.message}` },

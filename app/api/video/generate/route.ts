@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { chargeTicketsAtomic } from '@/lib/ticket-gate';
 import { fal } from "@/lib/fal-client";
 import { syncAndClaimFalSlot } from '@/lib/admin-queue-helpers';
 import { isGenerationBlocked } from '@/lib/generation-guard';
@@ -666,25 +667,18 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'User tickets not found' }, { status: 404 });
       }
 
-      // Use the same effective balance formula as /api/user/tickets and the UI:
-      // effectiveBalance = max(0, balance - reserved)
-      // This prevents the display and the check from diverging when `reserved` is non-zero.
-      const effectiveBalance = Math.max(0, userTickets.balance - (userTickets.reserved || 0));
-      if (effectiveBalance < ticketCost) {
+      // Check AND deduct in one statement (lib/ticket-gate chargeTicketsAtomic),
+      // against the free balance (balance - reserved, as /api/user/tickets and the
+      // UI show it). This used to read the balance, check it, then subtract: a
+      // dozen clips started at once (Nova, Storyboard) all read the same balance,
+      // all passed, and all subtracted - an account reached -89 (2026-10-19).
+      const paid = await chargeTicketsAtomic(userId!, ticketCost);
+      if (!paid.ok) {
         return NextResponse.json(
-          { success: false, error: `Insufficient tickets. Need ${ticketCost} tickets.` },
+          { success: false, error: `Insufficient tickets. Need ${ticketCost} tickets, you have ${paid.have}.` },
           { status: 400 }
         );
       }
-
-      // Deduct tickets before submitting to FAL queue
-      await prisma.ticket.update({
-        where: { userId },
-        data: {
-          balance:   { decrement: ticketCost },
-          totalUsed: { increment: ticketCost },
-        },
-      });
     }
 
     // Build FAL input based on model

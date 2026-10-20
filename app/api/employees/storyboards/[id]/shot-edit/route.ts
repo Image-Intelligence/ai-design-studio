@@ -4,18 +4,27 @@ import prisma from '@/lib/prisma'
 import { requireStoryboardUser } from '@/lib/storyboard-gate'
 import { openShotModels } from '@/lib/storyboard-access'
 import { jsonPrivate } from '@/lib/api-json'
+import { resolveStoryboardTextModel } from '@/lib/prompt-models'
+import { geminiGenerate } from '@/lib/gemini-generate'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { SHOT_EDIT_TICKETS, geminiUsage } from '@/lib/ai-text-pricing'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import {
   STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, DURATIONS,
   sanitizeShots, boardMode, imageModelLabel, stillModelSpec,
+  AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, VOICE_HINTS, STORYBOARD_MUSIC_MODELS, musicSpanSeconds,
 } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/shot-edit - edit ONE shot's plan with AI.
  *
- * Body: { shotId, instruction, scope: 'image' | 'video' | 'both' }
+ * Body: { shotId, instruction, scope: 'image' | 'video' | 'both' | 'voice' | 'music' | 'audio', textModel? }
+ *   voice / music / audio (2026-10-19, the audio lane's own Edit with AI): the
+ *   shot's voice lines (speaker, words, voice, start) and/or its music cue
+ *   ("make the narrator warmer", "shorter line", "darker, slower strings").
+ *   Returns { patch: { lines?, music? } } - a line whose words stayed keeps its
+ *   recording; a changed one shows "edited since" on the lane to re-record.
+ *   (textModel: an admin's pick from lib/prompt-models; ignored for anyone else)
  *   "use LTX 2.5 Fast instead of SeeDance 2.5", "rewrite the still for
  *   NanoBanana Pro 2", "slower camera, add rain"...
  * Returns: { patch, note } - the fields to change on the shot (only those in
@@ -23,7 +32,7 @@ import {
  * duration) and one line on what changed. NOT saved: the workspace applies it
  * (with an undo) and autosaves.
  *
- * Gemini 3.7 Flash in JSON mode, given the shot, its neighbours (continuity),
+ * Gemini 3.7 Flash (an admin may pick another) in JSON mode, given the shot, its neighbours (continuity),
  * the board's kind and look, the models it may choose from with what each is
  * good at, and the site's own prompting guide for the models in play - so a
  * prompt moved to a new model is rewritten the way THAT model wants it.
@@ -36,10 +45,11 @@ export const runtime = 'nodejs'
 export const maxDuration = 120
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
-const MODEL = 'gemini-3.7-flash'
+// Everyone edits on the default; an admin may pick another to compare (lib/prompt-models)
 const TIMEOUT_MS = 110_000
 type Ctx = { params: Promise<{ id: string }> }
 type Scope = 'image' | 'video' | 'both'
+type AudioScope = 'voice' | 'music' | 'audio'
 
 const clip = (s: string | undefined, n: number) => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
 const videoSpec = (label: string) => getCreateModel(STORYBOARD_VIDEO_IDS[label] ?? '')
@@ -64,6 +74,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const shot = shots[i]
   const prev = shots[i - 1], next = shots[i + 1]
   const kind = boardMode(board.mode)
+  if (body.scope === 'voice' || body.scope === 'music' || body.scope === 'audio') return editAudio(user, board, shots, i, instruction, body.scope, body.textModel, bill)
   const doImage = scope !== 'video', doVideo = scope !== 'image'
 
   // The models it may pick, with what each is good at; full prompting guides
@@ -123,21 +134,17 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   if (!paid.ok) return jsonPrivate({ error: `Edit with AI needs ${paid.need} ticket - you have ${paid.have}`, needTickets: true }, { status: 402 })
   if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = SHOT_EDIT_TICKETS; bill.balance = paid.newBalance }
 
-  const call = async (thinking: boolean) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: instructionText }] }],
-      generationConfig: { temperature: 0.6, maxOutputTokens: 4096, responseMimeType: 'application/json', ...(thinking ? { thinkingConfig: { thinkingLevel: 'low' } } : {}) },
-    }),
-  })
+  const textModel = resolveStoryboardTextModel(body.textModel, user.isAdmin)
+  // lib/gemini-generate: either Gemini API, and a 400 on thinkingLevel (2.5 models) retried without it
+  const call = () => geminiGenerate(textModel, {
+    contents: [{ role: 'user', parts: [{ text: instructionText }] }],
+    generationConfig: { temperature: 0.6, maxOutputTokens: 4096, responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } },
+  }, { signal: AbortSignal.timeout(TIMEOUT_MS) })
   try {
-    let res = await call(true)
-    if (res.status === 400) res = await call(false)
+    const res = await call()
     if (!res.ok) return jsonPrivate({ error: `The edit failed (${res.status})` }, { status: 502 })
     const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
-    { const u = geminiUsage(data); console.log(`[ai-usage] storyboard-shot-edit in=${u.in} out=${u.out} tickets=${SHOT_EDIT_TICKETS}`) }
+    { const u = geminiUsage(data); console.log(`[ai-usage] storyboard-shot-edit model=${textModel} in=${u.in} out=${u.out} tickets=${SHOT_EDIT_TICKETS}`) }
     const text = (data.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')
     let out: any
     try { out = JSON.parse(text) } catch { return jsonPrivate({ error: 'The model did not return a readable edit - try again' }, { status: 502 }) }
@@ -167,6 +174,80 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     if (!Object.keys(patch).length) return jsonPrivate({ error: 'Nothing changed - try saying it differently' }, { status: 422 })
     // A non-admin is never switched to a model they cannot use
     return jsonPrivate({ patch: openShotModels(patch as { imageModel?: string; videoModel?: string }, user.isAdmin), note: typeof out?.note === 'string' ? out.note.slice(0, 300) : '', tickets: bill.tickets, ...(bill.balance !== null && bill.balance >= 0 ? { balance: bill.balance } : {}) })
+  } catch (err: any) {
+    const msg = String(err?.message || err)
+    return jsonPrivate({ error: msg.includes('timeout') || msg.includes('aborted') ? 'The edit timed out - Gemini is slow right now, try again' : `The edit failed: ${msg.slice(0, 200)}` }, { status: 502 })
+  }
+}
+
+/** The audio lane's Edit with AI: one shot's lines and / or music cue. */
+async function editAudio(
+  user: { id: number; email: string; isAdmin: boolean },
+  board: { id: number; title: string; story: string; look: string; mode: string },
+  shots: ReturnType<typeof sanitizeShots>, i: number, instruction: string, scope: AudioScope, textModelRaw: unknown, bill: Bill,
+) {
+  const shot = shots[i]
+  const prev = shots[i - 1], next = shots[i + 1]
+  const kind = boardMode(board.mode)
+  const doVoice = scope !== 'music', doMusic = scope !== 'voice'
+  // The cue playing over this shot (its own, or one from an earlier shot that runs on)
+  const runningCue = shot.music ?? [...shots.slice(0, i)].reverse().find(s => s.music)?.music ?? null
+  const lineText = (shot.lines ?? []).map(l => `- ${l.speaker} (voice ${l.voice}) at +${l.offset}s: "${l.text}"`).join('\n') || '(no lines)'
+  const speakers = [...new Set(shots.flatMap(s => (s.lines ?? []).map(l => `${l.speaker} = ${l.voice}`)))].join(', ')
+  const instructionText = [
+    'You are editing the SOUND of ONE shot of a storyboard for an AI-generated video: the voice lines spoken over it and the music cue that starts on it.',
+    `BOARD: "${board.title}" - a ${kind.label.toLowerCase()}. ${clip(board.story, 900)}`,
+    prev ? `SHOT BEFORE (${i}): ${prev.title} - ${clip(prev.description, 200)}${prev.lines?.length ? ` | lines: ${prev.lines.map(l => `${l.speaker}: "${clip(l.text, 120)}"`).join(' / ')}` : ''}` : 'This is the FIRST shot.',
+    next ? `SHOT AFTER (${i + 2}): ${next.title} - ${clip(next.description, 200)}${next.lines?.length ? ` | lines: ${next.lines.map(l => `${l.speaker}: "${clip(l.text, 120)}"`).join(' / ')}` : ''}` : 'This is the LAST shot.',
+    '',
+    `THE SHOT (${i + 1}): ${shot.title} - ${shot.description} (${shot.duration}s)`,
+    `Its voice lines now:\n${lineText}`,
+    shot.music ? `Its music cue now (starts here, plays about ${musicSpanSeconds(shots, shot.id)}s): "${shot.music.prompt}"` : runningCue ? `No cue starts here; the cue from an earlier shot plays on: "${clip(runningCue.prompt, 300)}"` : 'No music plays here.',
+    speakers ? `Voices already cast on the board: ${speakers}.` : '',
+    `The voices sound like this: ${voiceMenu()}.`,
+    '',
+    `THE DIRECTOR'S INSTRUCTION: ${instruction}`,
+    `CHANGE ONLY: ${scope === 'audio' ? 'the voice lines and the music cue' : scope === 'voice' ? 'the voice lines - leave the music alone' : 'the music cue - leave the voice lines alone'}. Keep what is not asked to change.`,
+    '',
+    'Rules:',
+    ...AUDIO_PLAN_RULES.filter(r => (doVoice || !r.includes('"voiceLines"')) && (doMusic || !r.includes('"musicCue"'))),
+    '- To remove the music cue starting here, return "musicCue": "-". To keep it, return its prompt unchanged.',
+    '',
+    `Reply with JSON only: {${doVoice ? '"voiceLines": [{"speaker": string, "text": string, "at": number}], "voices": {"<speaker>": "<voice>"}, ' : ''}${doMusic ? '"musicCue": string, ' : ''}"note": "one short sentence saying what changed"}`,
+  ].filter(Boolean).join('\n')
+
+  const paid = await chargeAiText(user, SHOT_EDIT_TICKETS)
+  if (!paid.ok) return jsonPrivate({ error: `Edit with AI needs ${paid.need} ticket - you have ${paid.have}`, needTickets: true }, { status: 402 })
+  if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = SHOT_EDIT_TICKETS; bill.balance = paid.newBalance }
+  const textModel = resolveStoryboardTextModel(textModelRaw, user.isAdmin)
+  try {
+    const res = await geminiGenerate(textModel, {
+      contents: [{ role: 'user', parts: [{ text: instructionText }] }],
+      generationConfig: { temperature: 0.6, maxOutputTokens: 2048, responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } },
+    }, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+    if (!res.ok) return jsonPrivate({ error: `The edit failed (${res.status})` }, { status: 502 })
+    const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+    { const u = geminiUsage(data); console.log(`[ai-usage] storyboard-audio-edit model=${textModel} in=${u.in} out=${u.out} tickets=${SHOT_EDIT_TICKETS}`) }
+    const text = (data.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')
+    let out: any
+    try { out = JSON.parse(text) } catch { return jsonPrivate({ error: 'The model did not return a readable edit - try again' }, { status: 502 }) }
+    const patch: Record<string, unknown> = {}
+    if (doVoice && Array.isArray(out?.voiceLines)) {
+      const voiceFor = voicePicker(out?.voices, shots)
+      const lines = linesFromPlan(out.voiceLines, shot.lines, voiceFor, shot.duration)
+      // A voice the instruction re-cast applies to the lines that kept their words too
+      const recast = lines.map(l => { const v = voiceFor(l.speaker); return out?.voices && Object.keys(VOICE_HINTS).includes(v) && v !== l.voice ? { ...l, voice: v } : l })
+      if (JSON.stringify(recast) !== JSON.stringify(shot.lines ?? [])) patch.lines = recast
+    }
+    if (doMusic && typeof out?.musicCue === 'string') {
+      if (out.musicCue.trim() === '-') { if (shot.music) patch.music = null }
+      else {
+        const cue = cueFromPlan(out.musicCue, shot.music)
+        if (cue && cue !== shot.music) patch.music = { ...cue, model: STORYBOARD_MUSIC_MODELS.some(m => m.id === cue.model) ? cue.model : STORYBOARD_MUSIC_MODELS[0].id }
+      }
+    }
+    if (!Object.keys(patch).length) return jsonPrivate({ error: 'Nothing changed - try saying it differently' }, { status: 422 })
+    return jsonPrivate({ patch, note: typeof out?.note === 'string' ? out.note.slice(0, 300) : '', tickets: bill.tickets, ...(bill.balance !== null && bill.balance >= 0 ? { balance: bill.balance } : {}) })
   } catch (err: any) {
     const msg = String(err?.message || err)
     return jsonPrivate({ error: msg.includes('timeout') || msg.includes('aborted') ? 'The edit timed out - Gemini is slow right now, try again' : `The edit failed: ${msg.slice(0, 200)}` }, { status: 502 })

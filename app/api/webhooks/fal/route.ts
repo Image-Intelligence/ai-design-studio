@@ -418,7 +418,8 @@ export async function POST(request: Request) {
         await prisma.$executeRaw`
           UPDATE "Ticket"
           SET
-            balance     = balance - ${queueItem.ticketCost},
+            -- never below 0 (2026-10-19: a reservation skipped for an admin email was charged here unreserved)
+            balance     = GREATEST(0, balance - ${queueItem.ticketCost}),
             reserved    = GREATEST(0, reserved - ${queueItem.ticketCost}),
             "totalUsed" = "totalUsed" + ${queueItem.ticketCost}
           WHERE "userId" = ${queueItem.userId}

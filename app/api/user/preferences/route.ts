@@ -40,8 +40,10 @@ export async function PUT(req: Request) {
     // Stored canonical: a signed link's signature expires, the stored file does not
     const body = canonicalisePayload(await req.json())
     // `_enhance` is the server's daily prompt-enhancement count
-    // (lib/prompt-enhance) - never writable from the browser
-    if (body && typeof body === 'object') delete body._enhance
+    // (lib/prompt-enhance) - never writable from the browser. `_nova` is Nova
+    // Studio's spend ledger (lib/nova/ledger): the user's own limits are
+    // checked against it, so the browser must not be able to reset it.
+    if (body && typeof body === 'object') { delete body._enhance; delete body._nova }
 
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json({ error: 'Expected an object' }, { status: 400 })

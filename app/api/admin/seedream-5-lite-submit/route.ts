@@ -4,6 +4,7 @@ import { checkIsAdmin } from '@/lib/admin-check'
 import { fal } from '@/lib/fal-client'
 import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
+import { reserveTicketsAtomic, releaseReservedTickets, settleReservedTickets } from '@/lib/ticket-gate'
 import prisma from '@/lib/prisma'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { enforceContentFilter } from '@/lib/content-filter'
@@ -59,12 +60,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Insufficient tickets' }, { status: 402 })
     }
 
-    const updatedTicket = await prisma.ticket.update({
-      where: { userId: user.id },
-      data: { reserved: { increment: ticketCost } },
-      select: { balance: true, reserved: true },
-    })
-    const newBalance = Math.max(0, updatedTicket.balance - updatedTicket.reserved)
+    // Reserve in ONE statement (lib/ticket-gate reserveTicketsAtomic): the check
+    // above alone let parallel submits all pass and all reserve (2026-10-19)
+    const held = await reserveTicketsAtomic(user.id, ticketCost)
+    if (!held.ok) return NextResponse.json({ error: `Insufficient tickets. Need ${ticketCost}, have ${held.have}.` }, { status: 402 })
+    const newBalance = Math.max(0, held.balance - held.reserved)
 
     const input: Record<string, unknown> = {
       prompt: prompt.trim(),
@@ -120,10 +120,7 @@ export async function POST(req: Request) {
       request_id = result.request_id
     } catch (falErr: any) {
       // FAL submission failed — release the reservation
-      await prisma.ticket.update({
-        where: { userId: user.id },
-        data: { reserved: { decrement: ticketCost } },
-      })
+      await releaseReservedTickets(user.id, ticketCost)
       throw falErr
     }
 

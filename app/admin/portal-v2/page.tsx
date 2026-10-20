@@ -3,7 +3,7 @@
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
-import { seedvrUpscaleTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
+import { seedvrUpscaleTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, mossTicketCost, mossSide, mossSize, MOSS_PRESETS, MOSS_MIN_SIDE, MOSS_MAX_SIDE, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
 import { LoopVideo, SHOP_MEDIA } from "@/components/shop/ShopKit"
 import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAllowance } from "@/components/prompt/EnhanceKit"
@@ -24,6 +24,7 @@ import { ANY_PUBLIC_EMPLOYEE, employeeVisibleTo, isEmployeeId } from "@/lib/empl
 import { MovieStudioWorkspace } from "@/components/employees/MovieStudioWorkspace"
 import { Studio3D } from "@/components/studio3d/Studio3D"
 import { WorldsStudio } from "@/components/worlds/WorldsStudio"
+import { NovaStudio } from "@/components/nova/NovaStudio"
 import { StoryboardWorkspace } from "@/components/employees/StoryboardWorkspace"
 import { FaceSwapWorkspace } from "@/components/employees/FaceSwapWorkspace"
 import { CharacterStudioWorkspace } from "@/components/employees/CharacterStudioWorkspace"
@@ -42,7 +43,7 @@ import { BUILD_NAMES } from "@/components/worlds/WorldBuilder"
 import { LightingStudio } from "@/components/video/LightingStudio"
 import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
-import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL } from "@/lib/prompt-models"
+import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL, promptModelLabel } from "@/lib/prompt-models"
 import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { PlayerVideo } from "@/components/feed/PlayerVideo"
 import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
@@ -132,6 +133,8 @@ type AspectRatio = "auto" | "1:1" | "2:3" | "3:2" | "4:5" | "5:4" | "3:4" | "4:3
   | "2:1" | "1:2" | "9:21"
   | "4:1" | "1:4" | "8:1" | "1:8"   // NanoBanana 2.1's extreme ratios (banners, tall strips)
   | "1024x768" | "1024x1024" | "1024x1536" | "1920x1080" | "2560x1440" | "3840x2160"
+  // MOSS Image takes fal's named sizes (lib/ticket-pricing MOSS_PRESETS) or a custom W x H
+  | "square_hd" | "square" | "portrait_4_3" | "portrait_16_9" | "landscape_4_3" | "landscape_16_9" | "custom"
 type Quality = "1k" | "2k" | "3k" | "4k" | "low" | "medium" | "high"
 
 // --- IMAGE MODEL CONFIG ---
@@ -261,6 +264,10 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "flux-3-klein-base",    apiId: "flux-3-klein-base",        name: "FLUX 3 Klein Base",   aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   { id: "krea-3-realtime",      apiId: "krea-3-realtime",          name: "Krea 3 Realtime",     aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isRealtime: true, promptOptional: true },
   { id: "krea-3",               apiId: "krea-3",                   name: "Krea 3",              aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 8, isFal: true, maxImages: 4 },
+  // MOSS Image (2026-10-18, ADMIN ONLY while under test): fal's six named
+  // sizes plus Custom (W x H inputs beside the picker); steps and guidance in
+  // its settings row. Priced per MP of the size sent (mossTicketCost)
+  { id: "moss-image",           apiId: "moss-image",               name: "MOSS Image",          aspectRatios: ["square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9", "custom"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 4 },
   { id: "bria-fibo-expand",     apiId: "bria-fibo-expand",         name: "Bria Fibo Expand",    aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4"], supportsQuality: false, maxReferenceImages: 1, requiresReferenceImage: true, promptOptional: true, isFal: true, maxImages: 1 },
   { id: "flux-2",               apiId: "flux-2",                   name: "FLUX 2",              aspectRatios: ["1:1", "4:5", "9:16", "16:9"],                            supportsQuality: false, supportsAcceleration: true, maxReferenceImages: 4,  isFal: true  },
   { id: "pro-scanner-v3",       apiId: "gemini-3-pro-image",       name: "Pro Scanner v3",      aspectRatios: ["1:1", "2:3", "3:2", "4:5", "3:4", "4:3", "9:16", "16:9"], supportsQuality: true,  maxReferenceImages: 8,  isFal: false },
@@ -310,6 +317,8 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   if (modelId === "flux-3-klein" || modelId === "flux-3-klein-base") return kleinTicketCost(modelId, { quality, aspectRatio })
   if (modelId === "krea-3-realtime")     return KREA3_REALTIME_BLOCK_TICKETS   // per 30 seconds of session
   if (modelId === "krea-3")              return krea3TicketCost({ quality, aspectRatio, refs: refCount ?? (hasRefImages ? 1 : 0) })
+  // A named size; the composer prices Custom from its W x H (a bare "custom" reads as 1024 square)
+  if (modelId === "moss-image")          return mossTicketCost({ size: aspectRatio })
   if (modelId === "ideogram-4.5")        return quality === "high" ? 6 : quality === "low" ? 1 : 2   // fal $0.03 / $0.06 / $0.22 an image
   if (modelId === "qwen-image-3")        return (quality === "1k" ? 1 : 2) + (hasRefImages ? 1 : 0)   // fal $0.04 1K / $0.075 2K; edit +1
   // Topaz bills by OUTPUT megapixels; the server prices the measured source.
@@ -354,6 +363,11 @@ const PIXEL_DIM_RATIO: Record<string, string> = {
   "1920x1080": "16:9",
   "2560x1440": "16:9",
   "3840x2160": "16:9",
+}
+// MOSS Image's named sizes: the picker shows the name, the menu its pixels too
+const NAMED_SIZE_LABEL: Record<string, { label: string; hint?: string }> = {
+  ...Object.fromEntries(Object.entries(MOSS_PRESETS).map(([k, p]) => [k, { label: p.label, hint: `${p.width}×${p.height}` }])),
+  custom: { label: "Custom", hint: `W × H, ${MOSS_MIN_SIDE}-${MOSS_MAX_SIDE}` },
 }
 
 // SeeDream 5.0 Lite: combines quality + aspect ratio into image_size params.
@@ -1616,6 +1630,7 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "flux-3-klein":        "$",
   "flux-3-klein-base":   "$",
   "krea-3":              "$",
+  "moss-image":          "$",
   "krea-3-realtime":     "$$$",
   "bria-fibo-expand":    "$",
   "bria-guided-remove-bg": "$",
@@ -1940,6 +1955,8 @@ const ADMIN_IMAGE_MODEL_GROUPS = [
   // went public 2026-10-16 (moved to their makers' groups above); the live
   // session stays here while under test
   { label: "Krea",      type: "live editing · every keystroke a new frame", accent: "text-rose-300", dot: "bg-rose-300", items: ["Krea 3 Realtime"] },
+  // 2026-10-18, under test: OpenMOSS (Fudan / Shanghai Innovation Institute)
+  { label: "OpenMOSS",  type: "text to image · Chinese & English lettering · layouts", accent: "text-lime-300", dot: "bg-lime-300", items: ["MOSS Image"] },
   { label: "Wan",       type: "text to image · custom LoRA", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 T2I LoRA"] },
   { label: "RunPod",    type: "your Flux LoRAs · PC must be running", accent: "text-cyan-400",  dot: "bg-cyan-500",  items: ["Custom Flux LoRA"] },
 ]
@@ -8555,7 +8572,7 @@ function TextDropdown({
                       <optgroup key={g} label={g}>
                         {PROMPT_MODELS.filter(m => m.group === g).map(m => (
                           <option key={m.id} value={m.id}>
-                            {m.label}{m.note ? ` \u00b7 ${m.note}` : ""}
+                            {promptModelLabel(m, DEFAULT_PROMPT_MODEL)}
                           </option>
                         ))}
                       </optgroup>
@@ -13123,7 +13140,7 @@ function AspectRatioPicker({
             : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
         }`}
       >
-        {PIXEL_DIM_RATIO[value] ?? value}
+        {NAMED_SIZE_LABEL[value]?.label ?? PIXEL_DIM_RATIO[value] ?? value}
         {value === "auto" && autoHint && (
           <span className="text-slate-500 hidden sm:inline">{autoHint}</span>
         )}
@@ -13144,7 +13161,9 @@ function AspectRatioPicker({
                   : "text-slate-400 hover:text-white hover:bg-white/5"
               }`}
             >
-              {PIXEL_DIM_RATIO[ar] ? `${PIXEL_DIM_RATIO[ar]} (${ar})` : ar}
+              {NAMED_SIZE_LABEL[ar]
+                ? <>{NAMED_SIZE_LABEL[ar].label}<span className="block text-[10px] text-slate-500">{NAMED_SIZE_LABEL[ar].hint}</span></>
+                : PIXEL_DIM_RATIO[ar] ? `${PIXEL_DIM_RATIO[ar]} (${ar})` : ar}
               {ar === "auto" && autoHint && (
                 <span className="block text-[10px] text-slate-500 normal-case">{autoHint}</span>
               )}
@@ -17600,6 +17619,13 @@ function PromptBox({
   const [ideogramExpansion, setIdeogramExpansion] = useState<"None" | "Medium" | "Large">("Medium")
   // The six Ideogram rows fold behind one summary line, like SUPIR's do.
   const [ideogramConfigOpen, setIdeogramConfigOpen] = useState(false)
+  // MOSS Image (2026-10-18): fal's defaults - 50 steps, guidance 3 - and the
+  // Custom size, kept snapped to 16 inside 512-2048 (the server re-checks)
+  const [mossSteps, setMossSteps] = useState(50)
+  const [mossGuidance, setMossGuidance] = useState(3)
+  const [mossWidth, setMossWidth] = useState(1024)
+  const [mossHeight, setMossHeight] = useState(1024)
+  const [mossConfigOpen, setMossConfigOpen] = useState(false)
   const [loraGuidanceScale, setLoraGuidanceScale] = useState(3.5)
   const [loraSteps, setLoraSteps] = useState(28)
   const [loraPickerOpen, setLoraPickerOpen] = useState(false)
@@ -18313,6 +18339,9 @@ function PromptBox({
     : model.id === "nano-banana-2.1"
     // The same function the server charges with: size, thinking, each reference
     ? nb21TicketCost({ quality, thinking: nb21Thinking, refCount: activeRefImages.length, webSearch: nb21WebSearch })
+    : model.id === "moss-image"
+    // The same function the server charges with, on the same size
+    ? mossTicketCost({ size: aspectRatio, width: mossWidth, height: mossHeight })
     : calcTicketCost(model.id, quality, aspectRatio, supportsLora && !!selectedLoraUrl, activeRefImages.length > 0, activeRefImages.length)
   const totalCost = ticketCost * (maxImagesForUser > 1 ? imageCount : 1)
   const needsRefImage = !!model.requiresReferenceImage && activeRefImages.length === 0
@@ -18380,6 +18409,15 @@ function PromptBox({
       ? `${triggerWord} ${rawPrompt}`
       : rawPrompt
     const count = model.maxImages ? imageCount : 1
+    /*
+     * MOSS Image: its knobs, and the size really sent as the aspect - "WxH",
+     * which the loading tile and the feed already size tiles from (a named
+     * size like "portrait_16_9" would read as square)
+     */
+    const mossDims = model.id === "moss-image" ? mossSize({ size: aspectRatio, width: mossWidth, height: mossHeight }) : null
+    const mossSubmit = mossDims
+      ? { aspectRatio: `${mossDims.width}x${mossDims.height}`, mossSize: aspectRatio, mossWidth: mossDims.width, mossHeight: mossDims.height, mossSteps, mossGuidance }
+      : {}
 
     // --- Local admin models: submit to background job, poll for result ---
     if (model.isLocalModel) {
@@ -18587,6 +18625,7 @@ function PromptBox({
      */
     const runSettings: Record<string, unknown> = {
       ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}),
+      ...(mossDims ? { mossSteps, mossGuidance } : {}),
       ...(modelTakesLora && selectedLoraUrl ? {
         loraUrl: selectedLoraUrl,
         loraName: loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name,
@@ -18606,7 +18645,7 @@ function PromptBox({
     }
     slotIds.forEach(sid => onAddPending({
       slotId: sid, status: "loading", prompt: currentPrompt, modelId: model.apiId,
-      aspectRatio, quality, referenceImageUrls: permanentRefUrls,
+      aspectRatio: (mossDims ? `${mossDims.width}x${mossDims.height}` : aspectRatio) as AspectRatio, quality, referenceImageUrls: permanentRefUrls,
       // Carried on the slot so the tile can name the renderer and its
       // settings while it is still generating — the saved row does not exist
       // yet, and with two renderers running side by side "which one is this?"
@@ -19274,7 +19313,7 @@ function PromptBox({
         // Submit N separate jobs concurrently — each gets its own queue entry and slot
         await Promise.all(slotIds.map(async (sid) => {
           try {
-            const res = await fetch("/api/generate", submitInit({ clientSlotId: sid, prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }))
+            const res = await fetch("/api/generate", submitInit({ clientSlotId: sid, prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}), ...(model.id === "moss-image" ? mossSubmit : {}) }))
             const data = await readGen(res)
             if (!res.ok) { onUpdatePending(sid, { status: "failed", error: data.error || "Generation failed" }); return }
             if (data.newBalance !== undefined) onBalanceChange(data.newBalance)
@@ -19291,7 +19330,7 @@ function PromptBox({
         }
       } else {
         // Single FAL request (count=1)
-        const res = await fetch("/api/generate", submitInit({ clientSlotId: slotId, prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}) }))
+        const res = await fetch("/api/generate", submitInit({ clientSlotId: slotId, prompt: currentPrompt, model: model.apiId, quality, aspectRatio, referenceImages, loraUrl: selectedLoraUrl || undefined, loraName: selectedLoraUrl ? (loraJobs.find(j => j.loraUrl === selectedLoraUrl)?.name || undefined) : undefined, loraScale: selectedLoraUrl ? loraScale : undefined, extraLoras: extraLoras.length > 0 ? extraLoras.map(e => ({ ...e, name: loraJobs.find(j => j.loraUrl === e.url)?.name })) : undefined, loraGuidanceScale: selectedLoraUrl ? loraGuidanceScale : undefined, loraSteps: selectedLoraUrl ? loraSteps : undefined, ...(model.id === "seedream-4.5" ? { seedreamSafetyChecker } : {}), ...(model.id === "flux-1-dev" ? { fluxDevSafetyChecker } : {}), ...(model.id === "gpt-image-2.5" ? { gptVariant } : {}), ...(model.id === "bria-fibo" ? { briaStyle } : {}), ...(model.id === "nano-banana-2.1" ? { nb21Thinking, nb21WebSearch, ...(isAdminAccount ? { nb21SafetyTolerance: nb21Safety } : {}) } : {}), ...(model.supportsAcceleration ? { acceleration } : {}), ...(model.id === "ideogram-v4-tiling" ? { tilingMode } : {}), ...(model.id.startsWith("ideogram-v4") ? { ideogramStrength, ideogramRenderingSpeed, ideogramMode, ideogramExpansionModel: ideogramExpansion } : {}), ...(model.id === "moss-image" ? mossSubmit : {}) }))
         const data = await readGen(res)
         if (!res.ok) {
           onUpdatePending(slotId, { status: "failed", error: data.error || "Generation failed" })
@@ -20554,6 +20593,18 @@ function PromptBox({
           {/* One line for all of Ideogram's settings; the rows below open
               under it. The summary reads the live values, so it says what the
               run will do even while closed. */}
+          {/* MOSS Image: steps and guidance fold behind one summary line, like Ideogram's */}
+          {model.id === "moss-image" && (
+            <div className="border-t border-white/[0.06] px-4 py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">MOSS</span>
+              <button onClick={() => setMossConfigOpen(v => !v)}
+                className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 rounded-md border border-white/[0.08] text-[10px] font-mono text-slate-400 hover:text-white hover:border-white/20 transition-all">
+                <SlidersHorizontal size={9} className="shrink-0" />
+                <span className="truncate">{mossSteps} steps{" · "}guidance {mossGuidance}</span>
+                <ChevronDown size={9} className={`shrink-0 transition-transform ${mossConfigOpen ? "rotate-180" : ""}`} />
+              </button>
+            </div>
+          )}
           {model.id.startsWith("ideogram-v4") && (
             <div className="border-t border-white/[0.06] px-4 py-2.5 flex items-center justify-between gap-3">
               <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0">Ideogram</span>
@@ -20579,6 +20630,40 @@ function PromptBox({
               768px screen; here they scroll instead. On a tall screen the cap
               never binds. */}
           <div className="max-h-[max(9rem,calc(100dvh-26rem))] overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+          {mossConfigOpen && model.id === "moss-image" && (
+            <div className="px-4 py-3 border-t border-white/[0.06] space-y-2">
+              <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Steps</span>
+                <input
+                  type="range" min="1" max="100" step="1" value={mossSteps}
+                  onChange={e => setMossSteps(parseInt(e.target.value, 10))}
+                  className="w-full accent-violet-400 cursor-pointer h-0.5"
+                />
+                <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{mossSteps}</span>
+              </div>
+              <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500">Guidance</span>
+                <input
+                  type="range" min="0" max="10" step="0.5" value={mossGuidance}
+                  onChange={e => setMossGuidance(parseFloat(e.target.value))}
+                  className="w-full accent-violet-400 cursor-pointer h-0.5"
+                />
+                <span className="text-[11px] font-mono text-violet-300 tabular-nums text-right">{mossGuidance}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[10px] leading-snug text-slate-600">
+                  Denoising steps (1-100) and how closely it follows the prompt (0-10). fal&apos;s defaults are
+                  50 and 3; fewer steps run faster at the same price - MOSS bills by size only.
+                </p>
+                {(mossSteps !== 50 || mossGuidance !== 3) && (
+                  <button onClick={() => { setMossSteps(50); setMossGuidance(3) }}
+                    className="shrink-0 px-2 py-0.5 rounded-md border border-white/10 text-[10px] font-mono text-slate-400 hover:text-white hover:border-white/25">
+                    reset
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           {ideogramConfigOpen && (model.id === "ideogram-v4" || model.id === "ideogram-v4-fast" || model.id === "ideogram-v4-tiling") && (
             <div className="px-4 py-3 border-t border-white/[0.06] space-y-1.5">
               <div className="grid grid-cols-[5.5rem_1fr] items-center gap-3">
@@ -21448,6 +21533,28 @@ function PromptBox({
                   return crop ? `LoRA ${crop}` : null
                 })()}
               />
+            )}
+
+            {/* MOSS Image's Custom size: W x H, snapped to 16 inside 512-2048 when
+                the field is left (what is shown is what is sent and priced) */}
+            {model.id === "moss-image" && aspectRatio === "custom" && (
+              <div className="flex items-center gap-1 shrink-0" title={`Width × height, ${MOSS_MIN_SIDE}-${MOSS_MAX_SIDE} px, multiples of 16`}>
+                <input
+                  type="number" inputMode="numeric" aria-label="Width"
+                  min={MOSS_MIN_SIDE} max={MOSS_MAX_SIDE} step={16} value={mossWidth}
+                  onChange={e => setMossWidth(Number(e.target.value) || 0)}
+                  onBlur={e => setMossWidth(mossSide(e.target.value))}
+                  className="w-[3.75rem] px-1.5 py-1 rounded-md bg-slate-950 border border-white/10 text-[11px] font-mono text-white tabular-nums focus:outline-none focus:border-white/30 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                />
+                <span className="text-[11px] text-slate-500">{"×"}</span>
+                <input
+                  type="number" inputMode="numeric" aria-label="Height"
+                  min={MOSS_MIN_SIDE} max={MOSS_MAX_SIDE} step={16} value={mossHeight}
+                  onChange={e => setMossHeight(Number(e.target.value) || 0)}
+                  onBlur={e => setMossHeight(mossSide(e.target.value))}
+                  className="w-[3.75rem] px-1.5 py-1 rounded-md bg-slate-950 border border-white/10 text-[11px] font-mono text-white tabular-nums focus:outline-none focus:border-white/30 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                />
+              </div>
             )}
 
             {/* Quality toggle — hidden for upscaler */}
@@ -26379,6 +26486,8 @@ export default function PortalV2Page() {
   // stills), its arrows step through that list instead of the feed
   const [viewerNav, setViewerNav] = useState<ImageItem[] | null>(null)
   const [selectedVideo, setSelectedVideo] = useState<VideoDetailData | null>(null)
+  // The same for the video viewer: a Nova chat's clips instead of the video feed
+  const [videoViewerNav, setVideoViewerNav] = useState<VideoDetailData[] | null>(null)
   const [pendingDetail, setPendingDetail] = useState<PendingSlot | null>(null)
   const [videoPendingDetail, setVideoPendingDetail] = useState<VideoPendingSlot | null>(null)
   const [imageNavList, setImageNavList] = useState<ImageItem[]>([])
@@ -26482,16 +26591,43 @@ export default function PortalV2Page() {
     }
   }
 
+  /*
+   * The selection as the server needs it, and the in-session copies to clear
+   * (2026-10-18).
+   *
+   * A generation that finished this session is drawn from freshImages or from
+   * its own "done" slot, not from the database list - so Hide (and Delete)
+   * updated the row, reloaded the database list, and left the tile on screen.
+   * Its id can also be the status poll's placeholder rather than the saved
+   * row's. So the request carries each selected tile's object path too (the
+   * route finds the row by it), and on success every in-session copy of the
+   * same generation - by id, url or path - leaves the feed.
+   */
+  const sessionSelection = () => {
+    const picked = [...freshImages, ...pendingSlots.filter(s => s.status === "done" && s.doneImage).map(s => s.doneImage!)]
+      .filter(i => selectedImageIds.has(i.id))
+    const paths = [...new Set(picked.flatMap(i => [i.imageUrl, i.r2Key]).filter((u): u is string => !!u).map(mediaPathKey).filter(Boolean))]
+    return { picked, paths }
+  }
+  const dropFromSession = (picked: ImageItem[]) => {
+    if (!picked.length) return
+    const held = itemHeldKeys(picked)
+    setFreshImages(p => p.filter(i => !sameAsAny(held, i)))
+    setPendingSlots(p => p.filter(s => !(s.status === "done" && s.doneImage && sameAsAny(held, s.doneImage))))
+  }
+
   const handleBulkDelete = async () => {
     if (selectedImageIds.size === 0) return
     setBulkDeleting(true)
     try {
+      const { picked, paths } = sessionSelection()
       const res = await fetch('/api/my-images', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: Array.from(selectedImageIds) }),
+        body: JSON.stringify({ ids: Array.from(selectedImageIds), paths }),
       })
       if (res.ok) {
+        dropFromSession(picked)
         setSelectedImageIds(new Set())
         setSelectMode(false)
         // Force image grid to reload by bumping a key
@@ -26694,12 +26830,15 @@ export default function PortalV2Page() {
     if (selectedImageIds.size === 0 || bulkHiding) return
     setBulkHiding(true)
     try {
+      // The hidden view lists database rows only; the normal view may hold this session's tiles
+      const { picked, paths } = feedShowHidden ? { picked: [], paths: [] } : sessionSelection()
       const res = await fetch("/api/my-images", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: Array.from(selectedImageIds), hidden: !feedShowHidden }),
+        body: JSON.stringify({ ids: Array.from(selectedImageIds), paths, hidden: !feedShowHidden }),
       })
       if (res.ok) {
+        dropFromSession(picked)
         setSelectedImageIds(new Set())
         setSelectMode(false)
         // Force both feeds to reload so the (un)hidden items move between views
@@ -31721,7 +31860,9 @@ function employeePending(
         // feeds grew the PAGE as they loaded, so the window scrollbar appeared
         // and disappeared — each toggle changed the viewport width, flipped the
         // responsive breakpoint, and made the taskbar labels flash in and out.
-        <div style={{ height: `calc(100dvh - ${taskbarHeightPx}px)` }} className="flex flex-col overflow-hidden">
+        // --nova-vvh: Nova Studio's visible height, set while it is open (it
+        // shrinks above an on-screen keyboard - components/nova usePageLock).
+        <div style={{ height: `calc(var(--nova-vvh, 100dvh) - ${taskbarHeightPx}px)` }} className="flex flex-col overflow-hidden">
         <EmployeesView
           isAdmin={isAdminAccount}
           active={activeEmployee}
@@ -31795,6 +31936,20 @@ function employeePending(
               onBalanceChange={handleBalanceChange}
               onSaved={row => handlePrependImage({ id: row.id, imageUrl: row.url, thumbnailUrl: row.thumbnailUrl, prompt: row.prompt, model: row.model, aspectRatio: row.aspectRatio, createdAt: new Date().toISOString(), videoMetadata: { isVideo: true, duration: String(row.durationSec), thumbnailUrl: row.thumbnailUrl } })}
             />
+          ) : activeEmployee === "nova" ? (
+            // Nova Studio (2026-10-18, admin): a Gemini agent chat that works on
+            // the account's library and generates with the site's models
+            // Its pictures and clips open in the feed's own viewers; the arrows walk the chat's
+            <NovaStudio isAdmin={isAdminAccount} onBalanceChange={handleBalanceChange}
+              onOpenMedia={(kind, row, list) => {
+                if (kind === "image") { setViewerNav(list as ImageItem[]); setSelectedImage(row as ImageItem); return }
+                const asVideo = (img: typeof row): VideoDetailData => {
+                  const vm = (img.videoMetadata ?? {}) as Record<string, any>
+                  return { id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio || undefined, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }
+                }
+                setVideoViewerNav(list.map(asVideo))
+                setSelectedVideo(asVideo(row))
+              }} />
           ) : activeEmployee === "image-studio" ? (
             // Layered editing: the Refs library is where images come from and
             // where exports can go (new, or replacing the one it was opened from)
@@ -32353,7 +32508,7 @@ function employeePending(
       {selectedVideo && (
         <VideoDetailModal
           video={selectedVideo}
-          onClose={() => setSelectedVideo(null)}
+          onClose={() => { setSelectedVideo(null); setVideoViewerNav(null) }}
           onDismissFail={(vid) => handleDismissVideoFail({
             id: vid.failId || "",
             videoUrl: "",
@@ -32365,8 +32520,8 @@ function employeePending(
             queueRowId: vid.queueRowId,
             failKey: vid.failKey,
           })}
-          navList={videoNavList}
-          navIndex={videoNavList.findIndex(v => v.videoUrl === selectedVideo.videoUrl && v.prompt === selectedVideo.prompt && v.createdAt === selectedVideo.createdAt)}
+          navList={videoViewerNav ?? videoNavList}
+          navIndex={(videoViewerNav ?? videoNavList).findIndex(v => v.videoUrl === selectedVideo.videoUrl && v.prompt === selectedVideo.prompt && v.createdAt === selectedVideo.createdAt)}
           onNavigate={setSelectedVideo}
           onRescan={(vid) => {
             setScannerMode("video")
@@ -32386,7 +32541,7 @@ function employeePending(
             if (vid.endFrameUrl) { setVideoEndFramePreview(vid.endFrameUrl); setVideoEndFrameUrl(vid.endFrameUrl) }
             if (vid.motionVideoUrl) { setVideoMotionVideoPreview(vid.motionVideoUrl); setVideoMotionVideoUrl(vid.motionVideoUrl) }
           }}
-          onUsePrompt={(text) => { handleUsePrompt(text); setSelectedVideo(null) }}
+          onUsePrompt={(text) => { handleUsePrompt(text); setSelectedVideo(null); setVideoViewerNav(null) }}
         />
       )}
 

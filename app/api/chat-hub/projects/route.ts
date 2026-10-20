@@ -19,9 +19,10 @@ export async function GET() {
           },
         },
       }),
-      // Standalone chats living outside any project
+      // Standalone chats living outside any project (Nova Studio's chats are
+      // Chat rows too, source 'nova' - they belong to that studio, not here)
       prisma.chat.findMany({
-        where: { userId: user.id, projectId: null },
+        where: { userId: user.id, projectId: null, source: { not: 'nova' } },
         orderBy: { updatedAt: 'desc' },
         select: { id: true, title: true, model: true, updatedAt: true },
       }),

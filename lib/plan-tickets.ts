@@ -1,4 +1,5 @@
 import prisma from '@/lib/prisma'
+import { removeTicketsFloored } from '@/lib/ticket-gate'
 import { findPlan, packDiscountFor } from '@/lib/dev-tier-plans'
 import { findDevTierSubscription } from '@/lib/dev-tier'
 
@@ -49,12 +50,15 @@ async function balanceOf(userId: number): Promise<number> {
 async function adjust(userId: number, delta: number): Promise<{ before: number; after: number }> {
   const before = await balanceOf(userId)
   if (delta === 0) return { before, after: before }
+  // Taking a plan's tickets away stops at 0 - never a negative balance (lib/ticket-gate)
+  if (delta < 0) {
+    const r = await removeTicketsFloored(userId, -delta)
+    return { before, after: r.after }
+  }
   const t = await prisma.ticket.upsert({
     where: { userId },
-    create: { userId, balance: Math.max(0, delta), totalBought: Math.max(0, delta), totalUsed: 0 },
-    update: delta > 0
-      ? { balance: { increment: delta }, totalBought: { increment: delta } }
-      : { balance: { decrement: -delta } },
+    create: { userId, balance: delta, totalBought: delta, totalUsed: 0 },
+    update: { balance: { increment: delta }, totalBought: { increment: delta } },
     select: { balance: true },
   })
   return { before, after: t.balance }

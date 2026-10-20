@@ -1326,6 +1326,63 @@ export function krea3TicketCost(o: { quality?: string; aspectRatio?: string; ref
 }
 
 /*
+ * MOSS Image (fal-ai/moss-image, 2026-10-18): $0.05 per megapixel of output.
+ * It takes fal's six named sizes or a custom {width,height} - "rounded to
+ * multiples of 16 between 512 and 2048 pixels" - so a custom size is snapped
+ * and clamped HERE, before it is priced or sent (out of range = a paid 422).
+ * How fal counts, MEASURED from the balance on 2026-10-18 (one job at a time):
+ * a megapixel is 1024x1024 px and the bill rounds UP to whole megapixels, at
+ * least one - 512x512 $0.05, 1024x1024 $0.05, 1600x1200 $0.10, 2048x2048
+ * $0.20. So every preset (all at most 1 MP) is $0.05 -> 2 tickets, and a
+ * custom size is 2 / 3 / 4 / 5 tickets at 1 / 2 / 3 / 4 billed megapixels.
+ * (The first cut counted exact megapixels and charged 1 ticket = $0.04 for a
+ * $0.05 Square.)
+ */
+export const MOSS_USD_PER_MP = 0.05
+export const MOSS_PRESETS = {
+  square_hd: { width: 1024, height: 1024, label: 'Square HD' },
+  square: { width: 512, height: 512, label: 'Square' },
+  portrait_4_3: { width: 768, height: 1024, label: 'Portrait 3:4' },
+  portrait_16_9: { width: 576, height: 1024, label: 'Portrait 9:16' },
+  landscape_4_3: { width: 1024, height: 768, label: 'Landscape 4:3' },
+  landscape_16_9: { width: 1024, height: 576, label: 'Landscape 16:9' },
+} as const
+export type MossPreset = keyof typeof MOSS_PRESETS
+export const MOSS_SIZES = [...Object.keys(MOSS_PRESETS), 'custom'] as (MossPreset | 'custom')[]
+export const MOSS_MIN_SIDE = 512
+export const MOSS_MAX_SIDE = 2048
+/** One custom side: a number, snapped to 16, held to 512-2048 (1024 when it is not a number). */
+export function mossSide(v: unknown): number {
+  const n = typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN
+  if (!Number.isFinite(n)) return 1024
+  return Math.min(MOSS_MAX_SIDE, Math.max(MOSS_MIN_SIDE, Math.round(n / 16) * 16))
+}
+/** The size that will really be sent: a named preset, or the snapped custom one. */
+export function mossSize(o: { size?: unknown; width?: unknown; height?: unknown }): { preset: MossPreset | null; width: number; height: number } {
+  if (typeof o.size === 'string' && o.size in MOSS_PRESETS) {
+    const p = MOSS_PRESETS[o.size as MossPreset]
+    return { preset: o.size as MossPreset, width: p.width, height: p.height }
+  }
+  if (o.size === 'custom') return { preset: null, width: mossSide(o.width), height: mossSide(o.height) }
+  // "WxH": the aspect a run is saved under, so a retry of a failed tile keeps its size
+  const m = typeof o.size === 'string' ? o.size.match(/^(\d+)x(\d+)$/) : null
+  if (m) {
+    const width = mossSide(m[1]), height = mossSide(m[2])
+    const preset = (Object.keys(MOSS_PRESETS) as MossPreset[]).find(k => MOSS_PRESETS[k].width === width && MOSS_PRESETS[k].height === height) ?? null
+    return { preset, width, height }
+  }
+  return { preset: 'square_hd', width: 1024, height: 1024 }
+}
+export function mossTicketCost(o: { size?: unknown; width?: unknown; height?: unknown }): number {
+  const { width, height } = mossSize(o)
+  return Math.ceil((MOSS_USD_PER_MP * mossBilledMp(width, height)) / 0.04 - 1e-9)
+}
+/** The megapixels fal bills: 1024x1024 px each, rounded up, at least one. */
+export function mossBilledMp(width: number, height: number): number {
+  return Math.max(1, Math.ceil((width * height) / 1_048_576 - 1e-9))
+}
+
+/*
  * Krea 3 Realtime: $0.013 for every second a session is open (fal,
  * 2026-10-15, "pricing TBD"). Sold in 30-second blocks: $0.39 -> 10 tickets.
  */

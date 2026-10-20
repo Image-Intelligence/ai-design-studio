@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { uploadToR2 } from '@/lib/r2'
+import { reserveTicketsAtomic, releaseReservedTickets, settleReservedTickets } from '@/lib/ticket-gate'
 import prisma from '@/lib/prisma'
 import { getTicketCost, getModelById } from '@/config/ai-models.config'
 import { isGenerationBlocked } from '@/lib/generation-guard'
@@ -72,12 +73,11 @@ export async function POST(req: Request) {
       )
     }
 
-    const updatedTicket = await prisma.ticket.update({
-      where: { userId: user.id },
-      data: { reserved: { increment: ticketCost } },
-      select: { balance: true, reserved: true },
-    })
-    const newBalance = Math.max(0, updatedTicket.balance - updatedTicket.reserved)
+    // Reserve in ONE statement (lib/ticket-gate reserveTicketsAtomic): the check
+    // above alone let parallel submits all pass and all reserve (2026-10-19)
+    const held = await reserveTicketsAtomic(user.id, ticketCost)
+    if (!held.ok) return jsonPrivate({ error: `Insufficient tickets. Need ${ticketCost}, have ${held.have}.` }, { status: 402 })
+    const newBalance = Math.max(0, held.balance - held.reserved)
 
     // Create queue entry (polling picks this up immediately)
     const queueEntry = await prisma.generationQueue.create({
@@ -180,14 +180,8 @@ export async function POST(req: Request) {
         })
 
         // ── Deduct tickets ──────────────────────────────────────────────
-        await prisma.ticket.update({
-          where: { userId },
-          data: {
-            balance:   { decrement: ticketCost },
-            reserved:  { decrement: ticketCost },
-            totalUsed: { increment: ticketCost },
-          },
-        })
+        // Reserved -> spent, never below 0 (lib/ticket-gate)
+        await settleReservedTickets(userId, ticketCost)
 
         // ── Mark queue completed ────────────────────────────────────────
         await prisma.generationQueue.update({
@@ -213,10 +207,7 @@ export async function POST(req: Request) {
       } catch (err: any) {
         console.error(`Gemini queue #${queueId} failed:`, err.message)
         await Promise.all([
-          prisma.ticket.update({
-            where: { userId },
-            data: { reserved: { decrement: ticketCost } },
-          }).catch(() => {}),
+          releaseReservedTickets(userId, ticketCost),
           prisma.generationQueue.update({
             where: { id: queueId },
             data: {

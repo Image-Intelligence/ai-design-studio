@@ -103,6 +103,164 @@ export type StoryboardShot = {
   caption?: string
   /** A smaller line under the caption. */
   captionSub?: string
+  /**
+   * The audio lane (2026-10-19): lines spoken over this shot - dialogue or
+   * voice-over - each voiced on its own, placed `offset` seconds into the
+   * shot. The page owns the words, voice and offset; the recording (url,
+   * seconds, status) is the audio route's, kept by the autosave merge.
+   */
+  lines?: VoiceLine[]
+  /**
+   * A music cue that STARTS on this shot and plays until the next shot that
+   * has one (or the end of the board) - the board's score, written cue by cue.
+   */
+  music?: MusicCue | null
+}
+
+// ── The audio lane (2026-10-19) ──────────────────────────────────────────────
+//
+// Sound is planned along the board, not only at the Final Cut: voice lines
+// sit on the shots they are spoken over, music cues start on a shot and run
+// to the next cue. The animatic plays them, and the Final Cut uses them
+// (lines placed where they belong, cues instead of the AI score).
+
+/** What a recording is doing: 'idle' = words written, not voiced yet. */
+export type AudioStatus = 'idle' | 'making' | 'done' | 'failed'
+export type VoiceLine = {
+  id: string
+  /** Who says it (a cast name or "Narrator") - shown on the lane, told to the planner. */
+  speaker: string
+  text: string
+  /** An ElevenLabs voice (ELEVEN_VOICES). */
+  voice: string
+  /** STORYBOARD_VOICE_MODELS id. */
+  model: string
+  /** Seconds into the shot the line starts. */
+  offset: number
+  url: string | null
+  seconds: number
+  status: AudioStatus
+  error?: string | null
+  at: number
+  /** The words / voice the recording was made from, so an edited line shows it is out of date. */
+  madeText?: string | null
+  madeVoice?: string | null
+}
+export type MusicCue = {
+  id: string
+  prompt: string
+  /** STORYBOARD_MUSIC_MODELS id. */
+  model: string
+  /** Level under the picture, dB (default -10; the Final Cut ducks it under speech). */
+  gainDb?: number
+  url: string | null
+  seconds: number
+  status: AudioStatus
+  error?: string | null
+  at: number
+  madePrompt?: string | null
+}
+export const MAX_LINES_PER_SHOT = 4
+/** A recording "making" this long is dead (the route gives up long before). */
+export const AUDIO_STALE_MS = 6 * 60_000
+export const STORYBOARD_VOICE_MODELS = [
+  { id: 'eleven-v4', label: 'ElevenLabs v4' },
+  { id: 'eleven-v4-turbo', label: 'ElevenLabs v4 Turbo' },
+  { id: 'eleven-v3', label: 'ElevenLabs v3 (audio tags)' },
+] as const
+export const DEFAULT_VOICE_MODEL = 'eleven-v4'
+export const STORYBOARD_MUSIC_MODELS = [
+  { id: 'sonilo-music', label: 'Sonilo (film score)' },
+  { id: 'eleven-music-v2.5', label: 'ElevenLabs Music' },
+  { id: 'stable-audio-3', label: 'Stable Audio 3' },
+  { id: 'cassette-music', label: 'CassetteAI (quick)' },
+] as const
+export const DEFAULT_MUSIC_MODEL = 'sonilo-music'
+/** A recording's status now: one "making" past AUDIO_STALE_MS has failed. */
+export const liveAudio = (a: { status: AudioStatus; at: number }, now = Date.now()): AudioStatus =>
+  a.status === 'making' && now - a.at > AUDIO_STALE_MS ? 'failed' : a.status
+export const newVoiceLine = (partial: Partial<VoiceLine> = {}): VoiceLine => ({
+  speaker: 'Narrator', text: '', voice: 'Brian', model: DEFAULT_VOICE_MODEL, offset: 0.3, url: null, seconds: 0, status: 'idle', at: 0, ...partial, id: partial.id || newId('l'),
+})
+export const newMusicCue = (partial: Partial<MusicCue> = {}): MusicCue => ({
+  prompt: '', model: DEFAULT_MUSIC_MODEL, url: null, seconds: 0, status: 'idle', at: 0, ...partial, id: partial.id || newId('m'),
+})
+/*
+ * ── The audio lane written by AI (2026-10-19, owner) ──────────────────────
+ * Draft with AI can fill the lane along with the shots ("Also fill the audio
+ * lane"), and Edit with AI works on one shot's lines and music. Both ask the
+ * text model for the same shape, read back here:
+ *   voiceLines: [{ speaker, text, at }]  - at = seconds into the shot
+ *   musicCue:   "prompt" for a NEW cue starting on this shot, "" for none
+ *   voices:     { speaker: ElevenLabs voice } - one voice per speaker
+ * Nothing is recorded: the lane's Record buttons make the audio (and price it).
+ */
+/** The ElevenLabs voices with what they sound like, so the planner can cast them. */
+export const VOICE_HINTS: Record<string, string> = {
+  Rachel: 'calm young American woman', Aria: 'expressive American woman', Roger: 'confident middle-aged man', Sarah: 'soft young woman',
+  Laura: 'upbeat young woman', Charlie: 'natural Australian man', George: 'warm British man, storyteller', Callum: 'intense, gravelly man',
+  River: 'calm neutral voice', Liam: 'articulate young American man', Charlotte: 'smooth Swedish-accented woman', Alice: 'confident British woman',
+  Matilda: 'friendly warm woman', Will: 'friendly young man', Jessica: 'bright expressive young woman', Eric: 'friendly middle-aged man',
+  Chris: 'casual, natural man', Brian: 'deep American man, narrator', Daniel: 'authoritative British man, newsreader', Lily: 'warm British woman', Bill: 'trustworthy older American man',
+}
+export const voiceMenu = () => Object.entries(VOICE_HINTS).map(([v, h]) => `${v} (${h})`).join(', ')
+/** The rules both AI routes give the model for a shot's sound. */
+export const AUDIO_PLAN_RULES = [
+  '- "voiceLines": the words SPOKEN over this shot - narration or dialogue - as [{"speaker": a character\'s name from the board or "Narrator", "text": the exact words, "at": seconds into the shot it starts}]. Only where this kind of video needs voice (an ad\'s voiceover, a story\'s dialogue, a trailer\'s narrator) - an empty list for a shot that should breathe. At most 2 per shot. Spoken at about 2.5 words a second, a line must END before the shot does ("at" + words / 2.5 <= the shot\'s duration). Plain words only - no stage directions or sound descriptions.',
+  '- "musicCue": the prompt for a NEW piece of music that STARTS on this shot and plays until the next shot with a cue - genre, mood, instruments, tempo, and "instrumental" (no singing) under any voice. Start one on the first shot (unless the piece should have no music) and a new one only where the mood or scene clearly changes; "" everywhere else.',
+  '- Top level, "voices": {"<speaker>": "<voice>"} - one ElevenLabs voice per speaker, chosen to fit them, from: ' + Object.keys(VOICE_HINTS).join(', ') + '. Keep a speaker\'s voice the same everywhere.',
+]
+/**
+ * A shot's lines from the model's "voiceLines". A line whose words match one
+ * already there keeps it (and its recording); a changed line keeps its slot,
+ * id and recording - the lane then shows it "edited since" to re-record.
+ */
+export function linesFromPlan(raw: unknown, existing: VoiceLine[] | undefined, voiceFor: (speaker: string) => string, duration: number): VoiceLine[] {
+  const rows = (Array.isArray(raw) ? raw : []).slice(0, MAX_LINES_PER_SHOT)
+  const old = [...(existing ?? [])]
+  const out: VoiceLine[] = []
+  rows.forEach((r: any, k: number) => {
+    const text = String(r?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)
+    if (!text) return
+    const speaker = String(r?.speaker ?? 'Narrator').trim().slice(0, 60) || 'Narrator'
+    const at = Math.max(0, Math.min(Math.max(0, duration - 0.5), Math.round((Number(r?.at) || 0.3) * 10) / 10))
+    const same = old.findIndex(l => l.text.trim() === text)
+    if (same >= 0) { out.push({ ...old[same], speaker, offset: at }); old.splice(same, 1); return }
+    const slot = old.length && k < (existing?.length ?? 0) ? old.shift() : undefined
+    out.push(slot ? { ...slot, speaker, text, voice: voiceFor(speaker), offset: at } : newVoiceLine({ speaker, text, voice: voiceFor(speaker), offset: at }))
+  })
+  return out
+}
+/** A shot's cue from the model's "musicCue": a new prompt (keeping the slot and recording), or the cue it had. */
+export function cueFromPlan(raw: unknown, existing: MusicCue | null | undefined): MusicCue | null {
+  const prompt = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, 1500) : ''
+  if (!prompt) return existing ?? null
+  return existing ? (existing.prompt.trim() === prompt ? existing : { ...existing, prompt }) : newMusicCue({ prompt })
+}
+/** One voice per speaker: the plan's pick, else the one the board already uses for them, else Brian. */
+export function voicePicker(planVoices: unknown, shots: Pick<StoryboardShot, 'lines'>[]): (speaker: string) => string {
+  const map = new Map<string, string>()
+  for (const s of shots) for (const l of s.lines ?? []) if (!map.has(l.speaker.toLowerCase())) map.set(l.speaker.toLowerCase(), l.voice)
+  const plan = planVoices && typeof planVoices === 'object' ? planVoices as Record<string, unknown> : {}
+  for (const [k, v] of Object.entries(plan)) { const name = String(v ?? '').trim(); const hit = Object.keys(VOICE_HINTS).find(x => x.toLowerCase() === name.toLowerCase()); if (hit) map.set(k.toLowerCase(), hit) }
+  return speaker => map.get(speaker.toLowerCase()) ?? 'Brian'
+}
+
+/** A line whose words or voice changed since it was recorded. */
+export const lineStale =(l: VoiceLine) => !!l.url && (l.madeText != null && l.madeText !== l.text || l.madeVoice != null && l.madeVoice !== l.voice)
+/**
+ * The seconds a cue on `shotId` covers: from that shot to the next shot with
+ * a cue (or the end), at the planned lengths, plus a short tail for the fade.
+ */
+export function musicSpanSeconds(shots: Pick<StoryboardShot, 'id' | 'duration' | 'music'>[], shotId: string): number {
+  const i = shots.findIndex(s => s.id === shotId)
+  if (i < 0) return 30
+  let secs = 0
+  for (let k = i; k < shots.length; k++) {
+    if (k > i && shots[k].music) break
+    secs += shots[k].duration || 0
+  }
+  return Math.max(10, Math.min(300, Math.ceil(secs + 3)))
 }
 
 /** Frame shapes a single still may take (SHOT_ASPECTS) - wider and taller than a board's. */
@@ -160,6 +318,12 @@ export type ShotVideo = {
   rawUrl?: string | null
   /** The original's pixel size ("1080x1920"), to label the toggle between the two. */
   rawSize?: string | null
+  /**
+   * A clip EDIT (the Shot edits phase, 2026-10-19): the tool that made it
+   * from an earlier take - upscale, restyle, extend, lip-sync... `lineId` =
+   * the voice line lip-synced into it (the Final Cut does not lay it again).
+   */
+  edit?: { tool: string; label: string; of: string; prompt?: string; lineId?: string } | null
 }
 
 /** "1080x1920" -> "9:16" (the nearest common frame), else the pixel size. */
@@ -1199,7 +1363,65 @@ function sanitizeVideo(v: any): ShotVideo | null {
     at: Number.isFinite(Number(v.at)) ? Number(v.at) : 0,
     rawUrl: /^https:\/\//.test(str(v.rawUrl, 2000)) ? str(v.rawUrl, 2000) : null,
     rawSize: /^\d{2,5}x\d{2,5}$/.test(str(v.rawSize, 20)) ? str(v.rawSize, 20) : null,
+    edit: v.edit && typeof v.edit === 'object' && str(v.edit.tool, 60)
+      ? { tool: str(v.edit.tool, 60), label: str(v.edit.label, 80), of: str(v.edit.of, 2000), ...(str(v.edit.prompt, 1000) ? { prompt: str(v.edit.prompt, 1000) } : {}), ...(str(v.edit.lineId, 64) ? { lineId: str(v.edit.lineId, 64) } : {}) }
+      : null,
   }
+}
+
+const audioStatus = (v: unknown): AudioStatus => (v === 'making' || v === 'done' || v === 'failed' ? v : 'idle')
+const httpsOrNull = (v: unknown) => { const u = str(v, 2000); return /^https:\/\//.test(u) ? u : null }
+function sanitizeLines(raw: unknown): VoiceLine[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: VoiceLine[] = []
+  for (const r of raw.slice(0, MAX_LINES_PER_SHOT) as any[]) {
+    if (!r || typeof r !== 'object') continue
+    const off = Number(r.offset)
+    out.push({
+      id: str(r.id, 64) || newId('l'), speaker: str(r.speaker, 60) || 'Narrator', text: str(r.text, 600), voice: str(r.voice, 40) || 'Brian',
+      model: STORYBOARD_VOICE_MODELS.some(m => m.id === r.model) ? r.model : DEFAULT_VOICE_MODEL,
+      offset: Number.isFinite(off) ? Math.max(0, Math.min(30, Math.round(off * 10) / 10)) : 0.3,
+      url: httpsOrNull(r.url), seconds: Number.isFinite(Number(r.seconds)) ? Math.max(0, Number(r.seconds)) : 0,
+      status: audioStatus(r.status), error: str(r.error, 300) || null, at: Number.isFinite(Number(r.at)) ? Number(r.at) : 0,
+      madeText: typeof r.madeText === 'string' ? r.madeText.slice(0, 600) : null, madeVoice: typeof r.madeVoice === 'string' ? r.madeVoice.slice(0, 40) : null,
+    })
+  }
+  return out.length ? out : undefined
+}
+function sanitizeCue(r: any): MusicCue | undefined {
+  if (!r || typeof r !== 'object') return undefined
+  const g = Number(r.gainDb)
+  return {
+    id: str(r.id, 64) || newId('m'), prompt: str(r.prompt, 1500),
+    model: STORYBOARD_MUSIC_MODELS.some(m => m.id === r.model) ? r.model : DEFAULT_MUSIC_MODEL,
+    ...(r.gainDb != null && Number.isFinite(g) ? { gainDb: Math.max(-30, Math.min(0, g)) } : {}),
+    url: httpsOrNull(r.url), seconds: Number.isFinite(Number(r.seconds)) ? Math.max(0, Number(r.seconds)) : 0,
+    status: audioStatus(r.status), error: str(r.error, 300) || null, at: Number.isFinite(Number(r.at)) ? Number(r.at) : 0,
+    madePrompt: typeof r.madePrompt === 'string' ? r.madePrompt.slice(0, 1500) : null,
+  }
+}
+/**
+ * The page's lines with the server's recordings: the words, voice and offset
+ * are the page's; url / seconds / status come from what is stored (only the
+ * audio route records). A line being recorded that a stale page does not
+ * know yet is kept.
+ */
+export function mergeLines(stored: VoiceLine[] | undefined, incoming: VoiceLine[] | undefined): VoiceLine[] | undefined {
+  const old = new Map((stored ?? []).map(l => [l.id, l]))
+  const out: VoiceLine[] = (incoming ?? []).map(l => {
+    const o = old.get(l.id)
+    return o ? { ...l, url: o.url, seconds: o.seconds, status: o.status, error: o.error ?? null, at: o.at, madeText: o.madeText ?? null, madeVoice: o.madeVoice ?? null }
+      : { ...l, url: null, seconds: 0, status: 'idle', error: null, at: 0, madeText: null, madeVoice: null }
+  })
+  const ids = new Set(out.map(l => l.id))
+  for (const o of stored ?? []) if (!ids.has(o.id) && liveAudio(o) === 'making') out.push(o)
+  return out.length ? out.slice(0, MAX_LINES_PER_SHOT) : undefined
+}
+/** The same for a shot's music cue. */
+export function mergeCue(stored: MusicCue | null | undefined, incoming: MusicCue | null | undefined): MusicCue | undefined {
+  if (!incoming) return stored && liveAudio(stored) === 'making' ? stored : undefined
+  if (stored && stored.id === incoming.id) return { ...incoming, url: stored.url, seconds: stored.seconds, status: stored.status, error: stored.error ?? null, at: stored.at, madePrompt: stored.madePrompt ?? null }
+  return { ...incoming, url: null, seconds: 0, status: 'idle', error: null, at: 0, madePrompt: null }
 }
 
 /**
@@ -1257,6 +1479,8 @@ export function sanitizeShots(raw: unknown): StoryboardShot[] {
       video: sanitizeVideo(r?.video),
       videos: sanitizeVideoTakes(r?.videos),
       stills: sanitizeStills(r?.stills, /^https:\/\//.test(still) ? still : null, str(r?.imagePrompt, 4000), imageModel),
+      lines: sanitizeLines(r?.lines),
+      music: sanitizeCue(r?.music),
     })
   })
 }
@@ -1274,22 +1498,59 @@ export const STILLS_CUT_TICKETS = 2
  * narration (~$0.05) - in tickets at the $0.04 of fal cost a ticket covers
  * (lib/ticket-pricing's margin rule). The page shows it; the route charges it.
  */
-export function finalCutExtraTickets(o: { cards: boolean; narration: boolean }, seconds: number): number {
-  const usd = 0.02 + (o.cards ? 0.2 : 0) + seconds * 0.01 + 0.05 + (o.narration ? 0.05 : 0)
+export function finalCutExtraTickets(o: { cards: boolean; narration: boolean; review?: boolean; formats?: string[]; cardStyle?: string; score?: string }, seconds: number, reuse: { score?: boolean } = {}): number {
+  // Exact-text cards are our own render (free); designed cards are AI lettering
+  const cards = o.cards ? (o.cardStyle === 'exact' ? 0.01 : 0.2) : 0
+  // The critic (Gemini 4 Argon, ~$0.04 a look at the film, priced high while
+  // Argon has no published price) twice at most, plus one re-plan and re-cut
+  const review = o.review ? 0.12 : 0
+  // Each extra format is one re-frame of the finished film (our own ffmpeg time)
+  const formats = (o.formats?.length ?? 0) * (0.01 + seconds * 0.002)
+  // The AI score (~$0.01 a second) only when it is composed: the board's own
+  // music cues were paid for on the lane, and a revision may keep the last score
+  const score = (o.score ?? 'ai') === 'ai' && !reuse.score ? seconds * 0.01 : 0
+  const usd = 0.02 + cards + score + 0.05 + (o.narration ? 0.05 : 0) + review + formats
   return Math.ceil(usd / 0.04)
 }
 
+/** Extra shapes the Final Cut can also deliver (the board's own aspect is the main cut). */
+export const FINAL_CUT_FORMATS = ['16:9', '9:16', '1:1', '4:5'] as const
+
 /** What the Final Cut button is asked for. */
 export type FinalCutOptions = {
-  /** Title and end cards (lettering by Ideogram v4). */
+  /** Title and end cards. */
   cards: boolean
+  /**
+   * 'designed' = AI lettering (Recraft v4.1, Ideogram v4 fallback);
+   * 'exact' = the exact words set in type on a darkened frame of the film -
+   * free and never misspelled (2026-10-19). A designed card that fails falls
+   * back to an exact one instead of leaving the film without it.
+   */
+  cardStyle?: 'designed' | 'exact'
+  /** Narration burned in as subtitles. */
+  captions?: boolean
+  /**
+   * The critic (Nova Studio's: Gemini 4 Argon) watches the finished film -
+   * frames and measured sound - against the story; if it says revise, ONE
+   * automatic revision follows (re-plan with its notes, re-cut, re-mix).
+   */
+  review?: boolean
+  /** Extra shapes delivered after the main cut (FINAL_CUT_FORMATS). */
+  formats?: string[]
+  /**
+   * The music: 'board' = the audio lane's cues (2026-10-19), 'ai' = Sonilo
+   * composes to the cut, 'none'. A board with no recorded cues falls back to 'ai'.
+   */
+  score?: 'board' | 'ai' | 'none'
+  /** Lay the audio lane's recorded voice lines where they belong (default on). */
+  lines?: boolean
   /** A narrator over the film (lines written by the edit plan, voiced by ElevenLabs). */
   narration: boolean
   voice: string
   /** Resolution for any shots it still has to shoot. */
   resolution: string
 }
-export const DEFAULT_FINAL_CUT_OPTIONS: FinalCutOptions = { cards: true, narration: false, voice: 'Brian', resolution: '720p' }
+export const DEFAULT_FINAL_CUT_OPTIONS: FinalCutOptions = { cards: true, cardStyle: 'designed', narration: false, captions: false, review: true, formats: [], score: 'ai', lines: true, voice: 'Brian', resolution: '720p' }
 export const NARRATOR_VOICES = ['Brian', 'George', 'Liam', 'Aria', 'Sarah', 'Laura', 'Charlotte', 'Daniel', 'Bill', 'Jessica'] as const
 
 /** The steps, in order, as the page shows them. */
@@ -1298,10 +1559,12 @@ export const FINAL_CUT_PHASES = [
   { key: 'plan', label: 'Plan the edit' },
   { key: 'cards', label: 'Title & end cards' },
   { key: 'cut', label: 'Cut the picture' },
-  { key: 'voice', label: 'Narration' },
-  { key: 'score', label: 'Score the music' },
+  { key: 'voice', label: 'Voices' },
+  { key: 'score', label: 'Music' },
   { key: 'mix', label: 'Mix & master' },
+  { key: 'review', label: 'Critic review' },
   { key: 'save', label: 'Save the cut' },
+  { key: 'formats', label: 'Other formats' },
 ] as const
 export type FinalCutPhase = (typeof FINAL_CUT_PHASES)[number]['key']
 
@@ -1311,7 +1574,28 @@ export type FinalCutVersion = {
   posterUrl?: string | null
   /** The scene this cut is of ("Scene 2 · The Chase"); absent = the whole board. */
   scene?: string | null
+  /** The critic's verdict on this version (and whether a revision was made for it). */
+  review?: { verdict: 'pass' | 'revise'; score: number; summary: string; revised: boolean; issues?: string[] } | null
+  /** The same film in other shapes. */
+  formats?: { aspect: string; url: string; imageId: number | null }[]
+  /** What it was asked for, and its parts - a revision starts from these (its plan, score, cards). */
+  options?: FinalCutOptions
+  parts?: { plan?: unknown; musicUrl?: string | null; titleCard?: string | null; endCard?: string | null }
+  /** A revision: the version it revised and the edits it was asked to make. */
+  revisedFrom?: number | null
+  edits?: string[]
 }
+
+/**
+ * The Revise phase (2026-10-19): the user says what to change about a cut,
+ * the edit AI turns it into an edit list - 'cut' items the Final Cut makes
+ * itself (trims, order of emphasis, cards, lines' timing, music level), and
+ * 'board' items that need the board changed first (a reshoot, a new line) -
+ * and the cut is re-run with the list switched on. As often as it takes.
+ */
+export type ReviseEdit = { id: string; kind: 'cut' | 'board'; shot?: number | null; text: string; on: boolean }
+export type ReviseDraft = { from: number; notes: string; summary: string; edits: ReviseEdit[]; rescore: boolean; at: number }
+export const MAX_REVISE_EDITS = 12
 
 /** The board's Final Cut record: the running (or last) job, and every version made. */
 export type FinalCutState = {
@@ -1328,8 +1612,12 @@ export type FinalCutState = {
     sceneId?: string | null
     /** Tickets charged for the cut's own work (finalCutExtraTickets) - refunded if it is cancelled or started over. */
     charged?: number
+    /** A revision run: the version it starts from and the edits to make. */
+    revise?: { from: number; edits: string[]; notes: string; rescore: boolean } | null
   } | null
   versions: FinalCutVersion[]
+  /** The edit list being written / reviewed in the Revise phase. */
+  revision?: ReviseDraft | null
 }
 
 /**

@@ -174,7 +174,7 @@ export async function GET(
     }
 
     if (isDownload) {
-      headers['Content-Disposition'] = `attachment; filename="${audioExt ? 'audio' : 'image'}-${id}.${ext}"`
+      headers['Content-Disposition'] = `attachment; filename="${audioExt ? 'audio' : ext === 'mp4' || ext === 'webm' ? 'video' : 'image'}-${id}.${ext}"`
     }
 
     return new NextResponse(blobRes.body, { status: 200, headers })

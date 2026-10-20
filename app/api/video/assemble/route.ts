@@ -602,36 +602,68 @@ export async function POST(req: NextRequest) {
 
       const src = path.join(dir, 'in.mp4')
       await fetchTo(src, videoUrl)
-      const { seconds, height: vh } = await probe(src)
+      const { seconds, height: vh, width: vw } = await probe(src)
       // drawtext's size options take INTEGERS, not expressions like h/22, so
       // they are computed from the real frame height here.
       const H = vh > 0 ? vh : 720
+      const W = vw > 0 ? vw : Math.round(H * 16 / 9)
       const fontSize = Math.max(14, Math.round(H / 22))
       const borderW = Math.max(1, Math.round(H / 500))
       const boxBorder = Math.max(4, Math.round(H / 90))
 
-      // drawtext parses its own arg string, so anything with meaning inside it
-      // has to be neutralised or the filter graph breaks on an apostrophe.
-      const esc = (t: string) => t
-        .replace(/\\/g, '\\\\')
-        .replace(/:/g, '\\:')
-        .replace(/'/g, "\u2019")
-        .replace(/%/g, '\\%')
-        .replace(/\r?\n/g, ' ')
-
-      const pos = body.position === 'top' ? `${Math.round(H * 0.08)}` : `h-${Math.round(H * 0.12)}-text_h`
-      const chain = caps.map(c =>
-        `drawtext=text='${esc(c.text)}'`
-        + `:fontcolor=white:fontsize=${fontSize}:borderw=${borderW}:bordercolor=black@0.9`
-        + `:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}`
-        + `:x=(w-text_w)/2:y=${pos}`
-        + `:enable='between(t,${c.start.toFixed(2)},${c.end.toFixed(2)})'`
-      ).join(',')
+      /*
+       * Each caption's words go in a TEXT FILE that drawtext reads (2026-10-19):
+       * nothing in them is parsed, so an apostrophe stays an apostrophe. The
+       * old inline text= turned ' into a curly quote to get it past the filter
+       * parser, and the default font has no curly quote - "it's" came out as
+       * "it?s" with a missing-glyph box (caught by Nova watching a cut).
+       * expansion=none: a % in the words is just a %.
+       *
+       * drawtext does not wrap, and a 28-letter line ran off both sides of a
+       * 9:16 frame - so a caption wider than the frame is split into two
+       * lines at the space nearest its middle, each its own centred drawtext;
+       * a single word that still does not fit gets a smaller font.
+       */
+      const filePath = (f: string) => f.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+      const glyph = 0.56 // average glyph width / font size, bold-ish sans
+      const fitChars = Math.max(8, Math.floor((W * 0.9) / (fontSize * glyph)))
+      const split = (t: string): string[] => {
+        const one = t.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim()
+        if (one.length <= fitChars) return [one]
+        const mid = Math.floor(one.length / 2)
+        let at = -1
+        for (let d = 0; d <= mid; d++) { if (one[mid - d] === ' ') { at = mid - d; break } if (one[mid + d] === ' ') { at = mid + d; break } }
+        return at > 0 ? [one.slice(0, at), one.slice(at + 1)] : [one]
+      }
+      const lineH = Math.round(fontSize * 1.32)
+      const bottom = Math.round(H * 0.12)
+      const rows: { file: string; line: string; size: number; y: string | number; start: string; end: string }[] = []
+      for (const c of caps) {
+        const lines = split(c.text)
+        const longest = Math.max(...lines.map(l => l.length))
+        const size = longest > fitChars ? Math.max(12, Math.floor((W * 0.92) / (longest * glyph))) : fontSize
+        lines.forEach((line, i) => rows.push({
+          file: path.join(dir as string, `cap${rows.length}.txt`), line, size,
+          y: body.position === 'top' ? Math.round(H * 0.08) + i * lineH : `h-${bottom + (lines.length - 1 - i) * lineH}-text_h`,
+          start: c.start.toFixed(2), end: c.end.toFixed(2),
+        }))
+      }
+      const chain: string[] = []
+      for (const r of rows) {
+        await writeFile(r.file, r.line, 'utf8')
+        chain.push(
+          `drawtext=textfile='${filePath(r.file)}':expansion=none`
+          + `:fontcolor=white:fontsize=${r.size}:borderw=${borderW}:bordercolor=black@0.9`
+          + `:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}`
+          + `:x=(w-text_w)/2:y=${r.y}`
+          + `:enable='between(t,${r.start},${r.end})'`,
+        )
+      }
 
       const out = path.join(dir, 'captioned.mp4')
       await exec(ffmpegPath as string, [
         '-hide_banner', '-y', '-i', src,
-        '-vf', chain,
+        '-vf', chain.join(','),
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
         // the audio is already right — never re-encode it for a text overlay
         '-c:a', 'copy', '-movflags', '+faststart', out,

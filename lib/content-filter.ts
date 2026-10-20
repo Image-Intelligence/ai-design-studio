@@ -169,7 +169,8 @@ One word:` }] }],
 // mode 'static' = keyword + names list only (free, no API calls)
 export type FilterMode = 'gemini' | 'static'
 let filterStateCache: { at: number; on: boolean; mode: FilterMode } | null = null
-async function readFilterState(): Promise<{ on: boolean; mode: FilterMode }> {
+/** The admin filter switch (the composer's admin Filter ON/OFF); exported for Nova Studio's admin safety toggle. */
+export async function readFilterState(): Promise<{ on: boolean; mode: FilterMode }> {
   if (filterStateCache && Date.now() - filterStateCache.at < 15_000) return filterStateCache
   try {
     const rows = await prisma.$queryRaw<{ on: boolean; mode: string }[]>`SELECT "adminContentFilterOn" AS "on", "contentFilterMode" AS "mode" FROM "SystemState" LIMIT 1`

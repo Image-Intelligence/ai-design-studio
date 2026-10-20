@@ -3,6 +3,7 @@
 // current user so the canvas can restore loading placeholders after a page refresh
 // and enforce per-account concurrency limits.
 
+import { releaseReservedTickets } from '@/lib/ticket-gate'
 import { NextResponse, after } from 'next/server'
 import { harvestPollingJobs } from '@/lib/harvest-polling-jobs'
 import prisma from '@/lib/prisma'
@@ -99,10 +100,7 @@ export async function GET(request: Request) {
       })
       const totalReserved = provablyDead.reduce((sum, j) => sum + j.ticketCost, 0)
       if (totalReserved > 0) {
-        await prisma.ticket.update({
-          where: { userId: user.id },
-          data: { reserved: { decrement: totalReserved } },
-        })
+        await releaseReservedTickets(user.id, totalReserved)
       }
     }
 

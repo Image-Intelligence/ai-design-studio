@@ -6,16 +6,20 @@ import { requireStoryboardUser, ownRefs } from '@/lib/storyboard-gate'
 import { openShotModels, imageModelOpen, videoModelOpen } from '@/lib/storyboard-access'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
+import { resolveStoryboardTextModel } from '@/lib/prompt-models'
+import { geminiGenerate } from '@/lib/gemini-generate'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { storyboardDraftTickets, geminiUsage } from '@/lib/ai-text-pricing'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
-import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
+import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/draft - plan the board with AI.
  *
- * Body: { mode, boardMode?, framing?, premise?, shots?, targetSeconds?, shotIds?, extendCount?, refs?: string[], scenes?, sceneId? }
+ * Body: { mode, boardMode?, framing?, premise?, shots?, targetSeconds?, shotIds?, extendCount?, refs?: string[], scenes?, sceneId?, textModel? }
+ *   textModel   the Gemini model that plans - an admin's pick from lib/prompt-models
+ *               PROMPT_MODELS; everyone else (and any unknown id) gets 3.7 Flash
  *   framing     'close' | 'waist' | 'knee' | 'full' | 'wide' | 'mix' (default) - how characters are framed, for
  *               the kinds of video with people in them (BOARD_MODES `framing`)
  *   boardMode   what kind of video (lib/storyboard BOARD_MODES: story, trailer,
@@ -47,6 +51,11 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  * `shotIds` picks the shots (empty = all of them); `premise` is the direction
  * ("make it tenser", "the chase ends at the pier"), optional for all but replace.
  *
+ *   audio       true: also fill the AUDIO LANE of the shots it writes (2026-10-19) - each
+ *               shot's voice lines (speaker, words, start) and where a new music cue starts,
+ *               a voice cast per speaker (lib/storyboard AUDIO_PLAN_RULES). Nothing is
+ *               recorded - the lane's Record buttons do that, priced there. Costs a little
+ *               more (storyboardDraftTickets withAudio). Not for Match references.
  * Returns: { title, story, look, shots, scenes, changed } - `shots` is the WHOLE board
  * with the changes merged in (untouched slots come back exactly as stored) and
  * `changed` the ids written. NOT saved: the workspace shows it and autosaves.
@@ -66,7 +75,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 180
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
-const MODEL = 'gemini-3.7-flash'
+// Everyone drafts on the default; an admin may pick another to compare (lib/prompt-models)
 const TIMEOUT_MS = 170_000
 
 async function inlineRef(url: string) {
@@ -219,6 +228,19 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     ? body.preferredVideoModel : null
   const boardScenes = sanitizeScenes(board.scenes)
   const current = orderByScenes(sanitizeShots(board.shots), boardScenes)
+  // The audio lane too (Draft panel "Also fill the audio lane")
+  const withAudio = body.audio === true && mode !== 'refs'
+  // Set once the plan is read: one voice per speaker (the plan's casting, else the board's)
+  let voiceFor: (speaker: string) => string = () => 'Brian'
+  /** A written shot with the plan's lines and music cue (existing recordings kept where the words did not change). */
+  const withAudioOf = <T extends StoryboardShot>(shot: T, raw: any, existing?: StoryboardShot): T => {
+    if (!withAudio || !raw) return shot
+    // No "voiceLines" key at all = the planner left them alone (a polish keeps what was there)
+    if (!Array.isArray(raw?.voiceLines)) return { ...shot, music: cueFromPlan(raw?.musicCue, existing?.music) }
+    const lines = linesFromPlan(raw?.voiceLines, existing?.lines, voiceFor, shot.duration)
+    const music = cueFromPlan(raw?.musicCue, existing?.music)
+    return { ...shot, lines: lines.length ? lines : undefined, music }
+  }
   const wantIds = Array.isArray(body.shotIds) ? (body.shotIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
   // The chosen slots, by position; none chosen = all of them
   let picked = current.map((s, i) => (wantIds.includes(s.id) ? i : -1)).filter(i => i >= 0)
@@ -471,37 +493,38 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     }
   }
   // Suggested assets in every action that writes shots (not Match references, not an outfit pack's fixed outfits)
-  const instruction = [...head, ...task, mode !== 'refs' && !outfitPack ? NEW_ASSETS_RULE : ''].filter(Boolean).join('\n')
+  const audioTask = withAudio ? [
+    'ALSO WRITE THE SOUND - the audio lane that plays under the picture. Add these keys to EVERY shot object you return:',
+    ...AUDIO_PLAN_RULES,
+    `The voices sound like this: ${voiceMenu()}.`,
+    'Write the words to fit the shot\'s pictures and the kind of video; they are recorded later, so make them sound natural spoken aloud.',
+  ] : []
+  const instruction = [...head, ...task, ...audioTask, mode !== 'refs' && !outfitPack ? NEW_ASSETS_RULE : ''].filter(Boolean).join('\n')
 
   // The job's price (by how many shots it writes), charged now - just before
   // Gemini runs; any failure from here on is refunded by POST
   const jobShots = mode === 'replace' ? count : mode === 'extend' || mode === 'scene' ? extendCount : picked.length
-  const tickets = storyboardDraftTickets(mode, jobShots, { withImages: outfitPack && mode === 'replace' && outfits.length > 0 })
+  const tickets = storyboardDraftTickets(mode, jobShots, { withImages: outfitPack && mode === 'replace' && outfits.length > 0, withAudio })
   // Today's free AI actions first, then tickets (lib/prompt-enhance)
   const paid = await chargeAiText(user, tickets)
   if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
   if (paid.newBalance >= 0) { bill.user = { id: user.id, email: user.email }; bill.tickets = tickets; bill.balance = paid.newBalance }
 
-  const call = async (thinking: boolean) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-    body: JSON.stringify({
-      // The outfit photos come first, each under its name; the instruction after
-      contents: [{ role: 'user', parts: outfitPack && mode === 'replace' && outfits.length ? [...parts, { text: instruction }] : [{ text: instruction }, ...parts] }],
-      // A pack or a board in scenes can run to 30+ shots: room for all of them
-      generationConfig: { temperature: mode === 'polish' ? 0.6 : 0.9, maxOutputTokens: count > 16 ? 32768 : 16384, responseMimeType: 'application/json', ...(thinking ? { thinkingConfig: { thinkingLevel: 'low' } } : {}) },
-    }),
-  })
+  const textModel = resolveStoryboardTextModel(body.textModel, user.isAdmin)
+  // lib/gemini-generate: either Gemini API, and a 400 on thinkingLevel (2.5 models) retried without it
+  const call = () => geminiGenerate(textModel, {
+    // The outfit photos come first, each under its name; the instruction after
+    contents: [{ role: 'user', parts: outfitPack && mode === 'replace' && outfits.length ? [...parts, { text: instruction }] : [{ text: instruction }, ...parts] }],
+    // A pack or a board in scenes can run to 30+ shots: room for all of them
+    generationConfig: { temperature: mode === 'polish' ? 0.6 : 0.9, maxOutputTokens: count > 16 ? 32768 : 16384, responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } },
+  }, { signal: AbortSignal.timeout(TIMEOUT_MS) })
   try {
-    let res = await call(true)
-    // thinkingConfig is a Gemini 3.x field; fall back to a plain call if it is rejected
-    if (res.status === 400) res = await call(false)
+    const res = await call()
     if (!res.ok) return jsonPrivate({ error: `Drafting failed (${res.status})` }, { status: 502 })
     const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[] }
     {
       const u = geminiUsage(data)
-      console.log(`[ai-usage] storyboard-draft ${mode} shots=${jobShots} in=${u.in} out=${u.out} tickets=${tickets}`)
+      console.log(`[ai-usage] storyboard-draft ${mode} model=${textModel} shots=${jobShots} in=${u.in} out=${u.out} tickets=${tickets}`)
     }
     const text = (data.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')
     let plan: any
@@ -523,6 +546,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
         if (suggested.length >= 6) break
       }
     }
+    voiceFor = voicePicker(plan?.voices, current)
     const story = typeof plan?.story === 'string' && plan.story.trim() ? plan.story.slice(0, 8000) : board.story
     const look = typeof plan?.look === 'string' && plan.look.trim() ? plan.look.slice(0, 2000) : board.look
 
@@ -543,7 +567,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
         })
         const rawOwn = Array.isArray(rc?.shots) ? rc.shots.slice(0, outfitPack ? perOutfit : count) : []
         // An outfit's shots stay on their scene's outfit (automatic refs) - never an empty list
-        const own = sanitizeShots(rawOwn).map((s, j) => (outfitPack ? { ...s, sceneId: c.id } : withRefs({ ...s, sceneId: c.id }, rawOwn[j])))
+        const own = sanitizeShots(rawOwn).map((s, j) => withAudioOf(outfitPack ? { ...s, sceneId: c.id } : withRefs({ ...s, sceneId: c.id }, rawOwn[j]), rawOwn[j]))
         if (!own.length) return
         scenes.push(c)
         shots.push(...own)
@@ -562,7 +586,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
       const rawNew = Array.isArray(plan?.shots) ? plan.shots.slice(0, extendCount) : []
       const fresh = sanitizeShots(rawNew).map((s, k) => {
         const pickedModel = plannedImageModel(rawNew[k])
-        return withRefs(newShot({ ...s, id: undefined, sceneId: target.id, imageModel: pickedModel ?? base?.imageModel ?? s.imageModel, stillUrl: null, video: null, stills: [], editOf: editTarget(rawNew[k], current.length, n => current[n - 1]?.id) }), rawNew[k])
+        return withAudioOf(withRefs(newShot({ ...s, id: undefined, sceneId: target.id, imageModel: pickedModel ?? base?.imageModel ?? s.imageModel, stillUrl: null, video: null, stills: [], editOf: editTarget(rawNew[k], current.length, n => current[n - 1]?.id) }), rawNew[k]), rawNew[k])
       })
       if (!fresh.length) return jsonPrivate({ error: 'The model returned no new shots - try again' }, { status: 502 })
       // A scene that had no name yet takes the one the planner gave it
@@ -579,7 +603,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     if (mode === 'replace') {
       // Exactly the count asked for, and lengths that add up to the target
       const rawShots = Array.isArray(plan?.shots) ? plan.shots.slice(0, count) : []
-      const made = fitDurations(sanitizeShots(rawShots).map((s, k) => withRefs(s, rawShots[k])), targetSeconds)
+      const made = fitDurations(sanitizeShots(rawShots).map((s, k) => withRefs(s, rawShots[k])), targetSeconds).map((s, k) => withAudioOf(s, rawShots[k]))
       const shots = made.map((x, k) => ({ ...x, editOf: editTarget(rawShots[k], k, n => made[n - 1]?.id) }))
       if (!shots.length) return jsonPrivate({ error: 'The model returned no shots - try again' }, { status: 502 })
       // A new board planned as one run: its shots are Scene 1 (the old scenes go with the old shots)
@@ -595,7 +619,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
         // The planner's still model where it named one; else carry on the anchor's
         const picked = plannedImageModel(rawNew[k])
         // New shots join the anchor's scene
-        return withRefs(newShot({ ...s, id: undefined, sceneId: base.sceneId, imageModel: picked ?? base.imageModel, imageQuality: picked && picked !== base.imageModel ? '' : base.imageQuality, imageOptions: picked && picked !== base.imageModel ? undefined : base.imageOptions, stillUrl: null, video: null, stills: [], editOf: editTarget(rawNew[k], anchor + 1, n => current[n - 1]?.id) }), rawNew[k])
+        return withAudioOf(withRefs(newShot({ ...s, id: undefined, sceneId: base.sceneId, imageModel: picked ?? base.imageModel, imageQuality: picked && picked !== base.imageModel ? '' : base.imageQuality, imageOptions: picked && picked !== base.imageModel ? undefined : base.imageOptions, stillUrl: null, video: null, stills: [], editOf: editTarget(rawNew[k], anchor + 1, n => current[n - 1]?.id) }), rawNew[k]), rawNew[k])
       })
       if (!fresh.length) return jsonPrivate({ error: 'The model returned no new shots - try again' }, { status: 502 })
       const shots = [...current.slice(0, anchor + 1), ...fresh, ...current.slice(anchor + 1)]
@@ -634,7 +658,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
       const w = sanitizeShots([raw])[0]
       if (!w) return s
       changed.push(s.id)
-      return {
+      return withAudioOf({
         ...s,
         title: w.title || s.title, description: w.description || s.description,
         imagePrompt: unlabel(w.imagePrompt || s.imagePrompt, raw), videoPrompt: w.videoPrompt || s.videoPrompt,
@@ -648,7 +672,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
         // A re-imagined slot shows something new: its old still stays a take
         // (the slot's versions) but is no longer the one shown
         ...(mode === 'regenerate' ? { stillUrl: null } : {}),
-      }
+      }, raw, s)
     })
     if (!changed.length) return jsonPrivate({ error: 'The model returned nothing usable - try again' }, { status: 502 })
     return reply({ title: board.title, story: mode === 'polish' && picked.length === current.length ? story : board.story, look: mode === 'polish' && picked.length === current.length ? look : board.look, shots, scenes: boardScenes, changed })

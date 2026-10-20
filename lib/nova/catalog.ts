@@ -1,0 +1,135 @@
+/**
+ * Nova Studio - what Nova may generate with (server only).
+ *
+ * The catalog is only what Nova is TOLD about; the site's own routes stay the
+ * authority on who may run what (/api/generate and /api/video/generate refuse
+ * an admin-only model, /api/audio/generate and submitThreeD check their own
+ * flags) and on the price. So a model wrongly listed here fails cleanly, it
+ * cannot leak.
+ *
+ * Left out on purpose:
+ *  - the image models the hub runs through the raw Gemini API (`geminiApi`):
+ *    that path skips /api/generate's gate and billing;
+ *  - audio models that need an uploaded recording (voice changers, cloning) -
+ *    Nova has no upload of its own, and cloning needs the user's consent;
+ *  - 3D tools that work on an existing mesh (Nova makes models, it does not
+ *    take files in).
+ */
+import { usableCreateModels, computeCreateCost, resolveCreateSettings, type ChatCreateModel, type CreateField } from '@/lib/chat-hub-models'
+import { getFalImageModelSpec } from '@/lib/fal-image-models'
+import { imageModelOpen } from '@/lib/storyboard-access'
+import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
+import { AUDIO_STUDIO_MODELS, audioTicketCost, type AudioStudioModel } from '@/lib/audio-studio'
+import { THREED_TOOLS, toolTickets, type ThreeDTool } from '@/lib/threed/catalog'
+import { modelNote } from '@/lib/nova/model-notes'
+
+export type NovaKind = 'image' | 'video' | 'audio' | '3d'
+
+/*
+ * Settings for image models that have none in the shared catalog (2026-10-18).
+ *
+ * The catalog generated from AI_MODELS (lib/chat-image-catalog) carries no
+ * fields, so Nova could not ask NanoBanana 2.1 - the site's main model - for a
+ * square, got its default shape, judged it wrong and paid for a second image
+ * on another model. Every image model takes the portal's aspect + quality
+ * (/api/generate maps both per model), so they are filled in here: the shapes
+ * the model's own fal spec lists, else the portal's common set.
+ */
+const COMMON_ASPECTS = ['1:1', '4:5', '3:4', '2:3', '9:16', '5:4', '4:3', '3:2', '16:9', '21:9']
+function withImageFields(m: ChatCreateModel): ChatCreateModel {
+  if (m.fields?.some(f => f.key === 'aspect')) return m
+  const spec = getFalImageModelSpec(m.id)
+  const listed = (spec?.aspectRatios ?? []).filter(a => /^\d+:\d+$/.test(a))
+  const aspects = listed.length ? listed : COMMON_ASPECTS
+  return {
+    ...m,
+    fields: [
+      ...(m.fields ?? []),
+      { key: 'aspect', label: 'AR', options: aspects, def: aspects.includes('1:1') ? '1:1' : aspects[0] },
+      ...(m.fields?.some(f => f.key === 'quality') ? [] : [{ key: 'quality', label: 'Quality', options: ['1k', '2k', '4k'], def: '2k' }]),
+    ] as CreateField[],
+  }
+}
+
+/** "-edit" twins are picked by the site itself when references are attached - listing them twice only costs context. */
+const isEditTwin = (id: string) => id.endsWith('-edit') && !!getFalImageModelSpec(id.slice(0, -5))?.editVariant
+
+export function novaImageModels(isAdmin: boolean): ChatCreateModel[] {
+  return usableCreateModels(isAdmin).filter(m => m.kind === 'image' && !m.disabled && !m.geminiApi && !isEditTwin(m.id) && imageModelOpen(m.id, isAdmin)).map(withImageFields)
+}
+/*
+ * Video TOOLS that work on an existing clip (upscale, edit, extend, relight,
+ * subtitles, dubbing, lip sync...): generate_video only sends pictures, so they
+ * would fail - and listing ~40 of them only costs context. Left out until Nova
+ * has a video-in tool of its own.
+ */
+const VIDEO_IN_TOOL = /upscale|vsr|seedvr|topaz|modify|reframe|-edit|extend|relight|subtitles|translate|sfx|removal|depth|insert|recast|lipsync|animate-replace|dreamactor|lucy|camera|music-video|omnihuman|interpolate|deblur|sdr-to-hdr/
+
+export function novaVideoModels(isAdmin: boolean): ChatCreateModel[] {
+  return usableCreateModels(isAdmin).filter(m => m.kind === 'video' && !m.disabled && !VIDEO_IN_TOOL.test(m.id) && (isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(m.id)))
+}
+export function novaAudioModels(isAdmin: boolean): AudioStudioModel[] {
+  return AUDIO_STUDIO_MODELS.filter(m => (isAdmin || !m.admin) && !m.hidden && !m.fromSong && !m.audioIn?.required && !m.outputVideo)
+}
+export function novaThreeDTools(isAdmin: boolean): ThreeDTool[] {
+  return THREED_TOOLS.filter(t => (isAdmin || !t.admin) && !t.needs.mesh)
+}
+
+const clip = (s: string | undefined, n: number) => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
+
+/**
+ * The catalog of one kind, for the model (asked per kind, so the system prompt
+ * stays small). Without `search` it is a COMPACT list - id, price, refs and a
+ * one-line strength - because whatever a tool returns is re-sent on every
+ * later step of the turn: the full listing with every setting was ~7k tokens
+ * per kind. With `search`, the matching models (at most 6) come back in full,
+ * settings included.
+ */
+export function describeModels(kind: NovaKind, isAdmin: boolean, search?: string): string {
+  const q = (search ?? '').trim().toLowerCase()
+  const hit = (...xs: (string | undefined)[]) => !q || xs.some(x => (x ?? '').toLowerCase().includes(q))
+  const full = !!q
+  const cap = full ? 6 : 200
+  if (kind === 'image' || kind === 'video') {
+    const list = (kind === 'image' ? novaImageModels(isAdmin) : novaVideoModels(isAdmin)).filter(m => hit(m.id, m.label, m.group)).slice(0, cap)
+    const lines = list.map(m => {
+      const refs = m.needsRef ? `needs a start image${m.endFrame ? ' (+ end frame)' : ''}` : m.maxRefs ? `${m.maxRefs} refs${m.endFrame ? ', 2nd = end frame' : ''}` : 'no refs'
+      if (!full) return `- ${m.id} · ${m.ticketCost}t · ${refs} · ${clip(m.strengths, 70)}`
+      const fields = (m.fields ?? []).map(f => `${f.key}: ${f.options.join('|')} (default ${f.def})`).join('; ')
+      const note = modelNote(m.id)
+      return `- ${m.id} "${m.label}" · ${m.ticketCost} tickets at defaults · ${refs}${fields ? ` · settings {${fields}}` : ''} · ${clip(m.strengths, 400)}${note ? `
+  STUDIO NOTES: ${note}` : ''}`
+    })
+    if (!full) lines.push("(t = tickets at default settings. Call browse_models with search=<id> for a model's exact settings before using one you have not checked.)")
+    return lines.join('\n')
+  }
+  if (kind === 'audio') {
+    return novaAudioModels(isAdmin).filter(m => hit(m.id, m.name, m.group)).slice(0, cap).map(m => {
+      const price = audioTicketCost(m, { chars: 300, seconds: m.duration?.default ?? 30 })
+      if (!full) return `- ${m.id} [${m.group}] · ~${price}t · ${clip(m.blurb, 70)}`
+      const bits = [
+        m.text ? `text: ${m.text.label}${m.text.required ? ' (required)' : ''}, max ${m.text.max} chars` : null,
+        m.lyrics ? `lyrics${m.lyrics.required ? ' (required)' : ''}` : null,
+        m.style ? `style: ${m.style.label}` : null,
+        m.voices ? `voice: ${m.voices.options.slice(0, 16).join('|')} (default ${m.voices.default})` : null,
+        m.duration ? `duration ${m.duration.min}-${m.duration.max}s (default ${m.duration.default})` : null,
+        m.instrumental ? 'instrumental: true|false' : null,
+      ].filter(Boolean).join('; ')
+      return `- ${m.id} "${m.name}" [${m.group}] · ~${price} tickets typical · ${bits} · ${clip(m.blurb, 200)}${modelNote(m.id) ? `
+  STUDIO NOTES: ${modelNote(m.id)}` : ''}`
+    }).join('\n')
+  }
+  return novaThreeDTools(isAdmin).filter(t => hit(t.id, t.label, t.family)).slice(0, cap).map(t => {
+    const imgs = t.needs.images ? `${t.needs.images.min}-${t.needs.images.max} images` : 'no images'
+    const price = toolTickets(t, {}, t.needs.images?.min ?? 0)
+    if (!full) return `- ${t.id} [${t.stage}] · ~${price}t · ${imgs} · ${clip(t.bestFor, 70)}`
+    const ctrls = t.controls.filter(c => c.kind === 'select' && c.options?.length).map(c => `${c.key}: ${c.options!.map(o => o.value).join('|')}`).join('; ')
+    return `- ${t.id} "${t.label}" [${t.stage}] · ~${price} tickets · prompt ${t.needs.prompt ?? 'none'} · ${imgs} · ~${t.minutes} min · ${clip(t.bestFor, 200)}${ctrls ? ` · options {${ctrls}}` : ''}`
+  }).join('\n')
+}
+
+/** The estimated price of an image or video run, before the site route charges the real one. */
+export function estimateCreate(m: ChatCreateModel, settings: unknown): { settings: ReturnType<typeof resolveCreateSettings>; tickets: number } {
+  const s = resolveCreateSettings(m, settings)
+  return { settings: s, tickets: computeCreateCost(m, s) }
+}

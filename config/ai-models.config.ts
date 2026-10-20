@@ -606,6 +606,21 @@ export const AI_MODELS: AIModel[] = [
     isAvailable: true,
     provider: 'fal' as const,
   })),
+  // MOSS Image (2026-10-18, ADMIN ONLY while under test): $0.05 per MP of
+  // output, priced per request from the size sent (lib/ticket-pricing
+  // mossTicketCost) - this is the Square HD (1024x1024) figure
+  {
+    id: 'moss-image',
+    name: 'fal-ai/moss-image',
+    displayName: 'MOSS Image',
+    description: 'MOSS Image text-to-image - Chinese and English lettering, structured layouts',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
   // Ideogram 4.5 (2026-10-02) - fal per image by quality tier, any size:
   // low $0.03 / medium $0.06 / high $0.22 -> 1 / 2 / 6 tickets (getTicketCost
   // prices by quality; these are the medium defaults)

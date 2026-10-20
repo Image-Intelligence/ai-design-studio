@@ -1,3 +1,4 @@
+import { removeTicketsFloored } from '@/lib/ticket-gate';
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 
@@ -34,15 +35,13 @@ export async function POST(req: NextRequest) {
     const currentTicket = await prisma.ticket.findUnique({ where: { userId: subscription.userId } });
     const previousBalance = currentTicket?.balance ?? 0;
 
-    // Don't allow balance to go below 0
-    const deduct      = Math.min(amount, previousBalance);
-    const newBalance  = previousBalance - deduct;
-
-    const updatedTicket = await prisma.ticket.upsert({
-      where:  { userId: subscription.userId },
-      create: { userId: subscription.userId, balance: 0, totalBought: 0 },
-      update: { balance: { decrement: deduct } },
-    });
+    // Never below 0: one floored statement (it used to read, then decrement - a
+    // spend in between could take the balance negative)
+    if (!currentTicket) await prisma.ticket.create({ data: { userId: subscription.userId, balance: 0, totalBought: 0 } });
+    const removed     = await removeTicketsFloored(subscription.userId, amount);
+    const deduct      = removed.removed;
+    const newBalance  = removed.after;
+    const updatedTicket = { balance: removed.after };
 
     const transaction = await prisma.subscriptionTransaction.create({
       data: {

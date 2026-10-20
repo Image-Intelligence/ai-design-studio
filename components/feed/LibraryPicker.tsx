@@ -18,9 +18,12 @@ import { Boxes, Check, ChevronLeft, Folder, Images, Loader2, Search, X } from "l
  * canonical), or [] when closed. No props threaded through the panels.
  */
 type Folder = { id: number; name: string; parentId: number | null }
-type Pic = { id: string; url: string; thumb: string }
+type Pic = { id: string; url: string; thumb: string; kind?: "video" | "audio" }
 type Asset = { id: number; name: string; kind: string; refs: { id: string; url: string; thumb?: string | null }[] }
-type Request = { max: number; title?: string; resolve: (urls: string[]) => void }
+/** `media: "all"` (Nova Studio's references, 2026-10-19) lists videos and audio too; the default is pictures only. */
+type Request = { max: number; title?: string; media?: "image" | "all"; resolve: (urls: string[]) => void; resolveItems?: (items: PickedItem[]) => void }
+/** A picked picture with its My Generations row id (null for an asset's own uploaded picture). */
+export type PickedItem = { url: string; thumb: string; generationId: number | null }
 
 let setRequestGlobal: ((r: Request | null) => void) | null = null
 /** Open the picker; resolves with up to `max` picture links ([] if closed). */
@@ -31,6 +34,19 @@ export function openLibraryPicker(o: { max?: number; title?: string } = {}): Pro
   })
 }
 
+/**
+ * The same picker, answering with each picture's generation id as well
+ * (2026-10-18, Nova Studio - its chat refers to the library by id). An asset's
+ * pictures are generations when they were added from My Generations; one
+ * uploaded straight into an asset has no row, so its id is null.
+ */
+export function openLibraryPickerItems(o: { max?: number; title?: string; media?: "image" | "all" } = {}): Promise<PickedItem[]> {
+  return new Promise(resolve => {
+    if (!setRequestGlobal) { resolve([]); return }
+    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, resolve: () => {}, resolveItems: resolve })
+  })
+}
+
 const PAGE = 48
 const thumbOf = (img: any): string => img.thumbnailUrl || img.videoMetadata?.thumbnailUrl || `/api/images/${img.id}?thumb=1`
 
@@ -38,10 +54,17 @@ export function LibraryPickerHost() {
   const [req, setReq] = useState<Request | null>(null)
   useEffect(() => { setRequestGlobal = setReq; return () => { setRequestGlobal = null } }, [])
   if (!req || typeof document === "undefined") return null
-  return createPortal(<Picker req={req} close={urls => { req.resolve(urls); setReq(null) }} />, document.body)
+  return createPortal(<Picker req={req} close={(urls, items) => { req.resolve(urls); req.resolveItems?.(items); setReq(null) }} />, document.body)
 }
 
-function Picker({ req, close }: { req: Request; close: (urls: string[]) => void }) {
+function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[], items: PickedItem[]) => void }) {
+  // Every tile shown so far, by url - what a picked url's id and thumbnail are
+  const seen = useMemo(() => new Map<string, Pic>(), [])
+  const close = (urls: string[]) => closeUrls(urls, urls.map(url => {
+    const p = seen.get(url)
+    const n = p && /^\d+$/.test(p.id) ? Number(p.id) : null
+    return { url, thumb: p?.thumb ?? url, generationId: n }
+  }))
   const [tab, setTab] = useState<"gens" | "assets">("gens")
   const [folders, setFolders] = useState<Folder[]>([])
   const [folderId, setFolderId] = useState<number | "root" | "all">("all")
@@ -67,14 +90,20 @@ function Picker({ req, close }: { req: Request; close: (urls: string[]) => void 
     setLoading(true)
     try {
       const fq = folderId === "all" ? "" : `&folderId=${folderId}`
-      const r = await fetch(`/api/my-images?type=image&page=${p}&limit=${PAGE}&count=0${fq}`)
+      const r = await fetch(`/api/my-images?${req.media === "all" ? "" : "type=image&"}page=${p}&limit=${PAGE}&count=0${fq}`)
       const d = r.ok ? await r.json() : null
-      const rows: Pic[] = (d?.images ?? []).map((img: any) => ({ id: String(img.id), url: img.imageUrl, thumb: thumbOf(img) }))
+      const kindOf = (img: any): Pic["kind"] => {
+        const u = String(img.imageUrl ?? "").split("?")[0].toLowerCase()
+        if (img.videoMetadata?.isAudio || String(img.model ?? "").startsWith("audio:") || /\.(mp3|wav|flac|m4a|aac|ogg|opus)$/.test(u)) return "audio"
+        if (img.videoMetadata?.isVideo || /\.(mp4|webm|mov)$/.test(u)) return "video"
+        return undefined
+      }
+      const rows: Pic[] = (d?.images ?? []).map((img: any) => ({ id: String(img.id), url: img.imageUrl, thumb: thumbOf(img), kind: kindOf(img) }))
       setPics(prev => (reset ? rows : [...prev, ...rows]))
       setMore(rows.length === PAGE)
       setPage(p)
     } finally { setLoading(false) }
-  }, [folderId])
+  }, [folderId, req.media])
   useEffect(() => { if (tab === "gens") load(1, true) }, [tab, folderId, load])
 
   const toggle = (url: string) => setPicked(prev => {
@@ -97,12 +126,16 @@ function Picker({ req, close }: { req: Request; close: (urls: string[]) => void 
   const shown = q.trim() ? tree.filter(t => t.f.name.toLowerCase().includes(q.trim().toLowerCase())).map(t => ({ ...t, depth: 0 })) : tree
 
   const tile = (p: Pic) => {
+    seen.set(p.url, p)
     const on = picked.includes(p.url)
     return (
       <button key={p.id} onClick={() => toggle(p.url)}
         className={`relative aspect-square rounded-lg overflow-hidden bg-slate-800 border transition-all ${on ? "border-white ring-2 ring-white/60" : "border-white/10 hover:border-white/30"}`}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={p.thumb} alt="" loading="lazy" className="w-full h-full object-cover" />
+        {p.kind === "audio"
+          ? <span className="w-full h-full flex items-center justify-center bg-gradient-to-br from-amber-500/20 to-slate-900 text-[10px] font-bold uppercase tracking-wider text-amber-200">Audio</span>
+          : <img src={p.thumb} alt="" loading="lazy" className="w-full h-full object-cover" />}
+        {p.kind === "video" && <span className="absolute bottom-1.5 left-1.5 px-1 py-px rounded bg-black/70 text-[9px] font-bold uppercase tracking-wider text-white">Video</span>}
         {on && (
           <span className="absolute top-1.5 right-1.5 min-w-5 h-5 px-1 rounded-full bg-white text-black text-[10px] font-bold flex items-center justify-center">
             {req.max > 1 ? picked.indexOf(p.url) + 1 : <Check size={12} />}

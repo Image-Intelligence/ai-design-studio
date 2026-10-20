@@ -28,14 +28,17 @@
 export type DraftMode = 'replace' | 'polish' | 'regenerate' | 'extend' | 'scene' | 'refs'
 
 /** Draft with AI. `shots` = shots written (replace), shots picked (polish / regenerate / refs) or new shots (extend / scene). */
-export function storyboardDraftTickets(mode: DraftMode, shots: number, opts: { withImages?: boolean } = {}): number {
+export function storyboardDraftTickets(mode: DraftMode, shots: number, opts: { withImages?: boolean; withAudio?: boolean } = {}): number {
   const n = Math.max(1, Math.round(shots) || 1)
   const base =
     mode === 'replace' ? 2 + Math.ceil(n / 5)
     : mode === 'refs' ? 1 + Math.floor(n / 20)
     : 1 + Math.ceil(n / 5)
   // An outfit pack reads the wardrobe photos too (image tokens)
-  return base + (opts.withImages ? 1 : 0)
+  // Filling the audio lane too (2026-10-19): the lines, cues and voices add
+  // roughly a quarter to the plan's output - 1 ticket per started 8 shots.
+  // Recording the lines and cues is priced separately, on the lane.
+  return base + (opts.withImages ? 1 : 0) + (opts.withAudio && mode !== 'refs' ? Math.max(1, Math.ceil(n / 8)) : 0)
 }
 
 /** "Edit with AI" on one shot. */
