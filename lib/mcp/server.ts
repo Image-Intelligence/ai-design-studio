@@ -12,8 +12,10 @@
 import { TOOLS, callTool, type ToolCtx } from '@/lib/mcp/tools'
 import { WIDGET_URI_MCP_APPS, WIDGET_URI_OPENAI, mediaDomains, widgetHtml } from '@/lib/mcp/widget'
 
-const SUPPORTED_VERSIONS = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
+export const SUPPORTED_VERSIONS = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 const LATEST = SUPPORTED_VERSIONS[0]
+const SERVER_INFO = { name: 'ai-design-studio', title: 'AI Design Studio', version: '1.0.0' }
+const CAPABILITIES = { tools: { listChanged: false }, resources: { listChanged: false } }
 
 export type RpcRequest = { jsonrpc: '2.0'; id?: string | number | null; method: string; params?: Record<string, any> }
 export type RpcResponse = { jsonrpc: '2.0'; id: string | number | null; result?: unknown; error?: { code: number; message: string; data?: unknown } }
@@ -28,13 +30,21 @@ const INSTRUCTIONS = [
   '- The site\'s content rules apply to every request: no sexual content, nothing harmful involving minors, no real people\'s likeness without consent.',
 ].join('\n')
 
+/** The legacy handshake's answer (clients before 2026-07-28 send `initialize`). */
 function serverInfo(version: string) {
-  return {
-    protocolVersion: version,
-    capabilities: { tools: { listChanged: false }, resources: { listChanged: false } },
-    serverInfo: { name: 'ai-design-studio', title: 'AI Design Studio', version: '1.0.0' },
-    instructions: INSTRUCTIONS,
-  }
+  return { protocolVersion: version, capabilities: CAPABILITIES, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS }
+}
+
+/**
+ * server/discover (MCP 2026-07-28, SEP-2575): the stateless replacement for
+ * initialize. Its result is { supportedVersions, capabilities, instructions }
+ * with the server's identity in _meta - the first build answered it in the
+ * initialize shape (no supportedVersions), and ChatGPT reported "discovery
+ * failed" right after signing in (2026-10-20). serverInfo is also kept at the
+ * top level for clients built on the draft that still read it there.
+ */
+function discoverResult() {
+  return { supportedVersions: SUPPORTED_VERSIONS, capabilities: CAPABILITIES, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS, _meta: { 'io.modelcontextprotocol/serverInfo': SERVER_INFO } }
 }
 
 function resources() {
@@ -74,7 +84,7 @@ export async function handleRpc(msg: RpcRequest, ctx: ToolCtx | null, origin: st
       return ok(serverInfo(SUPPORTED_VERSIONS.includes(asked) ? asked : LATEST))
     }
     case 'server/discover':
-      return ok(serverInfo(LATEST))
+      return ok(discoverResult())
     case 'ping':
       return ok({})
     case 'tools/list':

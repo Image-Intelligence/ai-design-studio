@@ -2,7 +2,7 @@ import prisma from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api-key-auth'
 import { mcpResource, siteOrigin } from '@/lib/mcp/oauth'
 import { CORS, preflight } from '@/lib/mcp/http'
-import { handleRpc, type RpcRequest, type RpcResponse } from '@/lib/mcp/server'
+import { SUPPORTED_VERSIONS, handleRpc, type RpcRequest, type RpcResponse } from '@/lib/mcp/server'
 import type { ToolCtx } from '@/lib/mcp/tools'
 
 /**
@@ -56,10 +56,25 @@ export async function POST(req: Request) {
   if (!msgs.length || msgs.some(m => !m || typeof m !== 'object' || typeof m.method !== 'string')) {
     return Response.json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } }, { status: 400, headers: CORS })
   }
+  /*
+   * The protocol version (2026-07-28: an MCP-Protocol-Version header and the
+   * same value in each request's _meta). One this server does not speak gets
+   * the spec's -32022 with the versions it does, and the client retries with
+   * one of them (or falls back to initialize).
+   */
+  const asked = req.headers.get('mcp-protocol-version') ?? (msgs[0]?.params?._meta?.['io.modelcontextprotocol/protocolVersion'] as string | undefined)
+  if (asked && !SUPPORTED_VERSIONS.includes(asked) && !msgs.some(m => m.method === 'initialize')) {
+    console.log(`[mcp] unsupported protocol version ${asked} (${msgs.map(m => m.method).join(',')})`)
+    return Response.json({ jsonrpc: '2.0', id: msgs[0]?.id ?? null, error: { code: -32022, message: 'Unsupported protocol version', data: { supported: SUPPORTED_VERSIONS, requested: asked } } }, { status: 400, headers: CORS })
+  }
   const answers = (await Promise.all(msgs.map(m => handleRpc(m, ctx, origin)))).filter((a): a is RpcResponse => !!a)
+  // One line per call in the function log (methods and outcome only - no prompts, no tokens)
+  console.log(`[mcp] ${ctx.app} v=${asked ?? '-'} ${msgs.map(m => m.method === 'tools/call' ? `tools/call:${String(m.params?.name ?? '')}` : m.method).join(',')} -> ${answers.map(a => (a.error ? `err${a.error.code}` : 'ok')).join(',') || '202'}`)
   // Only notifications: accepted, nothing to say
   if (!answers.length) return new Response(null, { status: 202, headers: CORS })
-  return new Response(JSON.stringify(batch ? answers : answers[0]), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...CORS } })
+  // A method this server does not have: 404 as well as -32601 (2026-07-28)
+  const status = !batch && answers[0].error?.code === -32601 ? 404 : 200
+  return new Response(JSON.stringify(batch ? answers : answers[0]), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...CORS } })
 }
 
 /** No server-to-client stream: everything is answered in the POST. */
