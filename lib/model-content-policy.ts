@@ -81,6 +81,10 @@ const POLICY: Record<string, ModelContentPolicy> = {
     // admin turns the safety toggle off.
     note: 'safety_tolerance 0-4; we send 4 for admins with the safety toggle off.',
   },
+  'flux-3-max': {
+    tier: 'unknown',
+    note: 'No safety field in its schema: fal\'s own filter applies as is.',
+  },
   'minimax-h3-max': {
     tier: 'tunable',
     note: 'Exposes a safety checker toggle that we honour.',

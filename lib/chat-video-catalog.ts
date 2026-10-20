@@ -50,6 +50,7 @@ const REFS: Record<string, { maxRefs: number; needsRef?: boolean; endFrame?: boo
   'wan-3.0-prime':       { maxRefs: 1, endFrame: true },
   'minimax-h3-max':      { maxRefs: 2, endFrame: true },
   'flux-3':              { maxRefs: 10, endFrame: true },
+  'flux-3-max':          { maxRefs: 10, endFrame: true },
   'ltx-2.5-pro':         { maxRefs: 2, endFrame: true },
   'ltx-2.5-fast':        { maxRefs: 2, endFrame: true },
   'happy-horse':         { maxRefs: 1, needsRef: true },

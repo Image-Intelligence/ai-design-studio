@@ -192,6 +192,8 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "mai-image-2.5-pro",    apiId: "mai-image-2.5-pro",        name: "MAI Image 2.5 Pro",   aspectRatios: ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "grok-imagine-2",       apiId: "grok-imagine-2",           name: "Grok Imagine 2.0",    aspectRatios: ["2:1", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "1:2"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 4, isFal: true, maxImages: 4 },
   { id: "meta-muse",            apiId: "meta-muse",                name: "Meta Muse",           aspectRatios: ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"], supportsQuality: false, maxReferenceImages: 10, isFal: true, maxImages: 4 },
+  // Bria Fibo 2.0 (2026-10-20): ~1MP, no resolution choice; references -> its edit (1-4 pictures)
+  { id: "bria-fibo-2",          apiId: "bria-fibo-2",              name: "Bria Fibo 2.0",       aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], supportsQuality: false, maxReferenceImages: 4, isFal: true, maxImages: 4 },
   { id: "bria-fibo",            apiId: "bria-fibo",                name: "Bria Fibo 1.5",       aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   // Ideogram 4.5: one entry; references switch it to the edit endpoint (first = the source)
   { id: "ideogram-4.5",         apiId: "ideogram-4.5",             name: "Ideogram v4.5",       aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "2:1", "1:2"], supportsQuality: true, qualityOptions: ["low", "medium", "high"], maxReferenceImages: 5, isFal: true, maxImages: 4 },
@@ -1115,6 +1117,23 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     supportsVideoExtend: true,
   },
   {
+    // FLUX 3 Max (2026-10-20) — blackforestlabs/flux-3-max/*: fal's post-trained
+    // FLUX 3 Video (stronger prompt adherence, faster). Three endpoints, chosen
+    // by the inputs: text / a start image (+ an optional end frame) / several
+    // references -> keyframes. No extend. Native audio toggle.
+    id: "flux-3-max",
+    name: "Flux 3 Max",
+    durations: ["5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20"],
+    resolutions: ["720p", "1080p"],
+    aspectRatios: ["auto","21:9","2:1","16:9","4:3","1:1","3:4","9:16"],
+    supportsEndFrame: true,
+    audioType: "toggle",
+    textToVideo: true,
+    // Unified refs panel, pictures only (VIDEO_UI_OVERRIDES refLimits): one picture -> start
+    // (+ end frame), several -> keyframes across the clip
+    supportsReferenceVideo: true,
+  },
+  {
     // ADMIN ONLY — alibaba/wan-3.0/{text,image,reference}-to-video.
     // Native audio, 480p–1080p, "adaptive" aspect, optional end frame, and a
     // reference endpoint that takes images + videos + audio.
@@ -1570,6 +1589,8 @@ const VIDEO_UI_OVERRIDES: Record<string, Partial<VideoModelConfig>> = {
   // Its edit endpoint refuses every prompt (the route says so) - videos go to references instead
   "gemini-omni-1.1": { supportsVideoExtend: false, refLimits: { images: 9, videos: 3, audios: 0 } },
   "flux-3": { refLimits: { images: 9, videos: 1, audios: 0 } },
+  // Keyframes: up to 10 pictures, no video (it has no extend)
+  "flux-3-max": { refLimits: { images: 10, videos: 0, audios: 0 } },
   "seedance-2.0-mini": { refLimits: { images: 9, videos: 0, audios: 0 } },
   "kling-o3-pro": { refLimits: { images: 4, videos: 0, audios: 0 } },
   "kling-o3-4k": { refLimits: { images: 4, videos: 0, audios: 0 } },
@@ -1634,6 +1655,7 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "moss-image":          "$",
   "krea-3-realtime":     "$$$",
   "bria-fibo-expand":    "$",
+  "bria-fibo-2":         "$",
   "bria-guided-remove-bg": "$",
   "flux-1-dev":          "$$",
   "kling-v3-image":      "$",
@@ -1777,6 +1799,7 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "marey-motion-transfer": "$$$+",
   "marey-pose-transfer": "$$$+",
   "flux-3":             "$$$",
+  "flux-3-max":         "$$$",
   "flux-1-dev":         "$$",
   "z-image-base":       "$$",
   "z-image-turbo":      "$",
@@ -1899,7 +1922,7 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Pixelcut",          type: "product photography · background removal", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Product Photo", "Background Removal"] },
   // Public 2026-10-01 (priced from fal's rates, tested)
   { label: "Topaz",             type: "upscale · restore · adjust", accent: "text-lime-400",    dot: "bg-lime-400",    items: ["Topaz Image"] },
-  { label: "Bria",              type: "text to image · edit · product tools", accent: "text-teal-400", dot: "bg-teal-400", items: ["Bria Fibo 1.5", "Bria Replace Background", "Bria Product in Hand", "Bria Embed Product", "Bria Guided Background Removal", "Bria Fibo Expand"] },
+  { label: "Bria",              type: "text to image · edit · product tools", accent: "text-teal-400", dot: "bg-teal-400", items: ["Bria Fibo 2.0", "Bria Fibo 1.5", "Bria Replace Background", "Bria Product in Hand", "Bria Embed Product", "Bria Guided Background Removal", "Bria Fibo Expand"] },
   { label: "Microsoft",         type: "text to image · edit",      accent: "text-sky-400",     dot: "bg-sky-400",     items: ["MAI Image 2.5 Pro"] },
   // ESRGAN (Real-ESRGAN) is Tencent ARC Lab's - public with the other fal upscalers 2026-10-08
   { label: "Tencent",           type: "text to image · edit · upscale", accent: "text-sky-300", dot: "bg-sky-300",     items: ["Hunyuan Image 3", "Hunyuan Image 3 Instruct", "ESRGAN"] },
@@ -1997,7 +2020,7 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Lightricks",  type: "text & image to video · directed camera · up to 4K · from audio", accent: "text-lime-400", dot: "bg-lime-400", items: ["LTX 2.5 Pro", "LTX 2.5 Fast", "LTX 2.5 Audio to Video Pro", "LTX 2.5 Audio to Video Fast"] },
   // Public 2026-10-01 (priced from fal's rates, tested end to end)
   { label: "Google", type: "text · image · refs · edit to video · native audio", accent: "text-blue-400", dot: "bg-blue-400", items: ["Gemini Omni Flash 1.1", "Gemini Omni Flash"] },
-  { label: "Black Forest Labs", type: "text · image · first/last · keyframes · extend · audio · upscale", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3", "Flux Video Upscale"] },
+  { label: "Black Forest Labs", type: "text · image · first/last · keyframes · extend · audio · upscale", accent: "text-amber-400", dot: "bg-amber-400", items: ["Flux 3 Max", "Flux 3", "Flux Video Upscale"] },
   { label: "xAI", type: "text · image · refs to video · edit · extend", accent: "text-slate-300", dot: "bg-slate-300", items: ["Grok Imagine Video 1.5", "Grok Imagine Video 1.5 Lite", "Grok Video Edit", "Grok Video Extend"] },
   // Public 2026-10-02 (fal flat rates, tested)
   { label: "Hailuo", type: "MiniMax · text & image to video", accent: "text-rose-300", dot: "bg-rose-300", items: ["Hailuo 2.3 Pro", "Hailuo 2.3", "Hailuo 2.3 Fast Pro", "Hailuo 2.3 Fast"] },
@@ -2658,6 +2681,7 @@ const MODEL_BLURBS: Record<string, string> = {
   "Grok Imagine 2.0":          "Expressive and quick; edits with refs",
   "Virtual Try-On":            "Dress a person in a garment",
   "Meta Muse":                 "Meta's model; edits with up to 10 refs",
+  "Bria Fibo 2.0":             "Reasoning prompts; edits up to 4 pics",
   "Bria Fibo 1.5":             "Licensed data; edits with refs",
   "Ideogram v4 Instant":       "Best at text inside images",
   "Ideogram v4 Fast":          "Text rendering with speed presets",
@@ -2751,6 +2775,7 @@ const MODEL_BLURBS: Record<string, string> = {
   "Marey Motion Transfer":     "New video with a clip's motion",
   "Marey Pose Transfer":       "New video with a clip's poses",
   "MiniMax H3 Max":            "Strong prompt following, 768p",
+  "Flux 3 Max":                "Sharper prompt following, faster",
   "Flux 3":                    "Text, keyframes, extend, audio",
   "Lipsync v3":                "Syncs lips to any audio",
   "Happy Horse":               "Stylised character animation",

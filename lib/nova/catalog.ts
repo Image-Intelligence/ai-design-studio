@@ -54,9 +54,27 @@ function withImageFields(m: ChatCreateModel): ChatCreateModel {
 /** "-edit" twins are picked by the site itself when references are attached - listing them twice only costs context. */
 const isEditTwin = (id: string) => id.endsWith('-edit') && !!getFalImageModelSpec(id.slice(0, -5))?.editVariant
 
+/*
+ * Image models the agents cannot run (2026-10-20, found through the ChatGPT
+ * connector: "ChatGPT Images 2.0 couldn't run through the studio
+ * integration"). Every agent generation goes through /api/generate
+ * (lib/chat-image-submit) with the user's key, but the portal sends these to
+ * routes of their own (/api/admin/gpt-image-2-stream, kling-image-submit,
+ * kling-o3-submit, seedream-5-lite-submit, seedream-5-pro-submit,
+ * recraft-submit, wan-27-pro-submit), which take a browser session only -
+ * /api/generate answers "not available" (or, for GPT Image 2, "runs from the
+ * image page"). FIXED the same day: those routes take the key now and
+ * lib/dedicated-image-submit maps agent requests onto them - this set stays
+ * for any model that cannot run through the agents (none today).
+ */
+export const AGENT_UNRUNNABLE_IMAGE_MODELS = new Set<string>([])
+
 export function novaImageModels(isAdmin: boolean): ChatCreateModel[] {
-  return usableCreateModels(isAdmin).filter(m => m.kind === 'image' && !m.disabled && !m.geminiApi && !isEditTwin(m.id) && imageModelOpen(m.id, isAdmin)).map(withImageFields)
+  return usableCreateModels(isAdmin).filter(m => m.kind === 'image' && !m.disabled && !m.geminiApi && !isEditTwin(m.id) && !AGENT_UNRUNNABLE_IMAGE_MODELS.has(m.id) && imageModelOpen(m.id, isAdmin)).map(withImageFields)
 }
+
+/** A picture TOOL (cut-out, upscale, vectorize, try-on...): it works on a picture and makes nothing from a prompt alone. */
+export const needsPicture = (id: string) => !!getFalImageModelSpec(id)?.needsImage
 /*
  * Video TOOLS that work on an existing clip (upscale, edit, extend, relight,
  * subtitles, dubbing, lip sync...): generate_video only sends pictures, so they
@@ -93,7 +111,7 @@ export function describeModels(kind: NovaKind, isAdmin: boolean, search?: string
   if (kind === 'image' || kind === 'video') {
     const list = (kind === 'image' ? novaImageModels(isAdmin) : novaVideoModels(isAdmin)).filter(m => hit(m.id, m.label, m.group)).slice(0, cap)
     const lines = list.map(m => {
-      const refs = m.needsRef ? `needs a start image${m.endFrame ? ' (+ end frame)' : ''}` : m.maxRefs ? `${m.maxRefs} refs${m.endFrame ? ', 2nd = end frame' : ''}` : 'no refs'
+      const refs = kind === 'image' && (m.needsRef || needsPicture(m.id)) ? 'TOOL - needs a picture to work on (pass it as a reference)' : m.needsRef ? `needs a start image${m.endFrame ? ' (+ end frame)' : ''}` : m.maxRefs ? `${m.maxRefs} refs${m.endFrame ? ', 2nd = end frame' : ''}` : 'no refs'
       if (!full) return `- ${m.id} · ${m.ticketCost}t · ${refs} · ${clip(m.strengths, 70)}`
       const fields = (m.fields ?? []).map(f => `${f.key}: ${f.options.join('|')} (default ${f.def})`).join('; ')
       const note = modelNote(m.id)

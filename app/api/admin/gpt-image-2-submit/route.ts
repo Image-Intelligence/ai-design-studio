@@ -3,8 +3,7 @@ import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
 import { syncAndClaimFalSlot } from '@/lib/admin-queue-helpers'
-import { getUserFromSession } from '@/lib/auth'
-import { cookies } from 'next/headers'
+import { generationCaller } from '@/lib/api-key-auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
@@ -16,7 +15,20 @@ fal.config({ credentials: process.env.FAL_KEY })
 const TEXT_ENDPOINT = 'fal-ai/gpt-image-2'
 const EDIT_ENDPOINT = 'openai/gpt-image-2/edit'
 
-function computeGptTicketCost(quality: string, size: string): number {
+/*
+ * The same prices as the page's route (/api/admin/gpt-image-2-stream), which
+ * this one had drifted from (2026-10-20, when the agents started using it): a
+ * quality fal does not know runs - and is priced - as 'high', a size outside
+ * the page's six as the 4K one (the dearest), and references are billed as
+ * input tokens by the edit endpoint (~$0.01 each): one ticket per four.
+ */
+const GPT2_SIZES = new Set(['1024x1024', '1024x768', '1024x1536', '1920x1080', '2560x1440', '3840x2160'])
+function computeGptTicketCost(rawQuality: string, rawSize: string, refs = 0): number {
+  const quality = ['low', 'medium', 'high'].includes(rawQuality) ? rawQuality : 'high'
+  const size = GPT2_SIZES.has(rawSize) ? rawSize : '3840x2160'
+  return gptBaseTicketCost(quality, size) + Math.ceil(Math.max(0, Math.min(8, refs)) / 4)
+}
+function gptBaseTicketCost(quality: string, size: string): number {
   if (quality === 'low') return 1
   if (quality === 'high') {
     if (size === '1024x1024') return 8
@@ -42,9 +54,8 @@ function parseSize(size: string): { width: number; height: number } {
 // Image editing  → openai/gpt-image-2/edit  (reference images provided)
 export async function POST(req: Request) {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-    const sessionUser = token ? await getUserFromSession(token) : null
+    // The page's session, or a personal API key (Nova, Prism, the ChatGPT / Claude connector) - lib/api-key-auth
+    const sessionUser = await generationCaller(req)
 
     if (await isGenerationBlocked(sessionUser?.email)) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
@@ -73,7 +84,8 @@ export async function POST(req: Request) {
     } = body
 
     // Compute ticket cost server-side — never trust client-supplied value
-    const ticketCost = computeGptTicketCost(quality as string, size as string)
+    const refCount = (Array.isArray(referenceImages) ? referenceImages.length : 0) + (Array.isArray(referenceImageUrls) ? referenceImageUrls.length : 0)
+    const ticketCost = computeGptTicketCost(String(quality), String(size), refCount)
 
     if (!prompt?.trim()) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 })

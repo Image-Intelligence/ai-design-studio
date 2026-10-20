@@ -5,8 +5,7 @@ import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
 import { syncAndClaimFalSlot } from '@/lib/admin-queue-helpers'
-import { getUserFromSession } from '@/lib/auth'
-import { cookies } from 'next/headers'
+import { generationCaller } from '@/lib/api-key-auth'
 import { claimUserGenerationRow } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
@@ -53,8 +52,7 @@ function aspectRatioToImageSize(aspectRatio: string): string {
 // Returns immediately with { requestId, falEndpoint } — client polls /api/admin/wan-27-pro-status.
 export async function POST(req: Request) {
   try {
-    const _ck = await cookies(); const _tok = _ck.get('session')?.value
-    const _u = _tok ? await getUserFromSession(_tok) : null
+    const _u = await generationCaller(req)
     if (await isGenerationBlocked(_u?.email)) {
       return NextResponse.json({ error: 'Generation is temporarily disabled for maintenance. Please check back soon.' }, { status: 503 })
     }
@@ -130,9 +128,8 @@ export async function POST(req: Request) {
 
     console.log(`Wan 2.7 Pro submit (${endpoint}): aspect=${aspect_ratio} size=${imageSize}`)
 
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-    const sessionUser = token ? await getUserFromSession(token) : null
+    // The page's session, or a personal API key (Nova, Prism, the ChatGPT / Claude connector) - lib/api-key-auth
+    const sessionUser = await generationCaller(req)
     const targetUserId: number | null = sessionUser?.id ?? null
     if (!targetUserId) return NextResponse.json({ error: 'Not authenticated — log in before using the admin scanner' }, { status: 401 })
 

@@ -59,6 +59,9 @@ export const FEATURED_MODELS: { name: string; kind: "image" | "video" }[] = [
   { name: "Gemini Omni Flash 1.1", kind: "video" },   // big
   { name: "Pixelcut Product Photo", kind: "image" },  // tall
   { name: "Meta Muse", kind: "image" },
+  // New 2026-10-20: FLUX 3 Max (video) and Bria Fibo 2.0
+  { name: "Flux 3 Max", kind: "video" },
+  { name: "Bria Fibo 2.0", kind: "image" },
 ]
 
 /** The Featured grid's width in units at each breakpoint: phone, sm, md, lg+. */

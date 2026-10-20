@@ -88,6 +88,23 @@ export function modelNotPermittedResponse(modelId: string): NextResponse {
   )
 }
 
+/**
+ * Who is calling an image route that the portal reaches with its session
+ * (the per-model submit routes under /api/admin: SeeDream 5 Lite / Pro,
+ * Recraft, Kling V3 / O3 Image, Wan 2.7 Pro, GPT Image 2). Since 2026-10-20
+ * they also take a personal API key - the one Nova's background runs, Prism
+ * and the ChatGPT / Claude connector send - when it may generate images and
+ * spend tickets; before, those models failed for every agent ("not
+ * available"). null = no session and no usable key (the route answers 401).
+ */
+export async function generationCaller(request: Request, kind: 'image' | 'video' = 'image'): Promise<ApiKeyAuth['user'] | null> {
+  const apiAuth = await authenticateApiKey(request)
+  if (apiAuth === 'invalid') return null
+  if (apiAuth) return hasScope(apiAuth, `generate:${kind}`) && hasScope(apiAuth, 'tickets:spend') ? apiAuth.user : null
+  const token = (await cookies()).get('session')?.value
+  return token ? await getUserFromSession(token) : null
+}
+
 export type ResolvedRequestUser =
   | { user: NonNullable<Awaited<ReturnType<typeof getUserFromSession>>>; apiAuth: ApiKeyAuth | null }
   | { error: NextResponse }

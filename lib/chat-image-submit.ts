@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import type { ChatCreateModel, ChatCreateSettings } from '@/lib/chat-hub-models'
+import { isDedicatedImageModel, submitDedicatedImage } from '@/lib/dedicated-image-submit'
 
 // Chat IMAGE generation, routed through the site's own /api/generate.
 //
@@ -62,8 +63,15 @@ export async function submitChatImage(
 ): Promise<ChatImageResult> {
   let queueId: number | null = null
   let ticketCost = 0
+  /** A model with a submit route of its own (lib/dedicated-image-submit): a polled job the harvester may finish. */
+  const dedicated = isDedicatedImageModel(spec.id)
 
-  try {
+  if (dedicated) {
+    const r = await submitDedicatedImage(spec.id, prompt, refs, settings, opts?.headers ?? {})
+    if (!r.ok) return { ok: false, error: r.error }
+    queueId = r.queueId
+    ticketCost = r.ticketCost
+  } else try {
     const { POST } = await import('@/app/api/generate/route')
     const res = await POST(new NextRequest('http://internal/api/generate', {
       method: 'POST',
@@ -96,17 +104,27 @@ export async function submitChatImage(
 
   // ── wait for it, so the agent can still see and judge its own image ──
   const deadline = Math.min(Date.now() + WAIT_MS, opts?.waitUntil ?? Infinity)
+  let polls = 0
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, POLL_MS))
+    // A polled job (Kling, Wan, GPT Image 2) is finished by the harvester - there is no page here to poll it
+    if (dedicated && ++polls % 3 === 0) {
+      const { harvestPollingJobs } = await import('@/lib/harvest-polling-jobs')
+      await harvestPollingJobs({ userId, minAgeMs: 0, graceMs: 0, limit: 2, budgetMs: 15_000 }).catch(() => {})
+    }
     const row = await prisma.generationQueue.findUnique({
       where: { id: queueId },
-      select: { status: true, errorMessage: true, parameters: true },
+      select: { status: true, errorMessage: true, parameters: true, falRequestId: true },
     })
     if (!row) continue
     if (row.status === 'completed') {
       const p = (row.parameters ?? {}) as Record<string, unknown>
       const urls = Array.isArray(p.completedImageUrls) ? p.completedImageUrls : []
-      const url = typeof urls[0] === 'string' ? urls[0] : null
+      // The harvester saves the picture without listing it on the job: the feed row has it
+      const saved = !urls.length && row.falRequestId
+        ? await prisma.generatedImage.findFirst({ where: { userId, falRequestId: row.falRequestId, isDeleted: false }, orderBy: { id: 'asc' }, select: { imageUrl: true } })
+        : null
+      const url = typeof urls[0] === 'string' ? urls[0] : saved?.imageUrl ?? null
       if (url) return { ok: true, url, queueId, ticketCost }
       return { ok: false, error: 'The job completed but saved no image.' }
     }

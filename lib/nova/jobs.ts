@@ -100,7 +100,16 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
     return { status: 'pending' }
   }
 
-  // Images settle by fal's webhook (and the cron); nothing to push here
+  // Polled image jobs (Kling V3 / O3, Wan 2.7 Pro, GPT Image 2 - lib/dedicated-image-submit) have no page to
+  // poll them here: the harvester is nudged for this account, then the row checked again
+  if (job.modelType === 'image' && p.usePolling) {
+    const { harvestPollingJobs } = await import('@/lib/harvest-polling-jobs')
+    await harvestPollingJobs({ userId: user.id, minAgeMs: 0, graceMs: 0, limit: 2, budgetMs: 15_000 }).catch(() => {})
+    const again = await prisma.generationQueue.findUnique({ where: { id: job.id }, select: { status: true, errorMessage: true } })
+    if (again?.status === 'completed') return finished()
+    if (again?.status === 'failed') return { status: 'error', error: again.errorMessage || 'Generation failed' }
+  }
+  // Other images settle by fal's webhook (and the cron)
   return { status: 'pending' }
 }
 

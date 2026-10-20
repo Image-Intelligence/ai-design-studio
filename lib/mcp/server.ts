@@ -49,8 +49,7 @@ function discoverResult() {
 
 function resources() {
   return [
-    { uri: WIDGET_URI_OPENAI, name: 'studio-results', title: 'Results', mimeType: 'text/html+skybridge', description: 'The pictures and clips a tool made' },
-    { uri: WIDGET_URI_MCP_APPS, name: 'studio-results-app', title: 'Results', mimeType: 'text/html;profile=mcp-app', description: 'The pictures and clips a tool made' },
+    { uri: WIDGET_URI_MCP_APPS, name: 'studio-results', title: 'Results', mimeType: 'text/html;profile=mcp-app', description: 'The pictures and clips a tool made' },
   ]
 }
 
@@ -66,7 +65,13 @@ function readResource(uri: string, origin: string) {
     } }] }
   }
   if (uri === WIDGET_URI_MCP_APPS) {
-    return { contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: html, _meta: { ui: { csp: { resourceDomains: domains, connectDomains: [] }, prefersBorder: true } } }] }
+    // CSP both ways: the MCP Apps block, and ChatGPT's own keys (it still reads them for published apps)
+    return { contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: html, _meta: {
+      ui: { csp: { resourceDomains: domains, connectDomains: [] }, prefersBorder: true },
+      'openai/widgetCSP': { connect_domains: [], resource_domains: domains },
+      'openai/widgetDescription': 'Shows the images and videos AI Design Studio made for this request, with their model and ticket cost.',
+      'openai/widgetPrefersBorder': true,
+    } }] }
   }
   return null
 }

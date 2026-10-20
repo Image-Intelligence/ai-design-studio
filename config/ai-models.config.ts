@@ -501,6 +501,32 @@ export const AI_MODELS: AIModel[] = [
     provider: 'fal'
   },
 
+  // Bria Fibo 2.0 (2026-10-20) - fal $0.04 an image, generate and edit -> 2 tickets
+  {
+    id: 'bria-fibo-2',
+    name: 'bria/fibo-2/generate',
+    displayName: 'Bria Fibo 2.0',
+    description: "Bria Fibo 2.0 - Bria's reasoning text-to-image, licensed training data, ~1MP",
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+  {
+    id: 'bria-fibo-2-edit',
+    name: 'bria/fibo-2/edit',
+    displayName: 'Bria Fibo 2.0 Edit',
+    description: 'Bria Fibo 2.0 instruction edits from up to 4 pictures (optional mask)',
+    ticketCost: 2,
+    category: 'standard',
+    rateLimit: { rpm: 0, rpd: 0 },
+    quality: 'high',
+    isAvailable: true,
+    provider: 'fal'
+  },
+
   // Bria FIBO 1.5
   {
     id: 'bria-fibo',

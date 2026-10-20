@@ -47,6 +47,12 @@ export const FAL_ENDPOINTS: Record<string, string> = {
   'flux-3-flf':                 'blackforestlabs/flux-3/first-last-frame-to-video',
   'flux-3-keyframes':           'blackforestlabs/flux-3/keyframes-to-video',
   'flux-3-extend':              'blackforestlabs/flux-3/extend-video',
+  // FLUX 3 Max (2026-10-20) - fal's post-trained FLUX 3 Video: stronger prompt
+  // adherence, lower latency. Three endpoints: the start image takes an
+  // optional end frame itself (no separate first-last), and there is no extend.
+  'flux-3-max-t2v':             'blackforestlabs/flux-3-max/text-to-video',
+  'flux-3-max-i2v':             'blackforestlabs/flux-3-max/image-to-video',
+  'flux-3-max-keyframes':       'blackforestlabs/flux-3-max/keyframes-to-video',
   // Wan 3.0 / 3.0 Prime (ADMIN ONLY) — `alibaba/` owner. Native audio, 480p to
   // 1080p, adaptive aspect, optional end frame. Prime is the higher tier and
   // has no reference-to-video sibling.
@@ -206,7 +212,7 @@ export const VIDEO_MODEL_IDS: string[] = [
   'kling-v3', 'kling-o3', 'kling-v3-motion',
   'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'seedance-2.5',
   'gemini-omni-flash', 'gemini-omni-1.1',
-  'minimax-h3-max', 'flux-3',
+  'minimax-h3-max', 'flux-3', 'flux-3-max',
   'ltx-2.5-pro', 'ltx-2.5-fast',
   'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
   'kling-v3-turbo-pro', 'kling-v3-turbo', 'kling-o3-pro', 'kling-o3-4k',

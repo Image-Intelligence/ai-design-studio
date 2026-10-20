@@ -303,7 +303,7 @@ export async function POST(request: NextRequest) {
     // For SD20 family: auto-detect mode from imageUrl; explicit r2v overrides
     const effectiveSd20Mode = isSD20Family
       ? (sd20Mode === 'r2v' ? 'r2v' : imageUrl ? 'i2v' : 't2v')
-      : (isOmni || model === 'flux-3' || INPUT_ROUTED_MODELS.has(model))
+      : (isOmni || model === 'flux-3' || model === 'flux-3-max' || INPUT_ROUTED_MODELS.has(model))
         // Same resolution rule: honour an explicit references/extend choice,
         // otherwise let the presence of a start image decide
         ? (sd20Mode === 'r2v' || sd20Mode === 'edit' ? sd20Mode : imageUrl ? 'i2v' : 't2v')
@@ -356,7 +356,7 @@ export async function POST(request: NextRequest) {
     // was rejected here before it ever reached its endpoint.
     const TEXT_CAPABLE_MODELS = new Set([
       'seedance-1.5', 'seedance-2.0', 'seedance-2.0-fast', 'wan-2.7',
-      'wan-2.2-lora', 'gemini-omni-flash', 'minimax-h3-max', 'flux-3',
+      'wan-2.2-lora', 'gemini-omni-flash', 'minimax-h3-max', 'flux-3', 'flux-3-max',
       'luma-ray-2', 'luma-ray-2-flash', 'luma-ray-3.2',
       // Input-routed models with a text-to-video endpoint. Missing from this
       // list, they were refused a text-only run (LTX 2.5 Pro was public and
@@ -586,8 +586,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: problem }, { status: 400 });
       }
     }
-    if (model === 'flux-3' && effectiveSd20Mode === 'r2v' && (!Array.isArray(referenceImageUrls) || referenceImageUrls.length === 0)) {
+    if ((model === 'flux-3' || model === 'flux-3-max') && effectiveSd20Mode === 'r2v' && (!Array.isArray(referenceImageUrls) || referenceImageUrls.length === 0)) {
       return NextResponse.json({ success: false, error: 'Flux 3 keyframes need at least one reference image.' }, { status: 400 });
+    }
+    // FLUX 3 Max has no extend endpoint (Flux 3 does)
+    if (model === 'flux-3-max' && effectiveSd20Mode === 'edit') {
+      return NextResponse.json({ success: false, error: 'Flux 3 Max cannot extend a clip - use Flux 3 for that, or remove the video reference.' }, { status: 400 });
     }
     if (model === 'kling-v3-motion' && !motionVideoUrl) {
       return NextResponse.json({ success: false, error: 'Missing motion reference video URL' }, { status: 400 });
@@ -713,6 +717,13 @@ export async function POST(request: NextRequest) {
       ? (FAL_ENDPOINTS[`${model}-${effectiveSd20Mode}`]
          || FAL_ENDPOINTS[`${model}-i2v`]
          || FAL_ENDPOINTS[`${model}-t2v`])
+      : model === 'flux-3-max'
+      // Three endpoints: keyframes, a start image (with or without an end frame), or text
+      ? FAL_ENDPOINTS[
+          effectiveSd20Mode === 'r2v' ? 'flux-3-max-keyframes'
+          : imageUrl ? 'flux-3-max-i2v'
+          : 'flux-3-max-t2v'
+        ]
       : model === 'flux-3'
       // One family, five endpoints — the inputs decide which one runs
       ? FAL_ENDPOINTS[
@@ -1082,16 +1093,19 @@ export async function POST(request: NextRequest) {
         falInput.aspect_ratio = klingAspectRatio;
       }
       if (endImageUrl) falInput.end_image_url = endImageUrl;
-    } else if (model === 'flux-3') {
+    } else if (model === 'flux-3' || model === 'flux-3-max') {
       // Shared across all five Flux 3 endpoints. safety_tolerance stays at
       // fal's default of 2 — the provider filter is deliberately left on.
+      // FLUX 3 Max (2026-10-20) takes the same inputs minus safety_tolerance
+      // (not in its schema) and extend; its start image takes the end frame.
+      const max = model === 'flux-3-max'
       const secs = duration === 'auto' ? 0 : Math.min(20, Math.max(5, parseInt(duration) || 5));
       falInput = {
         prompt,
         resolution: resolution === '1080p' ? '1080p' : '720p',
         // 0 strictest … 4 most permissive (fal default 2). Admins who switch
         // the checker off get the most permissive setting the schema allows.
-        safety_tolerance: isAdminUser && flux3SafetyChecker === false ? 4 : 2,
+        ...(max ? {} : { safety_tolerance: isAdminUser && flux3SafetyChecker === false ? 4 : 2 }),
         generate_audio: generateAudio,
       };
       if (['auto', '21:9', '2:1', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(klingAspectRatio)) {
@@ -1115,7 +1129,8 @@ export async function POST(request: NextRequest) {
           frame_index: imgs.length === 1 ? 0 : Math.round((i * last) / (imgs.length - 1)),
         }));
       } else if (imageUrl && endImageUrl) {
-        falInput.start_image_url = imageUrl;
+        // Flux 3: its first-last endpoint; Max: the image endpoint with an end frame
+        falInput[max ? 'image_url' : 'start_image_url'] = imageUrl;
         falInput.end_image_url = endImageUrl;
         falInput.duration = secs || 5;      // this endpoint has no 'auto'
       } else if (imageUrl) {

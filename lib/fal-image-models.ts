@@ -409,6 +409,8 @@ const AR_GROK_T2I = ['2:1', '20:9', '19.5:9', '16:9', '4:3', '3:2', '1:1', '2:3'
 const AR_GROK_EDIT = ['auto', ...AR_GROK_T2I] as const
 const AR_MUSE = ['21:9', '16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16', '9:21'] as const
 const AR_BRIA = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9'] as const
+/** Bria Fibo 2.0 (2026-10-20): its menu offers 21 shapes at about 1MP; these are the portal's usual ones. */
+const AR_FIBO2 = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'] as const
 
 /**
  * Bria FIBO styles.
@@ -805,6 +807,51 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       aspect_ratio: pickEnum(ctx.aspectRatio, AR_MUSE, '1:1'),
       num_images: 1,
       output_format: 'png',
+    }),
+  },
+
+  // ── Bria Fibo 2.0 (2026-10-20) ─────────────────────────────────────────────
+  // Text-to-image strong on reasoning- and knowledge-heavy prompts, licensed
+  // training data. fal $0.04 an image for generate AND edit (pricing API) ->
+  // 2 tickets, as Fibo 1.5. About 1MP, no resolution choice. With references
+  // the site runs the edit twin: 1-4 pictures, an instruction (they are
+  // <image_1>... in it), the output keeps the first picture's shape unless one
+  // is asked for.
+  'bria-fibo-2': {
+    id: 'bria-fibo-2',
+    editVariant: 'bria-fibo-2-edit',
+    endpoint: 'bria/fibo-2/generate',
+    needsImage: false,
+    imageParam: null,
+    maxInputImages: 0,
+    promptRequired: true,
+    aspectRatios: [...AR_FIBO2],
+    usesImageSize: false,
+    notes: 'prompt is expanded into a VGL (returned). seed defaults to 5555 - a random one is sent so reruns differ.',
+    build: (ctx) => compact({
+      prompt: ctx.prompt,
+      aspect_ratio: pickEnum(ctx.aspectRatio, AR_FIBO2, '1:1'),
+      // fal's default seed is a constant: the same prompt would give the same picture every time
+      seed: int(ctx.options.briaSeed, 0, 2_147_483_647) ?? Math.floor(Math.random() * 2_147_483_647),
+    }),
+  },
+  'bria-fibo-2-edit': {
+    id: 'bria-fibo-2-edit',
+    endpoint: 'bria/fibo-2/edit',
+    needsImage: true,
+    imageParam: 'image_urls',
+    maxInputImages: 4,
+    promptRequired: true,
+    aspectRatios: [...AR_FIBO2],
+    usesImageSize: false,
+    notes: 'prompt field is `instruction`; 1-4 image_urls; aspect_ratio unset keeps the first picture\'s shape',
+    build: (ctx) => compact({
+      instruction: ctx.prompt,
+      image_urls: ctx.imageUrls.slice(0, 4),
+      // "auto" (or nothing) keeps the first picture's shape
+      aspect_ratio: (AR_FIBO2 as readonly string[]).includes(String(ctx.aspectRatio)) ? ctx.aspectRatio : undefined,
+      mask_url: typeof ctx.options.briaMaskUrl === 'string' ? ctx.options.briaMaskUrl : undefined,
+      seed: int(ctx.options.briaSeed, 0, 2_147_483_647) ?? Math.floor(Math.random() * 2_147_483_647),
     }),
   },
 
@@ -2080,6 +2127,8 @@ export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
   'topaz-img-upscale-precision', 'topaz-img-upscale-creative', 'topaz-img-upscale-generative',
   'topaz-img-upscale-transparent', 'topaz-adjust', 'topaz-sharpen', 'topaz-denoise', 'topaz-restore',
   'bria-fibo', 'bria-fibo-edit',
+  // Public 2026-10-20 (fal $0.04 an image -> 2, tested through the portal): Bria Fibo 2.0
+  'bria-fibo-2', 'bria-fibo-2-edit',
   'nano-banana-2-lite',
   'mai-image-2.5-pro', 'mai-image-2.5-pro-edit',
   'hunyuan-image-3',

@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fal } from '@/lib/fal-client'
-import { cookies } from 'next/headers'
-import { getUserFromSession } from '@/lib/auth'
+import { generationCaller } from '@/lib/api-key-auth'
 import { reserveTicketsAtomic, releaseReservedTickets, settleReservedTickets } from '@/lib/ticket-gate'
 import prisma from '@/lib/prisma'
 import { isGenerationBlocked } from '@/lib/generation-guard'
@@ -30,12 +29,9 @@ const RECRAFT_SIZE: Record<string, string> = {
 
 export async function POST(req: Request) {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('session')?.value
-    if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-
-    const user = await getUserFromSession(token)
-    if (!user) return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+    // The page's session, or a personal API key (Nova, Prism, the ChatGPT / Claude connector) - lib/api-key-auth
+    const user = await generationCaller(req)
+    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
     const isAdmin = await checkIsAdmin(user.email)
 

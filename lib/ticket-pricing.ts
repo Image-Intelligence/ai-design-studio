@@ -545,7 +545,11 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     // $0.04 a ticket = 50% at the $0.08 subscription ticket. 5-15s, as sent.
     const sec = Math.min(15, Math.max(5, parseInt(duration) || 5));
     ticketCost = Math.ceil((sec * (resolution === '480p' ? 0.05 : 0.08)) / 0.04 - 1e-9);
-  } else if (model === 'flux-3') {
+  } else if (model === 'flux-3' || model === 'flux-3-max') {
+    // FLUX 3 Max (2026-10-20): fal's REGULAR rates are FLUX 3's - $0.17 /
+    // $0.29 a second at 720p / 1080p (fal's page; a 75% launch promo runs to
+    // 2026-11-07, measured $0.2125 for 5s 720p) - so it is priced as Flux 3,
+    // like Vidu Q4 at its regular rates. It has no extend.
     /*
      * fal (2026-10-01), per second of generated video: $0.17 / $0.29 at 720p /
      * 1080p for text, image, first-last and keyframes; extend is $0.41 / $0.53.
@@ -1068,6 +1072,7 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'gemini-omni-flash',  label: 'Gemini Omni Flash',      kind: 'generator', durations: ['3', '5', '8', '10'],            resolutions: [],                       supportsAudio: false, durationSource: 'none', note: '4 tickets/sec (fal ~$0.13/s, token-billed; ~59% margin at $0.08). Edit bills the SOURCE clip length (min 3s, 8s when unknown).' },
   { id: 'gemini-omni-1.1',    label: 'Gemini Omni Flash 1.1',  kind: 'generator', durations: ['3', '5', '8', '10'],            resolutions: ['360p', '720p', '1080p', '4k'], supportsAudio: false, durationSource: 'none', note: '1 / 3 / 4 / 8 tickets/sec at 360p / 720p / 1080p / 4K (fal $0.03 / $0.10 / $0.15 / $0.30; 53-62% at $0.08). Edit bills the SOURCE clip length.' },
   { id: 'minimax-h3-max',     label: 'MiniMax H3 Max',         kind: 'generator', durations: ['5', '8', '10', '15'],           resolutions: ['480p', '768p'],         supportsAudio: false, durationSource: 'none', note: 'fal list $0.05 / $0.08 per s (480P / 768P) at cost / $0.04. Seconds clamped to 5-15.' },
+  { id: 'flux-3-max',         label: 'FLUX 3 Max',             kind: 'generator', durations: ['5', '10', '15', '20'],         resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: 'Priced as FLUX 3 at fal\'s regular rates: 4.5 / 7.5 tickets/sec at 720p / 1080p (fal $0.17 / $0.29; a 75% launch promo runs to Nov 7). No extend.' },
   { id: 'flux-3',             label: 'FLUX 3 Video',           kind: 'generator', durations: ['auto', '5', '10', '15', '20'],  resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: '4.5 / 7.5 tickets/sec at 720p / 1080p (fal $0.17 / $0.29); extend 11 / 14 (fal $0.41 / $0.53). 52-53% at $0.08. auto billed as 10s.' },
   { id: 'ltx-2.5-pro',        label: 'LTX 2.5 Pro',            kind: 'generator', durations: ['auto', '6', '8', '10'],         resolutions: ['720p', '1080p'],        supportsAudio: false, durationSource: 'none', note: 'fal $0.12/s 720p, $0.17/s 1080p (audio included). Length snapped to 6/8/10s; auto billed as 8s.' },
   { id: 'ltx-2.5-fast',       label: 'LTX 2.5 Fast',           kind: 'generator', durations: ['auto', '6', '10', '16', '20'],  resolutions: ['720p', '1080p', '1440p', '2160p'], supportsAudio: false, durationSource: 'none', note: '2.5 / 3.5 / 5 / 8 tickets/sec at 720p / 1080p / 1440p / 2160p (fal $0.09 / $0.13 / $0.19 / $0.30; 52-55% at $0.08). 1440p+ and 48/50fps cap at 10s. auto billed as 10s.' },

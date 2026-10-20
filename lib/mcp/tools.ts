@@ -23,7 +23,7 @@ import { signMediaUrl, isOurMedia } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
 import { submitChatImage } from '@/lib/chat-image-submit'
 import { submitChatVideo } from '@/lib/chat-video-submit'
-import { describeModels, estimateCreate, novaImageModels, novaVideoModels } from '@/lib/nova/catalog'
+import { describeModels, estimateCreate, needsPicture, novaImageModels, novaVideoModels } from '@/lib/nova/catalog'
 import { rowForRequest, settleQueueJob, ensureChatFolder, fileGeneration } from '@/lib/nova/jobs'
 import { kindOf, ownedRows } from '@/lib/nova/agent-tools'
 import type { ApiKeyAuth } from '@/lib/api-key-auth'
@@ -56,12 +56,22 @@ const IMAGE_WAIT_MS = 50_000
 const ADULT_TEXT = /\b(nsfw|nude|nudes|nudity|naked|topless|porn\w*|xxx|hentai|erotic\w*|sexy|sex|explicit|lingerie|nipples?|breasts?|boobs?|fetish\w*|bikini|thong|panties)\b/i
 const clip = (s: unknown, n: number) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
 const signed = (u: string | null | undefined) => (u ? signMediaUrl(u) : null)
+/** Some clips store the clip ITSELF as their "thumbnail" - never use a video file as a poster picture. */
+const VIDEO_FILE = /\.(mp4|webm|mov|m4v|mkv)(\?|#|$)/i
+const posterOnly = (u: string | null | undefined) => (u && !VIDEO_FILE.test(u) ? u : null)
 const err = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true })
 
 // ── the tool list ────────────────────────────────────────────────────────────
 
+/*
+ * The results card: ONE resource, the MCP Apps one (text/html;profile=mcp-app).
+ * ChatGPT reads _meta.ui.resourceUri and takes openai/outputTemplate as an
+ * alias - the first build pointed the alias at a second, older-style
+ * (skybridge) resource, and ChatGPT showed "Couldn't open ... Retry" in place
+ * of every card (2026-10-20).
+ */
 const WIDGET_META = {
-  'openai/outputTemplate': 'ui://widget/studio-results.html',
+  'openai/outputTemplate': 'ui://aids/studio-results.html',
   ui: { resourceUri: 'ui://aids/studio-results.html' },
 }
 const AUTH = [{ type: 'oauth2', scopes: ['studio'] }]
@@ -203,6 +213,7 @@ async function screen(items: Item[]): Promise<Map<Item, { type: 'image'; data: s
   const previews = new Map<Item, { type: 'image'; data: string; mimeType: string }>()
   await Promise.all(items.map(async it => {
     if (it.status !== 'done') return
+    if (it.kind === 'video') it.thumb = posterOnly(it.thumb)
     let src = it.kind === 'image' ? it.url : it.thumb
     // A saved clip with no poster yet: make one from its first frame (as the feed does) so it can be checked
     if (!src && it.kind === 'video' && it.id && it.url) src = await posterFor(it.id, it.url)
@@ -325,6 +336,8 @@ export async function callTool(ctx: ToolCtx, name: string, args: Record<string, 
       if (linkStop) return err(linkStop)
       const refs = [...(editing && links.length ? links : []), ...ordered, ...(!editing ? links : [])].slice(0, Math.max(0, spec.maxRefs))
       if (editing && !refs.length) return err('Pass the picture to edit: image_id (from search_library or an earlier result) or image_url.')
+      // A picture tool (cut-out, upscale, vectorize, try-on...) makes nothing from a prompt alone
+      if (!refs.length && needsPicture(spec.id)) return err(`${spec.label} is a tool that works on a picture - use edit_image with image_id (or image_url) and model "${spec.id}".`)
       if (editing && !spec.maxRefs) return err(`${spec.label} cannot edit pictures - leave model empty to use ${DEFAULT_IMAGE_MODEL}.`)
       const picStop = refs.length ? await guardPictures(ctx, refs) : null
       if (picStop) return err(picStop)
