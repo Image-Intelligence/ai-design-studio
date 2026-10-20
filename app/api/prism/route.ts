@@ -44,6 +44,7 @@ async function context(chat: { id: number; memorySummary: string | null; summary
 export async function GET() {
   const a = await requireAgentUser()
   if (!a.ok) return a.res
+  if (!a.sources.includes('prism')) return jsonPrivate({ error: 'Prism is not available yet' }, { status: 403 })
   const chat = await prismChat(a.user.id)
   const [{ budget, spend }, balance, plan] = await Promise.all([
     loadNovaBudget(a.user.id),
@@ -58,6 +59,7 @@ export async function GET() {
 export async function POST(req: Request) {
   const a = await requireAgentUser()
   if (!a.ok) return a.res
+  if (!a.sources.includes('prism')) return jsonPrivate({ error: 'Prism is not available yet' }, { status: 403 })
   const body = await req.json().catch(() => ({})) as { action?: unknown }
   if (body.action !== 'compact' && body.action !== 'clear') return jsonPrivate({ error: 'action must be compact or clear' }, { status: 400 })
   const chat = await prismChat(a.user.id)

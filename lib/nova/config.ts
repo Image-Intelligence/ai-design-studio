@@ -183,6 +183,13 @@ export type NovaSpend = { today: number; month: number }
  * account (Chat.source 'prism'). Same engine, tools, budgets and billing.
  */
 export type NovaPersonaId = 'nova' | 'prism'
+/**
+ * Prism is admin-only again while it is developed (2026-10-20, owner: "switched
+ * OFF for all users"). The server refuses Prism's routes to everyone else
+ * (lib/nova/auth requireAgentUser) and the pages show its button and Feed-menu
+ * switch to admins only. Opening it to everyone is this one flag.
+ */
+export const PRISM_ADMIN_ONLY = true
 /** Where the user compacted or cleared the context (shown as a divider after that message). */
 export type NovaContextMark = { afterId: number; kind: 'compact' | 'clear'; at: string }
 

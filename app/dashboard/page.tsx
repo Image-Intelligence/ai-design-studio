@@ -5,6 +5,7 @@ import { Ticket, LogOut, CreditCard, Image as ImageIcon, Receipt, Settings, Term
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { PrismGuide, PrismLauncher } from "@/components/prism/PrismGuide"
+import { PRISM_ADMIN_ONLY } from "@/lib/nova/config"
 import { LibraryPickerHost } from "@/components/feed/LibraryPicker"
 import { IdVerificationHost } from "@/components/id-verification/IdVerificationGate"
 import { SiteBrandMark, SiteLogoBox } from "@/components/SitePageHeader"
@@ -256,7 +257,7 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
             {/* Prism, the guide - its panel docks on the right */}
-            <PrismLauncher />
+            {(isAdmin || !PRISM_ADMIN_ONLY) && <PrismLauncher />}
             <TicketPill balance={user.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-black/40 font-mono text-xs" textClassName="text-white tabular-nums" />
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg border border-white/8 bg-white/3">
               {/* Profile picture — synced account-wide (same avatarUrl as the portal-v2 bubble) */}
@@ -599,7 +600,7 @@ export default function DashboardPage() {
     </div>
 
     {/* Prism, the guide (replaced the AI Guide widget 2026-10-20); the header button opens it */}
-    <PrismGuide isAdmin={isAdmin} onBalanceChange={b => setUser(u => (u ? { ...u, ticketBalance: b } : u))} />
+    {(isAdmin || !PRISM_ADMIN_ONLY) && <PrismGuide isAdmin={isAdmin} onBalanceChange={b => setUser(u => (u ? { ...u, ticketBalance: b } : u))} />}
     {/* Prism attaches from the library */}
     <LibraryPickerHost />
     {/* Uploads need an ID-verified account (CCBill) */}

@@ -9,6 +9,7 @@
 import { requireStudioUser } from '@/lib/studio-auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { jsonPrivate } from '@/lib/api-json'
+import { PRISM_ADMIN_ONLY } from '@/lib/nova/config'
 
 export const NOVA_ADMIN_ONLY = true
 
@@ -31,7 +32,12 @@ export async function requireNovaUser(): Promise<{ ok: true; user: { id: number;
 export type AgentUser = { ok: true; user: { id: number; email: string }; isAdmin: boolean; sources: ('nova' | 'prism')[] }
 export async function requireAgentUser(): Promise<AgentUser | { ok: false; res: Response }> {
   const user = await requireStudioUser()
-  if (!user?.email) return { ok: false, res: jsonPrivate({ error: 'Sign in to talk to Prism' }, { status: 401 }) }
+  if (!user?.email) return { ok: false, res: jsonPrivate({ error: 'Sign in first' }, { status: 401 }) }
   const isAdmin = await checkIsAdmin(user.email)
-  return { ok: true, user: { id: user.id, email: user.email }, isAdmin, sources: isAdmin || !NOVA_ADMIN_ONLY ? ['nova', 'prism'] : ['prism'] }
+  const sources: ('nova' | 'prism')[] = []
+  if (isAdmin || !NOVA_ADMIN_ONLY) sources.push('nova')
+  if (isAdmin || !PRISM_ADMIN_ONLY) sources.push('prism')
+  // Neither is open to this account yet (both still admin-only)
+  if (!sources.length) return { ok: false, res: jsonPrivate({ error: 'Prism is not available yet' }, { status: 403 }) }
+  return { ok: true, user: { id: user.id, email: user.email }, isAdmin, sources }
 }

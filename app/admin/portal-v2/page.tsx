@@ -10,6 +10,7 @@ import { EnhanceButton, EnhanceError, enhancePrompt, enhancesLeft, useEnhanceAll
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import { PrismGuide, PrismLauncher, setPrismVisible, usePrism } from "@/components/prism/PrismGuide"
+import { PRISM_ADMIN_ONLY } from "@/lib/nova/config"
 import ChatHub from "@/components/chat-hub"
 import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes, Radio, Plug } from "lucide-react"
 import { NewsManager } from "@/components/NewsManager"
@@ -4405,9 +4406,11 @@ function FeedDropdown({
                   <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">View</span>
                   <FeedToggleRow label="View Hidden" icon={<EyeOff size={11} />} on={showHidden} onChange={onShowHiddenChange} accent="amber" />
                   {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
-                  {/* Prism, the guide (2026-10-20): each account shows or hides it for itself */}
-                  <FeedToggleRow label="Prism guide" icon={<Sparkles size={11} />} on={!prism.hidden} onChange={on => setPrismVisible(on)} />
-                  <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">{prism.hidden ? "Hidden for your account." : "Your guide, in the header beside your tickets. Only changes your account."}</p>
+                  {/* Prism, the guide (2026-10-20): each account shows or hides it for itself - admins only while PRISM_ADMIN_ONLY */}
+                  {(isAdmin || !PRISM_ADMIN_ONLY) && <>
+                    <FeedToggleRow label="Prism guide" icon={<Sparkles size={11} />} on={!prism.hidden} onChange={on => setPrismVisible(on)} />
+                    <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">{prism.hidden ? "Hidden for your account." : "Your guide, in the header beside your tickets. Only changes your account."}</p>
+                  </>}
                 </section>
               </div>
 
@@ -31422,7 +31425,7 @@ function employeePending(
           </div>
           <div className="flex items-center gap-1.5">
             {/* Prism, the guide - opens its panel (hidden when the account switched it off) */}
-            {user && <PrismLauncher compact />}
+            {user && (isAdminAccount || !PRISM_ADMIN_ONLY) && <PrismLauncher compact />}
             {/* Plan accounts: the silver recharge ring; tap for the station */}
             <TicketPill balance={user?.ticketBalance} iconSize={10} className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 bg-black font-mono text-[10px]" textClassName="text-white tabular-nums" />
             <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
@@ -31643,7 +31646,7 @@ function employeePending(
               <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
             </div>
             {/* Prism, the guide - opens its panel docked on the right */}
-            {user && <PrismLauncher />}
+            {user && (isAdminAccount || !PRISM_ADMIN_ONLY) && <PrismLauncher />}
             {/* Plan accounts: the silver recharge ring; click for the station */}
             <TicketPill balance={user?.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" textClassName="text-white tabular-nums tracking-wider" />
             <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
@@ -32561,7 +32564,7 @@ function employeePending(
         />
       )}
       {/* Prism, the guide (2026-10-20 - replaced the AI Guide widget): its panel; the header button opens it */}
-      {user && <PrismGuide isAdmin={isAdminAccount} onBalanceChange={handleBalanceChange} onOpenMedia={openAgentMedia} />}
+      {user && (isAdminAccount || !PRISM_ADMIN_ONLY) && <PrismGuide isAdmin={isAdminAccount} onBalanceChange={handleBalanceChange} onOpenMedia={openAgentMedia} />}
     </div>
   )
 }
