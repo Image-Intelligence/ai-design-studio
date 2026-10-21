@@ -11,6 +11,7 @@ import {
 } from "@/lib/realtime-wma"
 import type { WorldExample } from "@/lib/world-examples"
 import { useWmaSession, uploadLiveMedia } from "@/components/realtime/useWmaSession"
+import { AdminTag } from "@/components/ui/admin-mark"
 
 /**
  * H3 Max Director live (2026-10-16, ADMIN ONLY while under test) - opened by
@@ -224,7 +225,11 @@ export function DirectorLiveSession({ initialPrompt, refs: initialRefs, resoluti
         style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08), 0 0 40px rgba(160,180,210,0.08)" }}>
         <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-white/10 bg-[#070b14]/95 px-4 py-3 backdrop-blur">
           <div className="min-w-0 flex-1">
-            <p className="whitespace-nowrap text-sm font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Live director</p>
+            {/* H3 Max Director is admin-only (under test) */}
+            <div className="flex items-center gap-1.5">
+              <p className="whitespace-nowrap text-sm font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Live director</p>
+              <AdminTag />
+            </div>
             <p className="truncate text-[10px] font-mono text-slate-500 uppercase tracking-[0.18em]">MiniMax H3 Max Director · admin</p>
           </div>
           {s.status === "live" && <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-400/30 px-2.5 py-1 text-[10.5px] font-bold text-emerald-200 whitespace-nowrap"><Radio size={11} /> Live {mmss(s.liveSec)}</span>}

@@ -17,7 +17,7 @@ import { StillThumbs, AddStillThumbs, thumbFrom, useThumb, mergeThumbs } from "@
 import { videoTicketCost } from "@/lib/ticket-pricing"
 import { Dropdown } from "@/components/employees/Dropdown"
 import {
-  addSuggestedAssets, assetPicturesTickets, STORYBOARD_ASPECTS, STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, SHOOT_RESOLUTIONS, DURATIONS, MAX_SHOTS,
+  addSuggestedAssets, STORYBOARD_ASPECTS, STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, SHOOT_RESOLUTIONS, DURATIONS, MAX_SHOTS,
   newShot, totalSeconds, fmtRuntime, imageModelLabel, stillKey, MAX_STILL_VERSIONS, type StoryboardDoc, type StoryboardShot, type ShotVideo,
   stillModelSpec, stillTickets, stillSettingValue, newAsset, newAssetRef, MAX_ASSET_REFS, type StoryAsset, type AssetKind,
   BOARD_MODES, boardMode, frameLabel, type BoardModeId, MAX_DRAFT_SHOTS, TARGET_LENGTHS, runtimeRange, lengthLabel,
@@ -27,9 +27,10 @@ import {
   FRAMINGS, isFraming, type FramingId, liveStillJob, mergeStills, pickRefs, autoShotRefs, type ShotRef,
   stillRefUrls, editSource, SHOT_ASPECTS, finalCutExtraTickets,
 } from "@/lib/storyboard"
-import { AssetsPanel, AddToAssetMenu, ShotRefsPanel, uploadImage, requestAssetPictures } from "@/components/employees/StoryboardAssets"
+import { AssetsPanel, AddToAssetMenu, ShotRefsPanel, uploadImage } from "@/components/employees/StoryboardAssets"
 import { StillsCutPanel } from "@/components/employees/StillsCutPanel"
 import { imageModelOpen, videoModelOpen } from "@/lib/storyboard-access"
+import { AdminTag, ADMIN_TEXT } from "@/components/ui/admin-mark"
 import { EditImagePopup } from "@/components/image-studio/EditImagePopup"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
@@ -64,14 +65,15 @@ const ASPECT_CSS: Record<string, string> = { "16:9": "16/9", "9:16": "9/16", "1:
  * The models an account can pick (public 2026-10-07): admin-only ones stay
  * off a non-admin's menus - the routes refuse them anyway (lib/storyboard-access).
  * A shot already on one (an old board) keeps it listed, so the menu shows it.
+ * Admin-only models are marked (`admin`), so the menus show them red.
  */
 const imageOptions = (isAdmin: boolean, current?: string) => {
-  const list = STORYBOARD_IMAGE_MODELS.filter(m => imageModelOpen(m.id, isAdmin)).map(m => ({ value: m.id, label: m.label }))
-  return current && !list.some(o => o.value === current) ? [...list, { value: current, label: `${imageModelLabel(current)} (admin)` }] : list
+  const list = STORYBOARD_IMAGE_MODELS.filter(m => imageModelOpen(m.id, isAdmin)).map(m => ({ value: m.id, label: m.label, admin: !imageModelOpen(m.id, false) }))
+  return current && !list.some(o => o.value === current) ? [...list, { value: current, label: `${imageModelLabel(current)} (admin)`, admin: !imageModelOpen(current, false) }] : list
 }
 const videoOptions = (isAdmin: boolean, current?: string) => {
-  const list = STORYBOARD_VIDEO_MODELS.filter(m => videoModelOpen(m, isAdmin)).map(m => ({ value: m as string, label: m as string }))
-  return current && !list.some(o => o.value === current) ? [...list, { value: current, label: current }] : list
+  const list = STORYBOARD_VIDEO_MODELS.filter(m => videoModelOpen(m, isAdmin)).map(m => ({ value: m as string, label: m as string, admin: !videoModelOpen(m, false) }))
+  return current && !list.some(o => o.value === current) ? [...list, { value: current, label: current, admin: !videoModelOpen(current, false) }] : list
 }
 const DURATION_OPTIONS = DURATIONS.map(d => ({ value: String(d), label: `${d}s` }))
 const ASPECT_OPTIONS = STORYBOARD_ASPECTS.map(a => ({ value: a, label: a }))
@@ -174,22 +176,14 @@ export function StoryboardWorkspace({
   })
   const setTextModel = (v: string) => { setTextModelState(v); try { localStorage.setItem("pv2-storyboard-text-model", v) } catch {} }
   /*
-   * Cast & sets, "Build the cast first" (2026-10-11): after a draft that names
-   * new recurring characters / places / things, offer to make them as assets
-   * with their pictures (one price, one click), then match every shot's
-   * references to them - so the stills that follow keep them consistent.
+   * Every draft fills the AUDIO LANE too (2026-10-21, owner: no "Also fill the
+   * audio lane" toggle - "it should still fill the Audio lane automatically").
+   * The planner decides per shot whether it needs voice, and whether the sound
+   * under it is music or ambience / effects (lib/storyboard AUDIO_PLAN_RULES).
+   * The "Build the cast first" toggle and its offer went the same day (owner);
+   * suggested assets still land in the Assets panel after a draft.
    */
-  const [castFirst, setCastFirstState] = useState<boolean>(() => { try { return localStorage.getItem("pv2-storyboard-cast-first") === "1" } catch { return false } })
-  const setCastFirst = (v: boolean) => { setCastFirstState(v); try { localStorage.setItem("pv2-storyboard-cast-first", v ? "1" : "0") } catch {} }
-  /*
-   * Also fill the audio lane (2026-10-19, owner): the draft writes each shot's
-   * voice lines and where the music changes, with a voice per speaker - ready
-   * to record on the lane (recording is priced there). Remembered per browser.
-   */
-  const [fillAudio, setFillAudioState] = useState<boolean>(() => { try { return localStorage.getItem("pv2-storyboard-fill-audio") === "1" } catch { return false } })
-  const setFillAudio = (v: boolean) => { setFillAudioState(v); try { localStorage.setItem("pv2-storyboard-fill-audio", v ? "1" : "0") } catch {} }
-  const [castOffer, setCastOffer] = useState<string[] | null>(null) // the suggested assets' names
-  const [castBuilding, setCastBuilding] = useState<string | null>(null)
+  const fillAudio = true
   const [drafting, setDrafting] = useState<false | DraftMode>(false)
   // Drafting on part of the board: pick shots on the cards, then act on them
   const [selecting, setSelecting] = useState(false)
@@ -410,6 +404,13 @@ export function StoryboardWorkspace({
   const removeShot = (id: string) => update(b => ({ ...b, shots: b.shots.filter(s => s.id !== id) }))
 
   // ── stills ──
+  /** The server took the still: the slot shows it making (and the board poll starts) at once. */
+  const markMaking = useCallback((shotId: string, model?: string) => {
+    if (boardRef.current) setBoard(cur => cur && ({
+      ...cur,
+      shots: cur.shots.map(s => s.id !== shotId ? s : { ...s, stillJob: { status: "making", at: Date.now(), ...(model ? { model } : {}) } }),
+    }))
+  }, [])
   const generateStill = useCallback(async (shot: StoryboardShot) => {
     const b = boardRef.current
     if (!b) return
@@ -439,6 +440,9 @@ export function StoryboardWorkspace({
       // Another tab or device is making this one: not an error - the board's
       // own state shows it, and the still arrives with the next poll
       if (r.status === 409 && j.busy) return
+      // Made in the background (2026-10-21): the slot shows it making, and the
+      // board's poll brings the still in - this page may go away meanwhile
+      if (r.ok && j.queued) { markMaking(shot.id, shot.imageModel); return }
       if (!r.ok || !j.url) throw new Error(j.error || "The still failed")
       // Only if this board is still the one open. The new take is added to the
       // slot's versions (read from the CURRENT shot, not this closure's copy),
@@ -460,7 +464,7 @@ export function StoryboardWorkspace({
       setBusy(x => { const n = { ...x }; delete n[shot.id]; return n })
     }
   // update / flush are stable; the board is read from boardRef
-  }, [update, flush])
+  }, [update, flush, markMaking])
   /*
    * An edit from the Image Studio popup becomes the shot's still: a new take
    * (the one it replaces stays), saved in the board's folder by the still
@@ -512,27 +516,39 @@ export function StoryboardWorkspace({
     await runStills(todo, sceneId)
   }
   /*
-   * Run stills three at a time, every one shown as queued until its turn -
-   * here AND on the server, so a refresh or another session shows the same
-   * queue (and a page that finds queued stills nobody is running picks them
-   * up: see the resume effect).
+   * A batch of stills, handed to the server in ONE request (2026-10-21): it
+   * charges and sends every one to fal's queue itself, and they are saved
+   * onto their slots in the background (lib/storyboard-stills). This page used
+   * to run them three at a time, so a locked phone or a closed tab stopped
+   * the rest ("load failed").
    */
   const runStills = async (todo: StoryboardShot[], sceneId?: string) => {
     const b = boardRef.current
     if (!b || !todo.length) return
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
-    // Queued on the server BEFORE any starts: a late "queue" landing after a
-    // still had finished would put that slot back in the queue (and make it again)
-    await getJson(`/api/employees/storyboards/${b.id}/still`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queue: todo.map(s => s.id) }),
-    })
     if (sceneId) setBatchScene(sceneId); else setBatch(true)
-    // Every one of them shows as queued now, not just the three that start
     for (const s of todo) queuedRef.current.add(s.id)
     setQueued(q => ({ ...q, ...Object.fromEntries(todo.map(s => [s.id, true])) }))
-    let i = 0
+    setShotError(e => { const n = { ...e }; for (const s of todo) delete n[s.id]; return n })
     try {
-      await Promise.all(Array.from({ length: 3 }, async () => { while (i < todo.length) await generateStill(todo[i++]) }))
+      const r = await getJson<{ results?: Record<string, { queued?: boolean; busy?: boolean; error?: string }>; error?: string }>(`/api/employees/storyboards/${b.id}/still`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          batch: todo.map(shot => ({
+            shotId: shot.id, prompt: (shot.imagePrompt || shot.description).trim(), model: shot.imageModel,
+            quality: shot.imageQuality || undefined, options: shot.imageOptions,
+            refs: stillRefUrls(b, shot, stillModelSpec(shot.imageModel).maxRefs),
+          })),
+        }),
+      })
+      const res = r.data?.results ?? {}
+      const errs: Record<string, string> = {}
+      for (const s of todo) {
+        const x = res[s.id]
+        if (x?.queued) markMaking(s.id, s.imageModel)
+        else if (!x?.busy) errs[s.id] = x?.error || r.data?.error || "The still could not be started"
+      }
+      if (Object.keys(errs).length) setShotError(e => ({ ...e, ...errs }))
     } finally {
       // Anything never started (the board was left mid-batch) stops waiting
       for (const s of todo) queuedRef.current.delete(s.id)
@@ -742,6 +758,8 @@ export function StoryboardWorkspace({
       const r = await getJson<{ url?: string; error?: string; aspect?: string | null; tickets?: number }>(`/api/employees/storyboards/${b.id}/still-edit`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shotId: shot.id, ...body }),
       })
+      // Made in the background (2026-10-21): the slot shows it making; the board's poll brings it in
+      if (r.ok && (r.data as { queued?: boolean } | undefined)?.queued) { markMaking(shot.id, String(body.model || body.op)); return null }
       if (!r.ok || !r.data?.url) return r.data?.error || (r.status === 409 ? "This still is being made already" : "The edit failed")
       const url = r.data.url
       if (boardRef.current?.id === b.id) setBoard(cur => cur && ({
@@ -916,10 +934,6 @@ export function StoryboardWorkspace({
         // Cast & sets: what the plan relies on that is not an asset yet, offered in the Assets panel
         assets: addSuggestedAssets(cur.assets, j.suggestedAssets),
       }))
-      // Cast first: offer to build what the plan relies on
-      if (castFirst && mode !== "refs" && Array.isArray(j.suggestedAssets) && j.suggestedAssets.length) {
-        setCastOffer((j.suggestedAssets as { name: string }[]).map(x => x.name))
-      }
       // Show what changed for a moment; extended shots become the selection
       const changed: string[] = Array.isArray(j.changed) ? j.changed : []
       setFlashIds(changed)
@@ -1117,45 +1131,6 @@ export function StoryboardWorkspace({
   )
   // What a Draft-with-AI job costs (lib/ai-text-pricing - the route charges the same)
   const pickedN = board ? (selected.filter(id => board.shots.some(s => s.id === id)).length || board.shots.length) : 0
-  /** The suggested assets the offer is about (by name, as they are on the board now). */
-  const offerAssets = (names: string[] | null) => (board?.assets ?? []).filter(a => a.suggested && names?.some(n => n.toLowerCase() === a.name.toLowerCase()))
-  const castPrice = (names: string[] | null) => offerAssets(names).reduce((n, a) => n + assetPicturesTickets(a.kind, { boardAspect: board?.aspect }), 0)
-    + storyboardDraftTickets("refs", board?.shots.length ?? 0)
-  /** Build the cast: accept, make every asset's pictures (in parallel), then match each shot's references. */
-  const buildCast = async () => {
-    const b = boardRef.current
-    if (!b || castBuilding) return
-    const list = (b.assets ?? []).filter(a => a.suggested && castOffer?.some(n => n.toLowerCase() === a.name.toLowerCase()))
-    if (!list.length) { setCastOffer(null); return }
-    setCastOffer(null)
-    const ids = new Set(list.map(a => a.id))
-    update(cur => ({ ...cur, assets: cur.assets.map(a => (ids.has(a.id) ? { ...a, suggested: undefined } : a)) }))
-    setCastBuilding(`Making pictures for ${list.length} asset${list.length === 1 ? "" : "s"}…`)
-    const results = await Promise.all(list.map(async a => ({ a, j: await requestAssetPictures(b.id, { ...a, suggested: undefined }) })))
-    if (boardRef.current?.id !== b.id) { setCastBuilding(null); return }
-    update(cur => ({
-      ...cur,
-      assets: cur.assets.map(x => {
-        const hit = results.find(r => r.a.id === x.id)
-        if (!hit?.j.refs) return x
-        return { ...x, refs: [...x.refs, ...hit.j.refs.filter(r => !x.refs.some(y => y.url === r.url)).map(r => ({ id: r.id, url: r.url, active: false, ...(r.caption ? { caption: r.caption } : {}), ...(r.tags?.length ? { tags: r.tags } : {}) }))] }
-      }),
-    }))
-    const failed = results.filter(r => r.j.error)
-    const made = results.length - failed.length
-    if (made > 0) {
-      setCastBuilding("Matching each shot's references…")
-      // Saved first (the draft reads the board on the server), then every shot
-      await new Promise(r => setTimeout(r, 50))
-      setSelected([])
-      const err = await draft("refs")
-      setCastBuilding(null)
-      setDraftError(failed.length || err ? [failed.length ? `${failed.map(f => f.a.name).join(", ")}: ${failed[0].j.error}` : "", err ?? ""].filter(Boolean).join(" · ") : null)
-    } else {
-      setCastBuilding(null)
-      setDraftError(failed[0]?.j.error || "The pictures could not be made")
-    }
-  }
   const draftPrice = (mode: DraftMode) => mode === "extend" ? storyboardDraftTickets("extend", Number(extendCount) || 2, { withAudio: fillAudio }) : storyboardDraftTickets(mode, pickedN, { withAudio: fillAudio })
   const draftBtn = (mode: DraftMode, label: string, title: string) =>
     brandBtn({ onClick: () => draft(mode), disabled: !!drafting, busy: drafting === mode, label: <>{label}<TicketChip n={draftPrice(mode)} /></>, title: `${title} - ${draftPrice(mode)} ticket${draftPrice(mode) === 1 ? "" : "s"}`, className: "flex-1 min-w-0" })
@@ -1296,20 +1271,13 @@ export function StoryboardWorkspace({
                 </div>
                 {isAdmin && (
                   <div className="min-w-0">
-                    <span className="block text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-0.5">AI model <span className="text-violet-300/70 normal-case tracking-normal">· admin · also Edit with AI</span></span>
+                    <span className={`flex items-center gap-1 text-[9px] font-mono uppercase tracking-[0.16em] mb-0.5 ${ADMIN_TEXT}`}>AI model <AdminTag /> <span className="truncate text-red-300/70 normal-case tracking-normal">also Edit with AI</span></span>
+                    {/* The whole menu is admin-only: every entry red */}
                     <Dropdown value={textModel} onChange={setTextModel} className="w-full"
-                      options={PROMPT_MODELS.map(m => ({ value: m.id, label: promptModelLabel(m, DEFAULT_STORYBOARD_TEXT_MODEL) }))} />
+                      options={PROMPT_MODELS.map(m => ({ value: m.id, label: promptModelLabel(m, DEFAULT_STORYBOARD_TEXT_MODEL), admin: true }))} />
                   </div>
                 )}
               </div>
-              <label className="flex items-start gap-2 text-[10px] leading-snug text-slate-400 cursor-pointer" title="After a draft, offer to make the new characters, places and things it uses as assets with pictures - then every still keeps them consistent">
-                <input type="checkbox" checked={castFirst} onChange={e => setCastFirst(e.target.checked)} className="mt-0.5 accent-violet-400" />
-                <span><span className="font-semibold text-slate-200">Build the cast first</span> - make the plan&apos;s characters, places and outfits as assets with pictures, then match every shot to them</span>
-              </label>
-              <label className="flex items-start gap-2 text-[10px] leading-snug text-slate-400 cursor-pointer" title="The draft also writes each shot's voice lines and music cues into the audio lane - record them there">
-                <input type="checkbox" checked={fillAudio} onChange={e => setFillAudio(e.target.checked)} className="mt-0.5 accent-violet-400" />
-                <span><span className="font-semibold text-slate-200">Also fill the audio lane</span> - voice lines (with a voice per speaker) and music cues for the shots it writes, ready to record (a little extra on the draft price; recording is priced on the lane)</span>
-              </label>
               {(prefImage || prefVideo) && (
                 <p className="-mt-0.5 text-[9.5px] leading-snug text-slate-500">
                   Every shot the draft writes uses {[prefImage && imageModelLabel(prefImage), prefVideo].filter(Boolean).join(" and ")} - name another model in your direction to switch a shot (&ldquo;the title card on Ideogram&rdquo;).
@@ -1394,22 +1362,6 @@ export function StoryboardWorkspace({
             </details>
           </>
         ) : newBoardRow}
-        {castOffer && offerAssets(castOffer).length > 0 && (
-          <div className="rounded-lg border border-violet-300/30 bg-violet-500/10 p-2 space-y-1.5">
-            <p className="text-[10.5px] leading-snug text-violet-100">
-              The plan uses {offerAssets(castOffer).length} new asset{offerAssets(castOffer).length === 1 ? "" : "s"}: {offerAssets(castOffer).map(a => `${a.name} (${a.kind})`).join(", ")}.
-              Build them first - pictures for each, then every shot matched to them.
-            </p>
-            <div className="flex items-center gap-1.5">
-              <button onClick={() => void buildCast()} disabled={!!castBuilding || !!drafting}
-                className="flex items-center gap-1 rounded-md bg-violet-500/30 border border-violet-300/40 px-2.5 py-1 text-[10.5px] font-bold text-white hover:bg-violet-500/40 disabled:opacity-50">
-                <Sparkles size={11} /> Build cast <TicketChip n={castPrice(castOffer)} />
-              </button>
-              <button onClick={() => setCastOffer(null)} className="text-[10px] text-slate-400 hover:text-white">Not now - they stay in Assets</button>
-            </div>
-          </div>
-        )}
-        {castBuilding && <p className="flex items-center gap-1.5 text-[10.5px] text-violet-200"><Loader2 size={11} className="animate-spin" />{castBuilding}</p>}
         {draftError && <p className="text-[10px] text-red-400">{draftError}</p>}
       </div>
     </div>
@@ -3070,7 +3022,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
                       const Icon = set.key === "nb21WebSearch" ? Globe : on ? SquareCheck : Square
                       return (
                         <div key={set.key} title={set.hint} className="min-w-0">
-                          <p className="text-[9px] font-mono uppercase tracking-wider text-slate-500 mb-0.5 truncate">{set.label}{set.admin ? " · admin" : ""}</p>
+                          <p className={`flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider mb-0.5 truncate ${set.admin ? ADMIN_TEXT : "text-slate-500"}`}>{set.label}{set.admin && <AdminTag />}</p>
                           {set.as === "bool" ? (
                             <button
                               onClick={() => setOpt(set.key, on ? "false" : "true")}

@@ -38,6 +38,8 @@ export const VIDEO_TOOL_MODELS = new Set([
   'mirelo-sfx2-video',
   // 2026-10-07: re-light a clip from a lit-sphere picture; swap its person for a character; edit it from words
   'minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro',
+  // 2026-10-21: fit a clip onto a new aspect ratio, outpainting the rest; Kling 4.0's clip edit
+  'minimax-h3-max-reframe', 'kling-v4-edit',
   // Pixelcut: cut the subject out of a clip
   'pixelcut-video-bg-removal',
 ])
@@ -410,7 +412,7 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     ticketCost = higgsfieldVideoTicketCost(model, { resolution, duration, sourceSec: editVideoDurationSec, refVideoSec: referenceVideoDurationSec })
   } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {
     // Ahead of the generic tool branch: Vidu Q4 by length x resolution, Relight by the source's length
-    ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps })
+    ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps, refVideoSec: referenceVideoDurationSec })
   } else if (BATCH_1003_MODELS.has(model)) {
     // Ahead of the generic tool branch: these price by their own rates
     ticketCost = batch1003TicketCost(model, {
@@ -1158,6 +1160,9 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   // 2026-10-07 (admin): lib/batch-1007-video
   { id: 'vidu-q4', label: 'Vidu Q4', kind: 'generator', durations: ['3', '5', '8', '10', '16'], resolutions: ['540p', '720p', '1080p', '2k', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.045 / $0.095 / $0.12 / $0.19 / $0.39 per s (regular rates; 30% off until Nov 30). Audio free.' },
   { id: 'minimax-h3-max-relight', label: 'H3 Max Relight', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 / $0.32 per s of the source (15s max).' },
+  { id: 'kling-v4', label: 'Kling 4.0', kind: 'generator', durations: ['3', '5', '10', '15', '30'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.157 / $0.235 per s (720p / 1080p); with reference clips $0.094 / $0.141 per s of input + output (min 2x output). Admin only.' },
+  { id: 'kling-v4-edit', label: 'Kling 4.0 Edit', kind: 'tool', durations: [], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'priced as clip references: $0.094 / $0.141 per s of source + output (2x the clip). Admin only.' },
+  { id: 'minimax-h3-max-reframe', label: 'H3 Max Reframe', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 per s of the source (1080p measured 2026-10-21; billed by the second, 15s max).' },
   { id: 'wan-2.2-animate-replace', label: 'Wan 2.2 Animate Replace', kind: 'tool', durations: [], resolutions: ['480p', '580p', '720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.04 / $0.06 / $0.08 per "video second" (16 frames of the clip).' },
   { id: 'dreamactor-v2', label: 'DreamActor v2', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 per s of the clip (30s max).' },
   { id: 'lucy-edit-pro', label: 'Lucy Edit Pro', kind: 'tool', durations: [], resolutions: ['720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.15 per s of the clip (720p only).' },

@@ -23,6 +23,8 @@ import {
   type AudioStudioModel,
 } from "@/lib/audio-studio"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
+import { AdminTag, ADMIN_BORDER, ADMIN_BUTTON, ADMIN_TEXT } from "@/components/ui/admin-mark"
+import { cn } from "@/lib/utils"
 
 type AudioItem = {
   id: number
@@ -158,14 +160,15 @@ function AudioCard({ item, onUsePrompt, onLyricsVideo }: { item: AudioItem; onUs
               <Wand2 size={11} /> Reuse text
             </button>
           )}
+          {/* Lyrics video: admin accounts only (red) */}
           {canLyricsVideo && (
-            <button onClick={() => setLvOpen(o => !o)} className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] ${lvOpen ? "bg-amber-400/15 border-amber-300/40 text-amber-100" : "bg-white/5 border-white/10 text-slate-200 hover:bg-white/10"}`}>
+            <button onClick={() => setLvOpen(o => !o)} className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] ${ADMIN_BUTTON} ${lvOpen ? "ring-1 ring-red-400/50" : ""}`}>
               <Clapperboard size={11} /> Lyrics video
             </button>
           )}
         </div>
         {canLyricsVideo && lvOpen && lv && (
-          <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-400/[0.05] p-2 space-y-1.5">
+          <div className={`mt-2 rounded-lg border ${ADMIN_BORDER} bg-red-500/[0.05] p-2 space-y-1.5`}>
             <div className="grid grid-cols-2 gap-1.5">
               {lv.options!.map(o => (
                 <select key={o.key} value={lvOpts[o.key as "layout" | "aspect"]} onChange={e => setLvOpts(v => ({ ...v, [o.key]: e.target.value }))}
@@ -230,11 +233,12 @@ function AudioSettings({
       <div>
         <div className="flex items-center gap-2 mb-2">
           <span className={`text-[10px] font-bold uppercase tracking-wider ${g.accent}`}>{g.label}</span>
+          {model.admin && <AdminTag />}
         </div>
-        <select value={model.id} onChange={e => onModelChange(e.target.value)} className={`${field} font-bold text-sm`}>
+        <select value={model.id} onChange={e => onModelChange(e.target.value)} className={cn(field, "font-bold text-sm", model.admin && `${ADMIN_BORDER} focus:border-red-500/60`)}>
           {AUDIO_GROUPS.map(gr => (
             <optgroup key={gr.key} label={gr.label}>
-              {AUDIO_STUDIO_MODELS.filter(m => m.group === gr.key && !m.hidden && (!m.admin || isAdmin)).map(m => <option key={m.id} value={m.id}>{m.name}{m.admin ? " (admin)" : ""}</option>)}
+              {AUDIO_STUDIO_MODELS.filter(m => m.group === gr.key && !m.hidden && (!m.admin || isAdmin)).map(m => <option key={m.id} value={m.id} className={m.admin ? ADMIN_TEXT : undefined}>{m.name}{m.admin ? " (admin)" : ""}</option>)}
             </optgroup>
           ))}
         </select>
@@ -671,7 +675,7 @@ export function AudioStudio({
       </div>
 
       {/* Prompt bar */}
-      <div className="fixed bottom-0 left-0 right-0 sm:left-72 z-30 p-3 sm:p-4 bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent">
+      <div data-prism-fit className="fixed bottom-0 left-0 right-0 sm:left-72 z-30 p-3 sm:p-4 bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent">
         <div className="max-w-4xl mx-auto rounded-2xl border border-white/15 bg-slate-900/95 backdrop-blur-md shadow-2xl shadow-black/50 p-3">
           <div className="flex items-center gap-2 mb-2">
             <span className={`w-2 h-2 rounded-full ${g.dot}`} />

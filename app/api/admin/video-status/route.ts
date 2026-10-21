@@ -207,10 +207,12 @@ export async function POST(req: Request) {
     console.error('Admin video status error:', error, 'body:', JSON.stringify(error.body))
     // 422 ValidationError = FAL rejected the job (bad input, unsupported format, content policy)
     // Treat these as permanent failures so the UI stops polling and shows the error.
-    if (error.status === 422 || error.constructor?.name === 'ValidationError') {
+    // A 400 / 403 on a finished job is final too (2026-10-21: Kling 4.0 answered
+    // 403 "You are not on early access" - the tile span until its timeout)
+    if (error.status === 422 || error.status === 400 || error.status === 403 || error.constructor?.name === 'ValidationError') {
       const rawDetail = Array.isArray(error.body?.detail)
         ? error.body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ')
-        : error.body?.message || error.message || 'Unprocessable content'
+        : (typeof error.body?.detail === 'string' ? error.body.detail : '') || error.body?.message || error.message || 'Unprocessable content'
       const { friendlyFalVideoError } = await import('@/lib/fal-friendly-errors')
       const detail = friendlyFalVideoError(rawDetail)
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)

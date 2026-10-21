@@ -685,7 +685,7 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
     }
     const ctx: NovaTurnCtx = {
       user, isAdmin, chatId: chat.id, state, budget, spend, persona,
-      steps: [], emit: step => { send({ t: 'step', step: { ...step } }); saveSteps() },
+      steps: [], emit: step => { send({ t: 'step', step: { ...step } }); saveSteps() }, textLength: () => live.text.length,
       // A turn that carries on by itself keeps counting the request's spend against its allowance
       allowance: novaAllowance(budget, state),
       mediaTickets: 0, unplanned: 0, chainBefore: input.continueRenders ? (state.chainUnplanned ?? 0) : 0, reserved: 0, proposedPlan: null, waitForRenders: false,
@@ -765,6 +765,9 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       closed = true
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
       ctx.steps = closeOpenSteps(ctx.steps)
+      // The saved reply is trimmed: the steps' places in it move with the text they followed
+      const leadTrim = text.length - text.trimStart().length, kept = text.trim().length
+      if (leadTrim || kept < text.length) for (const s of ctx.steps) if (s.textAt != null) s.textAt = Math.min(kept, Math.max(0, s.textAt - leadTrim))
 
       // ── pay for the chat: the measured tokens (and the summary's), never more than was held ──
       usage = { inputTokens: usage.inputTokens + compact.usage.inputTokens, outputTokens: usage.outputTokens + compact.usage.outputTokens, cachedInputTokens: usage.cachedInputTokens ?? 0 }

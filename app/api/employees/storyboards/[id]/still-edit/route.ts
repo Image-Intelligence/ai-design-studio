@@ -7,18 +7,15 @@ import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
-import { fal } from '@/lib/fal-client'
-import { uploadToR2 } from '@/lib/r2'
 import { buildFalCall } from '@/lib/chat-hub-create'
 import { fitRefsForModel } from '@/lib/fal-image-fit'
-import { ensureThumbnail } from '@/lib/thumbnail'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 import { canEdit, isAdminOnlyModel, upscaleTickets, EXPAND_TICKETS, EXPAND_MAX_PIXELS } from '@/lib/image-studio-ai'
 import { STORYBOARD_IMAGE_MODELS, SHOT_ASPECTS, sanitizeShots, shotAspect, stillModelSpec, stillBuildOptions, stillTickets, GPT_SIZE_FOR_ASPECT } from '@/lib/storyboard'
 import { STILL_TOOLS, STILL_EDIT_DEFAULT_MODEL, STILL_EDIT_MAX_SIDE, CUTOUT_TICKETS, type StillToolId } from '@/lib/storyboard-tools'
 import { claimStill, patchShot } from '@/lib/storyboard-store'
-import { boardFolder } from '@/lib/storyboard-shoot'
-import { conformToFrame } from '@/lib/storyboard-image'
+import { startStudioJob, failStudioJob } from '@/lib/studio-activity'
+import { submitStillJob } from '@/lib/storyboard-stills'
 
 /**
  * POST /api/employees/storyboards/[id]/still-edit - the Still edits phase.
@@ -31,10 +28,12 @@ import { conformToFrame } from '@/lib/storyboard-image'
  *   expand      Bria Fibo Expand: zoom out (`zoom` 0.5-1 of the new frame)
  *               and / or reach another frame (`aspect`, one of SHOT_ASPECTS)
  *   upscale     SeedVR2 2x, to 4096px on the long side at most
- * Returns: { url, imageId, tickets, aspect? }
+ * Returns: { queued: true, requestId, tickets, balance? } - made in the background
+ * (2026-10-21): charged, sent to fal's queue, and saved onto the slot by
+ * lib/storyboard-stills whether or not a page is open.
  *
  * Like the still route: the slot is claimed on the SERVER (stillJob "making",
- * refused if it already is), the result lands on the slot here as a new
+ * refused if it already is), the result lands on the slot as a new
  * TAKE (the still it edited stays one), it is saved in My Generations >
  * Storyboards > <title>, and a failure is written on the slot and refunded.
  * Priced as lib/storyboard-tools stillToolTickets shows it, measured here.
@@ -159,43 +158,26 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     await patchShot(board.id, shot.id, { stillJob: null }).catch(() => {})
     return jsonPrivate({ error: `${tool.label} needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
   }
+  // The feed's generating tile for it (lib/studio-activity)
+  const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: model, prompt: `${note} (Storyboard still edit)`, studio: 'storyboard-still-edit', aspectRatio: frame, quality: quality || undefined })
   const fail = async (error: string, status: number) => {
     await refundGenerationTickets(user.id, user.email, cost)
+    await failStudioJob(track, error)
     await patchShot(board.id, shot.id, { stillJob: { status: 'failed', at: Date.now(), model, error: error.slice(0, 400) } }).catch(() => {})
     return jsonPrivate({ error }, { status })
   }
 
-  let falUrl: string | undefined
+  // Made in the BACKGROUND (2026-10-21): sent to fal's queue now, saved onto
+  // the slot by lib/storyboard-stills - no page has to stay open for it
   try {
-    const out: any = await fal.subscribe(endpoint, { input })
-    falUrl = out?.data?.images?.[0]?.url ?? out?.data?.image?.url
+    const requestId = await submitStillJob(board.id, shot.id, endpoint, input, {
+      cost: paid.newBalance >= 0 ? cost : 0, track, prompt: `${note} (Storyboard still edit)`.slice(0, 4000), takePrompt: note, model,
+      ...(quality ? { quality } : {}), aspect: newAspect === undefined ? frame : (newAspect ?? board.aspect),
+      refs: refs.length ? refs : [shot.stillUrl], conform: op === 'edit' || op === 'background' ? frame : null,
+      name: `storyboard-${user.id}-${board.id}-${op}`, ...(newAspect !== undefined ? { patch: { aspect: newAspect } } : {}),
+    })
+    return jsonPrivate({ queued: true, requestId, tickets: user.isAdmin ? 0 : cost, ...(paid.newBalance >= 0 ? { balance: paid.newBalance } : {}) })
   } catch (e) {
     return fail(`${tool.label} failed: ${failText(e).slice(0, 240)}`, 502)
   }
-  if (!falUrl) return fail(`${tool.label} returned no picture`, 502)
-  const res = await fetch(falUrl).catch(() => null)
-  if (!res?.ok) return fail('Could not fetch the result', 502)
-  let buf = Buffer.from(await res.arrayBuffer())
-  // An AI edit that drifted off the frame is fitted back (a cut-out, an expand and an upscale keep theirs)
-  if (op === 'edit' || op === 'background') {
-    const fitted = await conformToFrame(buf, frame).catch(() => null)
-    if (fitted) buf = Buffer.from(fitted.buf)
-  }
-  const meta = await sharp(buf).metadata().catch(() => null)
-  const ct = meta?.format === 'png' ? 'image/png' : meta?.format === 'webp' ? 'image/webp' : 'image/jpeg'
-  const ext = ct === 'image/png' ? 'png' : ct === 'image/webp' ? 'webp' : 'jpg'
-  const url = await uploadToR2(`storyboard-${user.id}-${board.id}-${op}-${Date.now()}.${ext}`, buf, ct)
-  const row = await prisma.generatedImage.create({
-    data: {
-      userId: user.id, prompt: `${note} (Storyboard still edit)`.slice(0, 4000), imageUrl: url, model, ticketCost: user.isAdmin ? 0 : cost,
-      referenceImageUrls: refs.length ? refs : [shot.stillUrl],
-      folderId: await boardFolder(user.id, board.title),
-      expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
-      ...(quality ? { quality } : {}), aspectRatio: newAspect === undefined ? frame : (newAspect ?? board.aspect),
-    },
-  })
-  await ensureThumbnail(row.id).catch(() => {})
-  // The new take goes on the slot here - the page may be gone
-  await patchShot(board.id, shot.id, { stillUrl: url, stillJob: null, ...(newAspect !== undefined ? { aspect: newAspect } : {}) }, { url, prompt: note, model, at: Date.now() })
-  return jsonPrivate({ url, imageId: row.id, tickets: user.isAdmin ? 0 : cost, ...(newAspect !== undefined ? { aspect: newAspect } : {}), ...(paid.newBalance >= 0 ? { balance: paid.newBalance } : {}) })
 }

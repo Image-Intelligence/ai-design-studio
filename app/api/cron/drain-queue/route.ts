@@ -278,6 +278,16 @@ export async function GET(request: Request) {
       console.error('[cron-drain] image harvest pass failed:', e)
     }
 
+    // ── 1a-storyboard. Storyboard stills made in the background ─────────────
+    // Sent to fal's queue by the still / still-edit routes (2026-10-21); saved
+    // onto their slots here when no page is open (lib/storyboard-stills).
+    try {
+      const n = await (await import('@/lib/storyboard-stills')).settlePendingStills({ limit: 20, budgetMs: 30_000 })
+      if (n) console.log(`[cron-drain] settled ${n} storyboard still(s)`)
+    } catch (e) {
+      console.error('[cron-drain] storyboard stills pass failed:', e)
+    }
+
     // ── 1a-higgsfield. Finish Higgsfield jobs (admin exclusives, lib/higgsfield) ──
     try {
       const n = await (await import('@/lib/higgsfield')).harvestHiggsfieldJobs({ limit: 8, budgetMs: 40_000 })

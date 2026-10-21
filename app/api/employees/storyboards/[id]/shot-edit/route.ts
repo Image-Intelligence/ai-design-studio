@@ -12,7 +12,7 @@ import { getCreateModel } from '@/lib/chat-hub-models'
 import {
   STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, DURATIONS,
   sanitizeShots, boardMode, imageModelLabel, stillModelSpec,
-  AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, VOICE_HINTS, STORYBOARD_MUSIC_MODELS, musicSpanSeconds,
+  AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, cueKindOf, voicePicker, voiceMenu, VOICE_HINTS, STORYBOARD_MUSIC_MODELS, musicSpanSeconds,
 } from '@/lib/storyboard'
 
 /**
@@ -202,18 +202,18 @@ async function editAudio(
     '',
     `THE SHOT (${i + 1}): ${shot.title} - ${shot.description} (${shot.duration}s)`,
     `Its voice lines now:\n${lineText}`,
-    shot.music ? `Its music cue now (starts here, plays about ${musicSpanSeconds(shots, shot.id)}s): "${shot.music.prompt}"` : runningCue ? `No cue starts here; the cue from an earlier shot plays on: "${clip(runningCue.prompt, 300)}"` : 'No music plays here.',
+    shot.music ? `Its ${cueKindOf(shot.music.model) === 'sound' ? 'ambience' : 'music'} cue now (starts here, plays about ${musicSpanSeconds(shots, shot.id)}s): "${shot.music.prompt}"` : runningCue ? `No cue starts here; the ${cueKindOf(runningCue.model) === 'sound' ? 'ambience' : 'music'} cue from an earlier shot plays on: "${clip(runningCue.prompt, 300)}"` : 'No music or ambience plays here.',
     speakers ? `Voices already cast on the board: ${speakers}.` : '',
     `The voices sound like this: ${voiceMenu()}.`,
     '',
     `THE DIRECTOR'S INSTRUCTION: ${instruction}`,
-    `CHANGE ONLY: ${scope === 'audio' ? 'the voice lines and the music cue' : scope === 'voice' ? 'the voice lines - leave the music alone' : 'the music cue - leave the voice lines alone'}. Keep what is not asked to change.`,
+    `CHANGE ONLY: ${scope === 'audio' ? 'the voice lines and the music / sound cue' : scope === 'voice' ? 'the voice lines - leave the music and sound alone' : 'the music / sound cue - leave the voice lines alone'}. Keep what is not asked to change.`,
     '',
     'Rules:',
     ...AUDIO_PLAN_RULES.filter(r => (doVoice || !r.includes('"voiceLines"')) && (doMusic || !r.includes('"musicCue"'))),
-    '- To remove the music cue starting here, return "musicCue": "-". To keep it, return its prompt unchanged.',
+    '- To remove the cue starting here, return "musicCue": "-". To keep it, return its prompt unchanged. Return "cueKind" with every cue - its current kind unless the instruction asks for music instead of ambience or the other way round.',
     '',
-    `Reply with JSON only: {${doVoice ? '"voiceLines": [{"speaker": string, "text": string, "at": number}], "voices": {"<speaker>": "<voice>"}, ' : ''}${doMusic ? '"musicCue": string, ' : ''}"note": "one short sentence saying what changed"}`,
+    `Reply with JSON only: {${doVoice ? '"voiceLines": [{"speaker": string, "text": string, "at": number}], "voices": {"<speaker>": "<voice>"}, ' : ''}${doMusic ? '"musicCue": string, "cueKind": "music" | "ambience", ' : ''}"note": "one short sentence saying what changed"}`,
   ].filter(Boolean).join('\n')
 
   const paid = await chargeAiText(user, SHOT_EDIT_TICKETS)
@@ -242,7 +242,7 @@ async function editAudio(
     if (doMusic && typeof out?.musicCue === 'string') {
       if (out.musicCue.trim() === '-') { if (shot.music) patch.music = null }
       else {
-        const cue = cueFromPlan(out.musicCue, shot.music)
+        const cue = cueFromPlan(out.musicCue, shot.music, out?.cueKind)
         if (cue && cue !== shot.music) patch.music = { ...cue, model: STORYBOARD_MUSIC_MODELS.some(m => m.id === cue.model) ? cue.model : STORYBOARD_MUSIC_MODELS[0].id }
       }
     }

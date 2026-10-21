@@ -21,6 +21,7 @@ export async function GET(req: Request) {
         falRequestId: true,
         errorMessage: true,
         parameters: true,
+        resultImageId: true,
       },
     })
 
@@ -35,6 +36,8 @@ export async function GET(req: Request) {
       // Higgsfield's queued videos carry their poller marker (lib/higgsfield-models)
       falEndpoint: params?.falEndpoint ?? (params?.provider === 'higgsfield' && params?.hfEndpoint ? `higgsfield:${params.hfEndpoint}` : undefined),
       errorMessage: job.errorMessage,
+      // A studio video (lib/studio-activity) finishes with no fal request: the feed fetches this row
+      resultImageId: job.resultImageId,
     })
   } catch (err: any) {
     console.error('queue-job-status error:', err)

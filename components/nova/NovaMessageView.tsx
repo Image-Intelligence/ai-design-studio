@@ -180,6 +180,40 @@ function AudioTile({ step, url }: { step: NovaStep; url: string }) {
   )
 }
 
+/**
+ * One run of work in a reply: the library rows, the critic's cards and the
+ * media grid, for the steps taken between two pieces of the reply's text.
+ */
+function StepGroup({ steps }: { steps: NovaStep[] }) {
+  const media = steps.filter(isMediaStep)
+  const critics = steps.filter(s => s.tool === "critique_work")
+  // Model lookups are behind-the-scenes; the library rows are what the user follows
+  const rows = steps.filter(s => !isMediaStep(s) && s.tool !== "critique_work" && s.tool !== "recommend_models" && s.tool !== "browse_models")
+  if (!rows.length && !critics.length && !media.length) return null
+  return (
+    <>
+      {!!rows.length && <div className="mt-2.5 grid gap-1 md:grid-cols-2 max-w-[1100px]">{rows.map(s => <StepRow key={s.id} step={s} />)}</div>}
+      {!!critics.length && <div className="mt-2.5 space-y-1.5 max-w-[720px]">{critics.map(s => <CriticCard key={s.id} step={s} />)}</div>}
+      {!!media.length && (
+        /*
+         * A grid, not CSS columns (2026-10-20): Safari (iPhone / iPad) paints
+         * animated pieces inside multi-column layout in the wrong place - the
+         * floating figure on a "Making the image..." tile landed on another
+         * tile or over the "still working" banner. Rows come from the cards'
+         * own mb-2.5; items-start keeps a short tile from stretching.
+         * Columns follow the reply's own width (a container query), not the
+         * screen's: Prism's narrow dock gets one column, Nova Studio up to four.
+         */
+        <div className="mt-2.5 @container">
+          <div className={media.length === 1 ? "max-w-[560px]" : media.length === 2 ? "grid grid-cols-1 @sm:grid-cols-2 gap-x-2.5 items-start max-w-[900px]" : "grid grid-cols-1 @sm:grid-cols-2 @3xl:grid-cols-3 @6xl:grid-cols-4 gap-x-2.5 items-start"}>
+            {media.map(s => <MediaCard key={s.id} step={s} />)}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 /** A generation: the media itself, its status, and model · tickets · #id under it. */
 const MediaCard = memo(function MediaCard({ step }: { step: NovaStep }) {
   const [open, setOpen] = useState(false)
@@ -508,10 +542,26 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
 
   const steps = message.steps ?? []
   const media = steps.filter(isMediaStep)
-  const critics = steps.filter(s => s.tool === "critique_work")
-  // Model lookups are behind-the-scenes; the library rows are what the user follows
-  const rows = steps.filter(s => !isMediaStep(s) && s.tool !== "critique_work" && s.tool !== "recommend_models" && s.tool !== "browse_models")
   const settledMedia = media.filter(s => s.status === "done").length
+  const content = message.content ?? ""
+  /*
+   * Text and work in the order they happened (2026-10-20, owner: Prism's
+   * "done" recap sat ABOVE the pictures it was about). Each step knows how much
+   * of the reply was written when it began (textAt), so the reply is cut there:
+   * what was said before the work, the work, then the wrap-up under it. Steps
+   * from before textAt existed count as 0 - the work first, then the text.
+   */
+  const parts: ({ text: string } | { steps: NovaStep[] })[] = []
+  let at = 0
+  for (const st of steps) {
+    const cut = Math.min(content.length, Math.max(at, st.textAt ?? 0))
+    if (cut > at && content.slice(at, cut).trim()) parts.push({ text: content.slice(at, cut) })
+    at = Math.max(at, cut)
+    const last = parts[parts.length - 1]
+    if (last && "steps" in last) last.steps.push(st)
+    else parts.push({ steps: [st] })
+  }
+  if (content.slice(at).trim()) parts.push({ text: content.slice(at) })
   const t = message.tickets
   const total = t ? t.chat + t.media : 0
 
@@ -525,29 +575,12 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
           {streaming && <span className="inline-flex items-center gap-1 text-[10px] text-fuchsia-200"><span className="w-1 h-1 rounded-full bg-fuchsia-300 animate-pulse" />working</span>}
           {message.route ? <RouteChip route={message.route} /> : message.model && <span className="text-[10px] font-mono text-slate-600">{message.model}</span>}
         </div>
-        {message.content
-          ? <div className="max-w-[78ch]"><NovaMarkdown text={message.content} /></div>
-          : streaming && !steps.length && (
-            <div className="flex items-center gap-2 text-[12px] text-slate-500"><Loader2 size={12} className="animate-spin" /> Thinking…</div>
-          )}
-        {!!rows.length && <div className="mt-2.5 grid gap-1 md:grid-cols-2 max-w-[1100px]">{rows.map(s => <StepRow key={s.id} step={s} />)}</div>}
-        {!!critics.length && <div className="mt-2.5 space-y-1.5 max-w-[720px]">{critics.map(s => <CriticCard key={s.id} step={s} />)}</div>}
-        {!!media.length && (
-          /*
-           * A grid, not CSS columns (2026-10-20): Safari (iPhone / iPad) paints
-           * animated pieces inside multi-column layout in the wrong place - the
-           * floating figure on a "Making the image..." tile landed on another
-           * tile or over the "still working" banner. Rows come from the cards'
-           * own mb-2.5; items-start keeps a short tile from stretching.
-           * Columns follow the reply's own width (a container query), not the
-           * screen's: Prism's narrow dock gets one column, Nova Studio up to four.
-           */
-          <div className="mt-2.5 @container">
-            <div className={media.length === 1 ? "max-w-[560px]" : media.length === 2 ? "grid grid-cols-1 @sm:grid-cols-2 gap-x-2.5 items-start max-w-[900px]" : "grid grid-cols-1 @sm:grid-cols-2 @3xl:grid-cols-3 @6xl:grid-cols-4 gap-x-2.5 items-start"}>
-              {media.map(s => <MediaCard key={s.id} step={s} />)}
-            </div>
-          </div>
+        {!content.trim() && streaming && !steps.length && (
+          <div className="flex items-center gap-2 text-[12px] text-slate-500"><Loader2 size={12} className="animate-spin" /> Thinking…</div>
         )}
+        {parts.map((p, k) => "text" in p
+          ? <div key={`t${k}`} className={`max-w-[78ch] ${k ? "mt-2.5" : ""}`}><NovaMarkdown text={p.text.trim()} /></div>
+          : <StepGroup key={`s${k}`} steps={p.steps} />)}
         {message.plan && (
           <div className="max-w-[720px]">
           <PlanCard plan={message.plan} actionable={isLatestAssistant && !streaming} busy={busy}

@@ -15,6 +15,7 @@ import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { GenerationsCarousel } from "@/components/home/GenerationsCarousel"
 import { StudioLaunchers } from "@/components/dashboard/StudioLaunchers"
 import { TicketPill, RechargeInline } from "@/components/tickets/RechargeStation"
+import { ADMIN_BUTTON } from "@/components/ui/admin-mark"
 
 interface UserData {
   id: number
@@ -278,7 +279,7 @@ export default function DashboardPage() {
             </div>
             {isAdmin && (
               <Link href="/admin">
-                <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/15 bg-white/[0.06] hover:border-white/30 hover:bg-white/10 text-xs text-slate-200 transition-all">
+                <button className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all ${ADMIN_BUTTON}`}>
                   <ShieldCheck size={12} />
                   <span className="hidden sm:inline">Admin</span>
                 </button>

@@ -6,6 +6,7 @@
 
 import { useState } from "react"
 import { createPortal } from "react-dom"
+import { AdminTag } from "@/components/ui/admin-mark"
 import {
   ChevronLeft, ChevronRight, X, Search, FolderOpen, FolderPlus, Plus, Loader2,
 } from "lucide-react"
@@ -99,7 +100,7 @@ export function AddToBucketModal({ count, buckets, folders, recentBucketIds, loa
               </button>
             )}
             <div>
-              <p className="text-sm font-semibold text-white">Add to Bucket</p>
+              <p className="flex items-center gap-1.5 text-sm font-semibold text-white">Add to Bucket <AdminTag /></p>
               <p className="text-[11px] text-slate-600 mt-0.5">
                 {count} image{count !== 1 ? "s" : ""}
                 {browsePath.length > 0 && (

@@ -243,23 +243,24 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
       </p>
       {notice && <p className="text-[10.5px] text-amber-300 leading-snug">{notice}</p>}
 
-      {/* Cast & sets: what the AI draft says the board relies on, not made yet */}
+      {/* Cast & sets: what the AI draft says the board relies on, not made yet -
+          in the site's silver (2026-10-21, owner: not purple - "make sure it carries the sites branding") */}
       {suggestedList.length > 0 && (
-        <div className="rounded-xl border border-violet-300/25 bg-violet-500/[0.06] p-2 space-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <Sparkles size={12} className="text-violet-200" />
-            <span className="text-[11px] font-bold text-violet-100">Suggested by the draft</span>
-            <span className="text-[9.5px] font-mono text-violet-200/60">{suggestedList.length}</span>
-            <button onClick={() => onChange(list => list.map(x => (x.suggested ? { ...x, suggested: undefined } : x)))}
-              className="ml-auto rounded-md border border-violet-300/30 px-1.5 py-0.5 text-[10px] text-violet-100 hover:bg-violet-500/20">Create all</button>
-            <button onClick={() => onChange(list => list.filter(x => !x.suggested))} title="Dismiss every suggestion" className="text-violet-200/60 hover:text-white"><X size={12} /></button>
+        <div className="relative isolate overflow-hidden rounded-xl border border-white/15 bg-gradient-to-b from-white/[0.06] to-white/[0.015] p-2 space-y-1.5">
+          <SilverRimOverlay />
+          <div className="relative flex items-center gap-1.5">
+            <Sparkles size={12} className="text-slate-200" />
+            <span className="text-[11px] font-bold text-slate-100">Suggested by the draft</span>
+            <span className="text-[9.5px] font-mono text-slate-400">{suggestedList.length}</span>
+            <BrandButton onClick={() => onChange(list => list.map(x => (x.suggested ? { ...x, suggested: undefined } : x)))} size="xs" className="ml-auto">Create all</BrandButton>
+            <button onClick={() => onChange(list => list.filter(x => !x.suggested))} title="Dismiss every suggestion" className="text-slate-500 hover:text-white"><X size={12} /></button>
           </div>
-          <p className="text-[9.5px] leading-snug text-violet-100/60">The recurring characters, places and things your plan uses. Create them as assets - and make their pictures, so every still keeps them looking the same.</p>
+          <p className="relative text-[9.5px] leading-snug text-slate-400">The recurring characters, places and things your plan uses. Create them as assets - and make their pictures, so every still keeps them looking the same.</p>
           {suggestedList.map(a => {
             const Icon = ASSET_ICONS[a.kind]
             const views = assetViewPlan(a.kind, { outfitViews: outfitViews[a.id] ?? 1, boardAspect })
             return (
-              <div key={a.id} className="rounded-lg border border-white/10 bg-black/25 p-1.5 space-y-1">
+              <div key={a.id} className="relative rounded-lg border border-white/10 bg-black/30 p-1.5 space-y-1">
                 <div className="flex items-center gap-1.5">
                   <Icon size={12} className="shrink-0 text-slate-200" />
                   <input value={a.name} onChange={e => patch(a.id, x => ({ ...x, name: e.target.value.slice(0, 80) }))}
@@ -280,13 +281,12 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
                   )}
                   <button onClick={() => patch(a.id, x => ({ ...x, suggested: undefined }))}
                     className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] font-semibold text-slate-200 hover:bg-white/10">Create</button>
-                  <button onClick={() => void makePictures(a)} disabled={!boardId || !!picturing[a.id]}
-                    title={`Create it and make ${views.length} picture${views.length === 1 ? "" : "s"}: ${views.map(v => v.label).join(", ")}`}
-                    className="flex items-center gap-1 rounded-md border border-violet-300/40 bg-violet-500/20 px-2 py-0.5 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/30 disabled:opacity-50">
-                    {picturing[a.id] ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                  <BrandButton onClick={() => void makePictures(a)} disabled={!boardId || !!picturing[a.id]} busy={!!picturing[a.id]} primary size="xs"
+                    icon={<Sparkles size={10} />}
+                    title={`Create it and make ${views.length} picture${views.length === 1 ? "" : "s"}: ${views.map(v => v.label).join(", ")}`}>
                     Create + {views.length} picture{views.length === 1 ? "" : "s"}
-                    <span className="inline-flex items-center gap-0.5 font-mono opacity-80"><Ticket size={9} />{priceOf(a)}</span>
-                  </button>
+                    <span className="ml-1 inline-flex items-center gap-0.5 font-mono opacity-80"><Ticket size={9} />{priceOf(a)}</span>
+                  </BrandButton>
                 </div>
               </div>
             )
@@ -300,8 +300,21 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
       {assets.filter(a => !a.suggested).map(a => {
         const Icon = ASSET_ICONS[a.kind]
         const isOpen = open[a.id] ?? true
+        // For the AI draft (2026-10-21): the asset on / off, and which of its pictures go
+        // (togglePick never leaves every picture out - that switches the asset off instead)
+        const draftOn = !a.draftOff
+        const picksOn = a.draftOff ? 0 : a.refs.filter(r => !a.refOff?.includes(r.id)).length
+        const togglePick = (refId: string) => patch(a.id, x => {
+          // Off: switched on with just this picture
+          if (x.draftOff) return { ...x, draftOff: undefined, refOff: x.refs.filter(r => r.id !== refId).map(r => r.id) }
+          const off = x.refOff ?? []
+          const next = off.includes(refId) ? off.filter(id => id !== refId) : [...off, refId]
+          // The last picture left out switches the asset off
+          if (x.refs.every(r => next.includes(r.id))) return { ...x, draftOff: true, refOff: undefined }
+          return { ...x, refOff: next.length ? next : undefined }
+        })
         return (
-          <div key={a.id} className="rounded-xl border border-white/10 bg-black/20">
+          <div key={a.id} className={`rounded-xl border bg-black/20 ${draftOn ? "border-white/10" : "border-white/[0.06] opacity-80"}`}>
             <div className="flex items-center gap-1.5 px-2 py-1.5">
               <button onClick={() => setOpen(o => ({ ...o, [a.id]: !isOpen }))} className="text-slate-500 hover:text-white">
                 {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -313,7 +326,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
                 className="flex-1 min-w-0 bg-transparent text-[11.5px] font-semibold text-slate-100 focus:outline-none"
               />
               <span className="text-[9px] uppercase tracking-wider text-slate-600 shrink-0">{kindLabel(a.kind)}</span>
-              <span className="text-[9.5px] font-mono text-slate-500 shrink-0">{a.refs.length}</span>
+              <span className="text-[9.5px] font-mono text-slate-500 shrink-0" title="Pictures the AI draft may use / all of them">{a.refs.length ? `${picksOn}/${a.refs.length}` : 0}</span>
               <button
                 onClick={() => saveToLibrary(a)}
                 disabled={saving === a.id || a.refs.length === 0}
@@ -330,12 +343,24 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
                 </button>
               )}
               <button onClick={() => onChange(list => list.filter(x => x.id !== a.id))} title="Delete this asset (the images stay in your library)" className="text-slate-600 hover:text-red-400 shrink-0"><Trash2 size={11} /></button>
+              {/* Used by the AI draft - the scenes' switch */}
+              <button
+                role="switch"
+                aria-checked={draftOn}
+                onClick={() => patch(a.id, x => (draftOn ? { ...x, draftOff: true, refOff: undefined } : { ...x, draftOff: undefined, refOff: undefined }))}
+                title={draftOn ? "Leave this asset out of the AI draft" : "Let the AI draft use this asset"}
+                className={`relative h-4 w-7 shrink-0 rounded-full border transition-colors ${draftOn ? "border-white bg-white" : "border-white/25 bg-white/[0.06]"}`}
+              >
+                <span className={`absolute top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full transition-all ${draftOn ? "left-[14px] bg-black" : "left-[2px] bg-slate-400"}`} />
+              </button>
             </div>
             {isOpen && (
               <div className="px-2 pb-2 space-y-1.5">
                 <div className="grid grid-cols-5 gap-1">
-                  {a.refs.map((r, k) => (
-                    <div key={r.id} className="relative group">
+                  {a.refs.map((r, k) => {
+                    const picked = !a.draftOff && !a.refOff?.includes(r.id)
+                    return (
+                    <div key={r.id} className={`relative group ${picked ? "" : "opacity-40 hover:opacity-75"}`}>
                       <a
                         href={r.url}
                         target="_blank"
@@ -354,8 +379,17 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
                       >
                         <X size={8} />
                       </button>
+                      {/* This picture for the AI draft, or not */}
+                      <button
+                        onClick={() => togglePick(r.id)}
+                        title={picked ? "Used by the AI draft - tap to leave this picture out" : "Left out of the AI draft - tap to use this picture"}
+                        className={`absolute right-0.5 top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border ${picked ? "border-white bg-white text-black" : "border-white/40 bg-black/70 text-transparent hover:text-slate-300"}`}
+                      >
+                        <Check size={9} />
+                      </button>
                     </div>
-                  ))}
+                    )
+                  })}
                   {a.refs.length < MAX_ASSET_REFS && (
                     <button
                       onClick={() => setPicker(a.id)}
@@ -380,7 +414,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
                       title={a.refs.length === 0
                         ? `Make ${isPersonKind(a.kind) ? "front, three-quarter and back views" : isPlaceKind(a.kind) ? "a wide view" : a.kind === "wardrobe" ? "the outfit's views" : "a picture"} from the notes below`
                         : "Another angle - an edit of the first picture, so the place / thing stays the same"}
-                      className="flex items-center gap-1 rounded-md border border-violet-300/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/20 disabled:opacity-50">
+                      className="flex items-center gap-1 rounded-md border border-white/20 bg-white/[0.06] px-2 py-0.5 text-[10px] font-semibold text-slate-100 hover:bg-white/[0.12] hover:border-white/35 disabled:opacity-50">
                       {picturing[a.id] ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
                       {a.refs.length === 0 ? "Make pictures" : "Another angle"}
                       <span className="inline-flex items-center gap-0.5 font-mono opacity-80"><Ticket size={9} />{priceOf(a, a.refs.length > 0)}</span>
@@ -974,6 +1008,30 @@ function DescribeAsset({ asset, thumb, onClose, onChange }: {
 }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  /*
+   * Kept for good (2026-10-21, owner: captions made on one board were gone on
+   * the next board with the same assets). An asset from My Assets writes its
+   * captions back there - after Auto caption, and on closing when they were
+   * edited by hand - so every board that adds it gets them.
+   */
+  const captionsOf = (refs: StoryAsset["refs"]) => JSON.stringify(refs.map(r => [r.url, r.caption ?? "", r.tags ?? []]))
+  const opened = useRef(captionsOf(asset.refs))
+  const syncLibrary = (refs: StoryAsset["refs"]) => {
+    if (!asset.libraryId) return
+    opened.current = captionsOf(refs)
+    void fetch("/api/user/assets", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: asset.libraryId,
+        captionsByUrl: Object.fromEntries(refs.map(r => [r.url, r.caption ?? ""])),
+        tagsByUrl: Object.fromEntries(refs.map(r => [r.url, r.tags ?? []])),
+      }),
+    }).catch(() => {})
+  }
+  const close = () => {
+    if (captionsOf(asset.refs) !== opened.current) syncLibrary(asset.refs)
+    onClose()
+  }
   const setCaption = (id: string, caption: string) =>
     onChange({ ...asset, refs: asset.refs.map(r => (r.id === id ? { ...r, caption: caption.slice(0, 300) } : r)) })
   const auto = async () => {
@@ -992,18 +1050,19 @@ function DescribeAsset({ asset, thumb, onClose, onChange }: {
         .sort((p, q) => p._i - q._i)
         .map(({ _i, ...x }) => x)
       onChange({ ...asset, refs })
+      syncLibrary(refs)
     } catch (e) {
       setErr(String((e as Error).message || e))
     } finally { setBusy(false) }
   }
   if (typeof document === "undefined") return null
   return createPortal(
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onMouseDown={e => { if (e.target === e.currentTarget) close() }}>
       <div className="relative isolate flex max-h-[88dvh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-[#0d1322] to-[#080b14] shadow-2xl">
         <SilverRimOverlay />
         <div className="relative space-y-2 border-b border-white/[0.06] px-5 pb-3 pt-5">
           <BrandTitle title={`Describe ${asset.name}`} eyebrow={`${asset.refs.filter(r => r.caption).length}/${asset.refs.length} pictures described`} logo={26}
-            right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={16} /></button>} />
+            right={<button onClick={close} className="text-slate-500 hover:text-white"><X size={16} /></button>} />
           <div className="flex flex-wrap items-center gap-2">
             <p className="min-w-[12rem] flex-1 text-[11px] leading-snug text-slate-500">
               Say what each picture shows - the angle, pose, expression, outfit. The AI draft reads these to give each shot the right pictures, from any asset.
@@ -1036,7 +1095,7 @@ function DescribeAsset({ asset, thumb, onClose, onChange }: {
           ))}
         </div>
         <div className="relative flex justify-end border-t border-white/[0.06] px-5 py-3">
-          <BrandButton onClick={onClose} primary size="sm">Done</BrandButton>
+          <BrandButton onClick={close} primary size="sm">Done</BrandButton>
         </div>
       </div>
     </div>,

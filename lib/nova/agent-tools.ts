@@ -166,6 +166,8 @@ export type NovaTurnCtx = {
   /** Every step of this turn, in order; `emit` streams one to the browser. */
   steps: NovaStep[]
   emit: (step: NovaStep) => void
+  /** How long the reply's text is so far - stamped on each new step (NovaStep.textAt). */
+  textLength?: () => number
   /** Generation tickets spent this turn (real charges, as the routes report them). */
   mediaTickets: number
   /** Of those, spent outside a plan - limited by the allowance. */
@@ -208,7 +210,7 @@ export type NovaTurnCtx = {
 let stepSeq = 0
 export const newStep = (ctx: NovaTurnCtx, s: Omit<NovaStep, 'id'>): NovaStep => {
   const now = Date.now()
-  const step: NovaStep = { id: `s${now.toString(36)}${(stepSeq++).toString(36)}`, startedAt: now, ...s }
+  const step: NovaStep = { id: `s${now.toString(36)}${(stepSeq++).toString(36)}`, startedAt: now, textAt: ctx.textLength?.() ?? 0, ...s }
   ctx.steps.push(step)
   ctx.emit(step)
   return step

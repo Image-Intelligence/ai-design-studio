@@ -2,13 +2,14 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  AlertCircle, ArrowDown, ArrowUp, Check, Menu, MessageSquarePlus, Paperclip, Pencil, PlayCircle,
+  AlertCircle, ArrowDown, ArrowUp, Menu, MessageSquarePlus, Paperclip, Pencil, PlayCircle,
   ShieldCheck, Square, Ticket, Trash2, X, Loader2, PanelRight, Clapperboard, Image as ImageIcon, FolderTree,
   UserRound, Images, Radio, Mountain, Video, AudioLines, Box, Library, Upload,
 } from "lucide-react"
 import { NOVA_AUTO, NOVA_MODELS, cleanRunBudget, type NovaContextMark, type NovaPersonaId, type NovaBudget, type NovaChatSummary, type NovaMessage, type NovaSpend } from "@/lib/nova/config"
 import { promptModelLabel } from "@/lib/prompt-models"
 import { Dropdown } from "@/components/employees/Dropdown"
+import { ADMIN_BUTTON, ADMIN_TEXT } from "@/components/ui/admin-mark"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { openLibraryPickerItems, type PickedItem } from "@/components/feed/LibraryPicker"
 import { NovaMessageView, Lightbox, NovaOpenMediaContext } from "./NovaMessageView"
@@ -20,7 +21,7 @@ import { announceNewMedia, feedKindOf, type FeedKind } from "@/lib/feed-events"
 import { NovaBudgetPanel } from "./NovaBudgetPanel"
 import { NovaRunBudget } from "./NovaRunBudget"
 import { NOVA_UI, PRISM_UI, NovaPersonaContext } from "./persona"
-import { PrismHeader, PrismWelcome, ContextDivider, contextLoad } from "@/components/prism/PrismParts"
+import { PrismHeader, PrismWelcome, PrismLoading, ContextDivider, contextLoad } from "@/components/prism/PrismParts"
 import { NovaAssetPicker, type PickedAsset } from "./NovaAssetPicker"
 import { NovaReferences, type RefIds } from "./NovaReferences"
 import { NovaError, novaApi, novaSend, upsertStep, type NovaBackground, type NovaChatDetail, type NovaChatRefs, type NovaChatBible, type NovaNote, type NovaSendBody, type PrismContext } from "./novaApi"
@@ -36,7 +37,11 @@ import { NovaError, novaApi, novaSend, upsertStep, type NovaBackground, type Nov
  *
  * Renders that finish after a turn (video, audio, 3D) are polled through the
  * jobs route; when Nova asked to continue once they land, the chat carries on
- * by itself (the per-chat Auto-continue switch, on by default). The same
+ * by itself - it is the rest of the same piece of work (the clips going into
+ * the cut), and the server's sweep carries it on anyway with the tab closed.
+ * (2026-10-20, owner: the per-chat "Auto-continue after renders" switch is
+ * gone - turning it off only swapped this tab's carry-on for a Continue
+ * button while the server went on regardless. Stop ends a run.) The same
  * happens when a turn stopped at its step limit with an approved plan still
  * running (keepGoing) - up to the server's cap of turns in a row.
  *
@@ -67,8 +72,6 @@ const MAX_ATTACH = 6
 
 type Overview = { isAdmin: boolean; budget: NovaBudget; spend: NovaSpend; balance: number | null }
 
-const readAuto = (id: number) => { try { return localStorage.getItem(`nova-autocontinue-${id}`) !== "0" } catch { return true } }
-const writeAuto = (id: number, on: boolean) => { try { localStorage.setItem(`nova-autocontinue-${id}`, on ? "1" : "0") } catch {} }
 /* The prompt box's run budget: the last one picked on this device (none yet = the account default, budget.askAbove) */
 const RUN_BUDGET_KEY = "nova-run-budget"
 const readRunBudget = () => { try { return cleanRunBudget(localStorage.getItem(RUN_BUDGET_KEY)) ?? null } catch { return null } }
@@ -187,6 +190,12 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     for (const k of kinds) announceNewMedia(k)
   }, [messages])
   const [loadingChat, setLoadingChat] = useState(false)
+  /*
+   * From the first render until the chat is in: the overview (which says WHICH
+   * chat) comes first, so for a moment there was no chat id and nothing loading -
+   * and the empty-chat welcome flashed before "Opening the chat" (2026-10-21).
+   */
+  const [booting, setBooting] = useState(true)
   /** Prism: older messages exist above the loaded page; where the context was compacted / cleared; today's free questions. */
   const [hasMore, setHasMore] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -229,7 +238,6 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   const [background, setBackgroundState] = useState<NovaBackground | null>(null)
   /** Set while a turn Nova started by herself (plan carrying on) is running. */
   const [carryingOn, setCarryingOn] = useState(false)
-  const [autoContinue, setAutoContinue] = useState(true)
   const [readyToContinue, setReadyToContinue] = useState(false)
   const continuedFor = useRef<Set<number>>(new Set())
 
@@ -321,11 +329,12 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     void loadMemory()
     void (async () => {
       const o = await loadOverview()
-      if (!o) return
-      if (isPrism) { setChatId(o.chats[0]?.id ?? null); return }
+      if (!o) { setBooting(false); return }
+      if (isPrism) { const id = o.chats[0]?.id ?? null; setChatId(id); if (id === null) setBooting(false); return }
       let last: number | null = null
       try { last = Number(localStorage.getItem("nova-chat")) || null } catch {}
       if (last && o.chats.some(c => c.id === last)) setChatId(last)
+      else setBooting(false)
     })()
   }, [loadOverview, isPrism])
 
@@ -335,11 +344,10 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     if (freshChatRef.current !== chatId) { setChatRefs({ assets: [], generations: [] }); setChatBible(null) }
     if (chatId === null) { setChat(null); setMessages([]); return }
     if (!isPrism) { try { localStorage.setItem("nova-chat", String(chatId)) } catch {} }
-    setAutoContinue(readAuto(chatId))
     setReadyToContinue(false)
-    if (freshChatRef.current === chatId) { freshChatRef.current = null; return }
+    if (freshChatRef.current === chatId) { freshChatRef.current = null; setBooting(false); return }
     setLoadingChat(true)
-    void loadChat(chatId).finally(() => setLoadingChat(false))
+    void loadChat(chatId).finally(() => { setLoadingChat(false); setBooting(false) })
   }, [chatId, loadChat, isPrism])
 
   // Keep the newest message in view while the user is at the bottom
@@ -570,14 +578,14 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   // Carry on by itself once Nova's renders land, or straight away when she
   // stopped at her step limit mid-plan (keepGoing) - once per message
   useEffect(() => {
-    if (working || !autoContinue || !lastAssistant || !wantsToContinue) return
+    if (working || !lastAssistant || !wantsToContinue) return
     if (continuedFor.current.has(lastAssistant.id)) return
     const ready = readyToContinue || (lastAssistant.keepGoing && !hasPending)
     if (!ready) return
     continuedFor.current.add(lastAssistant.id)
     setCarryingOn(true)
     void send({ text: "", continue: true })
-  }, [readyToContinue, working, autoContinue, lastAssistant, wantsToContinue, hasPending, send])
+  }, [readyToContinue, working, lastAssistant, wantsToContinue, hasPending, send])
 
   const wasBusy = useRef(false)
   useEffect(() => {
@@ -589,12 +597,6 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     }
     wasBusy.current = working
   }, [working, lastAssistant])
-
-  const continueNow = () => {
-    if (lastAssistant) continuedFor.current.add(lastAssistant.id)
-    setCarryingOn(true)
-    void send({ text: "", continue: true })
-  }
 
   // ── chats ──
   const newChat = async () => {
@@ -817,7 +819,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   const chatSpent = chats.find(c => c.id === chatId)?.spent ?? chat?.spent ?? 0
   const budget = ov?.budget
   const spend = ov?.spend ?? { today: 0, month: 0 }
-  const empty = !loadingChat && messages.length === 0
+  const empty = !booting && !loadingChat && messages.length === 0
 
   // ── what Nova is doing right now (her pose + a line), for the stage, the bar and the live reply ──
   const live = deriveNovaLive({ messages, streamingId: following && lastAssistant ? lastAssistant.id : STREAM_ID, busy: working, justDone, now: nowTick })
@@ -831,7 +833,8 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   }
 
   const chip = "inline-flex items-center gap-1 px-2 py-1 rounded-md border border-white/[0.08] bg-white/[0.03] text-slate-300 tabular-nums whitespace-nowrap"
-  const balanceText = ov?.balance === null ? "Free · admin" : ov ? String(ov.balance) : "…"
+  // An admin account (no balance - not billed) reads red
+  const balanceText = ov?.balance === null ? <span className={ADMIN_TEXT}>Free · admin</span> : ov ? String(ov.balance) : "…"
 
   const panel = (
     <NovaStudioPanel live={live} chatTitle={chat?.title} plan={chat?.plan ?? null} chatSpent={chatSpent} spend={spend} budget={budget}
@@ -936,14 +939,14 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
               title={safetyOn
                 ? "Safety filter ON - Nova follows the site's content rules (admin switch, shared with the composer's Filter button)"
                 : "Safety filter OFF for admin accounts - Nova does not refuse on its own and defers to the models' checks (no minors, no explicit real people still holds). Shared with the composer's Filter button."}
-              className={`shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[10.5px] font-semibold transition-colors disabled:opacity-50 ${safetyOn
-                ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
-                : "border-amber-400/40 bg-amber-500/15 text-amber-200"}`}>
-              <ShieldCheck size={11} /> Safety {safetyOn ? "ON" : "OFF"}
+              // Red: admin accounts only; the icon keeps the ON (green) / OFF (amber) state
+              className={`shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-semibold transition-colors disabled:opacity-50 ${ADMIN_BUTTON}`}>
+              <ShieldCheck size={11} className={safetyOn ? "text-emerald-300" : "text-amber-300"} /> Safety {safetyOn ? "ON" : "OFF"}
             </button>
           )}
           {admin && chat && (
-            <div className="hidden sm:block w-44 lg:w-52 shrink-0">
+            // The admin model menu, ringed red (admin accounts only)
+            <div className="hidden sm:block w-44 lg:w-52 shrink-0 rounded-lg ring-1 ring-red-500/50">
               <Dropdown value={chat.model || NOVA_AUTO} options={modelOptions} onChange={v => void setModel(v)} disabled={busy} className="w-full" />
             </div>
           )}
@@ -972,12 +975,12 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
         <div className="relative flex-1 min-h-0 flex flex-col">
         <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
           <div className={isPrism ? "px-3 sm:px-4 py-4 space-y-5" : "max-w-[1500px] mx-auto px-3 sm:px-6 xl:px-10 py-5 sm:py-6 space-y-6"}>
-            {loadingChat && (
+            {(booting || loadingChat) && (isPrism ? <PrismLoading /> : (
               <div className="flex flex-col items-center justify-center gap-3 py-20 text-slate-500">
                 <NovaFigure pose="thinking" size={72} busy />
                 <span className="text-[12px]">Opening the chat…</span>
               </div>
-            )}
+            ))}
             {empty && isPrism && <PrismWelcome onPick={t => void submit(t)} disabled={busy} freeLeft={prismInfo?.freeLeft} />}
             {isPrism && hasMore && !loadingChat && (
               <button onClick={() => void loadOlder()} disabled={loadingOlder}
@@ -1047,14 +1050,6 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
             {busy && carryingOn && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.05] text-[11.5px] text-fuchsia-100">
                 <Loader2 size={12} className="animate-spin" /> {P.name} is carrying on with the plan…
-              </div>
-            )}
-            {!working && lastAssistant && wantsToContinue && (readyToContinue || (lastAssistant.keepGoing && !hasPending)) && !continuedFor.current.has(lastAssistant.id) && !autoContinue && (
-              <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.06] text-[12px] text-emerald-200">
-                <Check size={13} /> {lastAssistant.keepGoing ? `${P.name} paused mid-plan and can carry on.` : "The renders are ready."}
-                <button onClick={continueNow} className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-white font-semibold">
-                  <PlayCircle size={12} /> Continue
-                </button>
               </div>
             )}
           </div>
@@ -1157,12 +1152,6 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
             </div>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-slate-500">
               <span>{isPrism && prismInfo?.freeLeft != null ? `${prismInfo.freeLeft} free quick question${prismInfo.freeLeft === 1 ? "" : "s"} left today · ` : ""}{isPrism ? "Making things costs tickets" : "Chat and generations cost tickets"} · {P.name} asks first above {runValue}</span>
-              {chat && (
-                <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer select-none" title={`When ${P.name} is waiting on renders or paused mid-plan, carry on automatically`}>
-                  <input type="checkbox" checked={autoContinue} onChange={e => { setAutoContinue(e.target.checked); if (chat) writeAuto(chat.id, e.target.checked) }} className="accent-fuchsia-400" />
-                  Auto-continue after renders
-                </label>
-              )}
             </div>
           </div>
         </div>

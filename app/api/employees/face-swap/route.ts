@@ -6,6 +6,7 @@ import { cookies } from 'next/headers'
 import { getUserFromSession } from '@/lib/auth'
 import { checkIsAdmin } from '@/lib/admin-check'
 import { jsonPrivate } from '@/lib/api-json'
+import { startStudioJob, finishStudioJob, failStudioJob } from '@/lib/studio-activity'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -41,6 +42,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     return jsonPrivate({ error: 'Both a face image and a body image are required' }, { status: 400 })
   }
 
+  // The feed's generating tile for it (lib/studio-activity)
+  const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: 'face-swap', prompt: 'Face Swap Studio', studio: 'face-swap' })
   try {
     // base = the image that KEEPS its body/outfit; swap = the face donor.
     const result: any = await fal.subscribe('fal-ai/face-swap', {
@@ -48,7 +51,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       logs: false,
     })
     const outUrl: string | undefined = result?.data?.image?.url ?? result?.image?.url
-    if (!outUrl) return jsonPrivate({ error: 'The model returned no image' }, { status: 502 })
+    if (!outUrl) { await failStudioJob(track, 'The model returned no image'); return jsonPrivate({ error: 'The model returned no image' }, { status: 502 }) }
 
     // Re-host: a fal url expires, and everything else in the feed is on R2.
     const fetched = await fetch(outUrl, { signal: AbortSignal.timeout(60_000) })
@@ -70,8 +73,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       select: { id: true, imageUrl: true },
     })
 
+    await finishStudioJob(track, [saved.id], saved.imageUrl)
     return jsonPrivate({ url: saved.imageUrl, id: saved.id })
   } catch (err: any) {
+    await failStudioJob(track, String(err?.message || err))
     return jsonPrivate(
       { error: String(err?.message || err).slice(0, 300) },
       { status: 500 },

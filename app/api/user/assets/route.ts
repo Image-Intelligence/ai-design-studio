@@ -95,6 +95,21 @@ export async function PATCH(req: Request) {
   refs = withRefs(refs, adds)
   // Captions / tags / order edited in place (the editors, Auto caption)
   if (body.captions || body.tags || body.order) refs = withCaptions(refs, { captions: body.captions, tags: body.tags, order: body.order })
+  /*
+   * A board's copy writing its captions back (2026-10-21, owner: captions made
+   * on one board were gone on the next - they "should stay there permanently
+   * unless the user manually edits them or reruns the ai"). The board knows
+   * its pictures by URL, not by this asset's ref ids: matched by file name
+   * (signed and canonical links share it). Pictures the library does not
+   * hold are ignored.
+   */
+  if (body.captionsByUrl || body.tagsByUrl) {
+    const key = (u: string) => u.split('?')[0].split('/').pop() ?? u
+    const idOf = new Map(refs.map(r => [key(r.url), r.id]))
+    const remap = (m: unknown) => Object.fromEntries(Object.entries(m && typeof m === 'object' ? m as Record<string, unknown> : {})
+      .map(([u, v]) => [idOf.get(key(u)), v] as const).filter(([id]) => !!id))
+    refs = withCaptions(refs, { captions: remap(body.captionsByUrl), tags: remap(body.tagsByUrl) })
+  }
 
   const updated = await updateAsset(user.id, row.id, {
     kind: 'kind' in body ? assetKind(body.kind) : row.kind,

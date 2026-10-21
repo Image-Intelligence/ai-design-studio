@@ -29,6 +29,7 @@ import { createPortal } from "react-dom"
 import { createFalClient } from "@fal-ai/client"
 import { X, Dice5, Save, Loader2, Eye, ImageIcon, Eraser, Radio, Pause, Check, Power } from "lucide-react"
 import { KREA3_REALTIME_BLOCK_SEC, KREA3_REALTIME_BLOCK_TICKETS } from "@/lib/ticket-pricing"
+import { AdminTag } from "@/components/ui/admin-mark"
 
 /** Close the socket after this long without a change (an open socket bills). */
 const IDLE_MS = 20_000
@@ -419,7 +420,11 @@ export function KreaLiveSession({ source, initialPrompt = "", onClose, onBalance
         {/* Header */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10">
           <div className="min-w-0 flex-1">
-            <p className="whitespace-nowrap text-sm font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Live edit</p>
+            {/* Krea 3 Realtime is admin-only (under test) */}
+            <div className="flex items-center gap-1.5">
+              <p className="whitespace-nowrap text-sm font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60 leading-tight">Live edit</p>
+              <AdminTag />
+            </div>
             <p className="truncate text-[10px] font-mono text-slate-500 uppercase tracking-[0.18em]">Krea 3 Realtime · admin</p>
           </div>
           {/* The state chip - left out when it would only repeat the switch ("Live" / "Off") */}

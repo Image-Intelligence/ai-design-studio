@@ -20,7 +20,8 @@ import {
  *   { kind: 'line', shotId, line: { id?, speaker, text, voice, model, offset } }
  *       voice one line spoken over a shot (dialogue or voice-over) -> { line }
  *   { kind: 'music', shotId, cue: { id?, prompt, model, gainDb? } }
- *       compose the music cue that starts on that shot and runs to the next
+ *       compose the cue - music, or ambience / effects with a sound model
+ *       (2026-10-21) - that starts on that shot and runs to the next
  *       cue (lib/storyboard musicSpanSeconds sets its length) -> { cue }
  *
  * The line / cue is written onto the shot here, under the row lock (lib/
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   } else {
     const c = body.cue ?? {}
     text = String(c.prompt ?? '').trim().slice(0, 1500)
-    if (!text) return jsonPrivate({ error: 'Describe the music first' }, { status: 400 })
+    if (!text) return jsonPrivate({ error: 'Describe the music or sound first' }, { status: 400 })
     const model = STORYBOARD_MUSIC_MODELS.some(m => m.id === c.model) ? String(c.model) : 'sonilo-music'
     spec = getAudioStudioModel(model)
     if (shot.music && liveAudio(shot.music) === 'making') return jsonPrivate({ error: 'This cue is being composed already', busy: true }, { status: 409 })

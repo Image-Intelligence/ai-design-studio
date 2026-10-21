@@ -17,13 +17,23 @@ import { STORYBOARD_IMAGE_MODELS, stillModelSpec, stillBuildOptions, stillTicket
 import { claimStill, patchShot, queueStills } from '@/lib/storyboard-store'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 import { conformToFrame } from '@/lib/storyboard-image'
+import { startStudioJob, finishStudioJob, failStudioJob } from '@/lib/studio-activity'
+import { storyboardFolder as boardFolder, submitStillJob } from '@/lib/storyboard-stills'
 
 /**
  * POST /api/employees/storyboards/[id]/still - make one slot's still.
  *
  * Body: { prompt, model, shotId?, quality?, options?: Record<string, string>, refs?: string[] }
- * Returns: { url, imageId }   409 { busy: true } = that slot's still is being made already
- *    or:   { queue: string[] } marks those slots "queued" for a batch -> { ok: true }
+ * Returns: with a shotId { queued: true, requestId } - the still is made in the
+ *          BACKGROUND (2026-10-21): charged, sent to fal's queue, and saved onto
+ *          the slot by lib/storyboard-stills whether or not a page is open.
+ *          Without one { url, imageId } (made while you wait, as before).
+ *          409 { busy: true } = that slot's still is being made already
+ *    or:   { batch: [{ shotId, prompt, model, quality?, options?, refs? }] } every
+ *          still of a batch submitted HERE, by the server - the page no longer
+ *          runs a batch three at a time (a locked phone stopped it) ->
+ *          { results: { [shotId]: { queued } | { error } } }
+ *    or:   { queue: string[] } marks those slots "queued" (kept for old pages) -> { ok: true }
  *    or:   { adopt: dataUrl, shotId } - a picture edited in the Image Studio
  *          popup becomes the slot's still (a new take; the old one stays)
  *          -> { url, imageId }
@@ -53,13 +63,6 @@ export const maxDuration = 300
 type Ctx = { params: Promise<{ id: string }> }
 
 
-async function boardFolder(userId: number, title: string): Promise<number> {
-  const find = (name: string, parentId: number | null) => prisma.userGenerationFolder.findFirst({ where: { userId, name, parentId } })
-  const root = (await find('Storyboards', null)) ?? await prisma.userGenerationFolder.create({ data: { userId, name: 'Storyboards', parentId: null } })
-  const name = title.slice(0, 80) || 'Untitled storyboard'
-  const leaf = (await find(name, root.id)) ?? await prisma.userGenerationFolder.create({ data: { userId, name, parentId: root.id } })
-  return leaf.id
-}
 
 export async function POST(req: NextRequest, ctx: Ctx) {
   const user = await requireStoryboardUser()
@@ -73,6 +76,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // (CCBill: uploads need a verified account; admins exempt - lib/id-verification)
   const idGate = await requireOwnMediaUnlessVerified(user, [
     body.refs, ...(Array.isArray(body.queue) ? (body.queue as { refs?: unknown }[]).map(q => q?.refs) : []),
+    ...(Array.isArray(body.batch) ? (body.batch as { refs?: unknown }[]).map(q => q?.refs) : []),
   ])
   if (idGate) return idGate
   // A batch: its slots show as queued everywhere until each one's turn
@@ -110,16 +114,40 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return jsonPrivate({ url, imageId: row.id })
   }
 
+  // A batch: every still sent from here, a few at a time - nothing waits on the page
+  if (Array.isArray(body.batch)) {
+    const items = (body.batch as Record<string, unknown>[]).filter(x => x && typeof x.shotId === 'string').slice(0, 60)
+    const results: Record<string, unknown> = {}
+    let i = 0
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      while (i < items.length) {
+        const it = items[i++]
+        const r = await makeStill(user, board, it)
+        results[String(it.shotId)] = r.body
+      }
+    }))
+    return jsonPrivate({ results })
+  }
+  const r = await makeStill(user, board, body)
+  return jsonPrivate(r.body, { status: r.status })
+}
+
+type StoryboardUser = NonNullable<Awaited<ReturnType<typeof requireStoryboardUser>>>
+type BoardRow = NonNullable<Awaited<ReturnType<typeof prisma.storyboard.findFirst>>>
+
+/** One still: checked, charged, then sent to fal's queue for a slot (or made at once without one). */
+async function makeStill(user: StoryboardUser, board: BoardRow, body: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const out = (b: Record<string, unknown>, init?: { status?: number }) => ({ status: init?.status ?? 200, body: b })
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 4000) : ''
-  if (!prompt) return jsonPrivate({ error: 'Write an image prompt first' }, { status: 400 })
+  if (!prompt) return out({ error: 'Write an image prompt first' }, { status: 400 })
   const spec = STORYBOARD_IMAGE_MODELS.find(m => m.id === body.model)
-  if (!spec) return jsonPrivate({ error: 'Unknown image model' }, { status: 400 })
+  if (!spec) return out({ error: 'Unknown image model' }, { status: 400 })
   // Admin-only models stay admin-only here too (as in /api/generate)
-  if (!user.isAdmin && isAdminOnlyModel(spec.id)) return jsonPrivate({ error: 'This model is not available' }, { status: 403 })
+  if (!user.isAdmin && isAdminOnlyModel(spec.id)) return out({ error: 'This model is not available' }, { status: 403 })
   // The CCBill prompt filter - before any charge or provider call
   {
     const cf = await enforceContentFilter(prompt, user.email)
-    if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
+    if (!cf.ok) return out({ error: cf.reason }, { status: 400 })
   }
   // The model's own limits: how many refs it takes (Recraft none, Kling V3
   // one, NanoBanana Pro 2 fourteen...) and which qualities it offers
@@ -143,26 +171,45 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // Sized for the model where it limits uploads (Ideogram); the record keeps the originals
   const callRefs = await fitRefsForModel(spec.id, refs)
   const call = buildFalCall(spec.id, fullPrompt, callRefs, { aspect, quality }, stillBuildOptions(spec.id, body.options))
-  if ('error' in call) return jsonPrivate({ error: call.error }, { status: 400 })
+  if ('error' in call) return out({ error: call.error }, { status: 400 })
   // A non-admin's still runs at the site's public moderation
   publicStillSafety(spec.id, call.input as Record<string, unknown>, user.isAdmin)
 
   // Claimed for this request, or refused
   if (shot && !(await claimStill(board.id, shot.id, spec.id))) {
-    return jsonPrivate({ error: 'This still is already being made', busy: true }, { status: 409 })
+    return out({ error: 'This still is already being made', busy: true }, { status: 409 })
   }
   // Paid for before the model runs (admins are skipped by the gate)
   const cost = stillTickets(spec.id, quality, frame, body.options as Record<string, string> | undefined, refs.length)
   const paid = await deductGenerationTickets(user.id, user.email, cost)
   if (!paid.ok) {
     if (shot) await patchShot(board.id, shot.id, { stillJob: null }).catch(() => {})
-    return jsonPrivate({ error: `This still needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
+    return out({ error: `This still needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
   }
+  // The feed's generating tile for it (lib/studio-activity)
+  const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: spec.id, prompt: fullPrompt, studio: 'storyboard-still', aspectRatio: frame, quality })
   // A failure is written on the slot too, so every session sees why - and refunded
   const fail = async (error: string, status: number) => {
     await refundGenerationTickets(user.id, user.email, cost)
+    await failStudioJob(track, error)
     if (shot) await patchShot(board.id, shot.id, { stillJob: { status: 'failed', at: Date.now(), model: spec.id, error: error.slice(0, 400) } }).catch(() => {})
-    return jsonPrivate({ error }, { status })
+    return out({ error }, { status })
+  }
+
+  // A slot's still is made in the BACKGROUND: sent to fal's queue now, saved
+  // onto the slot by lib/storyboard-stills - no page has to stay open for it
+  if (shot) {
+    try {
+      const requestId = await submitStillJob(board.id, shot.id, call.endpoint, call.input as Record<string, unknown>, {
+        cost: paid.newBalance >= 0 ? cost : 0, track, prompt: fullPrompt, takePrompt: prompt, model: spec.id, quality, aspect: frame, refs,
+        conform: frame, name: `storyboard-${user.id}-${board.id}`, ...(shot.imagePrompt ? {} : { patch: { imagePrompt: prompt } }),
+      })
+      return out({ queued: true, requestId })
+    } catch (e: any) {
+      const detail = e?.body?.detail
+      const msg = Array.isArray(detail) ? detail.map((d: any) => d?.msg).filter(Boolean).join('; ') : typeof detail === 'string' ? detail : e?.message
+      return fail(msg ? `${spec.label} refused: ${String(msg).slice(0, 240)}` : 'The model could not be reached', 502)
+    }
   }
 
   let falUrl: string | undefined
@@ -194,10 +241,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     },
   })
   await ensureThumbnail(row.id).catch(() => {})
-  // The still goes on the slot here - the page may be gone (refreshed, closed)
-  if (shot) {
-    await patchShot(board.id, shot.id, { stillUrl: url, stillJob: null, ...(shot.imagePrompt ? {} : { imagePrompt: prompt }) }, { url, prompt, model: spec.id, at: Date.now() })
-      .catch(() => {})
-  }
-  return jsonPrivate({ url, imageId: row.id })
+  await finishStudioJob(track, [row.id], url)
+  // (no slot: nothing to put it on - a slot's still is saved by lib/storyboard-stills)
+  return out({ url, imageId: row.id })
 }

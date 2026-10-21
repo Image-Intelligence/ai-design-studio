@@ -15,7 +15,7 @@
  * SERVER ONLY.
  */
 import prisma from '@/lib/prisma'
-import { sanitizeShots, STILL_JOB_STALE_MS, type StoryboardShot, type StillVersion, type StillJob } from '@/lib/storyboard'
+import { sanitizeShots, STILL_JOB_STALE_MS, STILL_FAL_STALE_MS, type StoryboardShot, type StillVersion, type StillJob } from '@/lib/storyboard'
 
 /**
  * Read the shots under the row's lock, let `fn` work out the new array (and
@@ -75,7 +75,8 @@ export async function claimStill(boardId: number, shotId: string, model: string)
       AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(shots) x
         WHERE x->>'id' = ${shotId} AND x->'stillJob'->>'status' = 'making'
-          AND COALESCE((x->'stillJob'->>'at')::bigint, 0) > ${String(now - STILL_JOB_STALE_MS)}::bigint)`
+          AND COALESCE((x->'stillJob'->>'at')::bigint, 0) > (CASE WHEN x->'stillJob' ? 'fal'
+            THEN ${String(now - STILL_FAL_STALE_MS)}::bigint ELSE ${String(now - STILL_JOB_STALE_MS)}::bigint END))`
   return n > 0
 }
 
@@ -83,12 +84,13 @@ export async function claimStill(boardId: number, shotId: string, model: string)
 export async function queueStills(boardId: number, shotIds: string[], model?: string): Promise<void> {
   if (!shotIds.length) return
   const job = JSON.stringify({ stillJob: { status: 'queued', at: Date.now(), ...(model ? { model } : {}) } })
-  const live = String(Date.now() - STILL_JOB_STALE_MS)
+  const live = String(Date.now() - STILL_JOB_STALE_MS), liveFal = String(Date.now() - STILL_FAL_STALE_MS)
   await prisma.$executeRaw`
     UPDATE "Storyboard" SET "updatedAt" = NOW(), shots = (
       SELECT jsonb_agg(CASE
         WHEN t.s->>'id' = ANY(${shotIds}::text[])
-          AND NOT (t.s->'stillJob'->>'status' = 'making' AND COALESCE((t.s->'stillJob'->>'at')::bigint, 0) > ${live}::bigint)
+          AND NOT (t.s->'stillJob'->>'status' = 'making' AND COALESCE((t.s->'stillJob'->>'at')::bigint, 0)
+            > (CASE WHEN t.s->'stillJob' ? 'fal' THEN ${liveFal}::bigint ELSE ${live}::bigint END))
         THEN t.s || ${job}::jsonb ELSE t.s END ORDER BY t.i)
       FROM jsonb_array_elements(shots) WITH ORDINALITY AS t(s, i))
     WHERE id = ${boardId} AND jsonb_typeof(shots) = 'array'`

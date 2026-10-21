@@ -27,6 +27,7 @@ import type { AssetOut } from "@/lib/threed/assets"
 import type { ViewerHandle, ModelInfo, PrintReport, Backdrop } from "./Viewer3D"
 import { ClipPicker } from "./ClipPicker"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
+import { AdminTag } from "@/components/ui/admin-mark"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { uploadImage } from "@/components/employees/StoryboardAssets"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
@@ -346,6 +347,8 @@ export function Studio3D({ isAdmin, refLibrary, logo, onBalanceChange, onUseFram
                   <div className="flex items-center gap-2">
                     <span className="text-[12.5px] font-bold text-slate-100">{t.label}</span>
                     <span className="text-[9.5px] text-slate-500">{t.family}</span>
+                    {/* Admin-only tools (under test) */}
+                    {t.admin && <AdminTag />}
                     <span className="ml-auto flex items-center gap-0.5 text-[10px] font-mono text-slate-300"><Ticket size={9} />{toolTickets(t, on ? options : {}, on ? images.length : 0)}</span>
                   </div>
                   <p className="mt-0.5 text-[10.5px] leading-snug text-slate-400 line-clamp-2">{t.bestFor}</p>

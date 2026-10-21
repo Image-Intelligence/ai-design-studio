@@ -169,13 +169,25 @@ export const STORYBOARD_VOICE_MODELS = [
   { id: 'eleven-v3', label: 'ElevenLabs v3 (audio tags)' },
 ] as const
 export const DEFAULT_VOICE_MODEL = 'eleven-v4'
+/*
+ * The lane's cue is the bed of sound under a stretch of shots: music, or
+ * (2026-10-21, owner: "music or ambient noises/sound effects") ambience and
+ * effects - a street, rain, a room tone. Same slot, same Record button; the
+ * sound models are the Audio Studio's (lib/audio-studio).
+ */
 export const STORYBOARD_MUSIC_MODELS = [
-  { id: 'sonilo-music', label: 'Sonilo (film score)' },
-  { id: 'eleven-music-v2.5', label: 'ElevenLabs Music' },
-  { id: 'stable-audio-3', label: 'Stable Audio 3' },
-  { id: 'cassette-music', label: 'CassetteAI (quick)' },
+  { id: 'sonilo-music', label: 'Sonilo (film score)', kind: 'music' },
+  { id: 'eleven-music-v2.5', label: 'ElevenLabs Music', kind: 'music' },
+  { id: 'stable-audio-3', label: 'Stable Audio 3', kind: 'music' },
+  { id: 'cassette-music', label: 'CassetteAI (quick)', kind: 'music' },
+  { id: 'sonilo-sfx', label: 'Sonilo Sound (ambience, sound design)', kind: 'sound' },
+  { id: 'eleven-sfx-v2', label: 'ElevenLabs Sound Effects (up to 22s)', kind: 'sound' },
 ] as const
 export const DEFAULT_MUSIC_MODEL = 'sonilo-music'
+/** The planner's "ambience" cues: Sonilo's sound design runs up to 3 minutes, so one cue covers a long stretch. */
+export const DEFAULT_SOUND_MODEL = 'sonilo-sfx'
+export type CueKind = 'music' | 'sound'
+export const cueKindOf = (model: string): CueKind => STORYBOARD_MUSIC_MODELS.find(m => m.id === model)?.kind ?? 'music'
 /** A recording's status now: one "making" past AUDIO_STALE_MS has failed. */
 export const liveAudio = (a: { status: AudioStatus; at: number }, now = Date.now()): AudioStatus =>
   a.status === 'making' && now - a.at > AUDIO_STALE_MS ? 'failed' : a.status
@@ -187,12 +199,15 @@ export const newMusicCue = (partial: Partial<MusicCue> = {}): MusicCue => ({
 })
 /*
  * ── The audio lane written by AI (2026-10-19, owner) ──────────────────────
- * Draft with AI can fill the lane along with the shots ("Also fill the audio
- * lane"), and Edit with AI works on one shot's lines and music. Both ask the
- * text model for the same shape, read back here:
+ * Draft with AI fills the lane along with the shots (always, since
+ * 2026-10-21), and Edit with AI works on one shot's lines and music. Both ask
+ * the text model for the same shape, read back here:
  *   voiceLines: [{ speaker, text, at }]  - at = seconds into the shot
  *   musicCue:   "prompt" for a NEW cue starting on this shot, "" for none
+ *   cueKind:    "music" | "ambience" - what that cue is (picks its model)
  *   voices:     { speaker: ElevenLabs voice } - one voice per speaker
+ * The planner judges whether the piece needs voice at all, and whether a
+ * stretch wants a score or the sound of the place.
  * Nothing is recorded: the lane's Record buttons make the audio (and price it).
  */
 /** The ElevenLabs voices with what they sound like, so the planner can cast them. */
@@ -206,8 +221,9 @@ export const VOICE_HINTS: Record<string, string> = {
 export const voiceMenu = () => Object.entries(VOICE_HINTS).map(([v, h]) => `${v} (${h})`).join(', ')
 /** The rules both AI routes give the model for a shot's sound. */
 export const AUDIO_PLAN_RULES = [
-  '- "voiceLines": the words SPOKEN over this shot - narration or dialogue - as [{"speaker": a character\'s name from the board or "Narrator", "text": the exact words, "at": seconds into the shot it starts}]. Only where this kind of video needs voice (an ad\'s voiceover, a story\'s dialogue, a trailer\'s narrator) - an empty list for a shot that should breathe. At most 2 per shot. Spoken at about 2.5 words a second, a line must END before the shot does ("at" + words / 2.5 <= the shot\'s duration). Plain words only - no stage directions or sound descriptions.',
-  '- "musicCue": the prompt for a NEW piece of music that STARTS on this shot and plays until the next shot with a cue - genre, mood, instruments, tempo, and "instrumental" (no singing) under any voice. Start one on the first shot (unless the piece should have no music) and a new one only where the mood or scene clearly changes; "" everywhere else.',
+  '- First decide what this video SOUNDS like, from its kind, the direction and the pictures. Voice only where words carry it: an ad or explainer\'s voiceover, characters who talk to each other, a trailer or documentary narrator, someone speaking to camera. NO voice at all for a music video, a mood piece, a montage, a fashion or product loop, a nature or travel film, an action or chase beat told in pictures, or when the direction asks for no voice - those are music, or the sound of the place.',
+  '- "voiceLines": the words SPOKEN over this shot - narration or dialogue - as [{"speaker": a character\'s name from the board or "Narrator", "text": the exact words, "at": seconds into the shot it starts}]. An empty list for every shot that should breathe, and for the whole board when the piece has no voice. Dialogue belongs to characters the shot shows speaking. At most 2 per shot. Spoken at about 2.5 words a second, a line must END before the shot does ("at" + words / 2.5 <= the shot\'s duration). Plain words only - no stage directions or sound descriptions.',
+  '- "musicCue": the prompt for a NEW bed of sound that STARTS on this shot and plays until the next shot with a cue, and "cueKind" saying what it is: "music" (genre, mood, instruments, tempo, and "instrumental" - no singing - under any voice) or "ambience" (the sound of the place and what happens in it: room tone, weather, crowd, traffic, machines, footsteps, an impact - layered, specific, no music). Music for a score, a hook, an ad\'s energy; ambience where the piece should feel real, quiet or tense, or a scene plays out in its own sound. Start one on the first shot (unless the piece should be silent under its voice) and a new one only where the mood, place or kind of sound clearly changes - switching between music and ambience counts; "" everywhere else.',
   '- Top level, "voices": {"<speaker>": "<voice>"} - one ElevenLabs voice per speaker, chosen to fit them, from: ' + Object.keys(VOICE_HINTS).join(', ') + '. Keep a speaker\'s voice the same everywhere.',
 ]
 /**
@@ -231,11 +247,22 @@ export function linesFromPlan(raw: unknown, existing: VoiceLine[] | undefined, v
   })
   return out
 }
-/** A shot's cue from the model's "musicCue": a new prompt (keeping the slot and recording), or the cue it had. */
-export function cueFromPlan(raw: unknown, existing: MusicCue | null | undefined): MusicCue | null {
+/**
+ * A shot's cue from the model's "musicCue" + "cueKind": a new prompt (keeping
+ * the slot and recording), or the cue it had. The kind picks the model - a
+ * cue that switches between music and ambience moves to that kind's default
+ * model; one that stays its kind keeps the model it was given. No kind given
+ * (an older reply, or an edit that only rewords) keeps the cue's own kind.
+ */
+export function cueFromPlan(raw: unknown, existing: MusicCue | null | undefined, rawKind?: unknown): MusicCue | null {
   const prompt = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, 1500) : ''
   if (!prompt) return existing ?? null
-  return existing ? (existing.prompt.trim() === prompt ? existing : { ...existing, prompt }) : newMusicCue({ prompt })
+  const kind: CueKind = typeof rawKind === 'string' && rawKind.trim()
+    ? (/ambien|sound|sfx|effect/i.test(rawKind) ? 'sound' : 'music')
+    : existing ? cueKindOf(existing.model) : 'music'
+  const model = existing && cueKindOf(existing.model) === kind ? existing.model : kind === 'sound' ? DEFAULT_SOUND_MODEL : DEFAULT_MUSIC_MODEL
+  if (!existing) return newMusicCue({ prompt, model })
+  return existing.prompt.trim() === prompt && existing.model === model ? existing : { ...existing, prompt, model }
 }
 /** One voice per speaker: the plan's pick, else the one the board already uses for them, else Brian. */
 export function voicePicker(planVoices: unknown, shots: Pick<StoryboardShot, 'lines'>[]): (speaker: string) => string {
@@ -273,16 +300,57 @@ export const shotAspect = (shot: Pick<StoryboardShot, 'aspect'>, boardAspect: st
 export type ShotRef = { id: string; url: string; on: boolean; assetId?: string }
 export const MAX_SHOT_REFS = 40
 
-export type StillJob = { status: 'queued' | 'making' | 'failed'; at: number; model?: string; error?: string }
+/**
+ * A still sent to fal's queue (2026-10-21, owner: stills left running while
+ * the iPad slept came back "load failed" - "this should all be done on the
+ * site in the background"). The still and still-edit routes submit and
+ * answer at once; whoever looks next settles it (lib/storyboard-stills): the
+ * board's poll, the feed's job poll, the per-minute cron. Everything the save
+ * needs rides here, so no page has to be open.
+ */
+export type StillFalJob = {
+  requestId: string
+  endpoint: string
+  /** Tickets charged for it (0 for admins) - refunded if it fails. */
+  cost: number
+  /** Its feed tile (lib/studio-activity). */
+  track: number | null
+  /** The saved row's prompt, and the take's. */
+  prompt: string
+  takePrompt: string
+  model: string
+  quality?: string
+  /** The saved row's aspect ratio. */
+  aspect: string
+  refs: string[]
+  /** Fitted into this frame when it comes back off it (null = kept as made). */
+  conform: string | null
+  /** R2 file name prefix. */
+  name: string
+  /** Also set on the shot when it lands (an expand's new frame, a first prompt). */
+  patch?: Record<string, unknown>
+}
+export type StillJob = { status: 'queued' | 'making' | 'failed'; at: number; model?: string; error?: string; fal?: StillFalJob; savingAt?: number }
 /**
  * A still that has been "making" this long is dead (the route gives up at
  * 300s): the slot is free again. A queued one waits for a page to run it.
+ * One at fal (it has a request id) may wait in fal's queue: it is given
+ * STILL_FAL_STALE_MS before the slot is free again.
  */
 export const STILL_JOB_STALE_MS = 6 * 60_000
+export const STILL_FAL_STALE_MS = 45 * 60_000
+/**
+ * A "queued" still nobody started (the old page-run batches) is let go after
+ * this long - before 2026-10-21 one waited forever, and the Stills phase said
+ * "Making 12" over slots nothing was making.
+ */
+export const STILL_QUEUED_STALE_MS = 15 * 60_000
+export const stillStaleMs = (j: Pick<StillJob, 'fal'>) => (j.fal?.requestId ? STILL_FAL_STALE_MS : STILL_JOB_STALE_MS)
 /** The job as it stands now: a stale "making" counts as none. */
 export function liveStillJob(j: StillJob | null | undefined, now = Date.now()): StillJob | null {
   if (!j) return null
-  if (j.status === 'making' && now - j.at > STILL_JOB_STALE_MS) return null
+  if (j.status === 'making' && now - j.at > stillStaleMs(j)) return null
+  if (j.status === 'queued' && now - j.at > STILL_QUEUED_STALE_MS) return null
   return j
 }
 
@@ -547,7 +615,19 @@ export const cleanTags = (t: unknown): string[] =>
  * accepted - shown in the Assets panel's "Suggested" strip, never sent with a
  * still. `auto`: made by the draft (its pictures generated from the notes).
  */
-export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[]; libraryId?: number; suggested?: boolean; auto?: boolean }
+/**
+ * `draftOff` / `refOff` (2026-10-21, owner: the scenes' on/off "toggle to all
+ * assets so I can turn them on/off for drafting", and pick "a certain image
+ * instead of the entire asset"): an asset switched off is not shown to the AI
+ * draft at all; `refOff` = its pictures left out of the draft (by ref id).
+ * Stills already made keep their own references.
+ */
+export type StoryAsset = { id: string; kind: AssetKind; name: string; notes: string; refs: AssetRef[]; libraryId?: number; suggested?: boolean; auto?: boolean; draftOff?: boolean; refOff?: string[] }
+/** The asset as the AI draft sees it: null when switched off, else without its left-out pictures. */
+export function assetForDraft(a: StoryAsset): StoryAsset | null {
+  if (a.draftOff) return null
+  return a.refOff?.length ? { ...a, refs: a.refs.filter(r => !a.refOff!.includes(r.id)) } : a
+}
 export const MAX_ASSETS = 40
 export const MAX_ASSET_REFS = 24
 
@@ -566,6 +646,10 @@ export function sanitizeAssets(raw: unknown): StoryAsset[] {
     ...(Number.isInteger(a?.libraryId) && a.libraryId > 0 ? { libraryId: a.libraryId as number } : {}),
     ...(a?.suggested === true ? { suggested: true } : {}),
     ...(a?.auto === true ? { auto: true } : {}),
+    ...(a?.draftOff === true ? { draftOff: true } : {}),
+    ...(Array.isArray(a?.refOff) && a.refOff.length
+      ? { refOff: (a.refOff as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, MAX_ASSET_REFS).map(x => x.slice(0, 64)) }
+      : {}),
     refs: (Array.isArray(a?.refs) ? a.refs : [])
       .filter((r: any) => /^https:\/\//.test(str(r?.url, 2000)))
       .slice(0, MAX_ASSET_REFS)
@@ -1348,7 +1432,21 @@ function sanitizeShotRefs(raw: unknown): ShotRef[] | undefined {
 function sanitizeStillJob(j: any): StillJob | undefined {
   if (!j || typeof j !== 'object' || !['queued', 'making', 'failed'].includes(j.status)) return undefined
   const at = Number(j.at)
-  return { status: j.status, at: Number.isFinite(at) ? at : 0, model: str(j.model, 60) || undefined, error: str(j.error, 400) || undefined }
+  // The fal job a background still is waiting on: kept whole, or the save has nothing to go on
+  const f = j.fal
+  const fal: StillFalJob | undefined = f && typeof f === 'object' && typeof f.requestId === 'string' && typeof f.endpoint === 'string' ? {
+    requestId: str(f.requestId, 200), endpoint: str(f.endpoint, 200), cost: Math.max(0, Math.round(Number(f.cost) || 0)),
+    track: Number.isInteger(f.track) ? f.track : null, prompt: str(f.prompt, 5000), takePrompt: str(f.takePrompt, 4000), model: str(f.model, 60),
+    ...(str(f.quality, 20) ? { quality: str(f.quality, 20) } : {}), aspect: str(f.aspect, 20),
+    refs: Array.isArray(f.refs) ? f.refs.filter((u: unknown): u is string => typeof u === 'string').slice(0, 20) : [],
+    conform: typeof f.conform === 'string' ? str(f.conform, 20) : null, name: str(f.name, 200),
+    ...(f.patch && typeof f.patch === 'object' ? { patch: f.patch as Record<string, unknown> } : {}),
+  } : undefined
+  const savingAt = Number(j.savingAt)
+  return {
+    status: j.status, at: Number.isFinite(at) ? at : 0, model: str(j.model, 60) || undefined, error: str(j.error, 400) || undefined,
+    ...(fal ? { fal } : {}), ...(Number.isFinite(savingAt) && savingAt > 0 ? { savingAt } : {}),
+  }
 }
 
 function sanitizeVideo(v: any): ShotVideo | null {
@@ -1617,6 +1715,8 @@ export type FinalCutState = {
     charged?: number
     /** A revision run: the version it starts from and the edits to make. */
     revise?: { from: number; edits: string[]; notes: string; rescore: boolean } | null
+    /** Its generating tile in the feed (lib/studio-activity), while it runs. */
+    trackId?: number | null
   } | null
   versions: FinalCutVersion[]
   /** The edit list being written / reviewed in the Revise phase. */

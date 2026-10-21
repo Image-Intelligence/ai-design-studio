@@ -205,6 +205,9 @@ export const FAL_IMAGE_APPS_IN_USE: string[] = [
 export const VIDEO_MODEL_IDS: string[] = [
   // Higgsfield exclusives (admin, 2026-10-13 - not fal; lib/higgsfield-models)
   'higgsfield-genjutsu-motion', 'higgsfield-genjutsu-swap', 'higgsfield-cinema-4',
+  'higgsfield-genjutsu-lite-motion', 'higgsfield-genjutsu-lite-swap',
+  // Kling 4.0 (2026-10-21; the edit is in the tool list below)
+  'kling-v4',
   // Pixelcut video
   'pixelcut-looping-video', 'pixelcut-video-bg-removal',
   // generators
@@ -240,7 +243,7 @@ export const VIDEO_MODEL_IDS: string[] = [
   'veo-3.1-extend', 'veo-3.1-fast-extend', 'minimax-h3-max-extend',
   'marey-motion-transfer', 'marey-pose-transfer',
   'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
-  'minimax-h3-max-relight',
+  'minimax-h3-max-relight', 'minimax-h3-max-reframe', 'kling-v4-edit',
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -257,7 +260,7 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   // 2026-10-04 (BATCH_1003_PUBLIC)
   ...[...BATCH_1003_GENERATORS, ...BATCH_1003_TOOLS].filter(id => !BATCH_1003_PUBLIC.has(id)),
   // The 2026-10-07 batch while under test - all five public 2026-10-08
-  // (BATCH_1007_PUBLIC), so this spreads nothing until the next batch
+  // (BATCH_1007_PUBLIC), H3 Max Reframe 2026-10-21
   ...[...BATCH_1007_GENERATORS, ...BATCH_1007_TOOLS].filter(id => !BATCH_1007_PUBLIC.has(id)),
   // Pixelcut video: looping public 2026-10-01, background removal 2026-10-02
   // (priced per measured frame)
@@ -285,6 +288,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   'marey',
   // veo-3.1-extend + fast-extend public 2026-10-02 (Veo rates on the 7s added)
   'marey-motion-transfer', 'marey-pose-transfer',
+  // Higgsfield Genjutsu Lite (motion + swap) public 2026-10-21 after UI runs;
+  // its route, /api/admin/higgsfield/video-submit, checks this same list
   // The 2026-09-28 batch while under test. The Kling 8 (V3 Turbo / Pro, O3
   // Pro / 4K, O3 video edit + reference) public 2026-10-01 at fal cost / $0.04
   // PixVerse V6 / C1 and Vidu Q3 / Turbo public 2026-10-01 (fal cost / $0.04)

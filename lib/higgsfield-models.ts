@@ -16,6 +16,12 @@
  *                     mid tiers are not published: priced from the top end
  *   Genjutsu          $0.318 / $0.681 / $1.632 per second of the source clip
  *                     (480p / 720p / 1080p), rounded up to whole seconds
+ *   Genjutsu Lite     $0.05 / $0.10 / $0.20 per "total second" (2026-10-21,
+ *                     their API calls it Genjutsu Light): billable seconds =
+ *                     the output, rounded up, PLUS the input video's length -
+ *                     so a clip bills twice its length. Higgsfield's "3.5x less
+ *                     at 720p" than Genjutsu only adds up that way (0.681 vs
+ *                     2 x 0.10). Clips 4-15 seconds (it uses the first 15).
  *   Cinema Studio 4.0 $0.2057 / $0.4623 per second (480p / 720p); input video
  *                     seconds are billed too, at 0.6x (token metering)
  * Soul Cinema has no published price and Genjutsu Restyle needs its style
@@ -25,9 +31,18 @@
 export type HiggsfieldModelId =
   | 'higgsfield-soul-2' | 'higgsfield-soul' | 'higgsfield-marketing-image'
   | 'higgsfield-genjutsu-motion' | 'higgsfield-genjutsu-swap' | 'higgsfield-cinema-4'
+  | 'higgsfield-genjutsu-lite-motion' | 'higgsfield-genjutsu-lite-swap'
 
 export const HIGGSFIELD_IMAGE_MODELS = new Set<string>(['higgsfield-soul-2', 'higgsfield-soul', 'higgsfield-marketing-image'])
-export const HIGGSFIELD_VIDEO_MODELS = new Set<string>(['higgsfield-genjutsu-motion', 'higgsfield-genjutsu-swap', 'higgsfield-cinema-4'])
+export const HIGGSFIELD_VIDEO_MODELS = new Set<string>([
+  'higgsfield-genjutsu-motion', 'higgsfield-genjutsu-swap', 'higgsfield-cinema-4',
+  'higgsfield-genjutsu-lite-motion', 'higgsfield-genjutsu-lite-swap',
+])
+/** Genjutsu and Genjutsu Lite: a clip plus 1-8 pictures, motion transfer or object swap. */
+export const GENJUTSU_MODELS = new Set<string>(['higgsfield-genjutsu-motion', 'higgsfield-genjutsu-swap', 'higgsfield-genjutsu-lite-motion', 'higgsfield-genjutsu-lite-swap'])
+export const isGenjutsuLite = (id: string) => id === 'higgsfield-genjutsu-lite-motion' || id === 'higgsfield-genjutsu-lite-swap'
+/** Longest clip each Genjutsu takes (Lite uses only the first 15 seconds). */
+export const genjutsuMaxSec = (id: string) => (isGenjutsuLite(id) ? 15 : 30)
 export const isHiggsfieldModel = (id: string | null | undefined) => !!id && (HIGGSFIELD_IMAGE_MODELS.has(id) || HIGGSFIELD_VIDEO_MODELS.has(id))
 /**
  * Every Higgsfield model id. Higgsfield jobs are GenerationQueue rows with the
@@ -46,6 +61,8 @@ export const HIGGSFIELD_ENDPOINTS: Record<HiggsfieldModelId, string> = {
   'higgsfield-genjutsu-motion': 'higgsfield/genjutsu/motion-transfer/v1.0',
   'higgsfield-genjutsu-swap': 'higgsfield/genjutsu/object-swap/v1.0',
   'higgsfield-cinema-4': 'higgsfield/cinema-studio/4.0',
+  'higgsfield-genjutsu-lite-motion': 'higgsfield/genjutsu-light/motion-transfer/v1.0',
+  'higgsfield-genjutsu-lite-swap': 'higgsfield/genjutsu-light/object-swap/v1.0',
 }
 
 /**
@@ -59,8 +76,8 @@ export const isHiggsfieldEndpoint = (ep: unknown): ep is string => typeof ep ===
 /** Soul's two sizes ride the portal's 1K / 2K picker. */
 export const soulResolution = (quality: string | undefined) => (quality === '2k' ? '1080p' : '720p')
 
-/** Genjutsu: whole seconds of the source clip it bills (4-30, rounded up). */
-export const genjutsuSeconds = (sourceSec: number) => Math.min(30, Math.max(4, Math.ceil((sourceSec || 0) - 1e-6)))
+/** Genjutsu: whole seconds of the source clip it bills (4-30 - Lite 4-15 - rounded up). */
+export const genjutsuSeconds = (sourceSec: number, maxSec = 30) => Math.min(maxSec, Math.max(4, Math.ceil((sourceSec || 0) - 1e-6)))
 
 const t = (usd: number) => Math.max(1, Math.ceil(usd / 0.04 - 1e-9))
 
@@ -76,6 +93,11 @@ export function higgsfieldImageTicketCost(model: string, quality?: string): numb
 }
 
 export function higgsfieldVideoTicketCost(model: string, o: { resolution?: string; duration?: string; sourceSec?: number; refVideoSec?: number }): number {
+  if (isGenjutsuLite(model)) {
+    // The output's seconds plus the input clip's: twice the clip
+    const perSec = o.resolution === '1080p' ? 0.20 : o.resolution === '480p' ? 0.05 : 0.10
+    return t(2 * genjutsuSeconds(o.sourceSec ?? 0, 15) * perSec)
+  }
   if (model === 'higgsfield-genjutsu-motion' || model === 'higgsfield-genjutsu-swap') {
     const perSec = o.resolution === '1080p' ? 1.632 : o.resolution === '480p' ? 0.318 : 0.681
     return t(genjutsuSeconds(o.sourceSec ?? 0) * perSec)

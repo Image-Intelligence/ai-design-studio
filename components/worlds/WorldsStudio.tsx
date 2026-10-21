@@ -6,6 +6,7 @@ import {
   Library, RotateCcw, Save, Send, Shield, Shuffle, Sparkles, Trash2, Undo2, Upload, X,
 } from "lucide-react"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
+import { ADMIN_TEXT } from "@/components/ui/admin-mark"
 import { SilverRimOverlay } from "@/components/home/SilverRimOverlay"
 import { SiteLogoBox } from "@/components/SitePageHeader"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
@@ -638,7 +639,7 @@ export function WorldsStudio({ refLibrary, isAdmin = false, pick, onBalanceChang
           </label>
           <label className={`flex items-start gap-2 text-[12px] ${isAdmin ? "text-slate-300" : "text-slate-500"}`}>
             <input type="checkbox" className="mt-0.5" checked={isAdmin ? safety : true} disabled={live || !isAdmin} onChange={e => setSafety(e.target.checked)} />
-            <span className="flex items-center gap-1"><Shield size={11} /> Safety checker {isAdmin ? <span className="text-[10.5px] text-slate-500">(admin can switch off)</span> : <span className="text-[10.5px]">- always on</span>}</span>
+            <span className="flex items-center gap-1"><Shield size={11} /> Safety checker {isAdmin ? <span className={`text-[10.5px] ${ADMIN_TEXT}`}>(admin can switch off)</span> : <span className="text-[10.5px]">- always on</span>}</span>
           </label>
         </>
       )}

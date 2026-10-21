@@ -1,3 +1,4 @@
+import { startStudioJob, finishStudioJob, failStudioJob } from '@/lib/studio-activity'
 import { NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireStoryboardUser, publicStillSafety } from '@/lib/storyboard-gate'
@@ -106,6 +107,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const run = async (v: AssetView, i: number, base: string | null): Promise<{ url: string; v: AssetView } | null> => {
     const prompt = viewPrompt(asset, v, look, !!base)
     const refs = base ? [base] : []
+    // The feed's generating tile for this view (lib/studio-activity)
+    const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: ASSET_PICTURE_MODEL, prompt: `${asset.name} (${v.label}) - ${prompt}`, studio: 'storyboard-asset', aspectRatio: v.aspect, quality: ASSET_PICTURE_QUALITY })
     try {
       const call = buildFalCall(ASSET_PICTURE_MODEL, prompt, await fitRefsForModel(ASSET_PICTURE_MODEL, refs), { aspect: v.aspect, quality: ASSET_PICTURE_QUALITY }, stillBuildOptions(ASSET_PICTURE_MODEL, {}))
       if ('error' in call) throw new Error(call.error)
@@ -128,9 +131,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         },
       })
       await ensureThumbnail(row.id).catch(() => {})
+      await finishStudioJob(track, [row.id], url)
       return { url, v }
     } catch (e) {
       console.error(`[asset-pictures] ${asset.name} ${v.id} failed:`, (e as Error)?.message)
+      await failStudioJob(track, (e as Error)?.message || 'The picture could not be made')
       if (charged) { await refundGenerationTickets(user.id, user.email, price(v, i)); refunded += price(v, i) }
       return null
     }

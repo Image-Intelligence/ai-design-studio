@@ -6,6 +6,7 @@ import { checkIsAdmin } from '@/lib/admin-check'
 import { CONNECTOR_ADMIN_ONLY } from '@/lib/nova/config'
 import { SiteBrandHero } from '@/components/SitePageHeader'
 import { ConnectedApps, CopyUrl } from './ConnectedApps'
+import { AdminTag } from '@/components/ui/admin-mark'
 
 /*
  * /connect (2026-10-20) - AI Design Studio inside ChatGPT and Claude: how to
@@ -33,7 +34,11 @@ export default async function ConnectPage() {
     <div className="min-h-[100dvh] bg-[#050810] text-white px-4 py-10">
       <div className="max-w-2xl mx-auto">
         <SiteBrandHero />
-        <h1 className="mt-8 text-2xl sm:text-3xl font-black tracking-tight">Use AI Design Studio in ChatGPT and Claude</h1>
+        <div className="mt-8 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight">Use AI Design Studio in ChatGPT and Claude</h1>
+          {/* Red while the connector is admin-only (CONNECTOR_ADMIN_ONLY) */}
+          {CONNECTOR_ADMIN_ONLY && <AdminTag />}
+        </div>
         <p className="mt-2 text-[14px] text-slate-400 leading-relaxed">
           Connect your account once, then just ask in the chat - &ldquo;make a logo for my bakery&rdquo;, &ldquo;turn this picture into a 5-second video&rdquo;.
           The AI uses your AI Design Studio account: every picture and clip is made with the site&apos;s models, costs the same tickets as on the site,

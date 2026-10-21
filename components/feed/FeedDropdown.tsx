@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { LayoutGrid, EyeOff, ChevronDown } from "lucide-react"
 import { SiteLogoBox } from "@/components/SitePageHeader"
+import { AdminTag, ADMIN_BUTTON } from "@/components/ui/admin-mark"
+import { cn } from "@/lib/utils"
 
 // Feed settings dropdown for the my-generations page. Copied from the portal-v2
 // FeedDropdown with the admin feed-filter section removed, and in the site's
@@ -146,9 +148,8 @@ export function FeedDropdown({
         ref={buttonRef}
         onClick={onToggle}
         title="Feed layout - admins only, applies to every account"
-        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-all ${
-          open ? "border-white/30 bg-white/[0.12] text-white" : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/25 hover:text-white"
-        }`}
+        // Red: only admins get this (it edits the layout for every account)
+        className={cn("flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all", ADMIN_BUTTON, open && "bg-red-500/20 border-red-500/60")}
       >
         <LayoutGrid size={12} />
         <span className="hidden sm:inline">Feed</span>
@@ -167,7 +168,10 @@ export function FeedDropdown({
           <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-white/[0.06]">
             <SiteLogoBox size={24} rounded={6} />
             <div className="min-w-0">
-              <div className="text-[13px] font-black tracking-tight leading-tight silver-shimmer-text">Feed Settings</div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-[13px] font-black tracking-tight leading-tight silver-shimmer-text">Feed Settings</div>
+                <AdminTag />
+              </div>
               <div className="text-[9px] font-mono uppercase tracking-[0.2em] text-slate-500">Layout · columns · quality</div>
             </div>
             {scope && <span className="px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/20 text-[9px] font-bold uppercase tracking-wider text-slate-200">{scope}</span>}

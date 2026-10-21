@@ -12,6 +12,8 @@ import { createPortal } from "react-dom"
 import Link from "next/link"
 import { PrismGuide, PrismLauncher, setPrismVisible, usePrism } from "@/components/prism/PrismGuide"
 import { CONNECTOR_ADMIN_ONLY, PRISM_ADMIN_ONLY } from "@/lib/nova/config"
+import { ADMIN_BUTTON, ADMIN_TEXT, ADMIN_BORDER, AdminTag } from "@/components/ui/admin-mark"
+import { cn } from "@/lib/utils"
 import ChatHub from "@/components/chat-hub"
 import { Globe, Image, Video, Type, ChevronDown, ChevronLeft, ChevronRight, Ticket, User, BookMarked, ImagePlus, X, Plus, Check, Copy, Download, RotateCcw, ShoppingBag, SlidersHorizontal, Bell, AlertTriangle, CheckCircle, Info, Sparkles, Music, BookOpen, Star, Trash2, Loader2, Eye, RefreshCw, Upload, Pencil, Eraser, Crop, Undo2, Redo2, Square, Circle, Droplets, Lock, FolderPlus, Layers, Search, PanelLeft, PanelRight, PanelTop, PanelBottom, EyeOff, Folder, Maximize2, Minimize2, FolderInput, Zap, ArrowUpRight, Wand2, Scissors, List, LayoutGrid, Unlock, MousePointer2, ClipboardPaste, Play, Film, Mic, MicOff, Shield, UsersRound, Box, ImageOff, Images, BadgeCheck, ShieldCheck, Boxes, Radio, Plug } from "lucide-react"
 import { NewsManager } from "@/components/NewsManager"
@@ -47,6 +49,7 @@ import { holdCardVideos, registerCardVideo, type CardVideoHandle } from "@/compo
 import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL, promptModelLabel } from "@/lib/prompt-models"
 import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryPicker"
+import { KlingElementsEditor, getKlingElements } from "@/components/video/KlingElements"
 import { PlayerVideo } from "@/components/feed/PlayerVideo"
 import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
@@ -831,6 +834,12 @@ interface VideoModelConfig {
    * model, and builders silently dropped what their endpoint can't take).
    */
   refLimits?: { images: number; videos: number; audios: number }
+  /** Every reference picture stays a reference (@Image1...) - only one tagged S is the start frame (Kling 4.0) */
+  startOnlyWhenTagged?: boolean
+  /** Kling 4.0 elements (@Element1...): the Elements editor under the references (components/video/KlingElements) */
+  klingElements?: boolean
+  /** Reference clips this model takes, when not SeeDance's 3 clips of 2-15s in all (Kling 4.0: 5 clips, 3-30s, 30s in all) */
+  refVideoWindow?: { count: number; minSec: number; totalSec: number }
   /** Which frame tags the refs panel shows: start + end, start only, or none (default: start-end, none for clip tools). */
   frameTags?: "start-end" | "start" | "none"
   /** Creativity picker (sent as videoToolCreativity) - Flux upscale faithful/creative, Topaz Creative's strength. */
@@ -865,6 +874,8 @@ const BATCH_0928_VIDEO = new Set([
   "kandinsky6-pro", "kandinsky6-lite", "kandinsky6-vsr", "kandinsky6-vsr-lite",
   // 2026-10-07 batch (public 2026-10-08): Vidu Q4, H3 Max Relight, character swap
   "vidu-q4", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2", "lucy-edit-pro",
+  // 2026-10-21: H3 Max Reframe; Kling 4.0 + its edit (admin)
+  "minimax-h3-max-reframe", "kling-v4", "kling-v4-edit",
 ])
 
 // Luma's modify strength scale, closest to the source first
@@ -938,6 +949,8 @@ interface VideoPendingSlot {
   expectedAspect?: string
   /** The tile went up on the click; the route has not answered yet (no request id - nothing polls it, not persisted) */
   submitting?: boolean
+  /** A studio's run (Final Cut...; lib/studio-activity): no fal request - it finishes on its queue row */
+  studio?: boolean
 }
 
 interface VideoDetailData {
@@ -1074,6 +1087,12 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     sourceClipImages: { max: 8, label: "Characters", hint: "Who takes over the clip's motion - 1 to 8 clear pictures. The clip must be 4-30 seconds.", required: true } },
   { id: "higgsfield-genjutsu-swap", name: "Genjutsu Object Swap", durations: [], resolutions: ["480p","720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
     sourceClipImages: { max: 8, label: "Swap in", hint: "What to put into the clip - 1 to 8 pictures. The clip must be 4-30 seconds and at least ~640x640.", required: true } },
+  // Genjutsu Lite (2026-10-21, public after UI runs): the same two jobs on
+  // Higgsfield's cheaper model - clips of 4-15 seconds
+  { id: "higgsfield-genjutsu-lite-motion", name: "Genjutsu Lite Motion Transfer", durations: [], resolutions: ["480p","720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    sourceClipImages: { max: 8, label: "Characters", hint: "Who takes over the clip's motion - 1 to 8 clear pictures. The clip must be 4-15 seconds.", required: true } },
+  { id: "higgsfield-genjutsu-lite-swap", name: "Genjutsu Lite Object Swap", durations: [], resolutions: ["480p","720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    sourceClipImages: { max: 8, label: "Swap in", hint: "What to put into the clip - 1 to 8 pictures. The clip must be 4-15 seconds.", required: true } },
   {
     id: "higgsfield-cinema-4",
     name: "Cinema Studio 4.0",
@@ -1503,10 +1522,21 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // ── 2026-10-07 batch (ADMIN ONLY while under test) - lib/batch-1007-video ──
   // Vidu Q4: one image = the start frame (native audio always on); more = references (up to 12; audio is the toggle)
   { id: "vidu-q4", name: "Vidu Q4", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["540p","720p","1080p","2k","4k"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: false, audioType: "toggle", supportsReferenceVideo: true, refImagesOnly: true },
+  // Kling 4.0 (2026-10-21, ADMIN ONLY while under test): words, or references -
+  // pictures @Image1.., clips @Video1.. (30s in all) and elements @Element1..;
+  // a picture tagged S is the start frame. lib/batch-1007-video routes it.
+  { id: "kling-v4", name: "Kling 4.0", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","20","25","30"], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","21:9","auto"], supportsEndFrame: false, audioType: "none", textToVideo: true,
+    supportsReferenceVideo: true, refLimits: { images: 10, videos: 5, audios: 0 }, frameTags: "start", startOnlyWhenTagged: true, klingElements: true, refVideoWindow: { count: 5, minSec: 3, totalSec: 30 } },
+  // Kling 4.0 Edit: the clip (@Video1, 3-30s, 700px+) edited from words, with optional pictures and elements
+  { id: "kling-v4-edit", name: "Kling 4.0 Edit", durations: [], resolutions: ["720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 30, klingElements: true,
+    sourceClipImages: { max: 10, label: "Reference images (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (3-30s, at least 700px each way)." } },
   // H3 Max Relight: the clip (up to 15s) and a picture of a lit sphere in the refs panel
   { id: "minimax-h3-max-relight", name: "H3 Max Relight", durations: [], resolutions: ["480p","768p","1080p","2k"], aspectRatios: ["auto","21:9","16:9","4:3","1:1","3:4","9:16"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
     // lighting: the Lighting studio builds the picture from lights (components/video/LightingStudio)
     sourceClipImages: { max: 1, label: "Lighting picture", hint: "A lit sphere (a grey or chrome ball) in the light you want - the clip is re-lit to match. Build it in the Lighting studio, or upload one.", required: true, lighting: true } },
+  // H3 Max Reframe (2026-10-21, public after a UI run): the clip (up to 15s)
+  // is fitted into the chosen frame and the rest outpainted; prompt optional
+  { id: "minimax-h3-max-reframe", name: "H3 Max Reframe", durations: [], resolutions: ["480p","768p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4","21:9","9:21"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 15 },
   // Character swap: the person in the clip becomes the one in the picture; the footage stays
   { id: "wan-2.2-animate-replace", name: "Wan 2.2 Animate Replace", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
     sourceClipImages: { max: 1, label: "Character", hint: "Who to put in the clip - one clear picture, framed like the person in it (full body for a full-body shot).", required: true } },
@@ -1697,6 +1727,8 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
 const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "higgsfield-genjutsu-motion": "$$$+",
   "higgsfield-genjutsu-swap":   "$$$+",
+  "higgsfield-genjutsu-lite-motion": "$$",
+  "higgsfield-genjutsu-lite-swap":   "$$",
   "higgsfield-cinema-4":        "$$$",
   "gemini-omni-flash":  "$$",
   "lipsync-v3":         "$",
@@ -1719,6 +1751,9 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "minimax-h3-max-insert": "$$",
   "vidu-q4": "$$",
   "minimax-h3-max-relight": "$$",
+  "minimax-h3-max-reframe": "$$",
+  "kling-v4": "$$$",
+  "kling-v4-edit": "$$$",
   "wan-2.2-animate-replace": "$$$",
   "dreamactor-v2": "$$",
   "lucy-edit-pro": "$$$",
@@ -2026,7 +2061,7 @@ const VIDEO_MODEL_GROUPS = [
   { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1", "PixVerse V6 Extend", "PixVerse Music Video"] },
   { label: "Vidu", type: "text · image · start/end · refs to video · audio · up to 4K", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q4", "Vidu Q3", "Vidu Q3 Turbo"] },
   { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
-  { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot · relight", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot", "H3 Max Relight"] },
+  { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot · relight · reframe", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot", "H3 Max Relight", "H3 Max Reframe"] },
   { label: "ByteDance",   type: "image & text to video · character swap · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "OmniHuman v2", "DreamActor v2", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
   { label: "Google Veo", type: "text · image · first/last · refs · audio · extend", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite", "Veo 3.1 Extend", "Veo 3.1 Fast Extend"] },
   { label: "Wan",         type: "image & text to video · character swap", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7", "Wan 2.2 Animate Replace"] },
@@ -2060,7 +2095,7 @@ const VIDEO_MODEL_GROUPS = [
   // Public 2026-10-06 (priced from fal's rates, tested end to end)
   { label: "Kandinsky", type: "text & image to video · with sound · video upscale", accent: "text-red-300", dot: "bg-red-300", items: ["Kandinsky 6 Pro", "Kandinsky 6 Lite", "Kandinsky 6 VSR", "Kandinsky 6 VSR Lite"] },
   // Public 2026-10-13: Higgsfield's own models (not on fal; lib/higgsfield, its own 20-slot queue)
-  { label: "Higgsfield", type: "exclusive · motion transfer · object swap · directed shots", accent: "text-slate-200", dot: "bg-slate-300", items: ["Genjutsu Motion Transfer", "Genjutsu Object Swap", "Cinema Studio 4.0"] },
+  { label: "Higgsfield", type: "exclusive · motion transfer · object swap · lite · directed shots", accent: "text-slate-200", dot: "bg-slate-300", items: ["Genjutsu Motion Transfer", "Genjutsu Object Swap", "Genjutsu Lite Motion Transfer", "Genjutsu Lite Object Swap", "Cinema Studio 4.0"] },
 ]
 const HOME_VIDEO_TOOL_NAMES = VIDEO_MODEL_CONFIGS.filter(m => m.isVideoTool).map(m => m.name)
 // ── Home page: the Worlds and 3D model sections (2026-10-16, admin only) ──
@@ -2118,6 +2153,10 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   // 2026-10-16 and moved to their makers' groups above
   // 2026-10-16 (under test): a continuous film you steer while it plays
   { label: "MiniMax Live", type: "direct a film live · named references · with sound", accent: "text-rose-400", dot: "bg-rose-400", items: ["H3 Max Director"] },
+  // 2026-10-21 (under test): Kling 4.0 - text / references / elements, and its clip edit
+  { label: "Kling", type: "text & references to video · elements · edit a clip", accent: "text-sky-300", dot: "bg-sky-300", items: ["Kling 4.0", "Kling 4.0 Edit"] },
+  // H3 Max Reframe and Genjutsu Lite (2026-10-21) went public the same day
+  // after UI runs, into the MiniMax / Higgsfield groups above
   // The 2026-10-07 batch (Vidu Q4, H3 Max Relight, the character swaps) went
   // public 2026-10-08 and moved to its makers' groups above
 ]
@@ -2134,6 +2173,8 @@ const SLOW_VIDEO_POLL_MIN: Record<string, number> = {
 const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "higgsfield-genjutsu-motion": "Optional - how the new characters should look or act",
   "higgsfield-genjutsu-swap": "Optional - what to swap and where",
+  "higgsfield-genjutsu-lite-motion": "Optional - how the new characters should look or act",
+  "higgsfield-genjutsu-lite-swap": "Optional - what to swap and where",
   "higgsfield-cinema-4": "Describe the shot - the director picks camera, light and pacing",
   "kandinsky6-vsr": "No prompt needed - upscales the first ~5 seconds (121 frames) of the clip",
   "kandinsky6-vsr-lite": "No prompt needed - upscales the first ~5 seconds (121 frames) of the clip",
@@ -2155,6 +2196,9 @@ const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "minimax-h3-max-camera": "Describe the scene (optional) - the camera move is set on the left",
   "vidu-q4": "Describe the motion (optional with a start image, required with references)",
   "minimax-h3-max-relight": "No prompt needed - add the clip and a picture of a lit sphere (the lighting to match) in References",
+  "minimax-h3-max-reframe": "Optional - what fills the new space around the clip (pick the new shape on the left)",
+  "kling-v4": "Describe the video - name references @Image1, @Video1 and elements @Element1",
+  "kling-v4-edit": "Describe the edit - the clip is @Video1; pictures @Image1…, elements @Element1…",
   "wan-2.2-animate-replace": "No prompt needed - add the clip and your character's picture in References",
   "dreamactor-v2": "No prompt needed - add the clip and your character's picture in References",
   "lucy-edit-pro": "Describe the edit - e.g. make him a chrome robot (it renders 16:9 at 720p, so landscape clips work best)",
@@ -3102,11 +3146,11 @@ function ModelMenuPanel({
                 </div>
 
                 {filterGroups(adminGroups).length > 0 && (
-                  <div className="rounded-lg border border-violet-500/25 bg-violet-500/[0.04] overflow-hidden">
-                    <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-violet-500/15">
-                      <div className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
-                      <span className="text-[9px] font-bold tracking-widest uppercase text-violet-300">Admin Models</span>
-                      <span className="text-[8px] text-slate-600">· admin only</span>
+                  <div className={cn("rounded-lg border bg-red-500/[0.04] overflow-hidden", ADMIN_BORDER)}>
+                    <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-red-500/15">
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                      <span className={cn("text-[9px] font-bold tracking-widest uppercase", ADMIN_TEXT)}>Admin Models</span>
+                      <AdminTag label="admin only" />
                     </div>
                     <div className="p-2 grid gap-1.5" style={cardGridStyle}>
                       {filterGroups(adminGroups).flatMap(g => g.items.map(it => renderCard(it, g.label)))}
@@ -3203,11 +3247,11 @@ function ModelMenuPanel({
 
             {/* Admin Models — full-width block containing subsections */}
             {filterGroups(adminGroups).length > 0 && (
-              <div className="col-span-2 mt-0.5 rounded-lg border border-violet-500/25 bg-violet-500/[0.04] overflow-hidden">
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-violet-500/15">
-                  <div className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
-                  <span className="text-[9px] font-bold tracking-widest uppercase text-violet-300">Admin Models</span>
-                  <span className="text-[8px] text-slate-600">· admin only</span>
+              <div className={cn("col-span-2 mt-0.5 rounded-lg border bg-red-500/[0.04] overflow-hidden", ADMIN_BORDER)}>
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-red-500/15">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                  <span className={cn("text-[9px] font-bold tracking-widest uppercase", ADMIN_TEXT)}>Admin Models</span>
+                  <AdminTag label="admin only" />
                 </div>
                 <div className="p-2">
                  <div className="flex gap-2 items-start">
@@ -3217,7 +3261,7 @@ function ModelMenuPanel({
                     <div key={sub.label}>
                       <div className="flex items-center gap-1.5 px-1.5 pb-1">
                         <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${sub.dot}`} />
-                        <span className="text-[9px] font-bold tracking-widest uppercase leading-none text-slate-300">{sub.label}</span>
+                        <span className={cn("text-[9px] font-bold tracking-widest uppercase leading-none", ADMIN_TEXT)}>{sub.label}</span>
                         <span className="text-[8px] text-slate-600 leading-none truncate">· {sub.type}</span>
                       </div>
                       <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white/[0.02]">
@@ -3367,7 +3411,7 @@ function GroupedTaskbarDropdown({
         >
           {label}
         </span>
-        {variant === "admin" && <span className="px-1 py-px rounded bg-red-500/15 border border-red-500/30 text-[8px] font-bold uppercase tracking-wider text-red-300">Admin</span>}
+        {variant === "admin" && <AdminTag />}
         {activeCost && <CostBadge tier={activeCost} />}
       </button>
 
@@ -4013,12 +4057,14 @@ function FeedOptionRow({ label, children }: { label: string; children: ReactNode
 }
 
 // ON/OFF toggle row (Full Size, View Hidden).
-function FeedToggleRow({ label, icon, on, onChange, accent = "white" }: {
+function FeedToggleRow({ label, icon, on, onChange, accent = "white", admin = false }: {
   label: string
   icon?: ReactNode
   on: boolean
   onChange: (v: boolean) => void
   accent?: "white" | "amber"
+  /** Styling only: red + an Admin chip for a row only admin accounts get */
+  admin?: boolean
 }) {
   // Monochrome by default; amber flags "you're in a special view" (View Hidden)
   const activeCls = accent === "amber"
@@ -4028,9 +4074,9 @@ function FeedToggleRow({ label, icon, on, onChange, accent = "white" }: {
   return (
     <button
       onClick={() => onChange(!on)}
-      className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${on ? activeCls : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"}`}
+      className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[11px] font-medium transition-all ${admin ? ADMIN_BUTTON : on ? activeCls : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white"}`}
     >
-      <span className="flex items-center gap-1.5">{icon}{label}</span>
+      <span className="flex items-center gap-1.5">{icon}{label}{admin && <AdminTag />}</span>
       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${on ? pillCls : "bg-white/10 text-slate-500"}`}>{on ? "ON" : "OFF"}</span>
     </button>
   )
@@ -4104,9 +4150,9 @@ function FeedModelFilter({ label, groups, adminGroups = [], hidden, onChange }: 
           <div className="max-h-52 overflow-y-auto space-y-2 pr-0.5">
             {groups.map(g => renderGroup(g, "pub"))}
             {adminGroups.length > 0 && (
-              <div className="pt-1.5 mt-1 border-t border-white/[0.08] space-y-2">
-                <span className="flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-[0.2em] text-violet-300/80">
-                  <Lock size={8} /> Admin Models
+              <div className={cn("pt-1.5 mt-1 border-t space-y-2", ADMIN_BORDER)}>
+                <span className={cn("flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-[0.2em]", ADMIN_TEXT)}>
+                  <Lock size={8} /> Admin Models <AdminTag />
                 </span>
                 {adminGroups.map(g => renderGroup(g, "adm"))}
               </div>
@@ -4369,7 +4415,7 @@ function FeedDropdown({
           <EyeOff size={11} className="text-amber-400 shrink-0" aria-label="Viewing hidden generations" />
         )}
         {adminFilterCount > 0 && (
-          <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" title={`${adminFilterCount} feed filters active`} />
+          <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" title={`${adminFilterCount} feed filters active`} />
         )}
       </button>
 
@@ -4466,7 +4512,7 @@ function FeedDropdown({
                   {showHidden && <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">Showing only hidden generations — select them to unhide.</p>}
                   {/* Prism, the guide (2026-10-20): each account shows or hides it for itself - admins only while PRISM_ADMIN_ONLY */}
                   {(isAdmin || !PRISM_ADMIN_ONLY) && <>
-                    <FeedToggleRow label="Prism guide" icon={<Sparkles size={11} />} on={!prism.hidden} onChange={on => setPrismVisible(on)} />
+                    <FeedToggleRow label="Prism guide" icon={<Sparkles size={11} />} on={!prism.hidden} onChange={on => setPrismVisible(on)} admin={PRISM_ADMIN_ONLY} />
                     <p className="text-[9.5px] text-slate-600 leading-relaxed px-0.5">{prism.hidden ? "Hidden for your account." : "Your guide, in the header beside your tickets. Only changes your account."}</p>
                   </>}
                 </section>
@@ -4509,12 +4555,13 @@ function FeedDropdown({
             {isAdmin && (
               <section className="border-t border-white/5 pt-3 space-y-2">
                 <button onClick={() => setAdminOpen(v => !v)} className="w-full flex items-center justify-between gap-2 group">
-                  <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-violet-400/70 group-hover:text-violet-300 transition-colors">
+                  <span className={cn("flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider group-hover:text-red-200 transition-colors", ADMIN_TEXT)}>
                     <SlidersHorizontal size={11} />
-                    Admin · Feed Filters
-                    {adminFilterCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-violet-500/25 text-violet-200 text-[9px] font-bold leading-none">{adminFilterCount}</span>}
+                    Feed Filters
+                    <AdminTag />
+                    {adminFilterCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-500/25 text-red-200 text-[9px] font-bold leading-none">{adminFilterCount}</span>}
                   </span>
-                  <ChevronDown size={12} className={`text-violet-400/70 transition-transform ${adminOpen ? "rotate-180" : ""}`} />
+                  <ChevronDown size={12} className={`text-red-300/70 transition-transform ${adminOpen ? "rotate-180" : ""}`} />
                 </button>
 
                 {!adminOpen && (
@@ -5106,13 +5153,13 @@ function AdminFeedFilterPanel({ initial, onApply, onClose }: {
 
   return createPortal(
     <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-3xl rounded-2xl bg-[#0f0f1a] border border-white/[0.1] shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+      <div className={cn("w-full max-w-3xl rounded-2xl bg-[#0f0f1a] border shadow-2xl flex flex-col max-h-[85vh]", ADMIN_BORDER)} onClick={e => e.stopPropagation()}>
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07] shrink-0">
           <div className="flex items-center gap-2">
             <p className="text-sm font-semibold text-white">Feed Filters</p>
-            <span className="px-1.5 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/30 text-violet-300 text-[9px] font-bold uppercase tracking-wider">Admin</span>
+            <AdminTag />
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-white/[0.06] text-slate-600 hover:text-slate-300 transition-colors">
             <X size={14} />
@@ -5659,12 +5706,23 @@ function useFullscreenToggle() {
   return { fsAvailable, isFullscreen, toggleFullscreen }
 }
 
+/*
+ * The feeds, one tap each (2026-10-21, owner: replace "Regular feed" in the
+ * logo and profile menus with "image feed", "video feed" and "audio feed").
+ */
+type FeedKind = "image" | "video" | "audio"
+const FEED_LINKS: { kind: FeedKind; label: string; Icon: typeof Image }[] = [
+  { kind: "image", label: "Image feed", Icon: Image },
+  { kind: "video", label: "Video feed", Icon: Video },
+  { kind: "audio", label: "Audio feed", Icon: Music },
+]
+
 function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, size = 36, openUp = false }: {
   logoUrl: string | null
   isAdmin: boolean
   onLogoChange?: (url: string | null) => void
   onGoHome?: () => void
-  onGoFeed?: () => void
+  onGoFeed?: (kind: FeedKind) => void
   size?: number
   // Prompt-box placement: the bar sits at the bottom, so the menu opens upward
   openUp?: boolean
@@ -5767,13 +5825,16 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, size
             <Sparkles size={13} className="text-slate-300 shrink-0" />
             <span className="flex-1 text-left">Home</span>
           </button>
-          <button
-            onClick={() => { onGoFeed?.(); setOpen(false) }}
-            className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors border-t border-white/5"
-          >
-            <Layers size={13} className="text-slate-300 shrink-0" />
-            <span className="flex-1 text-left">Regular feed</span>
-          </button>
+          {FEED_LINKS.map(({ kind, label, Icon }) => (
+            <button
+              key={kind}
+              onClick={() => { onGoFeed?.(kind); setOpen(false) }}
+              className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors border-t border-white/5"
+            >
+              <Icon size={13} className="text-slate-300 shrink-0" />
+              <span className="flex-1 text-left">{label}</span>
+            </button>
+          ))}
           <Link
             href="/my-generations"
             onClick={() => setOpen(false)}
@@ -5802,12 +5863,12 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, size
               entry moved to the admin Lab -> Studios, 2026-10-12.) */}
           {isAdmin && (
             <>
-              <div className="px-3 py-2 border-t border-white/5 text-[10px] font-mono font-semibold uppercase tracking-[0.2em] text-slate-500">Site Logo · Admin</div>
+              <div className={cn("flex items-center gap-1.5 px-3 py-2 border-t border-white/5 text-[10px] font-mono font-semibold uppercase tracking-[0.2em]", ADMIN_TEXT)}>Site Logo <AdminTag /></div>
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                className={cn("flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:text-red-200 hover:bg-red-500/10 transition-colors", ADMIN_TEXT)}
               >
-                <Upload size={13} className="text-slate-300 shrink-0" />
+                <Upload size={13} className="shrink-0" />
                 <span className="flex-1 text-left">{logoUrl ? "Replace logo" : "Upload logo"}</span>
               </button>
               {logoUrl && (
@@ -5817,7 +5878,7 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, size
                     onLogoChange?.(null)
                     setOpen(false)
                   }}
-                  className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors border-t border-white/5"
+                  className={cn("flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:text-red-200 hover:bg-red-500/10 transition-colors border-t border-white/5", ADMIN_TEXT)}
                 >
                   <Trash2 size={13} className="shrink-0" />
                   <span className="flex-1 text-left">Remove logo</span>
@@ -5831,7 +5892,7 @@ function LogoDropdown({ logoUrl, isAdmin, onLogoChange, onGoHome, onGoFeed, size
   )
 }
 
-function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange, onGoHome, onGoFeed }: { user: UserData | null; isAdminAccount?: boolean; onSignOut: () => void; onAvatarChange?: (url: string | null) => void; onGoHome?: () => void; onGoFeed?: () => void }) {
+function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange, onGoHome, onGoFeed }: { user: UserData | null; isAdminAccount?: boolean; onSignOut: () => void; onAvatarChange?: (url: string | null) => void; onGoHome?: () => void; onGoFeed?: (kind: FeedKind) => void }) {
   const [open, setOpen] = useState(false)
   // The logo menu's navigation, here too (2026-10-12) - another route to each
   const { fsAvailable, isFullscreen, toggleFullscreen } = useFullscreenToggle()
@@ -5987,13 +6048,16 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                   <Sparkles size={13} className="text-slate-300 shrink-0" />
                   <span className="flex-1 text-left">Home</span>
                 </button>
-                <button
-                  onClick={() => { onGoFeed?.(); setOpen(false) }}
-                  className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  <Layers size={13} className="text-slate-300 shrink-0" />
-                  <span className="flex-1 text-left">Regular feed</span>
-                </button>
+                {FEED_LINKS.map(({ kind, label, Icon }) => (
+                  <button
+                    key={kind}
+                    onClick={() => { onGoFeed?.(kind); setOpen(false) }}
+                    className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                  >
+                    <Icon size={13} className="text-slate-300 shrink-0" />
+                    <span className="flex-1 text-left">{label}</span>
+                  </button>
+                ))}
                 <Link
                   href="/my-generations"
                   onClick={() => setOpen(false)}
@@ -6007,10 +6071,12 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                   <Link
                     href="/connect"
                     onClick={() => setOpen(false)}
-                    className="flex items-center gap-2 w-full px-4 py-2.5 text-xs text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                    className={cn("flex items-center gap-2 w-full px-4 py-2.5 text-xs transition-colors",
+                      CONNECTOR_ADMIN_ONLY ? cn(ADMIN_TEXT, "hover:text-red-200 hover:bg-red-500/10") : "text-slate-300 hover:text-white hover:bg-white/5")}
                   >
-                    <Plug size={13} className="text-slate-300 shrink-0" />
+                    <Plug size={13} className={cn("shrink-0", !CONNECTOR_ADMIN_ONLY && "text-slate-300")} />
                     <span className="flex-1 text-left">Use in ChatGPT &amp; Claude</span>
+                    {CONNECTOR_ADMIN_ONLY && <AdminTag />}
                   </Link>
                 )}
                 {fsAvailable && (
@@ -6034,7 +6100,7 @@ function ProfileBubble({ user, isAdminAccount = false, onSignOut, onAvatarChange
                 {isAdmin && (
                   <Link
                     href="/admin"
-                    className="relative overflow-hidden block w-full py-2 rounded-xl bg-white/10 border border-white/25 hover:bg-white/15 hover:border-white/40 text-xs font-bold text-white text-center transition-all"
+                    className={cn("relative overflow-hidden block w-full py-2 rounded-xl text-xs font-bold text-center transition-all", ADMIN_BUTTON)}
                     onClick={() => setOpen(false)}
                   >
                     <span
@@ -8104,10 +8170,11 @@ function RefDropdown({
             style={menuPos.underDock > 0 ? { paddingBottom: menuPos.underDock * (menuPos.z || 1) + 16 } : undefined}>
             {/* ── Batch bar (admin batch mode) ── */}
             {batchMode && (
-              <div className="mb-3 space-y-2 rounded-xl border border-cyan-500/25 bg-cyan-500/[0.04] p-3">
+              <div className={cn("mb-3 space-y-2 rounded-xl border bg-cyan-500/[0.04] p-3", ADMIN_BORDER)}>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[11px] uppercase tracking-wider text-cyan-300/90">
+                  <span className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-cyan-300/90">
                     Batch mode - {batches.length} batch{batches.length === 1 ? "" : "es"}
+                    <AdminTag />
                   </span>
                   {batches.length > 0 && (
                     <button onClick={() => onBatchesChange?.([])}
@@ -8622,11 +8689,11 @@ function TextDropdown({
               {/* Admins only: which Gemini model does the writing */}
               {isAdmin && (
                 <div>
-                  <label className="block text-[10px] text-slate-500 mb-1">AI model <span className="text-violet-300/70">· admin</span></label>
+                  <label className={cn("flex items-center gap-1.5 text-[10px] mb-1", ADMIN_TEXT)}>AI model <AdminTag /></label>
                   <select
                     value={promptModel}
                     onChange={(e) => setPromptModel(e.target.value)}
-                    className="w-full px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-xs text-white focus:outline-none focus:border-white/30"
+                    className={cn("w-full px-2 py-1.5 rounded-md bg-black/30 border text-xs text-white focus:outline-none focus:border-red-500/60", ADMIN_BORDER)}
                   >
                     {PROMPT_MODEL_GROUPS.map(g => (
                       <optgroup key={g} label={g}>
@@ -10084,6 +10151,7 @@ function PendingDetailModal({
 
   return (
     <div
+      data-prism-modal
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/90"
       onClick={onClose}
     >
@@ -10254,9 +10322,9 @@ function PendingDetailModal({
             {onDismiss && (
               <button
                 onClick={() => { onDismiss(); onClose() }}
-                className="w-full py-1.5 rounded-lg border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-[11px] text-red-400 hover:text-red-300 transition-all flex items-center justify-center gap-1.5"
+                className={cn("w-full py-1.5 rounded-lg text-[11px] transition-all flex items-center justify-center gap-1.5", ADMIN_BUTTON)}
               >
-                <X size={11} /> Dismiss Generation
+                <X size={11} /> Dismiss Generation <AdminTag />
               </button>
             )}
             <AIDisclaimer />
@@ -10928,6 +10996,7 @@ function ImageDetailModal({
 
   return (
     <div
+      data-prism-modal
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/90"
       onClick={onClose}
     >
@@ -11547,7 +11616,7 @@ function ImageDetailModal({
                     <button
                       onClick={() => { onLiveEdit(image); onClose() }}
                       title="Edit this picture live with Krea 3 Realtime - every change to the prompt re-renders it"
-                      className="flex-1 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 hover:border-white/30 text-slate-200 text-[11px] font-medium transition-all flex items-center justify-center gap-1.5"
+                      className={cn("flex-1 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center justify-center gap-1.5", ADMIN_BUTTON)}
                     >
                       <Radio size={11} />
                       Live
@@ -11804,6 +11873,7 @@ function VideoDetailModal({
 
   return (
     <div
+      data-prism-modal
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/90"
       onClick={onClose}
     >
@@ -13273,6 +13343,7 @@ function BarSelect<T extends string>({
   title,
   menuWidth = "w-44",
   footnote,
+  admin = false,
 }: {
   label?: string
   value: T
@@ -13281,6 +13352,8 @@ function BarSelect<T extends string>({
   title?: string
   menuWidth?: string
   footnote?: string
+  /** Styling only: red, for a control only admin accounts get */
+  admin?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -13299,12 +13372,14 @@ function BarSelect<T extends string>({
         onClick={() => setOpen(v => !v)}
         title={title}
         className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono transition-all ${
-          open
+          admin
+            ? ADMIN_BUTTON
+            : open
             ? "border-white/20 bg-white/10 text-white"
             : "border-white/10 bg-white/5 text-slate-300 hover:border-white/20 hover:text-white"
         }`}
       >
-        {label && <span className="text-slate-500">{label}</span>}
+        {label && <span className={admin ? "text-red-300/70" : "text-slate-500"}>{label}</span>}
         {current?.text ?? value}
         {current?.badge && <span className="text-amber-400/90">{current.badge}</span>}
         <ChevronDown size={10} className={`transition-transform ${open ? "rotate-180" : ""}`} />
@@ -17454,7 +17529,7 @@ function PromptBox({
   siteLogoUrl?: string | null
   onSiteLogoChange?: (url: string | null) => void
   onGoHome?: () => void
-  onGoFeed?: () => void
+  onGoFeed?: (kind: FeedKind) => void
   // Home-page card media for the model picker's Cards view (shared w/ taskbar menus)
   cardMedia?: Record<string, { mediaUrl: string; mediaType: string }>
   // Feed -> Prompt Box Size: zoom applied to the inner container (the fixed
@@ -20657,7 +20732,7 @@ function PromptBox({
                       ? "bg-red-500/20 border-red-500/60 text-red-400 animate-pulse"
                       : voiceState === "busy"
                         ? "bg-white/[0.06] border-white/[0.1] text-slate-400"
-                        : "bg-white/[0.04] border-white/[0.08] text-slate-500 hover:text-white hover:border-white/25"
+                        : ADMIN_BUTTON
                   }`}
                 >
                   {voiceState === "busy" ? <Loader2 size={14} className="animate-spin" /> : voiceState === "rec" ? <MicOff size={14} /> : <Mic size={14} />}
@@ -21695,6 +21770,7 @@ function PromptBox({
                       label="safety"
                       value={nb21Safety}
                       title="Safety tolerance (admins only)"
+                      admin
                       menuWidth="w-40"
                       onChange={setNb21Safety}
                       options={(["1", "2", "3", "4", "5", "6"] as const).map(v => ({
@@ -22366,10 +22442,11 @@ function PromptBox({
             </button>
 
             {/* Image count picker — only for models that support multi-image */}
+            {/* Only admins get more than one image per run (maxImagesForUser) */}
             {maxImagesForUser > 1 && (
               <>
                 <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
-                <div className="flex items-center shrink-0">
+                <div title="Images per run (admins only)" className={cn("flex items-center shrink-0 rounded-md px-0.5", ADMIN_BUTTON)}>
                   <button
                     onClick={() => setImageCount(c => Math.max(1, c - 1))}
                     disabled={imageCount <= 1}
@@ -22456,11 +22533,7 @@ function PromptBox({
                   title={ccbillFilterOn
                     ? "CCBill prompt filter applies to admin accounts too — click to exempt admins (regular users stay filtered)"
                     : "Admin accounts are EXEMPT from the CCBill prompt filter — click to re-enable (regular users are always filtered)"}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                    ccbillFilterOn
-                      ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                      : "border-amber-500/25 bg-amber-500/[0.08] text-amber-400 hover:bg-amber-500/15"
-                  }`}
+                  className={cn("flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] transition-all shrink-0", ADMIN_BUTTON, !ccbillFilterOn && "font-semibold")}
                 >
                   <Shield size={11} />
                   Filter {ccbillFilterOn ? "ON" : "OFF"}
@@ -22470,12 +22543,8 @@ function PromptBox({
                   title={ccbillFilterMode === "gemini"
                     ? "Filter engine: keyword list + name list + Gemini AI check (strongest, ~$0.00007/prompt) — click for Static (free, lists only)"
                     : "Filter engine: keyword list + static name list only (free, no API calls) — click for Gemini AI mode"}
-                  className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                    // Silver, the site's own (2026-10-12 - was violet / cyan): the AI engine reads brighter
-                    ccbillFilterMode === "gemini"
-                      ? "bg-white/[0.10] border-white/30 text-slate-100"
-                      : "bg-white/[0.04] border-white/15 text-slate-400"
-                  }`}
+                  // Red: admin-only, like the Filter switch beside it (2026-10-20)
+                  className={cn("flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-all shrink-0", ADMIN_BUTTON, ccbillFilterMode === "gemini" && "font-semibold")}
                 >
                   {ccbillFilterMode === "gemini" ? "AI" : "List"}
                 </button>
@@ -22570,9 +22639,9 @@ function PromptBox({
                     }}
                     title={isAdminAccount ? undefined : "Content safety filtering is required for all generations. This helps ensure the platform remains safe and compliant."}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                      safetyOn
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                        : "border-red-500/20 bg-red-500/[0.06] text-red-400 hover:bg-red-500/10"
+                      isAdminAccount
+                        ? cn(ADMIN_BUTTON, !safetyOn && "font-semibold")
+                        : "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
                     } ${!isAdminAccount ? "cursor-default opacity-70" : ""}`}
                   >
                     <Eye size={11} />
@@ -22606,9 +22675,9 @@ function PromptBox({
                     }}
                     title={isAdminAccount ? undefined : "Content safety filtering is required for all generations. This helps ensure the platform remains safe and compliant."}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 ${
-                      safetyOn
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                        : "border-red-500/20 bg-red-500/[0.06] text-red-400 hover:bg-red-500/10"
+                      isAdminAccount
+                        ? cn(ADMIN_BUTTON, !safetyOn && "font-semibold")
+                        : "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
                     } ${!isAdminAccount ? "cursor-default opacity-70" : ""}`}
                   >
                     <Eye size={11} />
@@ -22654,8 +22723,8 @@ function PromptBox({
                   title="Batch mode — build reference batches in the Refs dropdown; each batch runs as its own generation with this prompt"
                   className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-all shrink-0 ${
                     batchMode
-                      ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-300"
-                      : "bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/25"
+                      ? "bg-red-500/25 border-red-500/60 text-red-100"
+                      : ADMIN_BUTTON
                   }`}
                 >
                   <Layers size={12} />
@@ -22890,6 +22959,7 @@ function SD20RefPanel({
   videoRefAudioFilenames, onAddRefAudio, onRemoveRefAudio,
   videoRefVideoDuration = 0,
   maxVideos = 3,
+  refVideoWindow,
   maxAudios = 3,
   maxImages = 9,
   sourceClipMaxSec,
@@ -22920,6 +22990,8 @@ function SD20RefPanel({
   videoRefVideoDuration?: number
   // Gemini Omni Flash r2v reuses this panel with images only (maxVideos/maxAudios 0)
   maxVideos?: number
+  /** The model's reference-clip window (VideoModelConfig.refVideoWindow) - SeeDance's 3 / 2-15s when absent */
+  refVideoWindow?: { count: number; minSec: number; totalSec: number }
   maxAudios?: number
   /** How many reference images the model's endpoint takes (VideoModelConfig.refLimits) */
   maxImages?: number
@@ -22952,8 +23024,8 @@ function SD20RefPanel({
   // FAL Seedance 2.0 r2v limits: 9 images + 3 videos + 3 audio (12 files
   // total); input videos max 15s combined. Omni r2v: images only.
   const sourceOnly = !!sourceClipMaxSec
-  const SD20_MAX_VIDEO_SEC = sourceClipMaxSec ?? 15
-  const videoSlots = sourceOnly ? 1 : 3
+  const SD20_MAX_VIDEO_SEC = sourceClipMaxSec ?? refVideoWindow?.totalSec ?? 15
+  const videoSlots = sourceOnly ? 1 : refVideoWindow?.count ?? 3
   const totalFiles = videoRefImagePreviews.length + videoRefVideoFilenames.length + videoRefAudioFilenames.length
   const filesLeft = (maxImages + maxVideos + maxAudios) - totalFiles
 
@@ -23112,7 +23184,7 @@ function SD20RefPanel({
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
             {sourceOnly
               ? <>Source clip <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length ? `${videoRefVideoDuration.toFixed(1)}s` : "required"} · up to {SD20_MAX_VIDEO_SEC}s)</span></>
-              : <>Reference Videos <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length}/3 · {videoRefVideoDuration.toFixed(0)}s · 2–15s total)</span></>}
+              : <>Reference Videos <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length}/{videoSlots} · {videoRefVideoDuration.toFixed(0)}s · {refVideoWindow ? `${refVideoWindow.minSec}–${refVideoWindow.totalSec}s` : "2–15s"} total)</span></>}
           </p>
           {videoRefVideoFilenames.length < videoSlots && filesLeft > 0 && (sourceOnly || videoRefVideoDuration < SD20_MAX_VIDEO_SEC) && (
             <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
@@ -23737,6 +23809,7 @@ function VideoCustomizationPanel({
               videoRefVideoDuration={videoRefVideoDuration}
               sourceClipMaxSec={model.sourceClipMaxSec}
               clipImages={model.sourceClipImages}
+              refVideoWindow={model.refVideoWindow}
               allowFrameTags={model.frameTags ? model.frameTags !== "none" : !model.sourceClipMaxSec}
               startTagOnly={model.frameTags === "start" || !!model.refImagesOnly}
               {...(model.refLimits ? { maxImages: model.refLimits.images, maxVideos: model.refLimits.videos, maxAudios: model.refLimits.audios } : {})}
@@ -23747,6 +23820,8 @@ function VideoCustomizationPanel({
               onTagEnd={onTagRefEnd}
             />
           )}
+          {/* ── Kling 4.0 elements (@Element1...) ── */}
+          {model.klingElements && <KlingElementsEditor />}
           {/* ── Omni r2v: reference images (images only, <IMAGE_REF_n> tags) ── */}
           {isOmni && sd20Mode === "r2v" && (
             <SD20RefPanel
@@ -23948,8 +24023,9 @@ function VideoCustomizationPanel({
           {/* The model's named choice (config.choice) - e.g. Pixelcut's motion or background */}
           {model.choice && !(model.choice.adminOnly && !isAdminAccount) && (
             <div className="space-y-1.5">
-              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+              <p className={cn("text-[10px] font-semibold uppercase tracking-wider", model.choice.adminOnly ? cn("flex items-center gap-1.5", ADMIN_TEXT) : "text-slate-400")}>
                 {model.choice.label} {model.choice.note && <span className="text-slate-600 normal-case font-normal">({model.choice.note})</span>}
+                {model.choice.adminOnly && <AdminTag />}
               </p>
               {/* A long list (HeyGen's 22 languages, VEED's styles) is a dropdown:
                   as buttons it ran to a dozen rows on a phone */}
@@ -24086,9 +24162,9 @@ function VideoCustomizationPanel({
                   }}
                   title={!isAdminAccount ? "Content safety filtering is required for all generations." : undefined}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition-all shrink-0 mt-0.5 ${
-                    safetyOn
-                      ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                      : "border-red-500/20 bg-red-500/[0.06] text-red-400 hover:bg-red-500/10"
+                    isAdminAccount
+                      ? cn(ADMIN_BUTTON, !safetyOn && "font-semibold")
+                      : "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
                   } ${!isAdminAccount ? "cursor-default opacity-70" : ""}`}
                 >
                   <Eye size={11} />
@@ -25239,7 +25315,7 @@ function VideoPromptBar({
     : "Describe the motion...")
 
   return (
-    <div ref={barRef} className="fixed bottom-0 left-0 sm:left-72 xl:left-80 2xl:left-96 right-0 z-30 border-t border-white/5 bg-[#050810]/95 backdrop-blur-md">
+    <div ref={barRef} data-prism-fit className="fixed bottom-0 left-0 sm:left-72 xl:left-80 2xl:left-96 right-0 z-30 border-t border-white/5 bg-[#050810]/95 backdrop-blur-md">
 
       {/* ── Mobile layout (< sm) ───────────────────────────────────────────── */}
       <div className="flex flex-col gap-2 px-3 py-2.5 sm:hidden" style={{ zoom: promptScale }}>
@@ -25836,7 +25912,7 @@ function NewsDropdown({
                 <button
                   onClick={() => { onManage?.(); onToggle() }}
                   title="Manage news & notifications (admin)"
-                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-violet-500/30 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 text-[10px] font-medium transition-all"
+                  className={cn("flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all", ADMIN_BUTTON)}
                 >
                   <Pencil size={9} />
                   Manage
@@ -25892,7 +25968,7 @@ function NewsDropdown({
                           <button
                             onClick={e => { e.stopPropagation(); startEditArticle(featured) }}
                             title="Quick edit (admin)"
-                            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/60 text-violet-300 hover:bg-violet-500/40 hover:text-white transition-all"
+                            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/70 border border-red-500/40 text-red-300 hover:bg-red-500/40 hover:text-white transition-all"
                           >
                             <Pencil size={10} />
                           </button>
@@ -25972,7 +26048,7 @@ function NewsDropdown({
                                 <button
                                   onClick={e => { e.stopPropagation(); startEditArticle(a) }}
                                   title="Quick edit (admin)"
-                                  className="w-5 h-5 flex items-center justify-center rounded-full text-violet-400/70 hover:text-violet-300 hover:bg-violet-500/15 transition-all"
+                                  className={cn("w-5 h-5 flex items-center justify-center rounded-full transition-all", ADMIN_BUTTON)}
                                 >
                                   <Pencil size={10} />
                                 </button>
@@ -26025,7 +26101,7 @@ function NewsDropdown({
                                 <button
                                   onClick={() => startEditNotif(n)}
                                   title="Quick edit (admin)"
-                                  className="w-5 h-5 flex items-center justify-center rounded-full text-violet-400/70 hover:text-violet-300 hover:bg-violet-500/15 transition-all"
+                                  className={cn("w-5 h-5 flex items-center justify-center rounded-full transition-all", ADMIN_BUTTON)}
                                 >
                                   <Pencil size={10} />
                                 </button>
@@ -26055,9 +26131,9 @@ function NewsDropdown({
 
           {/* Admin footer note */}
           {isAdmin && (
-            <div className="px-4 py-2 border-t border-white/5 bg-violet-500/[0.04]">
+            <div className={cn("px-4 py-2 border-t bg-red-500/[0.04]", ADMIN_BORDER)}>
               <p className="text-[9px] text-slate-600 leading-relaxed">
-                Admin section — create, edit and delete news & notifications via <span className="text-violet-400">Manage</span>. Only visible to admin accounts.
+                <AdminTag className="mr-1 align-middle" />Admin section — create, edit and delete news & notifications via <span className={ADMIN_TEXT}>Manage</span>. Only visible to admin accounts.
               </p>
             </div>
           )}
@@ -26118,13 +26194,13 @@ function NewsManagerModal({ initialSection, initialArticleId, onClose }: {
 
   return createPortal(
     <div className="fixed inset-0 z-[10010] flex items-center justify-center p-3 sm:p-6 bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-5xl h-[90vh] rounded-2xl bg-[#09090f] border border-white/[0.1] shadow-2xl flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className={cn("w-full max-w-5xl h-[90vh] rounded-2xl bg-[#09090f] border shadow-2xl flex flex-col overflow-hidden", ADMIN_BORDER)} onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.07] shrink-0">
           <div className="flex items-center gap-2">
             <Bell size={14} className="text-fuchsia-400" />
             <p className="text-sm font-semibold text-white">Manage News & Notifications</p>
-            <span className="px-1.5 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/30 text-violet-300 text-[9px] font-bold uppercase tracking-wider">Admin</span>
+            <AdminTag />
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-white/[0.06] text-slate-600 hover:text-slate-300 transition-colors">
             <X size={14} />
@@ -26438,16 +26514,13 @@ function ShopDropdown({
           {isAdmin && onToggleEffects && (
             <div className="px-4 py-2 border-t border-white/[0.06] bg-black/30 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
-                <span className="text-[10px] font-medium text-slate-500">Effects <span className="text-slate-600">(all users)</span></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                <span className={cn("text-[10px] font-medium", ADMIN_TEXT)}>Effects <span className="text-slate-600">(all users)</span></span>
+                <AdminTag />
               </div>
               <button
                 onClick={onToggleEffects}
-                className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border transition-all ${
-                  effectsEnabled
-                    ? "bg-violet-500/20 border-violet-500/40 text-violet-300"
-                    : "bg-white/5 border-white/10 text-slate-500 hover:text-white"
-                }`}
+                className={cn("px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider transition-all", ADMIN_BUTTON, effectsEnabled && "bg-red-500/25 text-red-100")}
               >
                 {effectsEnabled ? "On" : "Off"}
               </button>
@@ -28094,6 +28167,11 @@ export default function PortalV2Page() {
       const imagesOnly = vids.length === 0 && auds.length === 0
       if (sdMode === "edit") {
         /* already resolved above */
+      } else if (selectedVideoModel.startOnlyWhenTagged) {
+        // Kling 4.0: every picture is a reference (@Image1...); only one tagged S is the start frame
+        sdMode = imgs.length || vids.length ? "r2v" : "t2v"
+        sdImageUrl = startPos !== -1 ? imgs[startPos].u : null; sdEndImageUrl = undefined
+        sdRefImageUrls = imgs.filter((_, p) => p !== startPos).map(e => e.u)
       } else if (imagesOnly && imgs.length === 0) {
         sdMode = "t2v"; sdImageUrl = null; sdEndImageUrl = undefined
       } else if (imagesOnly && imgs.length === 1 && endPos === -1) {
@@ -28196,6 +28274,8 @@ export default function PortalV2Page() {
             referenceAudioUrls:    videoRefAudioUrls.filter(Boolean) as string[],
             referenceVideoDurationSec: videoRefVideoDuration,
           }),
+          // Kling 4.0 elements (components/video/KlingElements)
+          ...(selectedVideoModel.klingElements ? { klingElements: getKlingElements() } : {}),
           // Extend / edit source video (inferred from the refs panel)
           ...(sdMode === "edit" && {
             editVideoUrl:          sdEditVideoUrl,
@@ -29041,8 +29121,9 @@ export default function PortalV2Page() {
     let pollCount = 0
     const interval = setInterval(async () => {
       pollCount++
-      // Timeout after 120 polls × 5s = 10 minutes (catches jobs stuck with no falRequestId)
-      if (pollCount > 120) {
+      // Timeout after 120 polls × 5s = 10 minutes (catches jobs stuck with no falRequestId);
+      // a studio run (a Final Cut) gets 20 - the server fails a dead one at 15 (lib/studio-activity)
+      if (pollCount > (slot.studio ? 240 : 120)) {
         clearInterval(interval)
         delete videoQueuePollingIntervals.current[queueJobId]
         setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slot.slotId))
@@ -29081,6 +29162,27 @@ export default function PortalV2Page() {
           }
           setVideoPendingSlots(prev => prev.map(s => s.slotId === slot.slotId ? promotedSlot : s))
           startVideoPolling(promotedSlot)
+        } else if (data.status === 'completed' && typeof data.resultImageId === 'number') {
+          // A studio video (2026-10-21): saved by the studio itself - the tile becomes that row
+          clearInterval(interval)
+          delete videoQueuePollingIntervals.current[queueJobId]
+          const r = await fetch(`/api/my-images?ids=${data.resultImageId}`).then(x => x.json()).catch(() => null)
+          const img = (r?.images ?? [])[0]
+          setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slot.slotId))
+          if (img?.imageUrl) {
+            const vm = img.videoMetadata || {}
+            setVideoItems(prev => prev.some(i => i.dbId === img.id) ? prev : [{
+              id: `studio-${queueJobId}`,
+              dbId: img.id,
+              videoUrl: img.imageUrl,
+              prompt: img.prompt ?? slot.prompt,
+              model: img.model ?? slot.model,
+              duration: vm.duration ?? slot.duration,
+              resolution: vm.resolution || undefined,
+              aspectRatio: vm.aspectRatio || img.aspectRatio || slot.aspectRatio,
+              createdAt: img.createdAt ?? new Date().toISOString(),
+            }, ...prev])
+          }
         } else if (data.status === 'failed') {
           clearInterval(interval)
           delete videoQueuePollingIntervals.current[queueJobId]
@@ -29117,8 +29219,16 @@ export default function PortalV2Page() {
    * record: anything running that no tile tracks gets one, and the normal
    * pollers take it from there (a request id: video-status; a queued row: the
    * queue poller).
+   *
+   * 2026-10-21 (owner: studio generations had no tiles here): it keeps
+   * watching every 15s after the load passes, so a video a studio starts
+   * while this page is open - a Storyboard shot, a Nova clip, a Final Cut
+   * (lib/studio-activity) - gets its tile within seconds. A row is adopted
+   * once (videoAdoptedIds), so a finished tile is never drawn again while its
+   * row catches up.
    */
   const videoAdoptedForUser = useRef<number | null>(null)
+  const videoAdoptedIds = useRef<Set<number>>(new Set())
   useEffect(() => {
     if (!user?.id || videoAdoptedForUser.current === user.id) return
     videoAdoptedForUser.current = user.id
@@ -29127,7 +29237,7 @@ export default function PortalV2Page() {
       try {
         const r = await fetch("/api/admin/my-active-jobs?type=video", { cache: "no-store" })
         if (!r.ok) return
-        const jobs: { id: number; falRequestId: string | null; falEndpoint?: string; clientSlotId?: string | null; modelId: string; prompt: string; createdAt: string; duration?: string; resolution?: string; aspectRatio?: string }[] = (await r.json()).jobs ?? []
+        const jobs: { id: number; falRequestId: string | null; falEndpoint?: string; clientSlotId?: string | null; modelId: string; prompt: string; createdAt: string; duration?: string; resolution?: string; aspectRatio?: string; studio?: boolean }[] = (await r.json()).jobs ?? []
         setVideoPendingSlots(prev => {
           let next = prev
           // A carried-over tile whose submit was still answering: its job names it
@@ -29145,6 +29255,7 @@ export default function PortalV2Page() {
           const reqs = new Set(next.map(s => s.requestId).filter(Boolean))
           const qids = new Set(next.map(s => s.queueJobId).filter((v): v is number => v != null))
           const add: VideoPendingSlot[] = jobs
+            .filter(j => !videoAdoptedIds.current.has(j.id))
             .filter(j => !(j.falRequestId && reqs.has(j.falRequestId)) && !qids.has(j.id))
             // Asked for by a tile in THIS page, still submitting: its own reply fills it
             .filter(j => !(j.clientSlotId && next.some(s => s.slotId === j.clientSlotId)))
@@ -29162,14 +29273,22 @@ export default function PortalV2Page() {
               ticketCost: 0,
               startedAt: Date.parse(j.createdAt) || Date.now(),
               aspectRatio: j.aspectRatio,
+              ...(j.studio ? { studio: true } : {}),
             }))
+          // Known to this page now, either way: never adopted twice
+          for (const j of jobs) {
+            if (add.some(a => a.slotId === `video-db-${j.id}`) || qids.has(j.id) || (j.falRequestId && reqs.has(j.falRequestId))) videoAdoptedIds.current.add(j.id)
+          }
           return add.length ? [...add, ...next] : next
         })
       } catch { /* the next pass tries again */ }
     }
     // At load, then while a request sent just before the reload may still be landing
     const timers = [0, 6_000, 15_000, 35_000, 75_000].map((ms, k, all) => setTimeout(() => void adopt(k === all.length - 1), ms))
-    return () => timers.forEach(clearTimeout)
+    // ...and from then on, for what studios and other tabs start
+    let watchTimer: ReturnType<typeof setInterval> | null = null
+    const watch = setTimeout(() => { watchTimer = setInterval(() => void adopt(false), 15_000) }, 76_000)
+    return () => { timers.forEach(clearTimeout); clearTimeout(watch); if (watchTimer) clearInterval(watchTimer) }
   }, [user?.id])
 
   // Watch for new video slots with queueJobId but no requestId
@@ -29369,6 +29488,7 @@ export default function PortalV2Page() {
           id: number; modelId: string; prompt: string; createdAt: string
           aspectRatio?: string; quality?: string; referenceImageUrls?: string[]
           falRequestId?: string | null
+          studio?: boolean
         }[] = Array.isArray(data.jobs) ? data.jobs : []
         if (cancelled || jobs.length === 0) return
 
@@ -29384,7 +29504,8 @@ export default function PortalV2Page() {
           // webhook, and adopting it again draws a second spinner for a
           // picture that is already on screen.
           && !completedQueueIds.current.has(j.id)
-          && Date.now() - new Date(j.createdAt).getTime() > SETTLE_MS)
+          // A studio's run (lib/studio-activity) is never this tab's own submit: no wait
+          && (j.studio || Date.now() - new Date(j.createdAt).getTime() > SETTLE_MS))
         if (fresh.length === 0) return
 
         /*
@@ -30206,17 +30327,18 @@ export default function PortalV2Page() {
           setRefVideoNotice(`This clip's shape (${meta.w}×${meta.h}) is outside SeeDance's supported range — clips must be no wider than 2.5:1 and no taller than 1:2.5.`)
           return
         }
-        if (videoRefVideoUrls.filter(Boolean).length >= 3) {
-          setRefVideoNotice("SeeDance takes up to 3 reference videos — remove one first.")
+        const win = selectedVideoModel.refVideoWindow ?? { count: 3, minSec: SD20_REF_MIN_SEC, totalSec: SD20_REF_MAX_SEC }
+        if (videoRefVideoUrls.filter(Boolean).length >= win.count) {
+          setRefVideoNotice(`${selectedVideoModel.name} takes up to ${win.count} reference videos — remove one first.`)
           return
         }
-        const remaining = SD20_REF_MAX_SEC - videoRefVideoDuration
-        if (remaining < SD20_REF_MIN_SEC) {
-          setRefVideoNotice(`Reference videos are capped at ${SD20_REF_MAX_SEC}s combined and only ${Math.max(0, remaining).toFixed(1)}s is left — remove a clip first.`)
+        const remaining = win.totalSec - videoRefVideoDuration
+        if (remaining < win.minSec) {
+          setRefVideoNotice(`Reference videos are capped at ${win.totalSec}s combined and only ${Math.max(0, remaining).toFixed(1)}s is left — remove a clip first.`)
           return
         }
         if (meta.duration <= remaining + 0.25) addLibraryVideoToSD20(url, meta.duration)
-        else setRefTrim({ url, minSec: SD20_REF_MIN_SEC, maxSec: Math.floor(remaining * 10) / 10, target: "sd20" })
+        else setRefTrim({ url, minSec: win.minSec, maxSec: Math.floor(remaining * 10) / 10, target: "sd20" })
       } else if (motionRefsEnabled) {
         const maxSec = videoCharacterOrientation === "video" ? 30 : 10
         if (meta.duration <= maxSec + 0.25) {
@@ -30239,7 +30361,8 @@ export default function PortalV2Page() {
   const clipWindow = useCallback((excludeSec = 0) => {
     const m = selectedVideoModel
     if (m.sourceClipMaxSec) return { minSec: SD20_REF_MIN_SEC, maxSec: m.sourceClipMaxSec }
-    return { minSec: SD20_REF_MIN_SEC, maxSec: Math.floor((SD20_REF_MAX_SEC - Math.max(0, videoRefVideoDuration - excludeSec)) * 10) / 10 }
+    const w = m.refVideoWindow ?? { minSec: SD20_REF_MIN_SEC, totalSec: SD20_REF_MAX_SEC }
+    return { minSec: w.minSec, maxSec: Math.floor((w.totalSec - Math.max(0, videoRefVideoDuration - excludeSec)) * 10) / 10 }
   }, [selectedVideoModel, videoRefVideoDuration])
   // An upload longer than the model takes: up it goes, then the trimmer opens on it
   const handleTrimNeeded = useCallback(async (file: File, _dur: number, width: number, height: number) => {
@@ -31520,13 +31643,17 @@ function employeePending(
       <LibraryPickerHost />
       {/* One-time ID verification before any upload (CCBill) - every file input calls gateFileInput */}
       <IdVerificationHost />
-      {/* Taskbar — user-scalable via Feed → Taskbar Size (CSS zoom reflows layout) */}
-      <div ref={taskbarRef} data-prism-anchor className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: taskbarZoom }}>
+      {/* Taskbar — user-scalable via Feed → Taskbar Size (CSS zoom reflows layout).
+          From lg it sits one layer above Prism's dock (45 - components/prism/PrismGuide)
+          and below the page's popups (50+): the dock starts under it, so only the
+          taskbar's own dropdowns reach over the dock, and stay usable (2026-10-20,
+          owner). Phones keep 40 - Prism is a full-screen sheet there. */}
+      <div ref={taskbarRef} data-prism-anchor className="sticky top-0 z-40 lg:z-[46] bg-slate-950/90 backdrop-blur-md border-b border-white/5" style={{ zoom: taskbarZoom }}>
 
         {/* Mobile-only top row: branding + queue + tickets + profile + dashboard */}
         <div className="flex sm:hidden items-center justify-between px-3 h-9 border-b border-white/5">
           <div className="flex items-center gap-2">
-            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} size={24} />
+            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={k => setScannerMode(k)} size={24} />
             <div className="w-px h-3 bg-white/10" />
             <QueueDisplay active={activeJobCount} max={maxConcurrent} label="img" />
             <QueueDisplay active={videoActiveJobCount} max={videoMaxConcurrent} label="vid" />
@@ -31536,7 +31663,7 @@ function employeePending(
             {user && (isAdminAccount || !PRISM_ADMIN_ONLY) && <PrismLauncher compact />}
             {/* Plan accounts: the silver recharge ring; tap for the station */}
             <TicketPill balance={user?.ticketBalance} iconSize={10} className="flex items-center gap-1 px-2 py-1 rounded-md border border-white/15 bg-black font-mono text-[10px]" textClassName="text-white tabular-nums" />
-            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
+            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={k => setScannerMode(k)} />
             <Link
               href="/dashboard"
               className="relative overflow-hidden flex items-center px-2 py-1 rounded-md border border-white/25 bg-white/10 text-[10px] font-bold text-white hover:bg-white/15 hover:border-white/40 transition-all"
@@ -31554,7 +31681,7 @@ function employeePending(
         <div className="flex items-center justify-between px-4 h-12">
           {/* Wordmark — desktop only. Logo (admin-uploadable dropdown) + title centered over the links. */}
           <div className="hidden sm:flex items-center gap-3 shrink-0 mr-3">
-            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} size={40} />
+            <LogoDropdown logoUrl={siteLogoUrl} isAdmin={isAdminAccount} onLogoChange={setSiteLogoUrl} onGoHome={() => setScannerMode("home")} onGoFeed={k => setScannerMode(k)} size={40} />
             {/* The wordmark gives its width to the model strip below xl. */}
             <div className="hidden xl:flex flex-col items-center leading-none gap-1">
               <span className="text-[13px] font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60">AI Design Studio</span>
@@ -31757,7 +31884,7 @@ function employeePending(
             {user && (isAdminAccount || !PRISM_ADMIN_ONLY) && <PrismLauncher />}
             {/* Plan accounts: the silver recharge ring; click for the station */}
             <TicketPill balance={user?.ticketBalance} iconSize={11} className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-white/15 bg-black font-mono text-xs" textClassName="text-white tabular-nums tracking-wider" />
-            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={() => setScannerMode("image")} />
+            <ProfileBubble user={user} isAdminAccount={isAdminAccount} onSignOut={handleSignOut} onAvatarChange={(url) => setUser(u => u ? { ...u, avatarUrl: url } : u)} onGoHome={() => setScannerMode("home")} onGoFeed={k => setScannerMode(k)} />
             <Link
               href="/dashboard"
               className="relative overflow-hidden flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/25 bg-white/10 text-[11px] font-bold text-white hover:bg-white/15 hover:border-white/40 transition-all"
@@ -31952,6 +32079,15 @@ function employeePending(
         </div>
       )}
 
+      {/*
+        * The page's body - everything under the taskbar but the popups - makes
+        * room for Prism's dock (2026-10-20, owner on iPad: the open panel
+        * covered part of the feed and the prompt box). From lg the dock is a
+        * column of its own: this area narrows to the space beside it, the
+        * taskbar stays full width above both (components/prism/PrismGuide,
+        * the data-prism-docked rules in globals.css).
+        */}
+      <div data-prism-push>
       {scannerMode === "employees" ? (
         // Fixed to the viewport, like the chat branch. Unconstrained, the two
         // feeds grew the PAGE as they loaded, so the window scrollbar appeared
@@ -31972,7 +32108,7 @@ function employeePending(
               isAdmin={isAdminAccount}
               onLogoChange={setSiteLogoUrl}
               onGoHome={() => { setActiveEmployee(null); setScannerMode("home") }}
-              onGoFeed={() => { setActiveEmployee(null); setScannerMode("image") }}
+              onGoFeed={k => { setActiveEmployee(null); setScannerMode(k) }}
               size={22}
             />
           }
@@ -32185,7 +32321,7 @@ function employeePending(
             siteLogoUrl={siteLogoUrl}
             onSiteLogoChange={setSiteLogoUrl}
             onGoHome={() => setScannerMode("home")}
-            onGoFeed={() => setScannerMode("image")}
+            onGoFeed={k => setScannerMode(k)}
             cardMedia={homeCards}
             promptScale={feedPromptScale}
             userId={user?.id ?? null}
@@ -32542,6 +32678,7 @@ function employeePending(
           )}
         </div>
       )}
+      </div>
 
       {/* Image detail modal */}
       {selectedImage && viewerImage && (

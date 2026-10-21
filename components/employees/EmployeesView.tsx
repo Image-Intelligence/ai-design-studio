@@ -6,6 +6,7 @@ import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo, type EmployeeId } from "@/lib/e
 import { registerCardVideo, type CardVideoHandle } from "@/components/home/card-video-scheduler"
 import { LoopVideo } from "@/components/shop/ShopKit"
 import { BrandButton } from "./StudioBrand"
+import { ADMIN_BORDER } from "@/components/ui/admin-mark"
 
 export type { EmployeeId }
 
@@ -585,7 +586,7 @@ export function StudioCard({ emp, featured = false, wide = false, xlSpan = 1, on
   return (
     <button
       onClick={() => onSelect(emp.id)}
-      className={`group relative isolate flex flex-col text-left rounded-2xl overflow-hidden border border-white/[0.08] bg-[#070b14] silver-edge transition-all duration-300 hover:-translate-y-0.5 hover:border-white/20 hover:shadow-[0_18px_50px_-20px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${layout}`}
+      className={`group relative isolate flex flex-col text-left rounded-2xl overflow-hidden border bg-[#070b14] silver-edge transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_50px_-20px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${EMPLOYEE_ADMIN_ONLY[emp.id] ? `${ADMIN_BORDER} hover:border-red-500/60` : "border-white/[0.08] hover:border-white/20"} ${layout}`}
     >
       {/* The studio's colour, lit from below on hover */}
       <span

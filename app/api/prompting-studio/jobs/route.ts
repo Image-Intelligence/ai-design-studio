@@ -136,7 +136,8 @@ export async function GET(request: Request) {
       const params = j.parameters as any
       const isCanvasJob = params?.slotId != null || params?.source === 'canvas'
       if (source === 'main-scanner') {
-        return params?.source === 'main-scanner' || (!isCanvasJob && j.falRequestId)
+        // Studio generations (lib/studio-activity) belong to the main feed too
+        return params?.source === 'main-scanner' || params?.source === 'studio' || (!isCanvasJob && j.falRequestId)
       }
       // Default (canvas): jobs tagged as canvas or with a slotId
       return isCanvasJob

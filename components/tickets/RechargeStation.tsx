@@ -18,6 +18,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import { Ticket } from "lucide-react"
+import { ADMIN_TEXT } from "@/components/ui/admin-mark"
 
 export type PlanTickets = {
   active: boolean
@@ -132,7 +133,7 @@ export function RechargeStation({ balance, className = "" }: { balance?: number 
           <p className="font-semibold text-white">{plan.left.toLocaleString()} plan tickets left</p>
           <p className="text-slate-400">
             {data.admin
-              ? <>Admin account · not billed</>
+              ? <span className={ADMIN_TEXT}>Admin account · not billed</span>
               : data.ending
               ? <>Plan ends {day(data.renewsAt)}</>
               : <>Refills to <b className="text-slate-200">{plan.cap.toLocaleString()}</b>{data.renewsAt ? <> on {day(data.renewsAt)}</> : null}</>}
@@ -256,7 +257,7 @@ export function RechargeInline({ balance, className = "" }: { balance?: number |
       <div className="min-w-0 text-[11px] leading-snug">
         <p className="font-semibold text-slate-200">{plan.left.toLocaleString()} of {plan.cap.toLocaleString()} {data.planName} plan tickets left</p>
         <p className="text-slate-500">
-          {data.admin ? <>Admin account · not billed</> : data.ending ? <>Plan ends {day(data.renewsAt)}</> : <>Refills to {plan.cap.toLocaleString()}{data.renewsAt ? <> on {day(data.renewsAt)}</> : null}</>}
+          {data.admin ? <span className={ADMIN_TEXT}>Admin account · not billed</span> : data.ending ? <>Plan ends {day(data.renewsAt)}</> : <>Refills to {plan.cap.toLocaleString()}{data.renewsAt ? <> on {day(data.renewsAt)}</> : null}</>}
           {plan.pack > 0 ? <> · +{plan.pack.toLocaleString()} {data.admin ? "extra" : "pack"} tickets</> : null}
         </p>
       </div>

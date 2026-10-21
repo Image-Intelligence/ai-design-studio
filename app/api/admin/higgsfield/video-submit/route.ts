@@ -9,8 +9,10 @@ import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { queueHiggsfieldJob, higgsfieldConfigured } from '@/lib/higgsfield'
 import {
-  HIGGSFIELD_ENDPOINTS, HIGGSFIELD_VIDEO_MODELS, HF_ENDPOINT_PREFIX, genjutsuSeconds, higgsfieldVideoTicketCost, type HiggsfieldModelId,
+  HIGGSFIELD_ENDPOINTS, HIGGSFIELD_VIDEO_MODELS, HF_ENDPOINT_PREFIX, GENJUTSU_MODELS, genjutsuMaxSec, genjutsuSeconds,
+  higgsfieldVideoTicketCost, isGenjutsuLite, type HiggsfieldModelId,
 } from '@/lib/higgsfield-models'
+import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
 
 /**
  * POST /api/admin/higgsfield/video-submit - one Higgsfield video job
@@ -48,6 +50,8 @@ export async function POST(req: Request) {
     }
     const model = String(b.model || '') as HiggsfieldModelId
     if (!HIGGSFIELD_VIDEO_MODELS.has(model)) return jsonPrivate({ success: false, error: 'Unknown Higgsfield model' }, { status: 400 })
+    // Models still under test (Genjutsu Lite, 2026-10-21) - the same list /api/video/generate enforces
+    if (ADMIN_ONLY_VIDEO_MODELS.has(model) && !isAdmin) return jsonPrivate({ success: false, error: 'That model is not available on this account' }, { status: 403 })
     const prompt = typeof b.prompt === 'string' ? b.prompt.trim() : ''
     if (prompt) {
       const cf = await enforceContentFilter(prompt, user.email)
@@ -65,23 +69,26 @@ export async function POST(req: Request) {
     let listTickets: number
     const aspectRatio = typeof b.klingAspectRatio === 'string' && CINEMA_RATIOS.includes(b.klingAspectRatio) ? b.klingAspectRatio : '16:9'
 
-    if (model === 'higgsfield-genjutsu-motion' || model === 'higgsfield-genjutsu-swap') {
+    if (GENJUTSU_MODELS.has(model)) {
       // The clip and 1-8 pictures (the characters / the objects to put in)
+      const maxSec = genjutsuMaxSec(model)
+      const isSwap = model === 'higgsfield-genjutsu-swap' || model === 'higgsfield-genjutsu-lite-swap'
       const clip = typeof b.editVideoUrl === 'string' ? b.editVideoUrl : (Array.isArray(b.referenceVideoUrls) ? b.referenceVideoUrls[0] : null)
-      if (!clip) return jsonPrivate({ success: false, error: 'Add the source clip (4-30 seconds).' }, { status: 400 })
-      if (!images.length) return jsonPrivate({ success: false, error: model === 'higgsfield-genjutsu-swap' ? 'Add a picture of what to swap in.' : 'Add a picture of each character.' }, { status: 400 })
+      if (!clip) return jsonPrivate({ success: false, error: `Add the source clip (4-${maxSec} seconds).` }, { status: 400 })
+      if (!images.length) return jsonPrivate({ success: false, error: isSwap ? 'Add a picture of what to swap in.' : 'Add a picture of each character.' }, { status: 400 })
       // Billed on the clip's MEASURED length (rounded up). A clip that cannot
       // be read is refused - pricing it on the browser's number let a 30s
-      // 1080p clip bill as 4s - and so is one over the 30s Genjutsu takes
+      // 1080p clip bill as 4s - and so is one over the 30s Genjutsu takes (Lite:
+      // 15s - it would trim a longer one but may still bill its whole length)
       const probed = await (await import('@/lib/video-probe')).probeRemoteVideo(clip).catch(() => null)
       if (!probed) return jsonPrivate({ success: false, error: "Couldn't read the source clip - try uploading it again." }, { status: 400 })
       const sec = probed.seconds
       if (sec < 3.95) return jsonPrivate({ success: false, error: 'Genjutsu needs a clip of at least 4 seconds.' }, { status: 400 })
-      if (sec > 30.5) return jsonPrivate({ success: false, error: 'Genjutsu takes clips up to 30 seconds - trim this one first.' }, { status: 400 })
+      if (sec > maxSec + 0.5) return jsonPrivate({ success: false, error: `${isGenjutsuLite(model) ? 'Genjutsu Lite' : 'Genjutsu'} takes clips up to ${maxSec} seconds - trim this one first.` }, { status: 400 })
       if (model === 'higgsfield-genjutsu-swap' && probed && probed.width * probed.height < 409_600) {
         return jsonPrivate({ success: false, error: 'Object swap needs at least ~640x640 worth of pixels per frame - use a larger clip.' }, { status: 400 })
       }
-      duration = String(genjutsuSeconds(sec))
+      duration = String(genjutsuSeconds(sec, maxSec))
       input = {
         prompt, video_url: sign(clip), image_urls: images.slice(0, 8).map(sign),
         resolution: ['480p', '720p', '1080p'].includes(resolution) ? resolution : '720p',

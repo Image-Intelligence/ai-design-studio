@@ -12,7 +12,7 @@ import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-g
 import { storyboardDraftTickets, geminiUsage } from '@/lib/ai-text-pricing'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
-import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
+import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, assetForDraft, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/draft - plan the board with AI.
@@ -51,8 +51,10 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  * `shotIds` picks the shots (empty = all of them); `premise` is the direction
  * ("make it tenser", "the chase ends at the pier"), optional for all but replace.
  *
- *   audio       true: also fill the AUDIO LANE of the shots it writes (2026-10-19) - each
- *               shot's voice lines (speaker, words, start) and where a new music cue starts,
+ *   audio       true: also fill the AUDIO LANE of the shots it writes (2026-10-19; every
+ *               draft sends it since 2026-10-21) - each shot's voice lines (speaker,
+ *               words, start), only where the piece needs voice, and where a new cue
+ *               starts - music or ambience / effects (cueKind picks its model),
  *               a voice cast per speaker (lib/storyboard AUDIO_PLAN_RULES). Nothing is
  *               recorded - the lane's Record buttons do that, priced there. Costs a little
  *               more (storyboardDraftTickets withAudio). Not for Match references.
@@ -228,7 +230,7 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     ? body.preferredVideoModel : null
   const boardScenes = sanitizeScenes(board.scenes)
   const current = orderByScenes(sanitizeShots(board.shots), boardScenes)
-  // The audio lane too (Draft panel "Also fill the audio lane")
+  // The audio lane too (the workspace asks on every draft since 2026-10-21)
   const withAudio = body.audio === true && mode !== 'refs'
   // Set once the plan is read: one voice per speaker (the plan's casting, else the board's)
   let voiceFor: (speaker: string) => string = () => 'Brian'
@@ -236,9 +238,9 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const withAudioOf = <T extends StoryboardShot>(shot: T, raw: any, existing?: StoryboardShot): T => {
     if (!withAudio || !raw) return shot
     // No "voiceLines" key at all = the planner left them alone (a polish keeps what was there)
-    if (!Array.isArray(raw?.voiceLines)) return { ...shot, music: cueFromPlan(raw?.musicCue, existing?.music) }
+    if (!Array.isArray(raw?.voiceLines)) return { ...shot, music: cueFromPlan(raw?.musicCue, existing?.music, raw?.cueKind) }
     const lines = linesFromPlan(raw?.voiceLines, existing?.lines, voiceFor, shot.duration)
-    const music = cueFromPlan(raw?.musicCue, existing?.music)
+    const music = cueFromPlan(raw?.musicCue, existing?.music, raw?.cueKind)
     return { ...shot, lines: lines.length ? lines : undefined, music }
   }
   const wantIds = Array.isArray(body.shotIds) ? (body.shotIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
@@ -250,7 +252,8 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const kind = boardMode(isBoardMode(body.boardMode) ? body.boardMode : board.mode)
   // Suggested-but-not-accepted assets are not the board's yet (no pictures) - but they are not suggested twice
   const allAssets = sanitizeAssets(board.assets)
-  const assets = allAssets.filter(a => !a.suggested)
+  // ...and only the assets (and pictures) switched on for drafting (assetForDraft)
+  const assets = allAssets.filter(a => !a.suggested).map(assetForDraft).filter((a): a is StoryAsset => !!a)
   // The scenes the director switched on as references, as picture lists
   const sceneAssets = sceneRefAssets({ scenes: boardScenes, shots: current })
   // Every picture list "photos" may pick from: the board's assets, then the scenes

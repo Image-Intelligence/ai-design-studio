@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
+import { STUDIO_RUNNING, STUDIO_STALE_MS, expireStudioJobs } from '@/lib/studio-activity'
 
 // GET /api/admin/my-active-jobs
 //
@@ -12,6 +13,11 @@ import { getUserFromSession } from '@/lib/auth'
 // including server-side batches no tab ever created slots for.
 //
 // Scoped to the session user, never to an id in the request.
+//
+// Studio generations too (2026-10-21): a Storyboard still, an Image Studio AI
+// tool, a Final Cut... run inside one request and write a 'studio-running'
+// row for its length (lib/studio-activity) - listed here with `studio: true`
+// so the feed draws their tiles as well.
 
 export const runtime = 'nodejs'
 
@@ -31,13 +37,20 @@ export async function GET(req: Request) {
    * Videos older than 3 hours are not offered - a row stuck "processing" that
    * long is a dead job, not a video on its way.
    */
+  await expireStudioJobs(user.id)
+  // Storyboard stills out at fal are settled from here too, so a feed open on
+  // its own finishes them (lib/storyboard-stills) - not waited on
+  void import('@/lib/storyboard-stills').then(m => m.settlePendingStills({ userId: user.id, limit: 5, budgetMs: 20_000 })).catch(() => {})
+  const studioSince = new Date(Date.now() - STUDIO_STALE_MS)
   if (new URL(req.url).searchParams.get('type') === 'video') {
     const rows = await prisma.generationQueue.findMany({
       where: {
         userId: user.id,
         modelType: 'video',
-        status: { in: ['queued', 'processing'] },
-        createdAt: { gte: new Date(Date.now() - 3 * 3600 * 1000) },
+        OR: [
+          { status: { in: ['queued', 'processing'] }, createdAt: { gte: new Date(Date.now() - 3 * 3600 * 1000) } },
+          { status: STUDIO_RUNNING, updatedAt: { gte: studioSince } },
+        ],
       },
       select: { id: true, modelId: true, prompt: true, createdAt: true, parameters: true, falRequestId: true },
       orderBy: { createdAt: 'asc' },
@@ -57,9 +70,12 @@ export async function GET(req: Request) {
           modelId: j.modelId,
           prompt: j.prompt,
           createdAt: j.createdAt.toISOString(),
-          duration: input.duration != null ? String(input.duration).replace(/s$/, '') : undefined,
+          duration: input.duration != null ? String(input.duration).replace(/s$/, '')
+            : typeof p.duration === 'string' ? p.duration : undefined,
           resolution: typeof input.resolution === 'string' ? input.resolution : undefined,
-          aspectRatio: typeof input.aspect_ratio === 'string' ? input.aspect_ratio : undefined,
+          aspectRatio: typeof input.aspect_ratio === 'string' ? input.aspect_ratio
+            : typeof p.aspectRatio === 'string' ? p.aspectRatio : undefined,
+          studio: p.source === 'studio',
         }
       }),
     }, { headers: { 'Cache-Control': 'private, no-store' } })
@@ -69,7 +85,10 @@ export async function GET(req: Request) {
     where: {
       userId: user.id,
       modelType: 'image',
-      status: { in: ['queued', 'processing'] },
+      OR: [
+        { status: { in: ['queued', 'processing'] } },
+        { status: STUDIO_RUNNING, updatedAt: { gte: studioSince } },
+      ],
     },
     select: {
       id: true, modelId: true, prompt: true, status: true,
@@ -96,6 +115,7 @@ export async function GET(req: Request) {
           ? (p.referenceImageUrls as unknown[]).filter((u): u is string => typeof u === 'string')
           : [],
         batch: p.batch === true,
+        studio: p.source === 'studio',
       }
     }),
   })

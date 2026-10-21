@@ -1,3 +1,4 @@
+import { startStudioJob, finishStudioJob, failStudioJob } from '@/lib/studio-activity'
 import { fitRefsForModel } from '@/lib/fal-image-fit'
 import { enforcePublicModeration } from '@/lib/public-moderation'
 import { enforceContentFilter } from '@/lib/content-filter'
@@ -247,6 +248,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const paid = await deductGenerationTickets(user.id, user.email, cost)
   if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
 
+  // The feed's generating tile for it (lib/studio-activity)
+  const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: model, prompt: `${LABEL[op]}${prompt ? `: ${prompt}` : ''} (Image Studio)`, studio: 'image-studio', quality: quality || undefined })
   try {
     const out: any = await fal.subscribe(endpoint, { input })
     const falUrl: string | undefined = out?.data?.images?.[0]?.url ?? out?.data?.image?.url
@@ -268,9 +271,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       },
     })
     await ensureThumbnail(row.id).catch(() => {})
+    await finishStudioJob(track, [row.id], url)
     return jsonPrivate({ url, width: w, height: h, tickets: cost, balance: paid.newBalance, imageId: row.id })
   } catch (e) {
     await refundGenerationTickets(user.id, user.email, cost)
+    await failStudioJob(track, failText(e))
     return jsonPrivate({ error: `${LABEL[op]} failed: ${failText(e).slice(0, 240)}`, balance: paid.newBalance >= 0 ? paid.newBalance + cost : paid.newBalance }, { status: 502 })
   }
 }

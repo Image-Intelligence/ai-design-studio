@@ -10,6 +10,7 @@ import { ProhibitedContentNotice } from "@/components/ProhibitedContentNotice"
 import { SITE_EMPLOYEES, AdminModelBadge, isLabStudio, STUDIO_MEDIA } from "@/components/employees/EmployeesView"
 import { EMPLOYEE_ADMIN_ONLY, employeeVisibleTo } from "@/lib/employees"
 import { STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, BOARD_MODES } from "@/lib/storyboard"
+import { AdminTag, ADMIN_BORDER, ADMIN_TEXT } from "@/components/ui/admin-mark"
 
 // Model group shape (matches IMAGE_MODEL_GROUPS / VIDEO_MODEL_GROUPS in portal-v2).
 export type ModelGroup = { label: string; type: string; accent: string; dot: string; items: string[] }
@@ -33,12 +34,16 @@ function reorder<T extends { name: string }>(models: T[], order: string[]): T[] 
   return [...front, ...rest]
 }
 
-function Section({ icon, title, subtitle, children }: { icon?: ReactNode; title: string; subtitle?: string; children: ReactNode }) {
+/** `admin`: a section only admin accounts see - its heading is red, with the Admin chip. */
+function Section({ icon, title, subtitle, admin, children }: { icon?: ReactNode; title: string; subtitle?: string; admin?: boolean; children: ReactNode }) {
   return (
     <section className="mb-7 sm:mb-8">
       <div className="flex items-center gap-2 mb-3">
-        {icon && <span className="text-slate-300">{icon}</span>}
-        <h2 className="text-base font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">{title}</h2>
+        {icon && <span className={admin ? ADMIN_TEXT : "text-slate-300"}>{icon}</span>}
+        {admin
+          ? <h2 className={`text-base font-black tracking-tight ${ADMIN_TEXT}`}>{title}</h2>
+          : <h2 className="text-base font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-white/85 to-white/55">{title}</h2>}
+        {admin && <AdminTag />}
         {subtitle && <span className="hidden sm:inline text-[9px] font-mono uppercase tracking-[0.18em] text-slate-600">{subtitle}</span>}
       </div>
       {children}
@@ -276,7 +281,7 @@ function ModelsHubCard({ kind, models, cards, costByName, fallbackStills, admin,
   return (
     <div
       onClick={onOpen}
-      className="group relative isolate flex flex-col md:max-lg:flex-row cursor-pointer overflow-hidden rounded-3xl border border-white/10 bg-[#070b14] silver-edge transition-all duration-300 hover:border-white/25 hover:shadow-[0_18px_50px_-20px_rgba(0,0,0,0.9)]"
+      className={`group relative isolate flex flex-col md:max-lg:flex-row cursor-pointer overflow-hidden rounded-3xl border bg-[#070b14] silver-edge transition-all duration-300 hover:shadow-[0_18px_50px_-20px_rgba(0,0,0,0.9)] ${admin ? `${ADMIN_BORDER} hover:border-red-500/60` : "border-white/10 hover:border-white/25"}`}
     >
       <div className="relative shrink-0 overflow-hidden md:max-lg:w-[50%] md:max-lg:self-center">
         <div className="grid grid-cols-3 gap-px bg-black transition-transform duration-[1200ms] ease-out group-hover:scale-[1.03]">
@@ -331,7 +336,7 @@ function ModelsHubCard({ kind, models, cards, costByName, fallbackStills, admin,
                           ? <img src={still} alt="" className="w-10 h-[30px] rounded-md object-cover shrink-0" />
                           : <span className="w-10 h-[30px] rounded-md bg-white/[0.05] shrink-0" />}
                         <span className="flex-1 min-w-0">
-                          <span className="block truncate text-[12.5px] font-semibold text-slate-100">{m.name}</span>
+                          <span className="flex items-center gap-1.5 min-w-0"><span className="truncate text-[12.5px] font-semibold text-slate-100">{m.name}</span>{m.admin && <AdminTag />}</span>
                           <span className={`block truncate text-[10.5px] ${m.accent}`}>{m.group}</span>
                         </span>
                         {costByName[m.name] && <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-black/60 border border-white/15 text-[10px] font-mono text-slate-300">{costByName[m.name]}</span>}
@@ -405,6 +410,8 @@ function ModelsPage({ kind, main, tools, cards, isAdmin, costByName, fallbackSti
             <ArrowLeft size={13} /> Home
           </button>
           <h1 className="text-3xl sm:text-4xl xl:text-5xl font-black tracking-tight leading-none silver-shimmer-text">{meta.title}</h1>
+          {/* A page of admin-only models (Worlds, 3D for now) */}
+          {all.length > 0 && all.every(m => m.admin) && <AdminTag className="mt-2" label="Admin only" />}
           <p className="mt-2 max-w-2xl text-[13px] sm:text-sm leading-relaxed text-slate-400">{meta.blurb}</p>
         </div>
         {onFeed && (
@@ -1026,7 +1033,7 @@ export function HomeView({
       {/* ADMIN TOOLS - the studios not released yet, and the tools that are
           not models. */}
       {isAdmin && (
-        <Section icon={<Shield size={17} />} title="Admin Tools" subtitle="Admin only">
+        <Section icon={<Shield size={17} />} title="Admin Tools" subtitle="Admin only" admin>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3 2xl:gap-4">
             {/* The studios that are not released yet wait here for their turn */}
             {otherStudios.map(emp => (

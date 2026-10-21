@@ -37,6 +37,7 @@ import {
   MOVIE_FORMATS, DEFAULT_MOVIE_FORMAT,
 } from "@/lib/chat-hub-skills"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
+import { AdminTag } from "@/components/ui/admin-mark"
 
 const ROUTING_LS_KEY = "chat-hub-routing"
 const ROUTING_EVENT = "chat-hub-routing-changed"
@@ -7338,7 +7339,7 @@ export function ChatApiKeysSettings() {
             <span className="text-[11px] text-slate-300 group-hover:text-white">
               {s.label}
               {s.adminOnly && (
-                <span className="ml-1.5 px-1 py-px rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[9px] align-middle">Admin</span>
+                <AdminTag className="ml-1.5 align-middle" />
               )}
               <span className="block text-[10px] text-slate-500">{s.description}</span>
             </span>

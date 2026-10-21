@@ -14,6 +14,7 @@ import {
   Gauge, History, Images, Layers, Loader2, Sparkles, Ticket, X, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ADMIN_BUTTON } from '@/components/ui/admin-mark';
 import { SilverRim, LoopVideo, ShopHeader, ShopBackdrop, ShopFooter, SHOP_MEDIA } from '@/components/shop/ShopKit';
 import { RechargeStation, refreshPlanTickets } from '@/components/tickets/RechargeStation';
 
@@ -234,7 +235,8 @@ export default function ManageSubscriptionPage() {
                         disabled={(!data.checkoutAvailable && !data.admin) || !!busy || scheduled}
                         title={data.admin ? 'Admin account: switches instantly, nothing is billed' : undefined}
                         className={cn('flex w-full items-center justify-center gap-1.5 rounded-lg py-2 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40',
-                          dir === 'down' ? 'border border-white/15 bg-white/[0.04] text-slate-200 hover:bg-white/[0.09]' : 'bg-slate-100 text-slate-900 hover:bg-white')}
+                          // An admin's instant plan switch is red (admin accounts only)
+                          data.admin ? ADMIN_BUTTON : dir === 'down' ? 'border border-white/15 bg-white/[0.04] text-slate-200 hover:bg-white/[0.09]' : 'bg-slate-100 text-slate-900 hover:bg-white')}
                       >
                         {data.admin ? <>Switch to {p.name}</> : dir === 'up' ? <><ArrowUp size={14} /> Upgrade</> : dir === 'down' ? <><ArrowDown size={14} /> Downgrade</> : <>Choose {p.name}</>}
                       </button>

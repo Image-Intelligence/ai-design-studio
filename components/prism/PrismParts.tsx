@@ -6,7 +6,8 @@ import {
   MoreHorizontal, RotateCcw, Shrink, SlidersHorizontal, Ticket, Video, X,
 } from "lucide-react"
 import { NovaFigure, type NovaLive } from "@/components/nova/NovaStage"
-import type { NovaContextMark, NovaMessage } from "@/lib/nova/config"
+import { PRISM_ADMIN_ONLY, type NovaContextMark, type NovaMessage } from "@/lib/nova/config"
+import { AdminTag, ADMIN_TEXT } from "@/components/ui/admin-mark"
 
 /*
  * Prism's own pieces (2026-10-20): the header (context meter, the menu with
@@ -70,13 +71,17 @@ export function PrismHeader({ live, working, balance, context, onCompact, onClea
     <div className="shrink-0 border-b border-white/[0.06] px-3 py-2 flex items-center gap-2 bg-[#070b14]/95">
       <NovaFigure pose={live.pose} size={34} animated={false} glow={false} className="rounded-full ring-1 ring-white/15" />
       <div className="min-w-0 flex-1">
-        <p className="text-[13.5px] font-black tracking-tight silver-shimmer-text leading-tight">Prism</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-[13.5px] font-black tracking-tight silver-shimmer-text leading-tight">Prism</p>
+          {/* Red while Prism is admin-only (PRISM_ADMIN_ONLY) */}
+          {PRISM_ADMIN_ONLY && <AdminTag />}
+        </div>
         <p className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-slate-500 truncate">{working ? live.line : "your guide"}</p>
       </div>
       <ContextMeter n={context.n} summary={context.summary} onClick={() => setMenu(true)} />
       {balance !== undefined && (
         <span className="hidden min-[380px]:inline-flex shrink-0 items-center gap-1 h-7 px-2 rounded-lg border border-white/[0.08] bg-white/[0.03] text-[10.5px] text-slate-300 tabular-nums" title="Your ticket balance">
-          <Ticket size={10} /> {balance === null ? "admin" : balance}
+          <Ticket size={10} /> {balance === null ? <span className={ADMIN_TEXT}>admin</span> : balance}
         </span>
       )}
       <div ref={wrap} className="relative shrink-0">
@@ -140,6 +145,29 @@ const STARTERS: { text: string; hint: string; icon: typeof Compass }[] = [
   { text: "Turn my latest picture into a short video", hint: "From your library to a clip", icon: Video },
   { text: "Where do I find everything I've made?", hint: "My Generations, folders and assets", icon: Layers },
 ]
+
+/**
+ * Prism while the chat loads (2026-10-21, owner: the panel showed an empty
+ * chat, then "loading your chat", then the chat - "just add an
+ * animation/display/graphic of prism while it is loading"). Prism floats with
+ * her sparks spinning fast, her name in silver, and the line breathing.
+ */
+export function PrismLoading() {
+  return (
+    <div className="flex min-h-[55vh] flex-col items-center justify-center text-center" role="status" aria-live="polite">
+      <NovaFigure pose="thinking" size={132} busy />
+      <p className="mt-3 text-[17px] font-black tracking-tight silver-shimmer-text">Prism</p>
+      <p className="mt-1 flex items-center gap-1 text-[11.5px] text-slate-400">
+        Getting your chat ready
+        <span className="inline-flex gap-[3px] pl-0.5" aria-hidden>
+          {[0, 1, 2].map(i => (
+            <span key={i} className="h-1 w-1 rounded-full bg-slate-300 animate-pulse" style={{ animationDelay: `${i * 0.22}s` }} />
+          ))}
+        </span>
+      </p>
+    </div>
+  )
+}
 
 export function PrismWelcome({ onPick, disabled, freeLeft }: { onPick: (text: string) => void; disabled: boolean; freeLeft: number | null | undefined }) {
   return (

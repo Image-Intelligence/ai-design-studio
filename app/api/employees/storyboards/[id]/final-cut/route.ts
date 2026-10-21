@@ -1,3 +1,4 @@
+import { startStudioJob, finishStudioJob, failStudioJob, touchStudioJob } from '@/lib/studio-activity'
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
@@ -476,7 +477,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       await refundGenerationTickets(user.id, user.email, st.job.charged)
       st.job = { ...st.job, charged: 0 }
     }
-    if (st.job?.status === 'running') st.job = { ...st.job, status: 'cancelled', message: 'Cancelled', error: null }
+    if (st.job?.status === 'running') { await failStudioJob(st.job.trackId, 'Cancelled'); st.job = { ...st.job, status: 'cancelled', message: 'Cancelled', error: null } }
     st.work = {}
     await save(board.id, st)
     return jsonPrivate({ finalCut: publicState(st) })
@@ -521,7 +522,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const charged = finalCutExtraTickets(boardMusic ? options : { ...options, score: options.score === 'board' ? 'ai' : options.score }, totalSeconds(shots), { score: keepScore })
     const paid = await deductGenerationTickets(user.id, user.email, charged)
     if (!paid.ok) return jsonPrivate({ error: `The Final Cut needs ${paid.need} tickets for the edit, cards, music${options.review ? ', the critic' : ''}${options.formats?.length ? ' and the extra formats' : ''} (plus any shots it shoots) - you have ${paid.have}`, needTickets: true }, { status: 402 })
-    st.job = { status: 'running', phase: 'shoot', message: revise ? `Revising Final Cut ${revise.from}` : scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null, charged: user.isAdmin ? 0 : charged, revise }
+    // An earlier run's tile, if it never settled, is done with
+    await failStudioJob(st.job?.trackId, 'Started over')
+    const trackId = await startStudioJob({ userId: user.id, modelType: 'video', modelId: 'storyboard-final-cut', prompt: `${board.title} - Final Cut${sceneLabel ? ` (${sceneLabel})` : ''}`, studio: 'final-cut', aspectRatio: board.aspect, duration: Math.round(totalSeconds(shots)) })
+    st.job = { status: 'running', phase: 'shoot', message: revise ? `Revising Final Cut ${revise.from}` : scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null, charged: user.isAdmin ? 0 : charged, revise, trackId }
     st.work = {}
     await save(board.id, st)
     return jsonPrivate({ finalCut: publicState(st) })
@@ -543,7 +547,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         if (!paid.ok) return jsonPrivate({ error: `Resuming the Final Cut needs ${paid.need} tickets for the edit, cards and music - you have ${paid.have}`, needTickets: true }, { status: 402 })
         charged = price
       }
-      st.job = { ...st.job, charged, status: 'running', error: null, message: 'Resuming' }
+      const trackId = await startStudioJob({ userId: user.id, modelType: 'video', modelId: 'storyboard-final-cut', prompt: `${board.title} - Final Cut (resumed)`, studio: 'final-cut', aspectRatio: board.aspect, duration: Math.round(totalSeconds(shots)) })
+      st.job = { ...st.job, charged, status: 'running', error: null, message: 'Resuming', trackId }
       if (st.job.phase === 'shoot') st.work = { ...st.work, submitted: false }
       await save(board.id, st)
     }
@@ -868,6 +873,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           expiresAt: new Date(now() + 100 * 365 * 24 * 3600 * 1000), quality: job.options.resolution, aspectRatio: board.aspect,
           videoMetadata: { isVideo: true, duration: String(Math.round(work.cutSeconds ?? 0)), thumbnailUrl: poster },
         } })
+        await finishStudioJob(job.trackId, [row.id], work.mixUrl)
         st.versions = [...st.versions, {
           n, url: work.mixUrl!, durationSec: Math.round((work.cutSeconds ?? 0) * 10) / 10, at: now(), imageId: row.id, posterUrl: poster, scene: sceneLabel,
           note: [
@@ -901,7 +907,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const why = Array.isArray(detail) ? detail.map((d: any) => d?.msg).filter(Boolean).join('; ') : typeof detail === 'string' ? detail : ''
     job.error = String(why || e?.message || e).slice(0, 400)
     job.message = 'Stopped'
+    await failStudioJob(job.trackId, job.error)
   }
+  // Still cutting: its feed tile stays alive between steps
+  if (job.status === 'running') await touchStudioJob(job.trackId)
   if (st.work) st.work.lockUntil = 0
   st.job = job
   await save(board.id, st)

@@ -20,9 +20,11 @@ import { type StudioDoc, type StudioLayer, MAX_CANVAS_SIDE } from "@/lib/image-s
 import {
   type UpscalerId, UPSCALERS, UPSCALE_MAX_SIDE, STUDIO_IMAGE_MODELS, STUDIO_EDIT_MODELS,
   ERASE_TICKETS, EXPAND_TICKETS, upscaleFactor, upscaleTickets, genTickets, studioModelsFor, defaultGenModel,
-  modelAspects, defaultAspect, editAspect as editFrame,
+  modelAspects, defaultAspect, editAspect as editFrame, isAdminOnlyModel,
 } from "@/lib/image-studio-ai"
 import { stillModelSpec } from "@/lib/storyboard"
+import { cn } from "@/lib/utils"
+import { AdminTag, ADMIN_BORDER, ADMIN_TEXT } from "@/components/ui/admin-mark"
 
 export type GenRequest =
   | { op: "fill"; prompt: string }
@@ -91,7 +93,7 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
         const v = modelOpts[id]?.[s.key] ?? s.def
         const labels = Object.fromEntries(s.options.map(o => [o.value, o.label.replace(/ - .*$/, "")]))
         return (
-          <Field key={s.key} label={s.label}>
+          <Field key={s.key} label={s.label} admin={s.admin}>
             {s.options.length <= 4
               ? <Seg value={v} options={s.options.map(o => o.value)} labels={labels} onChange={nv => setOpt(id, s.key, nv)} />
               : <select value={v} onChange={e => setOpt(id, s.key, e.target.value)} title={s.hint} className={select}>
@@ -159,6 +161,9 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
 
   const area = "w-full rounded-lg bg-black/40 border border-white/12 px-2 py-1.5 text-[11.5px] text-white placeholder:text-slate-500 focus:outline-none focus:border-white/35 resize-none"
   const select = "w-full rounded-lg bg-black/40 border border-white/12 px-1.5 py-1.5 text-[11px] text-slate-100 focus:outline-none focus:border-white/35"
+  // Admin-only models (only an admin's lists have them) are red in the menu, and the menu itself turns red while one is picked
+  const modelSelect = (id: string) => cn(select, isAdminOnlyModel(id) && `${ADMIN_BORDER} focus:border-red-500/60`)
+  const modelOption = (id: string) => (isAdminOnlyModel(id) ? ADMIN_TEXT : undefined)
   const label = (id: string) => STUDIO_IMAGE_MODELS.find(m => m.id === id)?.label ?? id
   const q = (v?: string) => (v ? (/^\dk$/.test(v) ? v.toUpperCase() : v[0].toUpperCase() + v.slice(1)) : "")
   // A group or an adjustment layer has no picture of its own to edit
@@ -177,9 +182,9 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && fillPrompt.trim()) { e.preventDefault(); e.currentTarget.blur(); runSel() } }} />
             {selMode === "regen" && (
               <>
-                <Field label="Model">
-                  <select value={regenModel} onChange={e => setRegenModel(e.target.value)} className={select}>
-                    {regenOptions.map(m => <option key={m.id} value={m.id}>{m.label} · {m.price} ticket{m.price === 1 ? "" : "s"}</option>)}
+                <Field label="Model" admin={isAdminOnlyModel(regenModel)}>
+                  <select value={regenModel} onChange={e => setRegenModel(e.target.value)} className={modelSelect(regenModel)}>
+                    {regenOptions.map(m => <option key={m.id} value={m.id} className={modelOption(m.id)}>{m.label} · {m.price} ticket{m.price === 1 ? "" : "s"}</option>)}
                   </select>
                 </Field>
                 {regenSpec.qualities.length > 1 && <Field label="Quality"><Seg value={regenQ ?? ""} options={regenSpec.qualities} onChange={v => setGenQuality(qq => ({ ...qq, [regenModel]: v }))} /></Field>}
@@ -204,9 +209,9 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
       {/* ── generate a layer ── */}
       <Card title="Generate a layer" icon={<ImagePlus size={12} />}>
         <textarea rows={3} value={genPrompt} onChange={e => setGenPrompt(e.target.value)} placeholder="Describe the image…" className={area} />
-        <Field label="Model">
-          <select value={genModel} onChange={e => setGenModel(e.target.value)} className={select}>
-            {genOptions.map(m => <option key={m.id} value={m.id}>{m.label} · {m.price} ticket{m.price === 1 ? "" : "s"}</option>)}
+        <Field label="Model" admin={isAdminOnlyModel(genModel)}>
+          <select value={genModel} onChange={e => setGenModel(e.target.value)} className={modelSelect(genModel)}>
+            {genOptions.map(m => <option key={m.id} value={m.id} className={modelOption(m.id)}>{m.label} · {m.price} ticket{m.price === 1 ? "" : "s"}</option>)}
           </select>
         </Field>
         {genSpec.qualities.length > 1 && <Field label="Quality"><Seg value={genQ ?? ""} options={genSpec.qualities} onChange={v => setGenQuality(qq => ({ ...qq, [genModel]: v }))} /></Field>}
@@ -234,9 +239,9 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
         {editable ? (
           <>
             <textarea rows={2} value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="What to change - “make it night”, “turn the jacket red”…" className={area} />
-            <Field label="Model">
-              <select value={editModel} onChange={e => setEditModel(e.target.value)} className={select}>
-                {editOptions.map(m => <option key={m.id} value={m.id}>{m.label} · {m.price} ticket{m.price === 1 ? "" : "s"}</option>)}
+            <Field label="Model" admin={isAdminOnlyModel(editModel)}>
+              <select value={editModel} onChange={e => setEditModel(e.target.value)} className={modelSelect(editModel)}>
+                {editOptions.map(m => <option key={m.id} value={m.id} className={modelOption(m.id)}>{m.label} · {m.price} ticket{m.price === 1 ? "" : "s"}</option>)}
               </select>
             </Field>
             {editSpec.qualities.length > 1 && <Field label="Quality"><Seg value={editQ ?? ""} options={editSpec.qualities} onChange={v => setGenQuality(qq => ({ ...qq, [editModel]: v }))} /></Field>}
@@ -295,9 +300,10 @@ function Card({ title, icon, children }: { title: string; icon: React.ReactNode;
   )
 }
 const Hint = ({ children }: { children: React.ReactNode }) => <p className="text-[10px] leading-snug text-slate-500">{children}</p>
-const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+/** `admin`: a setting (or the picked model) only admin accounts get - its label is red, with the Admin chip. */
+const Field = ({ label, admin, children }: { label: string; admin?: boolean; children: React.ReactNode }) => (
   <div className="flex flex-col gap-1">
-    <span className="text-[9px] font-mono uppercase tracking-[0.16em] text-slate-500">{label}</span>
+    <span className={cn("flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-[0.16em]", admin ? ADMIN_TEXT : "text-slate-500")}>{label}{admin && <AdminTag />}</span>
     {children}
   </div>
 )

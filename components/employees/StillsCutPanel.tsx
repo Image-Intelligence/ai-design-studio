@@ -5,6 +5,7 @@ import { createPortal } from "react-dom"
 import { X, Download, Check, LayoutTemplate } from "lucide-react"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { fmtRuntime, STILLS_CUT_TICKETS } from "@/lib/storyboard"
+import { AdminTag, ADMIN_BORDER } from "@/components/ui/admin-mark"
 
 /**
  * The Stills cut: the board as a film of its stills (or its clips where a
@@ -135,8 +136,8 @@ export function StillsCutPanel({ boardId, sceneId, sceneName, hasClips, isAdmin 
               <a href={result.url} download target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-md border border-white/20 text-[10.5px] font-semibold text-slate-100 hover:bg-white/10"><Download size={11} />Download</a>
               <button onClick={() => setResult(null)} className="px-2 py-1 rounded-md border border-white/10 text-[10.5px] text-slate-300 hover:text-white">New cut</button>
             </div>
-            {isAdmin && <div className="rounded-xl border border-white/10 p-2 space-y-1.5">
-              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-100"><LayoutTemplate size={12} />Put it on a home-page card</p>
+            {isAdmin && <div className={`rounded-xl border ${ADMIN_BORDER} p-2 space-y-1.5`}>
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-100"><LayoutTemplate size={12} />Put it on a home-page card<AdminTag /></p>
               <p className="text-[9.5px] text-slate-500 leading-snug">Goes live on the site at once - card-sized (long side 1280, ~3 Mbps, silent). The card key is the one its media uses, e.g. <span className="font-mono text-slate-300">image:NanoBanana 2.1</span>.</p>
               <div className="flex gap-1.5">
                 <input value={cardKey} onChange={e => { setCardKey(e.target.value); setCarding("idle") }} placeholder="image:NanoBanana 2.1" className="sb-input flex-1" />

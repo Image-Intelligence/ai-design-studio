@@ -336,6 +336,21 @@ html[data-refs-open] [data-prompt-dock] {
   z-index: 50;
 }
 
+/* Prism's dock (2026-10-20, owner, iPad): from lg the open panel is a column
+   of its own instead of covering the page. The page's body ([data-prism-push])
+   narrows to the space beside it and the bars pinned to the bottom of the
+   screen (the prompt box, the video / audio bars - [data-prism-fit]) end where
+   it starts; the taskbar stays full width above both. Set by PrismGuide. */
+@media (width >= 64rem) {
+  html[data-prism-docked] [data-prism-push] {
+    padding-right: var(--prism-dock-w, 440px);
+  }
+  html[data-prism-docked] [data-prompt-dock],
+  html[data-prism-docked] [data-prism-fit] {
+    right: var(--prism-dock-w, 440px);
+  }
+}
+
 /* Nova Studio (2026-10-19, owner, iPad): the page itself never scrolls while
    it is open - only its chat, chat list and side panel do. overscroll-behavior
    stops a swipe that reaches the end of one of them from carrying on into the

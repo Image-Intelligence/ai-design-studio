@@ -257,6 +257,14 @@ export type NovaStep = {
   note?: string
   /** When the step began (server clock, epoch ms): its timer counts from here, so a reload keeps it (2026-10-19). */
   startedAt?: number
+  /**
+   * How much of the reply's text was written when this step began (2026-10-20,
+   * owner: Prism's "done" recap showed ABOVE the pictures it was about). The
+   * chat lays text and steps out in the order they happened: what was said
+   * before the work, the work, then the wrap-up under it. Older steps have none
+   * and show before the text.
+   */
+  textAt?: number
 }
 
 export type NovaPlan = {

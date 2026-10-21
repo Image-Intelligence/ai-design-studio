@@ -14,7 +14,7 @@ import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
 import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, OMNIHUMAN_AUDIO_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
-import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BATCH_1007_MAX_SEC, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input } from '@/lib/batch-1007-video'
+import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BATCH_1007_MAX_SEC, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input, cleanKlingElements } from '@/lib/batch-1007-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
@@ -120,6 +120,8 @@ export async function POST(request: NextRequest) {
         rawBody?.imageUrl, rawBody?.endImageUrl, rawBody?.audioUrl, rawBody?.motionVideoUrl,
         rawBody?.referenceImageUrls, rawBody?.referenceVideoUrls, rawBody?.referenceAudioUrls,
         rawBody?.editVideoUrl, rawBody?.lipsyncVideoUrl, rawBody?.lipsyncAudioUrl,
+        // Kling 4.0 elements: a front view + angles each
+        cleanKlingElements(rawBody?.klingElements).flatMap(e => [e.frontal, ...e.views]),
       ])
       if (idGate) return idGate
     }
@@ -148,6 +150,8 @@ export async function POST(request: NextRequest) {
       referenceVideoUrls,
       referenceAudioUrls,
       referenceVideoDurationSec: clientReferenceVideoDurationSec = 0,
+      // Kling 4.0 elements ({ frontal, views }[], lib/batch-1007-video cleanKlingElements)
+      klingElements,
       // Gemini Omni Flash edit (video-to-video)
       editVideoUrl,
       editVideoDurationSec: clientEditVideoDurationSec = 0,
@@ -368,6 +372,8 @@ export async function POST(request: NextRequest) {
       'pixverse-music-video',
       // audio-driven (the photo is optional) and the draft completion (no inputs but the draft)
       'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast', 'seedance-2.5-complete',
+      // Kling 4.0: text to video (or elements alone, which route it to references)
+      'kling-v4',
     ])
     const hasNonImageInput = !!editVideoUrl || !!motionVideoUrl
       || (Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)
@@ -464,6 +470,18 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: false, error: `Relight takes clips up to ${RELIGHT_MAX_SEC} seconds - trim it first.` }, { status: 400 });
         }
       }
+      // Kling 4.0 Edit (2026-10-21): words, and fal's clip limits (3-30s, at least 700px each way)
+      if (model === 'kling-v4-edit') {
+        if (!prompt?.trim()) {
+          return NextResponse.json({ success: false, error: 'Describe the edit - the clip is @Video1.' }, { status: 400 });
+        }
+        if (editVideoDurationSec > 0 && editVideoDurationSec < 2.95) {
+          return NextResponse.json({ success: false, error: 'Kling 4.0 Edit takes clips of 3 to 30 seconds.' }, { status: 400 });
+        }
+        if (probed && (probed.width < 700 || probed.height < 700)) {
+          return NextResponse.json({ success: false, error: `Kling 4.0 Edit needs a clip at least 700px each way (this one is ${probed.width}x${probed.height}).` }, { status: 400 });
+        }
+      }
       // Character swap (2026-10-07): the clip and the character's picture
       if (BATCH_1007_NEEDS_CHARACTER.has(model) && !(Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0) && !imageUrl) {
         return NextResponse.json({ success: false, error: 'Add the character\'s picture next to the clip.' }, { status: 400 });
@@ -517,6 +535,17 @@ export async function POST(request: NextRequest) {
       }
       if (model === 'luma-ray-3.2-reframe' && editVideoDurationSec > 10.5) {
         return NextResponse.json({ success: false, error: 'Ray 3.2 reframe takes clips up to 10 seconds.' }, { status: 400 });
+      }
+    } else if (model === 'kling-v4') {
+      // Kling 4.0: always a prompt; reference clips 3-30s each, 30s together
+      if (!prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Describe the video - name references as @Image1, @Video1, @Element1.' }, { status: 400 });
+      }
+      if (refVideoList.length > 5) {
+        return NextResponse.json({ success: false, error: 'Kling 4.0 takes up to 5 reference clips.' }, { status: 400 });
+      }
+      if (refVideoList.length && referenceVideoDurationSec > 30.5) {
+        return NextResponse.json({ success: false, error: 'Kling 4.0 takes up to 30 seconds of reference clips in all - trim them first.' }, { status: 400 });
       }
     } else if (BATCH_1007_GENERATORS.has(model)) {
       // Vidu Q4: a start frame (prompt optional), or references (prompt required)
@@ -703,7 +732,7 @@ export async function POST(request: NextRequest) {
       : BATCH_0928_GENERATORS.has(model)
       ? FAL_ENDPOINTS[`${model}-${batchMode}`]
       : BATCH_1007_GENERATORS.has(model)
-      ? FAL_ENDPOINTS[batch1007EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode })]
+      ? FAL_ENDPOINTS[batch1007EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode, referenceVideoUrls: refVideoList, klingElements, imageUrl })]
       : BATCH_1003_GENERATORS.has(model)
       ? FAL_ENDPOINTS[batch1003EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode })]
       : BATCH_0929_GENERATORS.has(model)
@@ -856,6 +885,7 @@ export async function POST(request: NextRequest) {
         referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
         duration, resolution, aspectRatio: klingAspectRatio, effectiveMode: effectiveSd20Mode, generateAudio,
         sourceWidth: probed?.width, sourceHeight: probed?.height,
+        referenceVideoUrls: refVideoList, klingElements,
       });
     } else if (BATCH_1003_TOOLS.has(model) || BATCH_1003_GENERATORS.has(model)) {
       // lib/batch-1003-video builds the exact input (inputs checked above)

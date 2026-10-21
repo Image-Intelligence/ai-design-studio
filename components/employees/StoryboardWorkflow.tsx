@@ -9,12 +9,12 @@ import { Dropdown } from "@/components/employees/Dropdown"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { useThumb } from "@/components/employees/still-thumbs"
 import {
-  shotAspect, stillModelSpec, SHOT_ASPECTS, MAX_LINES_PER_SHOT, STORYBOARD_VOICE_MODELS, STORYBOARD_MUSIC_MODELS,
+  shotAspect, stillModelSpec, SHOT_ASPECTS, MAX_LINES_PER_SHOT, STORYBOARD_VOICE_MODELS, STORYBOARD_MUSIC_MODELS, cueKindOf,
   newVoiceLine, newMusicCue, musicSpanSeconds, liveAudio, lineStale, fmtRuntime,
   type StoryboardDoc, type StoryboardShot, type VoiceLine, type MusicCue, type FinalCutState, type FinalCutVersion, type ReviseDraft, type ReviseEdit,
 } from "@/lib/storyboard"
 import { STILL_TOOLS, STILL_EDIT_DEFAULT_MODEL, EXPAND_ZOOMS, stillToolTickets, CLIP_TOOLS, CLIP_TOOL_GROUPS, type StillToolId, type ClipTool } from "@/lib/storyboard-tools"
-import { STUDIO_EDIT_MODELS, studioModelsFor } from "@/lib/image-studio-ai"
+import { STUDIO_EDIT_MODELS, studioModelsFor, isAdminOnlyModel } from "@/lib/image-studio-ai"
 import { ELEVEN_VOICES, getAudioStudioModel, audioTicketCost, spokenCharCount } from "@/lib/audio-studio"
 
 /*
@@ -81,7 +81,8 @@ export function StillEditTools({ board, shot, isAdmin, running, onRun, onStudio 
   const [err, setErr] = useState<string | null>(null)
   const t = STILL_TOOLS.find(x => x.id === tool)
   const frame = shotAspect(shot, board.aspect)
-  const models = studioModelsFor(STUDIO_EDIT_MODELS, isAdmin).map(m => ({ value: m.id, label: m.label }))
+  // Admin-only models show red in the menu (only an admin's list has them)
+  const models = studioModelsFor(STUDIO_EDIT_MODELS, isAdmin).map(m => ({ value: m.id, label: m.label, admin: isAdminOnlyModel(m.id) }))
   const maxCast = Math.max(0, stillModelSpec(model).maxRefs - 1)
   const price = tool ? stillToolTickets(tool, { model, frame, refs: picks.length }) : 0
   const takes = (shot.stills ?? []).length
@@ -362,7 +363,7 @@ export function AudioLane({ board, onChangeShot, onRecordLine, onRecordCue, onPl
         <button onClick={() => setOpen(o => !o)} className="flex items-center gap-2 text-left">
           <Music size={14} className="text-slate-300" />
           <span className="text-[12px] font-bold text-white">Audio lane</span>
-          <span className="text-[10.5px] text-slate-500">{lineCount} voice line{lineCount === 1 ? "" : "s"} · {cueCount} music cue{cueCount === 1 ? "" : "s"} - plays in the animatic, used by the Final Cut</span>
+          <span className="text-[10.5px] text-slate-500">{lineCount} voice line{lineCount === 1 ? "" : "s"} · {cueCount} music / sound cue{cueCount === 1 ? "" : "s"} - plays in the animatic, used by the Final Cut</span>
         </button>
         <button onClick={() => onPlay(Math.max(0, shots.findIndex(s => s.id === sel)))} disabled={!shots.length} className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg border border-white/10 text-[10.5px] font-semibold text-slate-300 hover:text-white disabled:opacity-40">
           <Play size={11} /> Play with sound
@@ -408,7 +409,7 @@ export function AudioLane({ board, onChangeShot, onRecordLine, onRecordCue, onPl
               </div>
             </div>
           </div>
-          {!shot && <p className="mt-1.5 text-[10.5px] text-slate-500">Tap a shot to write its voice lines or start a music cue on it.</p>}
+          {!shot && <p className="mt-1.5 text-[10.5px] text-slate-500">Tap a shot to write its voice lines or start music or ambience on it.</p>}
 
           {shot && (() => {
             const i = shots.indexOf(shot)
@@ -460,21 +461,21 @@ export function AudioLane({ board, onChangeShot, onRecordLine, onRecordCue, onPl
                 </div>
                 {/* music cue */}
                 <div className="rounded-xl border border-white/10 bg-black/25 p-2.5 space-y-2">
-                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold text-slate-400"><Music size={11} /> Music from this shot</div>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold text-slate-400"><Music size={11} /> {cue && cueKindOf(cue.model) === "sound" ? "Ambience" : "Music"} from this shot</div>
                   {!cue ? (
                     <>
                       <p className="text-[10.5px] text-slate-500 leading-snug">
-                        {spans.some(sp => i > sp.from && i <= sp.to) ? "The cue from an earlier shot plays here. Start a new cue to change the music from this shot on." : "No music here yet."}
+                        {spans.some(sp => i > sp.from && i <= sp.to) ? "The cue from an earlier shot plays here. Start a new cue to change the sound from this shot on." : "No music or ambience here yet."}
                       </p>
                       <button onClick={() => onChangeShot(shot.id, { music: newMusicCue() })} className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg border border-dashed border-amber-300/25 text-[10.5px] font-semibold text-amber-200/80 hover:text-amber-100 hover:border-amber-300/50">
-                        <Plus size={12} /> Start a music cue here
+                        <Plus size={12} /> Start music or ambience here
                       </button>
                     </>
                   ) : (() => {
                     const busy = !!recording[cue.id] || liveAudio(cue) === "making"
                     return (
                       <>
-                        <textarea value={cue.prompt} onChange={e => onChangeShot(shot.id, { music: { ...cue, prompt: e.target.value } })} rows={3} className="sb-input" placeholder="e.g. slow, tense strings and a low pulse, building into the chase" />
+                        <textarea value={cue.prompt} onChange={e => onChangeShot(shot.id, { music: { ...cue, prompt: e.target.value } })} rows={3} className="sb-input" placeholder={cueKindOf(cue.model) === "sound" ? "e.g. rain on a tin roof, distant traffic, a dog barking far off" : "e.g. slow, tense strings and a low pulse, building into the chase"} />
                         <div className="flex items-center gap-2 text-[11px] text-slate-300">
                           <Dropdown value={cue.model} options={STORYBOARD_MUSIC_MODELS.map(m => ({ value: m.id, label: m.label }))} onChange={v => onChangeShot(shot.id, { music: { ...cue, model: v } })} className="w-44" />
                           <label className="ml-auto flex items-center gap-1 text-[10px] text-slate-400" title="How loud it sits under the picture (the Final Cut lowers it under speech by default)">

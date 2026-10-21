@@ -6,6 +6,7 @@ import { Upload, Trash2, Loader2, Film, Image as ImageIcon, Play, Pause } from "
 import { FrameModal } from "./FrameModal"
 import { SilverRimOverlay } from "./SilverRimOverlay"
 import { registerCardVideo, type CardVideoHandle } from "./card-video-scheduler"
+import { ADMIN_BUTTON } from "@/components/ui/admin-mark"
 
 export type CardMedia = { mediaUrl: string; mediaType: string }
 
@@ -401,7 +402,7 @@ export function HomeMediaCard({
         )}
       </div>
 
-      {/* Admin media controls */}
+      {/* Admin media controls (red: admin accounts only) */}
       {isAdmin && (
         <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
           <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={onPick} />
@@ -409,7 +410,7 @@ export function HomeMediaCard({
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
             title={media?.mediaUrl ? "Replace media" : "Upload media"}
-            className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/70 border border-white/15 text-[10px] text-white hover:bg-black/90 transition-colors disabled:opacity-50"
+            className={`flex items-center gap-1 px-2 py-1 rounded-md backdrop-blur-sm text-[10px] transition-colors disabled:opacity-50 ${ADMIN_BUTTON}`}
           >
             {uploading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
             {media?.mediaUrl ? "Replace" : "Upload"}
@@ -418,7 +419,7 @@ export function HomeMediaCard({
             <button
               onClick={onSwap}
               title={isVideo ? "Replace/Remove act on the video - switch them to the still" : "Replace/Remove act on the still - switch them to the video"}
-              className="flex items-center gap-1 px-2 py-1 rounded-md bg-black/70 border border-white/15 text-[10px] text-white hover:bg-black/90 transition-colors"
+              className={`flex items-center gap-1 px-2 py-1 rounded-md backdrop-blur-sm text-[10px] transition-colors ${ADMIN_BUTTON}`}
             >
               {isVideo ? <ImageIcon size={11} /> : <Film size={11} />}
               {isVideo ? "Edit still" : "Edit video"}
@@ -428,7 +429,7 @@ export function HomeMediaCard({
             <button
               onClick={onRemove}
               title="Remove media"
-              className="p-1 rounded-md bg-black/70 border border-white/15 text-red-400 hover:bg-red-500/20 transition-colors"
+              className={`p-1 rounded-md backdrop-blur-sm transition-colors ${ADMIN_BUTTON}`}
             >
               <Trash2 size={11} />
             </button>

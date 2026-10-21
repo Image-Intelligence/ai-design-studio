@@ -690,7 +690,7 @@ export function CharacterStudioWorkspace({
                 className="flex-1 min-w-0"
                 options={IMAGE_MODELS
                   .filter(m => isAdmin || !m.admin)
-                  .map(m => ({ value: m.id, label: m.label }))}
+                  .map(m => ({ value: m.id, label: m.label, admin: !!m.admin }))}
               />
             </div>
             <div className="flex gap-1.5 mt-1.5">

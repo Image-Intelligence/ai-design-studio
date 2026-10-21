@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ChevronDown, Check } from "lucide-react"
+import { AdminTag, ADMIN_TEXT } from "@/components/ui/admin-mark"
 
 /**
  * The site's own dropdown.
@@ -16,6 +17,9 @@ import { ChevronDown, Check } from "lucide-react"
  *
  * So the menu renders in a portal at fixed coordinates measured from the
  * button, and flips above it when there is more room up than down.
+ *
+ * An option marked `admin` (a model only admin accounts get) is red in the
+ * list, and so is the button while it is the one picked. Styling only.
  */
 export function Dropdown({
   value,
@@ -25,7 +29,7 @@ export function Dropdown({
   className = "",
 }: {
   value: string
-  options: { value: string; label: string }[]
+  options: { value: string; label: string; admin?: boolean }[]
   onChange: (v: string) => void
   disabled?: boolean
   className?: string
@@ -86,9 +90,13 @@ export function Dropdown({
         className={`flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] transition-colors ${className} ${
           disabled
             ? "border-white/10 bg-black/30 text-slate-600 cursor-not-allowed"
-            : open
-              ? "border-white/30 bg-black/60 text-slate-100"
-              : "border-white/10 bg-black/40 text-slate-200 hover:border-white/25"
+            : current?.admin
+              ? open
+                ? "border-red-500/60 bg-red-500/15 text-red-200"
+                : "border-red-500/40 bg-red-500/10 text-red-200 hover:border-red-500/60"
+              : open
+                ? "border-white/30 bg-black/60 text-slate-100"
+                : "border-white/10 bg-black/40 text-slate-200 hover:border-white/25"
         }`}
       >
         <span className="flex-1 min-w-0 truncate text-left">{current?.label ?? value}</span>
@@ -108,14 +116,15 @@ export function Dropdown({
               onClick={() => { onChange(o.value); setOpen(false) }}
               className={`w-full flex items-center gap-1.5 px-2 py-1.5 text-left text-[11px] transition-colors ${
                 o.value === value
-                  ? "bg-white/10 text-white"
-                  : "text-slate-300 hover:bg-white/5 hover:text-white"
+                  ? `bg-white/10 ${o.admin ? ADMIN_TEXT : "text-white"}`
+                  : o.admin ? `${ADMIN_TEXT} hover:bg-red-500/10` : "text-slate-300 hover:bg-white/5 hover:text-white"
               }`}
             >
               <span className="w-3 shrink-0">
                 {o.value === value && <Check size={10} className="text-cyan-300" />}
               </span>
               <span className="truncate">{o.label}</span>
+              {o.admin && <AdminTag className="ml-auto" />}
             </button>
           ))}
         </div>,

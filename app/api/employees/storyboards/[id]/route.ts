@@ -1,3 +1,4 @@
+import { settleBoardStills } from '@/lib/storyboard-stills'
 import { NextRequest, after } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireStoryboardUser, scrubBoardMedia } from '@/lib/storyboard-gate'
@@ -50,18 +51,20 @@ async function stillThumbs(userId: number, shots: unknown): Promise<[string, str
   return rows.filter(r => r.thumbnailUrl).map(r => [mediaKey(r.imageUrl), r.thumbnailUrl!])
 }
 
-async function own(ctx: Ctx) {
+async function own(ctx: Ctx, settle = false) {
   const user = await requireStoryboardUser()
   if (!user) return { error: jsonPrivate({ error: 'Unauthorized' }, { status: 401 }) }
   const id = parseInt((await ctx.params).id)
   if (!Number.isFinite(id)) return { error: jsonPrivate({ error: 'Invalid id' }, { status: 400 }) }
+  // Stills out at fal are settled first (lib/storyboard-stills), so the read shows them
+  if (settle && await prisma.storyboard.count({ where: { id, userId: user.id } })) await settleBoardStills(id, 15_000).catch(() => 0)
   const row = await prisma.storyboard.findFirst({ where: { id, userId: user.id } })
   if (!row) return { error: jsonPrivate({ error: 'Not found' }, { status: 404 }) }
   return { user, row }
 }
 
 export async function GET(_req: NextRequest, ctx: Ctx) {
-  const r = await own(ctx)
+  const r = await own(ctx, true)
   if ('error' in r) return r.error
   // Cleaned on the way out too: every shot is guaranteed its own id and a
   // scene to live in. A board from before scenes gets its Scene 1 here, and
