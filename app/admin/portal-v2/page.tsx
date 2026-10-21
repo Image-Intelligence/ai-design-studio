@@ -2,7 +2,7 @@
 import { listenForNewMedia } from "@/lib/feed-events"
 
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
-import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, type ReactNode, type ReactElement } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, startTransition, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
 import { seedvrUpscaleTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, mossTicketCost, mossSide, mossSize, MOSS_PRESETS, MOSS_MIN_SIDE, MOSS_MAX_SIDE, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
 import { CCBILL_PLANS } from "@/lib/dev-tier-plans"
@@ -50,6 +50,9 @@ import { gptImage25Size, expansionChoices } from "@/lib/fal-image-models"
 import { PROMPT_MODELS, PROMPT_MODEL_GROUPS, DEFAULT_PROMPT_MODEL, promptModelLabel } from "@/lib/prompt-models"
 import { LibraryPickerHost, openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { KlingElementsEditor, getKlingElements } from "@/components/video/KlingElements"
+import { MurekaSongPicker, getMurekaSong, getMurekaSongItem } from "@/components/video/MurekaSongPicker"
+import { GenInputsView } from "@/components/feed/GenInputs"
+import { videoInputsFromBody, img as inImg, vid as inVid, aud as inAud, type GenInputGroup, type GenInputVideo } from "@/lib/gen-inputs"
 import { PlayerVideo } from "@/components/feed/PlayerVideo"
 import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateError, useIdVerified, useIdStatus, requireIdVerification } from "@/components/id-verification/IdVerificationGate"
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
@@ -743,6 +746,8 @@ interface RefFolder { id: number; name: string; parentId: number | null }
 
 // --- PENDING SLOT ---
 interface PendingSlot {
+  /** What it was given, laid out for its model (lib/gen-inputs) - the tile's popup shows it */
+  inputs?: GenInputGroup[]
   slotId: string
   // "done" keeps the card ALIVE after the image arrives. Previously the slot
   // was destroyed and the image re-added as a different element with a
@@ -840,6 +845,8 @@ interface VideoModelConfig {
   klingElements?: boolean
   /** Reference clips this model takes, when not SeeDance's 3 clips of 2-15s in all (Kling 4.0: 5 clips, 3-30s, 30s in all) */
   refVideoWindow?: { count: number; minSec: number; totalSec: number }
+  /** Mureka Lyrics Video: made from one of the account's Mureka songs (components/video/MurekaSongPicker), run by /api/audio/generate */
+  murekaSong?: boolean
   /** Which frame tags the refs panel shows: start + end, start only, or none (default: start-end, none for clip tools). */
   frameTags?: "start-end" | "start" | "none"
   /** Creativity picker (sent as videoToolCreativity) - Flux upscale faithful/creative, Topaz Creative's strength. */
@@ -882,6 +889,8 @@ const BATCH_0928_VIDEO = new Set([
 const LUMA_MODES = ["adhere_1", "adhere_2", "adhere_3", "flex_1", "flex_2", "flex_3", "reimagine_1", "reimagine_2", "reimagine_3"]
 
 interface VideoItem {
+  /** What it was made from (lib/gen-inputs) */
+  inputs?: GenInputVideo
   id: string
   dbId?: number           // DB GeneratedImage id — set on completion from status route
   videoUrl: string
@@ -928,6 +937,8 @@ function measureMediaAspect(url: string, kind: "image" | "video"): Promise<strin
 }
 
 interface VideoPendingSlot {
+  /** What the job was sent (lib/gen-inputs) - laid out per model by videoInputGroups for the tile's popup */
+  inputs?: GenInputVideo
   slotId: string
   requestId: string
   falEndpoint: string
@@ -951,10 +962,14 @@ interface VideoPendingSlot {
   submitting?: boolean
   /** A studio's run (Final Cut...; lib/studio-activity): no fal request - it finishes on its queue row */
   studio?: boolean
+  /** Run through /api/audio/generate (Mureka Lyrics Video): finished by /api/audio/status, not video-status */
+  audioRun?: boolean
 }
 
 interface VideoDetailData {
   id?: number             // DB GeneratedImage id for rating
+  /** What it was made from (videoMetadata.inputs, lib/gen-inputs) */
+  inputs?: GenInputVideo
   videoUrl: string
   prompt: string
   model: string
@@ -1522,6 +1537,11 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // ── 2026-10-07 batch (ADMIN ONLY while under test) - lib/batch-1007-video ──
   // Vidu Q4: one image = the start frame (native audio always on); more = references (up to 12; audio is the toggle)
   { id: "vidu-q4", name: "Vidu Q4", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","16"], resolutions: ["540p","720p","1080p","2k","4k"], aspectRatios: ["16:9","9:16","4:3","3:4","1:1"], supportsEndFrame: false, audioType: "toggle", supportsReferenceVideo: true, refImagesOnly: true },
+  // Mureka Lyrics Video (moved here from the Audio Studio's song cards 2026-10-21 -
+  // it makes an MP4): one of your Mureka songs with its lyrics on screen. The
+  // prompt is an optional title; run by /api/audio/generate (lib/audio-studio)
+  { id: "mureka-lyrics-video", name: "Mureka Lyrics Video", durations: [], aspectRatios: ["9:16","16:9","3:4","4:3"], supportsEndFrame: false, audioType: "none", murekaSong: true,
+    choice: { label: "Layout", note: "how the lyrics are laid out", options: [1, 2, 3, 4, 5, 6, 7].map(n => ({ value: `layout_${n}`, label: `Layout ${n}` })) } },
   // Kling 4.0 (2026-10-21, ADMIN ONLY while under test): words, or references -
   // pictures @Image1.., clips @Video1.. (30s in all) and elements @Element1..;
   // a picture tagged S is the start frame. lib/batch-1007-video routes it.
@@ -1643,6 +1663,54 @@ const VIDEO_UI_OVERRIDES: Record<string, Partial<VideoModelConfig>> = {
 for (const m of VIDEO_MODEL_CONFIGS) Object.assign(m, VIDEO_UI_OVERRIDES[m.id] ?? {})
 const VIDEO_MODELS = VIDEO_MODEL_CONFIGS.map(m => m.name)
 
+/*
+ * A video job's inputs laid out for ITS model (2026-10-21, owner: the
+ * generating tile showed empty start / end frames - "each model takes
+ * different inputs, so each model should have a separate layout"). The
+ * record is what the job was sent (lib/gen-inputs); the model's config says
+ * which of those it takes and what they are called for it:
+ *   lip sync         Source video · Voice audio
+ *   Motion Control   Character · Motion video
+ *   clip tools       Source clip (or Clip to extend / Video to edit) · the tool's own pictures
+ *   Kling 4.0        Start frame (tagged S) · Reference images @Image1… · Reference videos · Elements
+ *   SeeDance & co    Start frame · End frame, or References (@Image1…) · Reference videos · Reference audio
+ *   audio-driven     its track (Voice track, Song…)
+ *   Mureka           Song
+ * Older tiles (before the record) fall back to their start / end frames.
+ */
+function videoInputGroups(modelId: string, i: GenInputVideo | undefined, legacy?: { startFrameUrl?: string; endFrameUrl?: string; motionVideoUrl?: string }): GenInputGroup[] {
+  const m = VIDEO_MODEL_CONFIGS.find(x => x.id === modelId)
+  const r: GenInputVideo = i ?? { imageUrl: legacy?.startFrameUrl, endImageUrl: legacy?.endFrameUrl, motionVideoUrl: legacy?.motionVideoUrl }
+  const g: GenInputGroup[] = []
+  const add = (label: string, items: GenInputGroup["items"], note?: string) => { if (items.length) g.push({ label, items, ...(note ? { note } : {}) }) }
+  if (r.song) { add("Song", [inAud(r.song.url)], r.song.name); return g }
+  if (m?.supportsLipsync) {
+    add("Source video", r.lipsyncVideoUrl ? [inVid(r.lipsyncVideoUrl)] : [])
+    add("Voice audio", r.lipsyncAudioUrl ? [inAud(r.lipsyncAudioUrl)] : [])
+    return g
+  }
+  if (m?.supportsMotionControl) {
+    add("Character", r.imageUrl ? [inImg(r.imageUrl)] : [])
+    add("Motion video", r.motionVideoUrl ? [inVid(r.motionVideoUrl)] : [])
+    return g
+  }
+  const atTags = !!m?.supportsReferenceVideo && !modelId.startsWith("gemini-omni")
+  const tag = (n: number) => (modelId.startsWith("gemini-omni") ? `REF_${n - 1}` : atTags ? `@Image${n}` : `${n}`)
+  if (r.editVideoUrl) {
+    add(m?.isVideoTool ? "Source clip" : m?.supportsVideoExtend ? "Clip to continue / edit" : "Video to edit", [inVid(r.editVideoUrl)])
+    add(m?.sourceClipImages?.label ?? "Reference pictures", (r.referenceImageUrls ?? []).map((u, k) => inImg(u, `${k + 1}`)))
+  } else {
+    add(m?.supportsEndFrame || m?.frameTags !== "none" ? "Start frame" : "Image", r.imageUrl ? [inImg(r.imageUrl)] : [])
+    add("End frame", r.endImageUrl ? [inImg(r.endImageUrl)] : [])
+    add(r.mode === "r2v" || atTags ? "Reference images" : "References", (r.referenceImageUrls ?? []).map((u, k) => inImg(u, tag(k + 1))))
+  }
+  add("Reference videos", (r.referenceVideoUrls ?? []).map((u, k) => inVid(u, atTags ? `@Video${k + 1}` : `${k + 1}`)))
+  add("Reference audio", (r.referenceAudioUrls ?? []).map((u, k) => inAud(u, atTags ? `@Audio${k + 1}` : `${k + 1}`)))
+  for (const [k, e] of (r.klingElements ?? []).entries()) add(`Element ${k + 1} (@Element${k + 1})`, [inImg(e.frontal, "front"), ...e.views.map(v => inImg(v))])
+  if (r.audioUrl && (m?.audioUpload || m?.audioType === "upload")) add(m?.audioUpload?.label ?? "Audio", [inAud(r.audioUrl)])
+  return g
+}
+
 // GIFs as video references: providers only accept real video, and a GIF will
 // not even load in a <video> element for the client-side duration checks.
 // Convert to MP4 first, then the normal upload path applies unchanged.
@@ -1753,6 +1821,7 @@ const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "minimax-h3-max-relight": "$$",
   "minimax-h3-max-reframe": "$$",
   "kling-v4": "$$$",
+  "mureka-lyrics-video": "$",
   "kling-v4-edit": "$$$",
   "wan-2.2-animate-replace": "$$$",
   "dreamactor-v2": "$$",
@@ -2060,6 +2129,7 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Kling O3 & Turbo", type: "text · image · refs to video · audio · clip edit", accent: "text-orange-300", dot: "bg-orange-300", items: ["Kling O3 Pro", "Kling O3 4K", "Kling V3 Turbo Pro", "Kling V3 Turbo", "Kling O3 Pro Video Edit", "Kling O3 Pro Video Reference", "Kling O3 4K Video Edit", "Kling O3 4K Video Reference"] },
   { label: "PixVerse", type: "text · image · start/end · refs to video", accent: "text-fuchsia-300", dot: "bg-fuchsia-300", items: ["PixVerse V6", "PixVerse C1", "PixVerse V6 Extend", "PixVerse Music Video"] },
   { label: "Vidu", type: "text · image · start/end · refs to video · audio · up to 4K", accent: "text-teal-300", dot: "bg-teal-300", items: ["Vidu Q4", "Vidu Q3", "Vidu Q3 Turbo"] },
+  { label: "Mureka", type: "lyrics video from your song", accent: "text-amber-300", dot: "bg-amber-300", items: ["Mureka Lyrics Video"] },
   { label: "Pika", type: "text · image · scenes · keyframes", accent: "text-yellow-300", dot: "bg-yellow-300", items: ["Pika 2.2", "Pikaframes"] },
   { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot · relight · reframe", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot", "H3 Max Relight", "H3 Max Reframe"] },
   { label: "ByteDance",   type: "image & text to video · character swap · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "OmniHuman v2", "DreamActor v2", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
@@ -2161,7 +2231,7 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   // public 2026-10-08 and moved to its makers' groups above
 ]
 // Models fal runs without any prompt (their inputs are the image/audio)
-const PROMPTLESS_VIDEO_MODELS = new Set(["omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2"])
+const PROMPTLESS_VIDEO_MODELS = new Set(["mureka-lyrics-video", "omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
 /** Minutes the portal keeps polling a video before giving up (default 20) - the
@@ -2198,6 +2268,7 @@ const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "minimax-h3-max-relight": "No prompt needed - add the clip and a picture of a lit sphere (the lighting to match) in References",
   "minimax-h3-max-reframe": "Optional - what fills the new space around the clip (pick the new shape on the left)",
   "kling-v4": "Describe the video - name references @Image1, @Video1 and elements @Element1",
+  "mureka-lyrics-video": "Optional - a title shown on the video (pick the song on the left)",
   "kling-v4-edit": "Describe the edit - the clip is @Video1; pictures @Image1…, elements @Element1…",
   "wan-2.2-animate-replace": "No prompt needed - add the clip and your character's picture in References",
   "dreamactor-v2": "No prompt needed - add the clip and your character's picture in References",
@@ -3999,6 +4070,30 @@ function measureVideoRef(url: string): Promise<{ duration: number; w: number; h:
     v.onerror = () => reject(new Error("Could not read video metadata"))
     v.src = url
   })
+}
+
+// The standard shape closest to w×h (a lip-sync source's aspect ratio)
+function closestAspectLabel(w: number, h: number): string | undefined {
+  if (!w || !h) return undefined
+  const r = w / h
+  const standards: [string, number][] = [["1:1", 1], ["16:9", 16 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["3:4", 3 / 4], ["3:2", 3 / 2], ["2:3", 2 / 3], ["4:5", 4 / 5], ["5:4", 5 / 4], ["21:9", 21 / 9]]
+  return standards.reduce((best, s) => (Math.abs(r - s[1]) < Math.abs(r - best[1]) ? s : best))[0]
+}
+/** Which clip slot a library pick fills: references / a tool's source clip, motion, lip sync, Omni edit. */
+type LibraryClipTarget = "sd20" | "motion" | "lipsync" | "edit"
+/*
+ * "From My Generations / Assets" for a video slot (2026-10-21, owner: users
+ * should be able to choose from their generated videos as inputs, the way
+ * picture slots already can). The page measures the clip and applies the
+ * model's window - too long opens the trimmer - exactly as for a Refs clip.
+ */
+function LibraryClipButton({ onClick, label = "From My Generations / Assets", className = "" }: { onClick: () => void; label?: string; className?: string }) {
+  return (
+    <button onClick={onClick} title="Choose one of your videos - My Generations or a clip saved in Assets"
+      className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] hover:bg-white/[0.07] hover:border-white/25 text-[10px] text-slate-300 transition-all ${className}`}>
+      <Images size={11} /> {label}
+    </button>
+  )
 }
 
 // Deterministic shortest-column packing: assign each item, in order, to the currently
@@ -7242,6 +7337,111 @@ function FrameExtractorModal({ onClose, onAddRefs, canUseLayers = false }: {
   )
 }
 
+/*
+ * The trimmer's visual guide (2026-10-21, owner: "users should be able to see
+ * what parts of the video they are trimming out"): frames along the whole
+ * clip, the part kept outlined, the parts cut darkened and hatched with how
+ * much each is, and the playhead. Drag on it to move the kept part.
+ *
+ * Frames are drawn by a second, hidden copy of the clip seeked to each point.
+ * Our clips come from another origin, which only taints the canvases - fine,
+ * they are shown, never read back. If a browser will not seek it (a phone
+ * that will not load hidden video), the strip stays a plain bar and the guide
+ * still works.
+ */
+const TRIM_FRAMES = 10
+function TrimFilmstrip({ url, duration, start, len, now, onMove }: {
+  url: string; duration: number; start: number; len: number; now: number
+  /** the kept part's new start, from a drag on the strip */
+  onMove: (start: number) => void
+}) {
+  const canvases = useRef<(HTMLCanvasElement | null)[]>([])
+  const strip = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let off = false
+    const v = document.createElement("video")
+    v.muted = true; v.playsInline = true; v.preload = "auto"; v.src = url
+    const seek = (t: number) => new Promise<void>((res, rej) => {
+      const done = () => { clearTimeout(timer); v.removeEventListener("seeked", done); res() }
+      const timer = setTimeout(() => { v.removeEventListener("seeked", done); rej(new Error("seek timeout")) }, 4000)
+      v.addEventListener("seeked", done)
+      v.currentTime = t
+    })
+    v.addEventListener("loadeddata", async () => {
+      try {
+        for (let i = 0; i < TRIM_FRAMES && !off; i++) {
+          await seek(Math.min(duration - 0.05, ((i + 0.5) / TRIM_FRAMES) * duration))
+          const c = canvases.current[i]
+          const ctx = c?.getContext("2d")
+          if (!c || !ctx || !v.videoWidth) continue
+          // cover-fit the frame into the tile
+          const scale = Math.max(c.width / v.videoWidth, c.height / v.videoHeight)
+          const w = v.videoWidth * scale, h = v.videoHeight * scale
+          ctx.drawImage(v, (c.width - w) / 2, (c.height - h) / 2, w, h)
+        }
+      } catch { /* the plain bar is the fallback */ }
+      v.removeAttribute("src"); v.load()
+    }, { once: true })
+    return () => { off = true; v.removeAttribute("src"); v.load() }
+  }, [url, duration])
+
+  const pct = (t: number) => `${Math.max(0, Math.min(100, (t / duration) * 100))}%`
+  const end = start + len
+  const cutBefore = start, cutAfter = Math.max(0, duration - end)
+  // Drag: the kept part follows the pointer (centred on it), inside the clip
+  const moveTo = (clientX: number) => {
+    const r = strip.current?.getBoundingClientRect()
+    if (!r) return
+    const t = ((clientX - r.left) / r.width) * duration
+    onMove(Math.max(0, Math.min(duration - len, t - len / 2)))
+  }
+  return (
+    <div className="space-y-1">
+      <div ref={strip}
+        onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); moveTo(e.clientX) }}
+        onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) moveTo(e.clientX) }}
+        className="relative h-14 rounded-lg overflow-hidden bg-white/[0.06] cursor-grab active:cursor-grabbing select-none touch-none">
+        {/* the frames */}
+        <div className="absolute inset-0 flex">
+          {Array.from({ length: TRIM_FRAMES }, (_, i) => (
+            <canvas key={i} ref={el => { canvases.current[i] = el }} width={96} height={56} className="h-full flex-1 min-w-0 border-r border-black/40 last:border-r-0" />
+          ))}
+        </div>
+        {/* the parts cut out: darkened and hatched */}
+        {[{ left: 0, w: cutBefore }, { left: end, w: cutAfter }].map((c, i) => c.w > 0.05 && (
+          <div key={i} className="absolute inset-y-0 bg-black/70 flex items-center justify-center"
+            style={{ left: pct(c.left), width: pct(c.w), backgroundImage: "repeating-linear-gradient(135deg, rgba(248,113,113,0.22) 0 4px, transparent 4px 9px)" }}>
+            {c.w / duration > 0.12 && <span className="px-1 rounded bg-black/70 text-[9px] font-mono text-red-200 whitespace-nowrap">cut {c.w.toFixed(1)}s</span>}
+          </div>
+        ))}
+        {/* the part kept */}
+        <div className="absolute inset-y-0 rounded-md border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.6)] pointer-events-none"
+          style={{ left: pct(start), width: pct(len) }}>
+          <span className="absolute -left-0.5 inset-y-2 w-1 rounded-full bg-white" />
+          <span className="absolute -right-0.5 inset-y-2 w-1 rounded-full bg-white" />
+        </div>
+        {/* playhead */}
+        <div className="absolute inset-y-0 w-0.5 bg-amber-300 pointer-events-none" style={{ left: pct(now) }} />
+      </div>
+      {/* ruler + what is kept and cut */}
+      <div className="relative h-3 text-[9px] font-mono text-slate-500">
+        {/* the kept part's in / out points; at an end of the clip they replace that end's label */}
+        {start / duration > 0.08 ? <span className="absolute left-0">0s</span> : null}
+        <span className={`absolute text-slate-200 ${start / duration > 0.08 ? "-translate-x-1/2" : ""}`} style={{ left: start / duration > 0.08 ? pct(start) : 0 }}>{start.toFixed(1)}s</span>
+        <span className={`absolute text-slate-200 ${end / duration < 0.92 ? "-translate-x-1/2" : ""}`} style={end / duration < 0.92 ? { left: pct(end) } : { right: 0 }}>{end.toFixed(1)}s</span>
+        {end / duration < 0.92 ? <span className="absolute right-0">{duration.toFixed(1)}s</span> : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pt-1 text-[10px]">
+        <span className="flex items-center gap-1 text-slate-200"><span className="w-2.5 h-2.5 rounded-sm border-2 border-white" />Kept {len.toFixed(1)}s</span>
+        <span className="flex items-center gap-1 text-red-200/80"><span className="w-2.5 h-2.5 rounded-sm bg-red-400/40" />{
+          [cutBefore > 0.05 ? `Cut ${cutBefore.toFixed(1)}s from the start` : "", cutAfter > 0.05 ? `${cutBefore > 0.05 ? "" : "Cut "}${cutAfter.toFixed(1)}s from the end` : ""].filter(Boolean).join(" · ") || "Nothing cut"
+        }</span>
+        <span className="ml-auto text-slate-600">Drag the strip to move the kept part</span>
+      </div>
+    </div>
+  )
+}
+
 // Trim popup for a reference video that exceeds the selected model's input
 // window (e.g. SeeDance 2.0 takes 2-15s, Kling Motion Control 30s). Pick a
 // start point and a length inside the allowed range; the server cuts the clip
@@ -7260,6 +7460,8 @@ function VideoTrimModal({ url, minSec, maxSec, modelName, onCancel, onDone }: {
   const [len, setLen] = useState(maxSec)
   const [trimming, setTrimming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Where the preview is (the guide's playhead)
+  const [now, setNow] = useState(0)
 
   // Loop playback inside the selected window so the preview shows exactly
   // what the model will receive
@@ -7268,6 +7470,7 @@ function VideoTrimModal({ url, minSec, maxSec, modelName, onCancel, onDone }: {
     if (!v) return
     const onTime = () => {
       if (v.currentTime > start + len || v.currentTime < start - 0.3) v.currentTime = start
+      setNow(v.currentTime)
     }
     v.addEventListener("timeupdate", onTime)
     return () => v.removeEventListener("timeupdate", onTime)
@@ -7325,11 +7528,9 @@ function VideoTrimModal({ url, minSec, maxSec, modelName, onCancel, onDone }: {
 
         {duration !== null && (
           <>
-            {/* Window visual on the full timeline */}
-            <div className="relative h-2 rounded-full bg-white/[0.08] overflow-hidden">
-              <div className="absolute inset-y-0 bg-white/70 rounded-full"
-                style={{ left: `${(start / duration) * 100}%`, width: `${(effLen / duration) * 100}%` }} />
-            </div>
+            {/* The visual guide: frames, the kept part, the parts cut, the playhead */}
+            <TrimFilmstrip url={url} duration={duration} start={start} len={effLen} now={now}
+              onMove={st => { const s2 = Math.round(Math.min(st, maxStart) * 10) / 10; setStart(s2); setLen(l => Math.min(l, Math.max(minSec, duration - s2))) }} />
             <div className="space-y-2.5">
               <label className="block">
                 <span className="flex items-center justify-between text-[10px] font-mono text-slate-500 uppercase tracking-wider">
@@ -7985,8 +8186,8 @@ function RefDropdown({
                     </button>
                     <button
                       onClick={() => { setAssetNote(null); setAssetPickOpen(true) }}
-                      disabled={picked.filter(r => !isVideoRefUrl(r.url) && !is3D(r.url)).length === 0}
-                      title="Save these pictures into one of your Assets (a character, location or prop) - or a new one"
+                      disabled={picked.filter(r => !is3D(r.url)).length === 0}
+                      title="Save these pictures and clips into one of your Assets (a character, location or prop) - or a new one"
                       className={`${btn} border-white/15 bg-white/[0.05] text-white hover:bg-white/[0.1]`}
                     >
                       <Boxes size={13} /> Add to asset
@@ -8371,10 +8572,11 @@ function RefDropdown({
       {assetPickOpen && typeof document !== "undefined" && createPortal(
         <div data-keep-refs-open className="relative z-[10060]">
           {(() => {
-            const urls = library.filter(r => selectedForDelete.has(r.id) && !isVideoRefUrl(r.url) && !is3D(r.url)).map(r => r.url)
+            // Pictures and (since 2026-10-21) clips - 3D files never go in an asset
+            const urls = library.filter(r => selectedForDelete.has(r.id) && !is3D(r.url)).map(r => r.url)
             const done = (a: UserAsset, added: number) => {
               setAssetPickOpen(false)
-              setAssetNote(added > 0 ? `Added ${added} picture${added === 1 ? "" : "s"} to ${a.name}` : `Nothing new for ${a.name} - already there, or it's full`)
+              setAssetNote(added > 0 ? `Added ${added} to ${a.name}` : `Nothing new for ${a.name} - already there, or it's full`)
               setSelectedForDelete(new Set())
             }
             return (
@@ -10114,10 +10316,16 @@ function PendingDetailModal({
   endFrameUrl,
   isQueued,
   videoMetadata,
+  inputGroups,
+  duration,
   onClose,
   onUsePrompt,
   onDismiss,
 }: {
+  /** A video's length (seconds) - a chip beside the shape */
+  duration?: string
+  /** The job's inputs, laid out for its model (videoInputGroups, or an image tool's slot) - replaces the start/end frame block */
+  inputGroups?: GenInputGroup[]
   prompt: string
   model: string
   quality?: string
@@ -10134,7 +10342,8 @@ function PendingDetailModal({
   onDismiss?: () => void
 }) {
   const [copied, setCopied] = useState(false)
-  const modelName = getModelDisplayName(model)
+  // Video models by their own names (getModelDisplayName knows the image ones)
+  const modelName = VIDEO_MODEL_CONFIGS.find(m => m.id === model)?.name ?? getModelDisplayName(model)
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
@@ -10241,6 +10450,11 @@ function PendingDetailModal({
                       {aspectRatio}
                     </span>
                   )}
+                  {duration && Number(duration) > 0 && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
+                      {duration}s
+                    </span>
+                  )}
                   {quality && (
                     <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
                       {quality.toUpperCase()}
@@ -10249,7 +10463,12 @@ function PendingDetailModal({
                 </div>
               </div>
             )}
-            {isVideoSlot ? (
+            {inputGroups ? (
+              <div>
+                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Inputs</p>
+                <GenInputsView groups={inputGroups} />
+              </div>
+            ) : isVideoSlot ? (
               <div className="space-y-3">
                 <div>
                   <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Start Frame</p>
@@ -10296,6 +10515,12 @@ function PendingDetailModal({
               {aspectRatio && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{aspectRatio}</span>}
               {quality && <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[10px] font-mono">{quality.toUpperCase()}</span>}
             </div>
+            {/* Phones see the inputs too (2026-10-21) */}
+            {(inputGroups ?? (referenceImageUrls?.length ? [{ label: "References", items: referenceImageUrls.map(u => inImg(u)) }] : null)) && (
+              <div className="mt-2.5 max-h-[34dvh] overflow-y-auto">
+                <GenInputsView compact groups={inputGroups ?? [{ label: "References", items: (referenceImageUrls ?? []).map(u => inImg(u)) }]} />
+              </div>
+            )}
           </div>
 
           {/* Actions */}
@@ -12041,7 +12266,12 @@ function VideoDetailModal({
                 </p>
               </div>
             )}
-            {(video.startFrameUrl || video.endFrameUrl) && (
+            {video.inputs ? (
+              <div>
+                <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Inputs</p>
+                <GenInputsView groups={videoInputGroups(video.model, video.inputs)} />
+              </div>
+            ) : (video.startFrameUrl || video.endFrameUrl) && (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">
                   Frames
@@ -18588,7 +18818,8 @@ function PromptBox({
           : `${(ckName.iter / 1000).toFixed(0)}k`
         : 'local'
       const label  = `${upscaleFactor}x ${model.name.replace(' (Local)', '')} · ${ckLabel}`
-      onAddPending({ slotId, status: "loading", prompt: label, modelId: model.apiId, aspectRatio: "1:1", quality: `${upscaleFactor}x` as Quality })
+      onAddPending({ slotId, status: "loading", prompt: label, modelId: model.apiId, aspectRatio: "1:1", quality: `${upscaleFactor}x` as Quality,
+        ...(upscaleSourceUrl ? { inputs: [{ label: "Image to upscale", items: [inImg(upscaleSourceUrl)] }] } : {}) })
       setGenerating(false)
       try {
         const res  = await fetch("/api/admin/upscaler/infer", {
@@ -18626,6 +18857,11 @@ function PromptBox({
       slotIds.forEach(sid => onAddPending({
         slotId: sid, status: "loading", prompt: label, modelId: model.apiId,
         aspectRatio: "auto", quality: quality as Quality,
+        // Its two pictures, named as the panel names them
+        inputs: [
+          { label: model.id === "bria-embed-product" ? "Scene" : "Person", items: tryOnPerson.url ? [inImg(tryOnPerson.url)] : [] },
+          { label: model.id === "bria-product-holding" || model.id === "bria-embed-product" ? "Product" : "Garment", items: tryOnGarment.url ? [inImg(tryOnGarment.url)] : [] },
+        ].filter(x => x.items.length),
       }))
 
       // Free Generate NOW, the way the main image path does. The submit itself
@@ -18695,6 +18931,8 @@ function PromptBox({
         : model.id === "aura-sr" ? `${upscaleFactor}x AuraSR` : model.id === "esrgan" ? `${upscaleFactor}x ESRGAN` : model.id === "drct" ? `${upscaleFactor}x DRCT` : model.id === "supir" ? `${upscaleFactor}x SUPIR` : `${upscaleFactor}x upscale`
       onAddPending({
         slotId, status: "loading", prompt: pendingLabel, modelId: model.apiId, aspectRatio: "auto",
+        // The picture the tool works on
+        ...(upscaleSourceUrl ? { inputs: [{ label: model.id === "seedvr2-upscale" || /upscal|aura-sr|esrgan|drct|supir|clarity/.test(model.id) ? "Image to upscale" : "Source image", items: [inImg(upscaleSourceUrl)] }] } : {}),
         quality: (model.id === "seedvr2-upscale"
           ? (seedvrMode === "target" ? seedvrTarget : seedvrMode === "default" ? "auto" : `${seedvrFactor}x`)
           : NO_FACTOR_TOOLS.has(model.id) ? "auto"
@@ -22965,6 +23203,7 @@ function SD20RefPanel({
   sourceClipMaxSec,
   clipImages,
   onAddRefImageUrls,
+  onPickLibraryVideos,
   refTagHint = "prompt with @Image1…",
   allowFrameTags = false,
   startTagOnly = false,
@@ -23001,6 +23240,8 @@ function SD20RefPanel({
   clipImages?: { max: number; label: string; hint: string; required?: boolean; lighting?: boolean }
   /** Pictures chosen from My Generations / Assets instead of uploaded */
   onAddRefImageUrls?: (urls: string[]) => void
+  /** Clips chosen from My Generations / Assets (the page measures and fits them) */
+  onPickLibraryVideos?: () => void
   refTagHint?: string
   // SeeDance 2.0: pick the start/end frame out of the references (S/E tags per tile)
   allowFrameTags?: boolean
@@ -23187,10 +23428,18 @@ function SD20RefPanel({
               : <>Reference Videos <span className="text-slate-600 normal-case font-normal">({videoRefVideoFilenames.length}/{videoSlots} · {videoRefVideoDuration.toFixed(0)}s · {refVideoWindow ? `${refVideoWindow.minSec}–${refVideoWindow.totalSec}s` : "2–15s"} total)</span></>}
           </p>
           {videoRefVideoFilenames.length < videoSlots && filesLeft > 0 && (sourceOnly || videoRefVideoDuration < SD20_MAX_VIDEO_SEC) && (
-            <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
-              className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
-              <Plus size={10} />Add
-            </button>
+            <span className="flex items-center gap-2">
+              {onPickLibraryVideos && (
+                <button onClick={onPickLibraryVideos} title="Choose from your videos - My Generations / Assets"
+                  className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
+                  <Images size={10} />Library
+                </button>
+              )}
+              <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
+                className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-0.5">
+                <Plus size={10} />Add
+              </button>
+            </span>
           )}
         </div>
         <input ref={vidInputRef} type="file" onClick={gateFileInput} accept="video/*,image/gif" className="hidden"
@@ -23215,10 +23464,18 @@ function SD20RefPanel({
             ))}
           </div>
         ) : (
-          <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
-            className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
-            <Video size={12} />{sourceOnly ? "Upload the clip" : "Upload reference videos"}
-          </button>
+          <div className={onPickLibraryVideos ? "grid grid-cols-2 gap-1.5" : ""}>
+            <button onClick={() => requestConsent(() => vidInputRef.current?.click())}
+              className="w-full py-4 rounded-lg border border-dashed border-white/10 hover:border-white/20 text-[10px] text-slate-600 hover:text-slate-400 transition-all flex items-center justify-center gap-1.5">
+              <Video size={12} />{sourceOnly ? "Upload the clip" : "Upload reference videos"}
+            </button>
+            {onPickLibraryVideos && (
+              <button onClick={onPickLibraryVideos}
+                className="py-4 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/25 text-[10px] text-slate-400 hover:text-slate-200 transition-all flex items-center justify-center gap-1.5">
+                <Images size={12} />From My Generations
+              </button>
+            )}
+          </div>
         )}
       </div>
       )}
@@ -23280,7 +23537,7 @@ function VideoCustomizationPanel({
   characterOrientation, onCharacterOrientationChange,
   keepOriginalSound, onKeepOriginalSoundToggle,
   videoRefImagePreviews = [], onAddRefImage, onRemoveRefImage,
-  videoRefVideoFilenames = [], videoRefVideoUrls = [], onAddRefVideo, onRemoveRefVideo, onTrimNeeded, onTrimClip,
+  videoRefVideoFilenames = [], videoRefVideoUrls = [], onAddRefVideo, onRemoveRefVideo, onTrimNeeded, onTrimClip, onPickLibraryVideo,
   videoRefAudioFilenames = [], onAddRefAudio, onRemoveRefAudio,
   videoRefVideoDuration = 0,
   refStartIdx = null, refEndIdx = null, onTagRefStart, onTagRefEnd,
@@ -23369,6 +23626,8 @@ function VideoCustomizationPanel({
   editSourceDims?: { w: number; h: number } | null
   onEditSourceSelect?: (f: File, duration: number) => void
   onClearEditSource?: () => void
+  /** A clip slot filled from My Generations / Assets (the page's pickLibraryVideo) */
+  onPickLibraryVideo?: (target: LibraryClipTarget) => void
   // Lipsync v3
   lipsyncVideoFilename?: string | null
   lipsyncVideoUploading?: boolean
@@ -23607,6 +23866,9 @@ function VideoCustomizationPanel({
                 <span className="text-[10px] text-slate-500">Click to upload source video</span>
               </button>
             )}
+            {!lipsyncVideoFilename && onPickLibraryVideo && (
+              <LibraryClipButton onClick={() => onPickLibraryVideo("lipsync")} />
+            )}
             {lipsyncVideoError && (
               <p className="text-[10px] text-red-400 flex items-center gap-1"><X size={10} className="shrink-0" />{lipsyncVideoError}</p>
             )}
@@ -23673,7 +23935,7 @@ function VideoCustomizationPanel({
 
       {/* Reference Image / Start Frame — hidden for r2v models, hidden for lipsync;
           for mode-switched models (Omni) only shown in Image mode */}
-      {!isLipsync && !model.supportsReferenceVideo && (!isOmni || sd20Mode === "i2v") && (
+      {!isLipsync && !model.supportsReferenceVideo && !model.murekaSong && (!isOmni || sd20Mode === "i2v") && (
         <div className="space-y-1.5">
           <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
             {model.supportsMotionControl ? "Character Image" : model.textToVideo ? "Reference Image" : "Start Frame"}
@@ -23737,6 +23999,7 @@ function VideoCustomizationPanel({
                 <span className="text-[9px] text-slate-600">Must be between 3–30 seconds long</span>
               </button>
             )}
+            {!motionVideoFilename && onPickLibraryVideo && <LibraryClipButton onClick={() => onPickLibraryVideo("motion")} />}
             {motionVideoError && (
               <p className="text-[10px] text-red-400 flex items-center gap-1">
                 <X size={10} className="shrink-0" />{motionVideoError}
@@ -23796,6 +24059,7 @@ function VideoCustomizationPanel({
               videoRefImagePreviews={videoRefImagePreviews}
               onAddRefImage={onAddRefImage!}
               onAddRefImageUrls={onAddRefImageUrls}
+              onPickLibraryVideos={onPickLibraryVideo ? () => onPickLibraryVideo("sd20") : undefined}
               onRemoveRefImage={onRemoveRefImage!}
               videoRefVideoFilenames={videoRefVideoFilenames}
               videoRefVideoUrls={videoRefVideoUrls}
@@ -23820,6 +24084,8 @@ function VideoCustomizationPanel({
               onTagEnd={onTagRefEnd}
             />
           )}
+          {/* ── Mureka Lyrics Video: which song ── */}
+          {model.murekaSong && <MurekaSongPicker />}
           {/* ── Kling 4.0 elements (@Element1...) ── */}
           {model.klingElements && <KlingElementsEditor />}
           {/* ── Omni r2v: reference images (images only, <IMAGE_REF_n> tags) ── */}
@@ -23828,6 +24094,7 @@ function VideoCustomizationPanel({
               videoRefImagePreviews={videoRefImagePreviews}
               onAddRefImage={onAddRefImage!}
               onAddRefImageUrls={onAddRefImageUrls}
+              onPickLibraryVideos={onPickLibraryVideo ? () => onPickLibraryVideo("sd20") : undefined}
               onRemoveRefImage={onRemoveRefImage!}
               videoRefVideoFilenames={[]}
               videoRefVideoUrls={[]}
@@ -23877,6 +24144,7 @@ function VideoCustomizationPanel({
                   <span className="text-[10px] text-slate-500">Click to upload the video to edit</span>
                 </button>
               )}
+              {!editSourceFilename && onPickLibraryVideo && <LibraryClipButton onClick={() => onPickLibraryVideo("edit")} />}
             </div>
           )}
 
@@ -24657,6 +24925,7 @@ function VideoFeed({
       motionVideoUrl: item.motionVideoUrl,
       keepOriginalSound: item.keepOriginalSound,
       characterOrientation: item.characterOrientation,
+      inputs: item.inputs,
       createdAt: item.createdAt,
       failed: item.failed,
       failError: item.failError,
@@ -24681,7 +24950,7 @@ function VideoFeed({
           endFrameUrl: vm.endFrameUrl || undefined,
           motionVideoUrl: vm.motionVideoUrl || undefined,
           keepOriginalSound: vm.keepOriginalSound,
-          characterOrientation: vm.characterOrientation || undefined,
+          characterOrientation: vm.characterOrientation || undefined, inputs: vm.inputs || undefined,
           createdAt: img.createdAt,
         }
       })
@@ -24822,7 +25091,7 @@ function VideoFeed({
             ? "border-2 border-cyan-400 ring-2 ring-cyan-400 ring-inset"
             : "border border-white/5 hover:border-orange-500/30"
         }`}
-        onClick={() => selectMode ? onSelectToggle?.(parseInt(item.id)) : onVideoClick({ id: item.dbId, videoUrl: item.videoUrl, prompt: item.prompt, model: item.model, duration: item.duration, resolution: item.resolution, aspectRatio: item.aspectRatio, audioEnabled: item.audioEnabled, startFrameUrl: item.startFrameUrl, endFrameUrl: item.endFrameUrl, motionVideoUrl: item.motionVideoUrl, keepOriginalSound: item.keepOriginalSound, characterOrientation: item.characterOrientation, createdAt: item.createdAt })}
+        onClick={() => selectMode ? onSelectToggle?.(parseInt(item.id)) : onVideoClick({ id: item.dbId, videoUrl: item.videoUrl, prompt: item.prompt, model: item.model, duration: item.duration, resolution: item.resolution, aspectRatio: item.aspectRatio, audioEnabled: item.audioEnabled, startFrameUrl: item.startFrameUrl, endFrameUrl: item.endFrameUrl, motionVideoUrl: item.motionVideoUrl, keepOriginalSound: item.keepOriginalSound, characterOrientation: item.characterOrientation, inputs: item.inputs, createdAt: item.createdAt })}
         videoSrc={iosSrc(item.videoUrl)}
         stillSrc={item.dbId ? `/api/images/${item.dbId}?thumb=1` : undefined}
         videoClassName={`w-full h-full pointer-events-none ${tileFit(item.aspectRatio)}`}
@@ -24929,7 +25198,7 @@ function VideoFeed({
             onClick={() => {
               if (selectMode) { onSelectToggle?.(img.id); return }
               const vm = img.videoMetadata || {}
-              onVideoClick({ id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt })
+              onVideoClick({ id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, inputs: vm.inputs || undefined, createdAt: img.createdAt })
             }}
             videoSrc={iosSrc(img.imageUrl)}
             stillSrc={videoStill(img)}
@@ -24962,7 +25231,7 @@ function VideoFeed({
             key={img.id}
             className="rounded-lg bg-black border border-white/5 overflow-hidden relative group cursor-pointer hover:border-white/15 transition-colors"
             style={{ aspectRatio: tileAspect(dbAr) }}
-            onClick={() => { const vm = img.videoMetadata || {}; onVideoClick({ videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }) }}
+            onClick={() => { const vm = img.videoMetadata || {}; onVideoClick({ videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, inputs: vm.inputs || undefined, createdAt: img.createdAt }) }}
           >
             <img src={img.imageUrl} alt={img.prompt} className="w-full h-full object-cover" />
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
@@ -25209,12 +25478,32 @@ function VideoPromptBar({
   // from inside the setPromptRaw updater, and React runs updaters DURING
   // render — which threw "Cannot update a component (PortalV2Page) while
   // rendering a different component".
+  //
+  // ...and as a TRANSITION (2026-10-21): the mirror re-renders the whole page
+  // (tens of thousands of lines), and as an urgent update it ran inside each
+  // keystroke's own commit. Keys arriving faster than those renders chained
+  // the sync updates past React's limit - "Maximum update depth exceeded"
+  // thrown from setPrompt, and a dropped letter. Now the box updates at once
+  // and the page catches up behind it (the draft and the panels read it; the
+  // submit takes the box's own text).
+  //
+  // Typing mirrors straight from the box's onChange (an event handler, so no
+  // effect-scheduled update per keystroke - fast typing piled those up past
+  // React's nested-update warning); the effect is left for changes made in
+  // code (Enhance, Use prompt, a restored draft).
   const mirroredPrompt = useRef<string | null>(null)
+  const typePrompt = (v: string) => {
+    setPromptRaw(v)
+    if (mirroredPrompt.current !== null && mirroredPrompt.current !== v) {
+      mirroredPrompt.current = v
+      startTransition(() => { onPromptChange?.(v) })
+    }
+  }
   useEffect(() => {
     if (mirroredPrompt.current === null) { mirroredPrompt.current = prompt; return }
     if (mirroredPrompt.current === prompt) return
     mirroredPrompt.current = prompt
-    onPromptChange?.(prompt)
+    startTransition(() => { onPromptChange?.(prompt) })
   }, [prompt, onPromptChange])
   const [modelOpen, setModelOpen] = useState(false)
   const startFrameInputRef = useRef<HTMLInputElement>(null)
@@ -25436,7 +25725,7 @@ function VideoPromptBar({
               />
               <textarea
                 value={prompt}
-                onChange={e => setPrompt(e.target.value)}
+                onChange={e => typePrompt(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && ready) { e.preventDefault(); onGenerate(prompt) } }}
                 placeholder={promptPlaceholder}
                 rows={2}
@@ -25530,7 +25819,7 @@ function VideoPromptBar({
           />
           <textarea
             value={prompt}
-            onChange={e => setPrompt(e.target.value)}
+            onChange={e => typePrompt(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && ready) { e.preventDefault(); onGenerate(prompt) } }}
             placeholder={promptPlaceholder}
             rows={2}
@@ -27597,7 +27886,7 @@ export default function PortalV2Page() {
     if (kind === "image") { setViewerNav(list as ImageItem[]); setSelectedImage(row as ImageItem); return }
     const asVideo = (img: NovaViewerRow): VideoDetailData => {
       const vm = (img.videoMetadata ?? {}) as Record<string, any>
-      return { id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio || undefined, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, createdAt: img.createdAt }
+      return { id: img.id, videoUrl: img.imageUrl, prompt: img.prompt, model: img.model, duration: vm.duration, resolution: vm.resolution || img.quality || undefined, aspectRatio: vm.aspectRatio || img.aspectRatio || undefined, audioEnabled: vm.audioEnabled, startFrameUrl: vm.startFrameUrl || undefined, endFrameUrl: vm.endFrameUrl || undefined, motionVideoUrl: vm.motionVideoUrl || undefined, keepOriginalSound: vm.keepOriginalSound, characterOrientation: vm.characterOrientation || undefined, inputs: vm.inputs || undefined, createdAt: img.createdAt }
     }
     setVideoViewerNav(list.map(asVideo))
     setSelectedVideo(asVideo(row))
@@ -27923,6 +28212,43 @@ export default function PortalV2Page() {
     if (!slot.requestId) return
     if (videoPollingIntervals.current[slot.slotId]) return
 
+    /*
+     * A run of the Audio Studio's route that makes a video (Mureka Lyrics
+     * Video): /api/audio/status settles it (exactly once, refunded if it
+     * fails, saved to the feed) and hands back the saved row.
+     */
+    if (slot.audioRun) {
+      let polls = 0, inFlight = false
+      const done = (item: VideoItem) => {
+        clearInterval(iv)
+        delete videoPollingIntervals.current[slot.slotId]
+        setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slot.slotId))
+        setVideoItems(prev => prev.some(i => i.id === item.id) ? prev : [item, ...prev])
+        if (item.failed) setSavedVideoFails(prev => prev.some(f => f.id === item.id) ? prev : [item, ...prev])
+      }
+      const iv = setInterval(async () => {
+        if (inFlight) return
+        inFlight = true
+        try {
+          if (++polls > 150) {
+            done({ id: slot.requestId, videoUrl: "", prompt: slot.prompt, model: slot.model, duration: slot.duration, failed: true, failError: "Generation timed out", failKey: `rf-${slot.requestId}`, createdAt: new Date().toISOString() })
+            return
+          }
+          const r = await fetch("/api/audio/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId: slot.requestId }) })
+          const d = await r.json().catch(() => null)
+          if (d?.status === "completed" && Array.isArray(d.items) && d.items[0]) {
+            const it = d.items[0]
+            const vm = it.videoMetadata || {}
+            done({ id: slot.requestId, dbId: it.id, videoUrl: it.imageUrl, prompt: it.prompt ?? slot.prompt, model: it.model ?? slot.model, duration: vm.duration ?? (vm.durationSec ? String(Math.round(vm.durationSec)) : slot.duration), aspectRatio: vm.options?.aspect ?? slot.aspectRatio, createdAt: it.createdAt ?? new Date().toISOString() })
+          } else if (d?.status === "failed") {
+            done({ id: slot.requestId, videoUrl: "", prompt: slot.prompt, model: slot.model, duration: slot.duration, failed: true, failError: d.error || "The lyrics video failed - your tickets are back", failKey: `rf-${slot.requestId}`, createdAt: new Date().toISOString() })
+          }
+        } catch { /* the next tick tries again */ } finally { inFlight = false }
+      }, 6000)
+      videoPollingIntervals.current[slot.slotId] = iv
+      return
+    }
+
     // If the slot is already past its poll timeout (e.g. page was refreshed after it
     // expired), fail it immediately so a failed tile appears instead of silent disappearance.
     // 80 polls × 15s = 20 min (SeeDance 2.0 can be slow) - longer for models that
@@ -28041,6 +28367,7 @@ export default function PortalV2Page() {
             motionVideoUrl:       slot.motionVideoUrl,
             keepOriginalSound:    slot.keepOriginalSound,
             characterOrientation: slot.characterOrientation,
+            inputs:               slot.inputs,
             createdAt:            new Date().toISOString(),
           }, ...prev])
         } else if (data.status === "failed") {
@@ -28099,6 +28426,35 @@ export default function PortalV2Page() {
     // A live model opens its session instead of queueing a job
     if (selectedVideoModel.isRealtime) {
       setDirectorLive({ prompt: promptText, refs: videoRefImageUrls.filter(Boolean) as string[], resolution: videoResolution, aspectRatio: videoAspectRatio })
+      return
+    }
+    // Mureka Lyrics Video: one of your songs, made by the Audio Studio's route
+    // (lib/audio-studio) and finished by /api/audio/status - its tile is a video
+    if (selectedVideoModel.murekaSong) {
+      const songId = getMurekaSong()
+      if (!songId) { alert("Pick one of your Mureka songs first (make one in the Audio models)."); return }
+      const slotId = `video-${Date.now()}`
+      setVideoGenerating(true)
+      try {
+        const res = await fetch("/api/audio/generate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "mureka-lyrics-video", songAssetId: songId, text: promptText.trim() || undefined,
+            options: { layout: videoChoice || "layout_1", aspect: videoAspectRatio || "9:16" } }),
+        })
+        const d = await res.json().catch(() => ({}))
+        if (!res.ok || !d.success || !d.requestId) throw new Error(d.error || "Could not start the lyrics video")
+        if (d.charged) setUser(prev => prev ? { ...prev, ticketBalance: Math.max(0, prev.ticketBalance - d.charged) } : prev)
+        const slot: VideoPendingSlot = {
+          slotId, requestId: d.requestId, falEndpoint: "audio:mureka-lyrics-video", prompt: promptText.trim() || "Lyrics video",
+          model: "mureka-lyrics-video", duration: "", ticketCost: 0, startedAt: Date.now(), aspectRatio: videoAspectRatio || "9:16", audioRun: true,
+          ...(() => { const song = getMurekaSongItem(); return song ? { inputs: { song: { url: song.url, name: song.name } } } : {} })(),
+        }
+        setVideoPendingSlots(prev => [slot, ...prev])
+      } catch (e: any) {
+        alert(e?.message || "Could not start the lyrics video")
+      } finally {
+        setVideoGenerating(false)
+      }
       return
     }
     const isMotion = selectedVideoModel.id === "kling-v3-motion"
@@ -28227,7 +28583,74 @@ export default function PortalV2Page() {
       : chosenAr ? { ar: chosenAr }
       : null
     const expectedAspect = shapeFrom && "ar" in shapeFrom ? shapeFrom.ar : undefined
+    const reqBody = {
+      clientSlotId:         slotId,
+      prompt:               sdPrompt,
+      imageUrl:             sdImageUrl,
+      endImageUrl:          sdEndImageUrl,
+      duration:             videoDuration,
+      resolution:           videoResolution,
+      klingAspectRatio:     videoAspectRatio,
+      model:                selectedVideoModel.id,
+      sd20Mode:             sdMode,
+      generateAudio:        videoAudioEnabled,
+      audioUrl:             videoAudioUrl || undefined,
+      adminMode:            userRef.current !== null && ADMIN_EMAILS.includes(userRef.current.email),
+      userId:               (userRef.current !== null && !ADMIN_EMAILS.includes(userRef.current.email)) ? userRef.current.id : undefined,
+      // Motion Control
+      motionVideoUrl:          videoMotionVideoUrl || undefined,
+      motionVideoDurationSec:  videoMotionVideoDuration ?? undefined,
+      characterOrientation:    videoCharacterOrientation,
+      keepOriginalSound:       videoKeepOriginalSound,
+      // SeeDance 2.0 / Omni reference-to-video
+      ...(sdMode === "r2v" && {
+        referenceImageUrls:    sdRefImageUrls,
+        referenceVideoUrls:    videoRefVideoUrls.filter(Boolean) as string[],
+        referenceAudioUrls:    videoRefAudioUrls.filter(Boolean) as string[],
+        referenceVideoDurationSec: videoRefVideoDuration,
+      }),
+      // Kling 4.0 elements (components/video/KlingElements)
+      ...(selectedVideoModel.klingElements ? { klingElements: getKlingElements() } : {}),
+      // Extend / edit source video (inferred from the refs panel)
+      ...(sdMode === "edit" && {
+        editVideoUrl:          sdEditVideoUrl,
+        // A tool's image references ride along with its clip (Recast's
+        // faces, Kling O3 edit's references); they were dropped before
+        ...(selectedVideoModel.isVideoTool && sdRefImageUrls.length > 0 ? { referenceImageUrls: sdRefImageUrls } : {}),
+        // Luma tools bill by the clip's length: when it came in through the
+        // refs panel, that panel's measured duration is the one to send
+        editVideoDurationSec:  videoToolSourceSec,
+      }),
+      // Lipsync v3
+      ...(isLipsync && {
+        lipsyncVideoUrl:        videoLipsyncVideoUrl,
+        lipsyncAudioUrl:        videoLipsyncAudioUrl,
+        lipsyncSyncMode:        videoLipsyncSyncMode,
+        lipsyncVideoDurationSec: videoLipsyncVideoDuration,
+      }),
+      ...(selectedVideoModel.id === "wan-2.5" ? { wan25SafetyChecker: wan25VideoSafetyChecker } : {}),
+      ...(selectedVideoModel.id === "seedance-1.5" ? { seedance15SafetyChecker: seedance15VideoSafetyChecker } : {}),
+      ...(selectedVideoModel.id === "wan-2.7" ? { wan27SafetyChecker: wan27VideoSafetyChecker } : {}),
+      ...(selectedVideoModel.id === "minimax-h3-max" ? { h3MaxSafetyChecker: h3MaxVideoSafetyChecker } : {}),
+      ...(selectedVideoModel.id === "flux-3" ? { flux3SafetyChecker: flux3VideoSafetyChecker } : {}),
+      ...(selectedVideoModel.id.startsWith("wan-3.0") ? { wan30SafetyChecker: wan30VideoSafetyChecker } : {}),
+      ...(selectedVideoModel.fpsOptions ? { ltxFps: videoLtxFps } : {}),
+      ...(selectedVideoModel.lumaModes ? { lumaMode: videoLumaMode } : {}),
+      ...(selectedVideoModel.choice ? { videoChoice: videoChoice || selectedVideoModel.choice.options[0].value } : {}),
+      ...(selectedVideoModel.insertTimes ? { insertStartSec: Number(videoInsertTimes.start), insertResumeSec: Number(videoInsertTimes.resume) } : {}),
+      ...(selectedVideoModel.isVideoTool ? {
+        videoUpscaleFactor: videoToolFactor,
+        videoToolCreativity: videoToolCreativity,
+        videoTargetFps: videoToolTargetFps,
+      } : {}),
+      ...(selectedVideoModel.id === "wan-2.2-lora"
+        ? { loras: videoLoraSel ? [{ path: videoLoraSel.path, scale: videoLoraSel.scale, transformer: videoLoraSel.transformer }] : [] }
+        : {}),
+    }
+    // What this job is given, for its tile's popup (lib/gen-inputs) - the same body the route gets
+    const sentInputs = videoInputsFromBody(reqBody as Record<string, unknown>)
     setVideoPendingSlots(prev => [{
+      inputs: sentInputs,
       slotId, requestId: "", falEndpoint: "", submitting: true,
       prompt: promptText, model: m.id, duration: videoDuration, resolution: videoResolution, ticketCost: 0, startedAt,
       aspectRatio: isLipsync ? videoLipsyncAspectRatio : (videoAspectRatio || undefined),
@@ -28248,70 +28671,7 @@ export default function PortalV2Page() {
     setVideoGenerating(true)
     const freeButton = setTimeout(() => setVideoGenerating(false), 600)
     try {
-      const res = await fetch(isHiggsfieldModel(selectedVideoModel.id) ? "/api/admin/higgsfield/video-submit" : "/api/video/generate", submitInit({
-          clientSlotId:         slotId,
-          prompt:               sdPrompt,
-          imageUrl:             sdImageUrl,
-          endImageUrl:          sdEndImageUrl,
-          duration:             videoDuration,
-          resolution:           videoResolution,
-          klingAspectRatio:     videoAspectRatio,
-          model:                selectedVideoModel.id,
-          sd20Mode:             sdMode,
-          generateAudio:        videoAudioEnabled,
-          audioUrl:             videoAudioUrl || undefined,
-          adminMode:            userRef.current !== null && ADMIN_EMAILS.includes(userRef.current.email),
-          userId:               (userRef.current !== null && !ADMIN_EMAILS.includes(userRef.current.email)) ? userRef.current.id : undefined,
-          // Motion Control
-          motionVideoUrl:          videoMotionVideoUrl || undefined,
-          motionVideoDurationSec:  videoMotionVideoDuration ?? undefined,
-          characterOrientation:    videoCharacterOrientation,
-          keepOriginalSound:       videoKeepOriginalSound,
-          // SeeDance 2.0 / Omni reference-to-video
-          ...(sdMode === "r2v" && {
-            referenceImageUrls:    sdRefImageUrls,
-            referenceVideoUrls:    videoRefVideoUrls.filter(Boolean) as string[],
-            referenceAudioUrls:    videoRefAudioUrls.filter(Boolean) as string[],
-            referenceVideoDurationSec: videoRefVideoDuration,
-          }),
-          // Kling 4.0 elements (components/video/KlingElements)
-          ...(selectedVideoModel.klingElements ? { klingElements: getKlingElements() } : {}),
-          // Extend / edit source video (inferred from the refs panel)
-          ...(sdMode === "edit" && {
-            editVideoUrl:          sdEditVideoUrl,
-            // A tool's image references ride along with its clip (Recast's
-            // faces, Kling O3 edit's references); they were dropped before
-            ...(selectedVideoModel.isVideoTool && sdRefImageUrls.length > 0 ? { referenceImageUrls: sdRefImageUrls } : {}),
-            // Luma tools bill by the clip's length: when it came in through the
-            // refs panel, that panel's measured duration is the one to send
-            editVideoDurationSec:  videoToolSourceSec,
-          }),
-          // Lipsync v3
-          ...(isLipsync && {
-            lipsyncVideoUrl:        videoLipsyncVideoUrl,
-            lipsyncAudioUrl:        videoLipsyncAudioUrl,
-            lipsyncSyncMode:        videoLipsyncSyncMode,
-            lipsyncVideoDurationSec: videoLipsyncVideoDuration,
-          }),
-          ...(selectedVideoModel.id === "wan-2.5" ? { wan25SafetyChecker: wan25VideoSafetyChecker } : {}),
-          ...(selectedVideoModel.id === "seedance-1.5" ? { seedance15SafetyChecker: seedance15VideoSafetyChecker } : {}),
-          ...(selectedVideoModel.id === "wan-2.7" ? { wan27SafetyChecker: wan27VideoSafetyChecker } : {}),
-          ...(selectedVideoModel.id === "minimax-h3-max" ? { h3MaxSafetyChecker: h3MaxVideoSafetyChecker } : {}),
-          ...(selectedVideoModel.id === "flux-3" ? { flux3SafetyChecker: flux3VideoSafetyChecker } : {}),
-          ...(selectedVideoModel.id.startsWith("wan-3.0") ? { wan30SafetyChecker: wan30VideoSafetyChecker } : {}),
-          ...(selectedVideoModel.fpsOptions ? { ltxFps: videoLtxFps } : {}),
-          ...(selectedVideoModel.lumaModes ? { lumaMode: videoLumaMode } : {}),
-          ...(selectedVideoModel.choice ? { videoChoice: videoChoice || selectedVideoModel.choice.options[0].value } : {}),
-          ...(selectedVideoModel.insertTimes ? { insertStartSec: Number(videoInsertTimes.start), insertResumeSec: Number(videoInsertTimes.resume) } : {}),
-          ...(selectedVideoModel.isVideoTool ? {
-            videoUpscaleFactor: videoToolFactor,
-            videoToolCreativity: videoToolCreativity,
-            videoTargetFps: videoToolTargetFps,
-          } : {}),
-          ...(selectedVideoModel.id === "wan-2.2-lora"
-            ? { loras: videoLoraSel ? [{ path: videoLoraSel.path, scale: videoLoraSel.scale, transformer: videoLoraSel.transformer }] : [] }
-            : {}),
-        }))
+      const res = await fetch(isHiggsfieldModel(selectedVideoModel.id) ? "/api/admin/higgsfield/video-submit" : "/api/video/generate", submitInit(reqBody))
       const data = await res.json()
       if (!data.success) throw new Error(data.error || "Generation failed")
       const slotBase = {
@@ -28329,6 +28689,7 @@ export default function PortalV2Page() {
         motionVideoUrl:       videoMotionVideoUrl || undefined,
         keepOriginalSound:    videoKeepOriginalSound,
         characterOrientation: videoCharacterOrientation,
+        inputs:               sentInputs,
         ...(expectedAspect ? { expectedAspect } : {}),
       }
       // Update UI balance immediately.
@@ -28670,7 +29031,9 @@ export default function PortalV2Page() {
   const nb2BatchInFlight = useRef(false)
   // Bounded completion: at most this many heavy per-job calls at once. The
   // rest wait their turn, in the order their ticks came due.
-  const NB2_HEAVY_MAX = 3
+  // 6 (was 3, 2026-10-21): a big batch finishing together drained three at a
+  // time - the owner saw finished images sit on "loading" for minutes
+  const NB2_HEAVY_MAX = 6
   const nb2HeavyRunning = useRef(0)
   const nb2HeavyQueue = useRef<(() => void)[]>([])
   const acquireHeavy = () => new Promise<void>(resolve => {
@@ -28752,6 +29115,15 @@ export default function PortalV2Page() {
     // heavy pipeline runs — give them 3h before declaring a timeout (other
     // models keep the 30-min cap; their queues never run that long)
     const maxPolls = statusUrl.includes('flux-inference') ? 2160 : 360
+    /*
+     * Waiting in fal's queue does not count toward maxPolls (2026-10-21): a
+     * big batch can sit IN_QUEUE for longer than 30 minutes, and timing it out
+     * refunded tickets for images fal then made (the harvester saved them,
+     * the tile said "timed out"). A hard ceiling still ends a job that never
+     * leaves the queue.
+     */
+    const pollStartedMs = Date.now()
+    const POLL_CEILING_MS = 6 * 3600_000
     // Failure updates carry the full generation context — if the slot object
     // is gone by the time the failure lands, the error card is built from
     // these fields instead of silently vanishing (and settings still display)
@@ -28785,6 +29157,7 @@ export default function PortalV2Page() {
         const snap = nb2BatchStatus.current
         const st = snap.statuses[requestId]
         if (st && Date.now() - snap.at < 12_000 && (st === "IN_QUEUE" || st === "IN_PROGRESS")) {
+          if (st === "IN_QUEUE" && Date.now() - pollStartedMs < POLL_CEILING_MS) pollCount--
           try {
             const cur = pendingSlotsRef.current.find(sl => slotIds.includes(sl.slotId))
             if (st === "IN_QUEUE") {
@@ -28855,6 +29228,8 @@ export default function PortalV2Page() {
         // the fal branch, queued fal jobs never got execStartMs — the tile
         // said GENERATING with a timer counting from QUEUE time (hours off).
         if ((statusData.status === 'processing' || statusData.status === 'in_progress') && !statusData.notFound) {
+          // Still in fal's queue: not counted toward the timeout (see pollStartedMs)
+          if (statusData.falStatus === 'IN_QUEUE' && Date.now() - pollStartedMs < POLL_CEILING_MS) pollCount = Math.max(0, pollCount - 1)
           try {
             const cur = pendingSlotsRef.current.find(s => slotIds.includes(s.slotId))
             const stillQueued = statusData.queued || statusData.falStatus === 'IN_QUEUE'
@@ -29041,19 +29416,53 @@ export default function PortalV2Page() {
   const startQueuePollingForSlot = useCallback((slot: PendingSlot) => {
     const queueJobId = slot.queueJobId!
     if (queuePollingIntervals.current[queueJobId]) return
-    let pollCount = 0
+    /*
+     * 2026-10-21 (owner: with a lot queued at once, finished images sat on
+     * "loading"):
+     *  - A job still WAITING its turn ('queued') is not timed out at 10
+     *    minutes any more - a long batch waits longer than that for a slot.
+     *    Polls the row cannot answer still are (10 minutes), and a 6-hour
+     *    ceiling ends anything.
+     *  - A job the server finished itself ('completed' - the harvester, the
+     *    drain-queue cron) while its tile waited here was never picked up:
+     *    the tile now claims the rows it wrote.
+     *  - A webhook-settled model's job that has started is followed to the
+     *    end here too (it used to sit until the 10-minute timeout failed it).
+     */
+    let pollCount = 0, quietPolls = 0, claimTries = 0
+    const startedMs = Date.now()
+    const stop = () => { clearInterval(interval); delete queuePollingIntervals.current[queueJobId] }
     const interval = setInterval(async () => {
       pollCount++
-      // Timeout after 120 polls × 5s = 10 minutes (catches jobs stuck with no falRequestId)
-      if (pollCount > 120) {
-        clearInterval(interval)
-        delete queuePollingIntervals.current[queueJobId]
+      if (quietPolls > 120 || Date.now() - startedMs > 6 * 3600_000) {
+        stop()
         handleUpdatePending(slot.slotId, { status: 'failed', error: 'Queued job timed out waiting for promotion' })
         return
       }
+      // Something else settled this tile (the jobs poller, a reconcile pass): nothing left to watch
+      const cur = pendingSlotsRef.current.find(s => s.slotId === slot.slotId)
+      if (!cur || cur.status !== 'loading' || cur.nb2RequestId) { stop(); return }
       try {
         const res = await fetch(`/api/admin/queue-job-status?id=${queueJobId}`)
         const data = await res.json()
+        if (data.status === 'queued' || data.status === 'processing') quietPolls = 0
+        else if (data.status !== 'completed') quietPolls++
+        if (data.status === 'completed') {
+          const ids: number[] = Array.isArray(data.completedImageIds) && data.completedImageIds.length ? data.completedImageIds
+            : typeof data.resultImageId === 'number' ? [data.resultImageId] : []
+          const img = ids.length ? (((await (await fetch(`/api/my-images?ids=${ids.join(",")}`)).json())?.images ?? []) as any[])[0] : null
+          if (img) {
+            stop()
+            completedQueueIds.current.add(queueJobId)
+            handleUpdatePending(slot.slotId, { status: 'done', doneImage: img })
+          } else if (++claimTries >= 6) {
+            // Done, but its picture can't be found from here: the feed's next refresh shows it
+            stop()
+            completedQueueIds.current.add(queueJobId)
+            handleRemovePending(slot.slotId)
+          }
+          return
+        }
         if (data.status === 'processing' && data.falRequestId && data.falEndpoint) {
           /*
            * A status URL is required, never defaulted.
@@ -29096,7 +29505,7 @@ export default function PortalV2Page() {
       } catch { /* keep polling on transient error */ }
     }, 5000)
     queuePollingIntervals.current[queueJobId] = interval
-  }, [startNb2SlotPolling, handleUpdatePending])
+  }, [startNb2SlotPolling, handleUpdatePending, handleRemovePending])
 
   // Watch for new image slots with queueJobId but no nb2RequestId
   useEffect(() => {
@@ -29237,7 +29646,7 @@ export default function PortalV2Page() {
       try {
         const r = await fetch("/api/admin/my-active-jobs?type=video", { cache: "no-store" })
         if (!r.ok) return
-        const jobs: { id: number; falRequestId: string | null; falEndpoint?: string; clientSlotId?: string | null; modelId: string; prompt: string; createdAt: string; duration?: string; resolution?: string; aspectRatio?: string; studio?: boolean }[] = (await r.json()).jobs ?? []
+        const jobs: { id: number; falRequestId: string | null; falEndpoint?: string; clientSlotId?: string | null; modelId: string; prompt: string; createdAt: string; duration?: string; resolution?: string; aspectRatio?: string; studio?: boolean; inputs?: GenInputVideo }[] = (await r.json()).jobs ?? []
         setVideoPendingSlots(prev => {
           let next = prev
           // A carried-over tile whose submit was still answering: its job names it
@@ -29248,6 +29657,7 @@ export default function PortalV2Page() {
               ...s, submitting: undefined,
               requestId: j.falRequestId ?? "", falEndpoint: j.falEndpoint ?? "",
               ...(j.falRequestId ? {} : { queueJobId: j.id }),
+              ...(!s.inputs && j.inputs ? { inputs: j.inputs } : {}),
             } : s))
           }
           // The last pass: a carried-over tile no job claimed was never submitted
@@ -29274,6 +29684,7 @@ export default function PortalV2Page() {
               startedAt: Date.parse(j.createdAt) || Date.now(),
               aspectRatio: j.aspectRatio,
               ...(j.studio ? { studio: true } : {}),
+              ...(j.inputs ? { inputs: j.inputs } : {}),
             }))
           // Known to this page now, either way: never adopted twice
           for (const j of jobs) {
@@ -30303,7 +30714,7 @@ export default function PortalV2Page() {
   const [refVideoNotice, setRefVideoNotice] = useState<string | null>(null)
   const SD20_REF_MIN_SEC = 2, SD20_REF_MAX_SEC = 15
   const addLibraryVideoToSD20 = useCallback((url: string, duration: number) => {
-    const label = decodeURIComponent(url.split("/").pop() || "library clip").slice(0, 28)
+    const label = decodeURIComponent(url.split("?")[0].split("/").pop() || "library clip").slice(0, 28)
     setVideoRefVideoFilenames(f => [...f, label])
     setVideoRefVideoUrls(u => [...u, url])
     setVideoRefVideoDuration(d => d + duration)
@@ -30353,6 +30764,72 @@ export default function PortalV2Page() {
       setRefVideoNotice("Couldn't read that video's metadata — try re-uploading it.")
     }
   }, [videoRefsEnabled, motionRefsEnabled, videoRefVideoUrls, videoRefVideoDuration, videoCharacterOrientation, addLibraryVideoToSD20, selectedVideoModel])
+  /*
+   * A clip slot filled from My Generations / Assets (2026-10-21) - the
+   * account's own videos, no re-upload. Same rules as a Refs clip
+   * (activateLibraryVideo): references share the model's window and are
+   * added while they fit; the first that does not opens the trimmer (one
+   * trim at a time). Motion takes 3-30s (10s with an image orientation); lip
+   * sync and Omni edit take the clip as it is (the server measures every clip).
+   */
+  const pickLibraryVideo = useCallback(async (target: LibraryClipTarget) => {
+    setRefVideoNotice(null)
+    const m = selectedVideoModel
+    if (target === "sd20") {
+      const toolMax = m.sourceClipMaxSec
+      const win = m.refVideoWindow ?? { count: 3, minSec: SD20_REF_MIN_SEC, totalSec: SD20_REF_MAX_SEC }
+      const have = videoRefVideoUrls.filter(Boolean).length
+      const room = (toolMax ? 1 : win.count) - have
+      if (room <= 0) { setRefVideoNotice(toolMax ? `${m.name} takes one clip - remove the one in it first.` : `${m.name} takes up to ${win.count} reference videos — remove one first.`); return }
+      const urls = await openLibraryPicker({ max: room, media: "video", title: toolMax ? `Choose the clip for ${m.name}` : `Choose up to ${room} reference video${room === 1 ? "" : "s"}` })
+      let used = videoRefVideoDuration
+      for (const url of urls) {
+        let meta: { duration: number; w: number; h: number }
+        try { meta = await measureVideoRef(url) } catch { setRefVideoNotice("Couldn't read one of those videos - try another."); continue }
+        if (!toolMax && meta.w > 0 && meta.h > 0 && Math.max(meta.w, meta.h) / Math.min(meta.w, meta.h) > 2.5) {
+          setRefVideoNotice(`One clip's shape (${meta.w}×${meta.h}) is outside the supported range — reference clips must be no wider than 2.5:1 and no taller than 1:2.5.`)
+          continue
+        }
+        const minSec = toolMax ? SD20_REF_MIN_SEC : win.minSec
+        const maxSec = toolMax ?? Math.floor((win.totalSec - used) * 10) / 10
+        if (maxSec < minSec) { setRefVideoNotice(`Reference videos are capped at ${win.totalSec}s combined - there's no room for more.`); break }
+        if (meta.duration <= maxSec + 0.25) {
+          if (toolMax && meta.w > 0 && meta.h > 0) setVideoRefVideoDims({ w: meta.w, h: meta.h })
+          addLibraryVideoToSD20(url, meta.duration)
+          used += meta.duration
+        } else {
+          if (toolMax && meta.w > 0 && meta.h > 0) setVideoRefVideoDims({ w: meta.w, h: meta.h })
+          setRefTrim({ url, minSec, maxSec, target: "sd20" })
+          break
+        }
+      }
+      return
+    }
+    const title = target === "motion" ? "Choose the motion reference video" : target === "lipsync" ? "Choose the video to lip-sync" : "Choose the video to edit"
+    const [url] = await openLibraryPicker({ max: 1, media: "video", title })
+    if (!url) return
+    let meta: { duration: number; w: number; h: number }
+    try { meta = await measureVideoRef(url) } catch { setRefVideoNotice("Couldn't read that video - try another."); return }
+    const label = decodeURIComponent(url.split("?")[0].split("/").pop() || "library clip").slice(0, 40)
+    if (target === "motion") {
+      const maxSec = videoCharacterOrientation === "video" ? 30 : 10
+      if (meta.duration < 3) { setRefVideoNotice(`That clip is ${meta.duration.toFixed(1)}s - a motion reference needs at least 3 seconds.`); return }
+      if (meta.duration <= maxSec + 0.25) {
+        setVideoMotionVideoPreview(url)
+        setVideoMotionVideoUrl(url)
+        setVideoMotionVideoDuration(meta.duration)
+      } else setRefTrim({ url, minSec: 3, maxSec, target: "motion" })
+    } else if (target === "lipsync") {
+      setVideoLipsyncVideoFilename(label)
+      setVideoLipsyncVideoUrl(url)
+      setVideoLipsyncVideoDuration(meta.duration)
+      setVideoLipsyncAspectRatio(closestAspectLabel(meta.w, meta.h))
+    } else {
+      setVideoEditSourceFilename(label)
+      setVideoEditSourceUrl(url)
+      setVideoEditSourceDuration(meta.duration)
+    }
+  }, [selectedVideoModel, videoRefVideoUrls, videoRefVideoDuration, videoCharacterOrientation, addLibraryVideoToSD20])
   /*
    * The window a clip may fill for the selected model (2026-10-11): a clip
    * tool's own cap (Relight 15s, Insert Shot 60s...); SeeDance's references
@@ -32450,7 +32927,7 @@ function employeePending(
               videoRefVideoUrls={videoRefVideoUrls}
               onAddRefVideo={handleAddRefVideo}
               onTrimNeeded={handleTrimNeeded}
-              onTrimClip={handleTrimClip}
+              onTrimClip={handleTrimClip} onPickLibraryVideo={pickLibraryVideo}
               onRemoveRefVideo={handleRemoveRefVideo}
               videoRefAudioFilenames={videoRefAudioFilenames}
               onAddRefAudio={handleAddRefAudio}
@@ -32527,7 +33004,7 @@ function employeePending(
             onGenerate={handleVideoGenerate}
             onPromptChange={setVideoPromptText}
             generating={videoGenerating}
-            canGenerate={selectedVideoModel.isRealtime ? !videoGenerating : !videoGenerating && (selectedVideoModel.isVideoTool ? (videoRefVideoUrls.filter(Boolean).length > 0 || !!videoEditSourceUrl) : selectedVideoModel.supportsLipsync ? (!!videoLipsyncVideoUrl && !!videoLipsyncAudioUrl) : (selectedVideoModel.textToVideo || !!videoStartFrameUrl || (!!selectedVideoModel.supportsReferenceVideo && (videoRefImageUrls.some(Boolean) || videoRefVideoUrls.some(Boolean))))) && (selectedVideoModel.id !== "kling-v3-motion" || !!videoMotionVideoUrl) && videoActiveJobCount < videoMaxConcurrent}
+            canGenerate={selectedVideoModel.isRealtime || selectedVideoModel.murekaSong ? !videoGenerating : !videoGenerating && (selectedVideoModel.isVideoTool ? (videoRefVideoUrls.filter(Boolean).length > 0 || !!videoEditSourceUrl) : selectedVideoModel.supportsLipsync ? (!!videoLipsyncVideoUrl && !!videoLipsyncAudioUrl) : (selectedVideoModel.textToVideo || !!videoStartFrameUrl || (!!selectedVideoModel.supportsReferenceVideo && (videoRefImageUrls.some(Boolean) || videoRefVideoUrls.some(Boolean))))) && (selectedVideoModel.id !== "kling-v3-motion" || !!videoMotionVideoUrl) && videoActiveJobCount < videoMaxConcurrent}
             queueFull={videoActiveJobCount >= videoMaxConcurrent && videoMaxConcurrent !== Infinity}
             isGenerationMaintenance={isGenerationMaintenance && !isAdminAccount && !isAuditAccount}
             isAdminAccount={isAdminAccount}
@@ -32641,7 +33118,7 @@ function employeePending(
                   videoRefVideoUrls={videoRefVideoUrls}
                   onAddRefVideo={handleAddRefVideo}
                   onTrimNeeded={handleTrimNeeded}
-                  onTrimClip={handleTrimClip}
+                  onTrimClip={handleTrimClip} onPickLibraryVideo={pickLibraryVideo}
                   onRemoveRefVideo={handleRemoveRefVideo}
                   videoRefAudioFilenames={videoRefAudioFilenames}
                   onAddRefAudio={handleAddRefAudio}
@@ -32778,6 +33255,7 @@ function employeePending(
           quality={pendingDetail.quality}
           aspectRatio={pendingDetail.aspectRatio}
           referenceImageUrls={pendingDetail.referenceImageUrls}
+          inputGroups={pendingDetail.inputs}
           isQueued={!!(pendingDetail.queueJobId && !pendingDetail.nb2RequestId)}
           videoMetadata={pendingDetail.videoMetadata}
           onClose={() => setPendingDetail(null)}
@@ -32795,9 +33273,12 @@ function employeePending(
           prompt={videoPendingDetail.prompt}
           model={videoPendingDetail.model}
           aspectRatio={videoPendingDetail.aspectRatio}
-          isVideoSlot={true}
+          isVideoSlot={!videoPendingDetail.studio}
+          quality={videoPendingDetail.resolution}
+          duration={videoPendingDetail.duration}
           startFrameUrl={videoPendingDetail.startFrameUrl}
           endFrameUrl={videoPendingDetail.endFrameUrl}
+          inputGroups={videoPendingDetail.studio ? undefined : videoInputGroups(videoPendingDetail.model, videoPendingDetail.inputs, videoPendingDetail)}
           isQueued={!!(videoPendingDetail.queueJobId && !videoPendingDetail.requestId)}
           onClose={() => setVideoPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setVideoPendingDetail(null) }}

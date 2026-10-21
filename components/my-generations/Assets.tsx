@@ -21,8 +21,12 @@ export type UserAsset = {
   kind: AssetKind
   name: string
   notes: string
-  /** caption / tags: what each picture shows - read by the Storyboard's AI draft to pick pictures per shot */
-  refs: { id: string; url: string; thumb?: string | null; caption?: string; tags?: string[] }[]
+  /**
+   * caption / tags: what each picture shows - read by the Storyboard's AI draft to pick pictures per shot.
+   * kind "video": a clip (assets hold videos alongside pictures since 2026-10-21 - the video models'
+   * clip inputs and Nova use them; Storyboard, Kling elements and Auto caption use the pictures).
+   */
+  refs: { id: string; url: string; kind?: "video"; thumb?: string | null; caption?: string; tags?: string[] }[]
   updatedAt?: string
 }
 
@@ -80,6 +84,35 @@ export function useUserAssets(enabled: boolean) {
   }
 }
 
+type AssetRefItem = UserAsset["refs"][number]
+/** "3 pictures · 2 clips" */
+export function assetCount(refs: { kind?: string }[]): string {
+  const clips = refs.filter(r => r.kind === "video").length, pics = refs.length - clips
+  return [pics || !clips ? `${pics} picture${pics === 1 ? "" : "s"}` : "", clips ? `${clips} clip${clips === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")
+}
+/**
+ * One of an asset's items: a picture, or a clip (its poster, playing while
+ * hovered; a clip with no poster shows its first frame).
+ */
+function RefMedia({ r, className = "", live = false }: { r: AssetRefItem; className?: string; live?: boolean }) {
+  if (r.kind !== "video") {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={r.thumb || r.url} alt="" loading="lazy" className={className} />
+  }
+  return (
+    <span className={`relative block ${className}`}>
+      {live || !r.thumb
+        ? <video src={live ? r.url : `${r.url}#t=0.1`} poster={r.thumb || undefined} muted loop playsInline preload={live ? "none" : "metadata"}
+            onMouseEnter={live ? e => { void e.currentTarget.play().catch(() => {}) } : undefined}
+            onMouseLeave={live ? e => { e.currentTarget.pause() } : undefined}
+            className="absolute inset-0 w-full h-full object-cover" />
+        // eslint-disable-next-line @next/next/no-img-element
+        : <img src={r.thumb} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />}
+      <span className="pointer-events-none absolute top-1 left-1 px-1 py-px rounded bg-black/70 text-[8.5px] font-bold uppercase tracking-wider text-white">Clip</span>
+    </span>
+  )
+}
+
 /** Four pictures of an asset as one cover. */
 function Mosaic({ a, className = "" }: { a: UserAsset; className?: string }) {
   const Icon = ASSET_ICONS[a.kind]
@@ -94,8 +127,7 @@ function Mosaic({ a, className = "" }: { a: UserAsset; className?: string }) {
   return (
     <span className={`grid ${shown.length === 1 ? "grid-cols-1" : "grid-cols-2"} gap-px bg-black/50 ${className}`}>
       {shown.map((r, k) => (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img key={r.id} src={r.thumb || r.url} alt="" loading="lazy" className={`w-full h-full object-cover ${shown.length === 3 && k === 0 ? "row-span-2" : ""}`} />
+        <RefMedia key={r.id} r={r} className={`w-full h-full object-cover ${shown.length === 3 && k === 0 ? "row-span-2" : ""}`} />
       ))}
     </span>
   )
@@ -119,7 +151,7 @@ export function AssetsGrid({ assets, onOpen, onNew }: {
           logo={30}
         />
         <p className="sm:ml-auto sm:max-w-md text-[11px] text-slate-500 leading-relaxed">
-          Build an asset from your own pictures: open one and add pictures, or choose <span className="text-slate-300">Select</span> in
+          Build an asset from your own pictures and clips: open one and add them, or choose <span className="text-slate-300">Select</span> in
           any folder and <span className="text-slate-300">Add to asset</span>. Use them in Storyboard Studio from a board&apos;s
           Assets panel - <span className="text-slate-300">My assets</span>.
         </p>
@@ -141,7 +173,7 @@ export function AssetsGrid({ assets, onOpen, onNew }: {
                 <Icon size={14} className="text-slate-300 shrink-0" />
                 <span className="flex-1 min-w-0">
                   <span className="block truncate text-[12.5px] font-bold text-slate-100">{a.name}</span>
-                  <span className="block text-[9px] font-mono uppercase tracking-[0.18em] text-slate-500">{kindLabel(a.kind)} · {a.refs.length} picture{a.refs.length === 1 ? "" : "s"}</span>
+                  <span className="block text-[9px] font-mono uppercase tracking-[0.18em] text-slate-500">{kindLabel(a.kind)} · {assetCount(a.refs)}</span>
                 </span>
               </span>
             </button>
@@ -210,7 +242,7 @@ export function NewAssetModal({ onCreate, onClose }: {
       <div className="relative p-5 space-y-4">
         <BrandTitle title="New asset" eyebrow="A character, vehicle, prop, place..." logo={28} right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={16} /></button>} />
         <NewAssetFields kind={kind} setKind={setKind} name={name} setName={setName} onSubmit={submit} autoFocus />
-        <p className="text-[11px] text-slate-500 leading-relaxed">Next you&apos;ll pick its pictures from your generations - any folder.</p>
+        <p className="text-[11px] text-slate-500 leading-relaxed">Next you&apos;ll pick its pictures and clips from your generations - any folder.</p>
         {err && <p className="text-[11px] text-red-300">{err}</p>}
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-2 rounded-lg text-[11.5px] text-slate-400 hover:text-white">Cancel</button>
@@ -245,6 +277,8 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
     if (now !== was) void run(`cap-${id}`, () => onUpdate({ captions: { [id]: now } }))
   }
   const described = asset.refs.filter(r => r.caption).length
+  // Auto caption reads the pictures (a clip keeps its hand-written description)
+  const pictureCount = asset.refs.filter(r => r.kind !== "video").length
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key); setErr(null)
     try { await fn() } catch (e: any) { setErr(String(e?.message || e)) } finally { setBusy(null) }
@@ -258,7 +292,7 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
       <div className="relative px-5 pt-5 pb-3 space-y-3 border-b border-white/[0.06]">
         <BrandTitle
           title={asset.name}
-          eyebrow={`${kindLabel(asset.kind)} · ${asset.refs.length} of ${MAX_ASSET_REFS} pictures`}
+          eyebrow={`${kindLabel(asset.kind)} · ${assetCount(asset.refs)} (up to ${MAX_ASSET_REFS})`}
           logo={28}
           right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={16} /></button>}
         />
@@ -287,8 +321,8 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
       <div className="relative flex-1 min-h-0 overflow-y-auto px-5 py-4">
         {asset.refs.length === 0 ? (
           <div className="py-10 text-center space-y-3">
-            <p className="text-[12px] text-slate-400">No pictures yet.</p>
-            <BrandButton onClick={onAddPictures} primary size="md" icon={<ImagePlus size={14} />}>Add pictures from my generations</BrandButton>
+            <p className="text-[12px] text-slate-400">Nothing in it yet.</p>
+            <BrandButton onClick={onAddPictures} primary size="md" icon={<ImagePlus size={14} />}>Add pictures or videos from my generations</BrandButton>
           </div>
         ) : (
           <>
@@ -298,11 +332,11 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
             <p className="flex-1 min-w-[12rem] text-[11px] leading-snug text-slate-500">
               Describe each picture (angle, pose, outfit...) so Storyboard&apos;s AI picks the right ones for each shot. {described}/{asset.refs.length} described.
             </p>
-            {onAutoCaption && (
+            {onAutoCaption && pictureCount > 0 && (
               <BrandButton onClick={() => void run("auto", onAutoCaption)} busy={busy === "auto"} disabled={!!busy} size="sm" icon={<Sparkles size={13} />}
-                title="Gemini describes and tags every picture, then sorts them by view">
+                title="Gemini describes and tags every picture, then sorts them by view (clips keep their own descriptions)">
                 Auto caption
-                <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-black/25 px-1 font-mono text-[10px] opacity-80"><Ticket size={9} />{assetCaptionTickets(asset.refs.length)}</span>
+                <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-black/25 px-1 font-mono text-[10px] opacity-80"><Ticket size={9} />{assetCaptionTickets(pictureCount)}</span>
               </BrandButton>
             )}
           </div>
@@ -310,12 +344,11 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
             {asset.refs.map((r, k) => (
               <div key={r.id} className="flex flex-col gap-1">
                 <div className="relative group aspect-square rounded-lg overflow-hidden border border-white/10">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={r.thumb || r.url} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+                  <RefMedia r={r} live className="absolute inset-0 w-full h-full object-cover" />
                   <span className="absolute bottom-0 left-0 px-1.5 py-0.5 bg-black/70 text-[9px] font-mono text-slate-200">{k + 1}</span>
                   <button
                     onClick={() => void run(r.id, () => onUpdate({ removeRefIds: [r.id] }))}
-                    title="Remove from this asset (the picture stays in your generations)"
+                    title="Remove from this asset (it stays in your generations)"
                     className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/75 border border-white/15 flex items-center justify-center text-slate-300 hover:text-red-300 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"
                   >
                     {busy === r.id ? <Loader2 size={11} className="animate-spin" /> : <X size={12} />}
@@ -347,7 +380,7 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
       <div className="relative flex flex-wrap items-center gap-2 px-5 py-3 border-t border-white/[0.06]">
         {confirmDelete ? (
           <>
-            <span className="text-[11.5px] text-slate-300">Delete this asset? Its pictures stay in your generations.</span>
+            <span className="text-[11.5px] text-slate-300">Delete this asset? Its pictures and clips stay in your generations.</span>
             <button onClick={() => setConfirmDelete(false)} className="px-2.5 py-1.5 rounded-lg text-[11px] text-slate-400 hover:text-white">Keep</button>
             <button onClick={() => void run("delete", onDelete)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 bg-red-500/15 hover:bg-red-500/25 text-red-300 text-[11px] font-bold">
               {busy === "delete" ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Delete
@@ -358,7 +391,7 @@ export function AssetEditor({ asset, onClose, onUpdate, onDelete, onAddPictures,
             <button onClick={() => setConfirmDelete(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] text-slate-500 hover:text-red-300"><Trash2 size={12} /> Delete asset</button>
             <span className="ml-auto flex items-center gap-1.5 text-[10.5px] text-slate-500"><Clapperboard size={12} /> In Storyboard Studio: Assets → My assets</span>
             {asset.refs.length > 0 && asset.refs.length < MAX_ASSET_REFS && (
-              <BrandButton onClick={onAddPictures} size="sm" icon={<ImagePlus size={13} />}>Add pictures</BrandButton>
+              <BrandButton onClick={onAddPictures} size="sm" icon={<ImagePlus size={13} />}>Add pictures / videos</BrandButton>
             )}
           </>
         )}
@@ -386,7 +419,7 @@ export function AddToAssetModal({ count, assets, onAdd, onCreate, onClose }: {
   return (
     <Modal onClose={onClose}>
       <div className="relative px-5 pt-5 pb-3">
-        <BrandTitle title="Add to asset" eyebrow={`${count} picture${count === 1 ? "" : "s"} selected · videos are skipped`} logo={28} right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={16} /></button>} />
+        <BrandTitle title="Add to asset" eyebrow={`${count} selected · pictures and videos (sounds are skipped)`} logo={28} right={<button onClick={onClose} className="text-slate-500 hover:text-white"><X size={16} /></button>} />
       </div>
       <div className="relative flex-1 min-h-0 overflow-y-auto px-5 space-y-1.5">
         {assets === null ? (
@@ -419,7 +452,7 @@ export function AddToAssetModal({ count, assets, onAdd, onCreate, onClose }: {
         {err && <p className="text-[11px] text-red-300">{err}</p>}
         <div className="flex justify-end">
           <BrandButton onClick={() => void run("new", () => onCreate(kind, name.trim() || `${kindLabel(kind)} 1`))} busy={busy === "new"} disabled={!!busy && busy !== "new"} primary size="md">
-            Create with {count} picture{count === 1 ? "" : "s"}
+            Create with {count} item{count === 1 ? "" : "s"}
           </BrandButton>
         </div>
       </div>

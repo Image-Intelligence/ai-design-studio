@@ -13,15 +13,32 @@ import { ASSET_KINDS, MAX_ASSET_REFS, cleanCaption, cleanTags, type AssetKind } 
  * another account's private image URL into an asset and read it back signed.
  * Every URL is checked against the account's own generations, Refs library
  * and per-user uploads (/u/<id>/) before it is kept.
+ *
+ * VIDEOS (2026-10-21, owner: "users should be able to add videos to assets
+ * alongside the images"). A ref can be a clip: `kind: 'video'` (no kind = a
+ * picture, as every ref stored before then). Everything that needs a STILL -
+ * Auto caption, the Storyboard draft, Kling elements, Nova's look at an asset -
+ * reads assetImages(); the video models' and Nova's clip inputs read the clips.
+ * Audio and 3D files never go in an asset.
  */
 
 export const MAX_USER_ASSETS = 200
 /** `caption` / `tags`: what this picture shows (hand-written or Auto caption) - see lib/storyboard AssetRef. */
-export type UserAssetRef = { id: string; url: string; thumb?: string | null; caption?: string; tags?: string[] }
+export type UserAssetRef = { id: string; url: string; kind?: 'video'; thumb?: string | null; caption?: string; tags?: string[] }
+/** A link the account owns, ready to become a ref. */
+export type AssetMedia = { url: string; kind?: 'video' }
 export type UserAssetOut = { id: number; kind: AssetKind; name: string; notes: string; refs: UserAssetRef[]; updatedAt: Date }
 
 const KIND_IDS = new Set<string>(ASSET_KINDS.map(k => k.id))
 const VIDEO_RE = /\.(mp4|webm|mov|m4v|glb|gltf|zip|mp3|wav|flac|m4a|aac|ogg|opus)(\?|#|$)/i
+/** A clip (may go in an asset since 2026-10-21) */
+const CLIP_RE = /\.(mp4|webm|mov|m4v)(\?|#|$)/i
+/** Never in an asset: audio, 3D, archives */
+const NOT_ASSET_RE = /\.(glb|gltf|zip|mp3|wav|flac|m4a|aac|ogg|opus)(\?|#|$)/i
+/** An asset's pictures (stills only) - for everything that needs an image. */
+export const assetImages = <T extends { kind?: string }>(refs: T[]): T[] => refs.filter(r => r.kind !== 'video')
+/** An asset's clips. */
+export const assetClips = <T extends { kind?: string }>(refs: T[]): T[] => refs.filter(r => r.kind === 'video')
 const refId = () => `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 
 export const assetKind = (k: unknown): AssetKind => (typeof k === 'string' && KIND_IDS.has(k) ? k : 'other') as AssetKind
@@ -36,7 +53,8 @@ export function storedRefs(raw: unknown): UserAssetRef[] {
     const url = typeof r?.url === 'string' ? r.url : ''
     if (!/^https:\/\//.test(url)) continue
     const caption = cleanCaption(r?.caption), tags = cleanTags(r?.tags)
-    out.push({ id: typeof r?.id === 'string' && r.id ? r.id.slice(0, 40) : refId(), url, ...(caption ? { caption } : {}), ...(tags.length ? { tags } : {}) })
+    const video = r?.kind === 'video' || CLIP_RE.test(url)
+    out.push({ id: typeof r?.id === 'string' && r.id ? r.id.slice(0, 40) : refId(), url, ...(video ? { kind: 'video' as const } : {}), ...(caption ? { caption } : {}), ...(tags.length ? { tags } : {}) })
     if (out.length >= MAX_ASSET_REFS) break
   }
   return out
@@ -65,30 +83,69 @@ export async function ownedImageUrls(userId: number, urls: unknown[]): Promise<s
   return canon.filter(u => mine.has(u))
 }
 
-/** The stored URLs of the account's own (not deleted, not video) generations with these ids. */
-export async function ownedGenerationUrls(userId: number, ids: unknown[]): Promise<string[]> {
+/**
+ * Pictures AND clips among these URLs that belong to the account (the same
+ * check as ownedImageUrls, clips allowed) - for an asset's refs. Audio / 3D
+ * never qualify.
+ */
+export async function ownedAssetMedia(userId: number, urls: unknown[]): Promise<AssetMedia[]> {
+  const canon = [...new Set(urls.filter((u): u is string => typeof u === 'string').map(u => canonicalMediaUrl(u.trim())))]
+    .filter(u => /^https:\/\//.test(u) && !NOT_ASSET_RE.test(u))
+    .slice(0, 100)
+  if (!canon.length) return []
+  const mine = new Set(canon.filter(u => u.includes(`/u/${userId}/`)))
+  const video = new Set(canon.filter(u => CLIP_RE.test(u)))
+  const rest = canon.filter(u => !mine.has(u))
+  if (rest.length) {
+    const [gens, refs] = await Promise.all([
+      prisma.generatedImage.findMany({ where: { userId, isDeleted: false, imageUrl: { in: rest } }, select: { imageUrl: true, model: true, videoMetadata: true } }),
+      prisma.userReference.findMany({ where: { userId, isCleared: false, url: { in: rest } }, select: { url: true } }),
+    ])
+    for (const g of gens) {
+      const vm = g.videoMetadata as { isVideo?: boolean; isAudio?: boolean } | null
+      if (g.model.startsWith('audio:') || vm?.isAudio) continue
+      mine.add(g.imageUrl)
+      if (vm?.isVideo) video.add(g.imageUrl)
+    }
+    for (const r of refs) mine.add(r.url)
+  }
+  return canon.filter(u => mine.has(u)).map(url => (video.has(url) ? { url, kind: 'video' as const } : { url }))
+}
+
+/**
+ * The stored URLs of the account's own (not deleted) generations with these
+ * ids - pictures and (since 2026-10-21) clips; audio and 3D are skipped.
+ */
+export async function ownedGenerationUrls(userId: number, ids: unknown[]): Promise<AssetMedia[]> {
   const nums = [...new Set(ids.map(Number).filter(n => Number.isInteger(n) && n > 0))].slice(0, 100)
   if (!nums.length) return []
   const rows = await prisma.generatedImage.findMany({
     where: { userId, isDeleted: false, id: { in: nums } },
-    select: { id: true, imageUrl: true, videoMetadata: true },
+    select: { id: true, imageUrl: true, model: true, videoMetadata: true },
   })
   const byId = new Map(rows.map(r => [r.id, r]))
-  return nums.map(n => byId.get(n)).filter((r): r is NonNullable<typeof r> =>
-    !!r && !VIDEO_RE.test(r.imageUrl) && (r.videoMetadata as { isVideo?: boolean } | null)?.isVideo !== true,
-  ).map(r => r.imageUrl)
+  const out: AssetMedia[] = []
+  for (const n of nums) {
+    const r = byId.get(n)
+    if (!r) continue
+    const vm = r.videoMetadata as { isVideo?: boolean; isAudio?: boolean } | null
+    if (NOT_ASSET_RE.test(r.imageUrl) || r.model.startsWith('audio:') || vm?.isAudio) continue
+    out.push(vm?.isVideo || CLIP_RE.test(r.imageUrl) ? { url: r.imageUrl, kind: 'video' } : { url: r.imageUrl })
+  }
+  return out
 }
 
-/** New refs appended (deduped by URL), capped. */
-export function withRefs(current: UserAssetRef[], urls: string[], captions?: Map<string, string>): UserAssetRef[] {
+/** New refs appended (deduped by URL), capped. Plain strings are pictures. */
+export function withRefs(current: UserAssetRef[], items: (string | AssetMedia)[], captions?: Map<string, string>): UserAssetRef[] {
   const have = new Set(current.map(r => r.url))
   const next = [...current]
-  for (const url of urls) {
+  for (const it of items) {
+    const { url, kind } = typeof it === 'string' ? { url: it, kind: undefined } : it
     if (next.length >= MAX_ASSET_REFS) break
     if (have.has(url)) continue
     have.add(url)
     const caption = cleanCaption(captions?.get(url))
-    next.push({ id: refId(), url, ...(caption ? { caption } : {}) })
+    next.push({ id: refId(), url, ...(kind === 'video' || CLIP_RE.test(url) ? { kind: 'video' as const } : {}), ...(caption ? { caption } : {}) })
   }
   return next
 }
@@ -125,10 +182,14 @@ export async function assetsOut(userId: number, rows: { id: number; kind: string
   const thumbs = new Map<string, string>()
   if (urls.length) {
     const gens = await prisma.generatedImage.findMany({
-      where: { userId, imageUrl: { in: urls }, thumbnailUrl: { not: null } },
-      select: { imageUrl: true, thumbnailUrl: true },
+      where: { userId, imageUrl: { in: urls } },
+      select: { id: true, imageUrl: true, thumbnailUrl: true, videoMetadata: true },
     })
-    for (const g of gens) thumbs.set(g.imageUrl, g.thumbnailUrl!)
+    for (const g of gens) {
+      if (g.thumbnailUrl) thumbs.set(g.imageUrl, g.thumbnailUrl)
+      // A clip without its poster yet: the library's poster route makes one (first frame)
+      else if ((g.videoMetadata as { isVideo?: boolean } | null)?.isVideo || CLIP_RE.test(g.imageUrl)) thumbs.set(g.imageUrl, `/api/images/${g.id}?thumb=1`)
+    }
   }
   return all.map(({ row, refs }) => ({
     id: row.id, kind: assetKind(row.kind), name: row.name, notes: row.notes, updatedAt: row.updatedAt,

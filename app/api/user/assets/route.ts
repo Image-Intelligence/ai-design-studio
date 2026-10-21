@@ -3,7 +3,7 @@ import { getUserFromSession } from '@/lib/auth'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalMediaUrl } from '@/lib/media-url'
 import {
-  MAX_USER_ASSETS, assetKind, assetName, assetNotes, assetsOut, ownedGenerationUrls, ownedImageUrls, storedRefs, withRefs, withCaptions,
+  MAX_USER_ASSETS, assetKind, assetName, assetNotes, assetsOut, assetClips, ownedAssetMedia, ownedGenerationUrls, storedRefs, withRefs, withCaptions,
   listAssets, countAssets, findAsset, insertAsset, updateAsset, deleteAsset,
 } from '@/lib/user-assets'
 
@@ -23,7 +23,8 @@ import {
  * them in place.
  *
  * Pictures arrive as generation ids (My Generations) or URLs (a board's
- * asset); either way only the account's own images are kept.
+ * asset); either way only the account's own media are kept. Since 2026-10-21
+ * that includes CLIPS (ref `kind: 'video'`) - audio and 3D are still skipped.
  */
 async function authUser() {
   const token = (await cookies()).get('session')?.value
@@ -43,8 +44,8 @@ function metaByUrl(list: unknown): Map<string, { caption?: string; tags?: string
 /** The pictures of a `refs` list the account owns, with their captions and tags. */
 async function ownedRefsWithMeta(userId: number, list: unknown) {
   const meta = metaByUrl(list)
-  const owned = await ownedImageUrls(userId, [...meta.keys()])
-  const refs = withRefs([], owned, new Map(owned.map(u => [u, meta.get(u)?.caption ?? ''])))
+  const owned = await ownedAssetMedia(userId, [...meta.keys()])
+  const refs = withRefs([], owned, new Map(owned.map(m => [m.url, meta.get(m.url)?.caption ?? ''])))
   return withCaptions(refs, { tags: Object.fromEntries(refs.map(r => [r.id, meta.get(r.url)?.tags ?? []])) })
 }
 
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
   }
   const urls = [
     ...(await ownedGenerationUrls(user.id, Array.isArray(body.imageIds) ? body.imageIds : [])),
-    ...(await ownedImageUrls(user.id, Array.isArray(body.urls) ? body.urls : [])),
+    ...(await ownedAssetMedia(user.id, Array.isArray(body.urls) ? body.urls : [])),
   ]
   // Pictures with their captions (Make an asset from a board) go first
   const withMeta = Array.isArray(body.refs) ? await ownedRefsWithMeta(user.id, body.refs) : []
@@ -82,15 +83,20 @@ export async function PATCH(req: Request) {
   if (!row) return jsonPrivate({ error: 'Not found' }, { status: 404 })
 
   let refs = storedRefs(row.refs)
-  // A whole new list (a board saving over its library copy): only owned pictures survive
-  if (Array.isArray(body.refs)) refs = await ownedRefsWithMeta(user.id, body.refs)
+  // A whole new list (a board saving over its library copy): only owned pictures survive.
+  // A board holds pictures only, so the asset's clips stay (they're removed by removeRefIds).
+  if (Array.isArray(body.refs)) {
+    const next = await ownedRefsWithMeta(user.id, body.refs)
+    const have = new Set(next.map(r => r.url))
+    refs = [...next, ...assetClips(refs).filter(r => !have.has(r.url))]
+  }
   if (Array.isArray(body.removeRefIds)) {
     const drop = new Set(body.removeRefIds.filter((x: unknown) => typeof x === 'string'))
     refs = refs.filter(r => !drop.has(r.id))
   }
   const adds = [
     ...(await ownedGenerationUrls(user.id, Array.isArray(body.addImageIds) ? body.addImageIds : [])),
-    ...(await ownedImageUrls(user.id, Array.isArray(body.addUrls) ? body.addUrls : [])),
+    ...(await ownedAssetMedia(user.id, Array.isArray(body.addUrls) ? body.addUrls : [])),
   ]
   refs = withRefs(refs, adds)
   // Captions / tags / order edited in place (the editors, Auto caption)

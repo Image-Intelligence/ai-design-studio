@@ -9,7 +9,7 @@ import type { NovaBudget, NovaChatSummary, NovaContextMark, NovaMessage, NovaSpe
 
 export type NovaChatDetail = NovaChatSummary & { plan: { total: number; spent: number } | null }
 /** A chat's references as the panel shows them (lib/nova/chat-refs). */
-export type NovaRefAsset = { id: number; name: string; kind: string; notes: string; thumb: string | null; pictures: { url: string; thumb: string | null }[]; ids: number[] }
+export type NovaRefAsset = { id: number; name: string; kind: string; notes: string; thumb: string | null; pictures: { url: string; thumb: string | null; kind?: "video" }[]; ids: number[]; clipIds?: number[] }
 export type NovaRefGeneration = { id: number; kind: string; url: string; thumb: string | null; prompt: string; model: string }
 export type NovaChatRefs = { assets: NovaRefAsset[]; generations: NovaRefGeneration[] }
 /** The look bible Nova set for a chat (lib/nova/chat-refs resolveBible). */
@@ -99,6 +99,9 @@ export const novaApi = {
   settings: () => call<NovaSettings>("/api/nova/settings"),
   saveSettings: (budget: NovaBudget) => call<NovaSettings>("/api/nova/settings", json({ budget }, "PUT")),
   forgetNote: (id: string) => call<NovaSettings>(`/api/nova/settings?note=${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Add a note to what Nova remembers, or rewrite one (the memory panel) */
+  addNote: (text: string) => call<NovaSettings>("/api/nova/settings", json({ note: text }, "PUT")),
+  editNote: (id: string, text: string) => call<NovaSettings>("/api/nova/settings", json({ editNote: { id, text } }, "PUT")),
   setBackground: (on: boolean) => call<NovaSettings>("/api/nova/settings", json({ background: on }, "PUT")),
   /** Stop the running reply on the server (it no longer stops when the connection drops). */
   /** The newest message id and whether a reply is being written - cheap, for the open chat's check for news. */

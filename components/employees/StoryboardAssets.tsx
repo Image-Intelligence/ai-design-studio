@@ -63,7 +63,9 @@ function useLibrary() {
     try {
       const r = await fetch("/api/user/assets", { cache: "no-store" })
       const j = await r.json().catch(() => ({}))
-      setAssets(r.ok && Array.isArray(j.assets) ? j.assets : [])
+      // A board's assets are pictures (stills are made from them): an asset's clips (2026-10-21) stay in
+      // the library - saving the board back keeps them (PATCH refs leaves an asset's clips alone)
+      setAssets(r.ok && Array.isArray(j.assets) ? j.assets.map((a: Omit<LibraryAsset, "refs"> & { refs: (LibraryAsset["refs"][number] & { kind?: string })[] }) => ({ ...a, refs: a.refs.filter(r => r.kind !== "video") })) : [])
     } catch { setAssets([]) }
   }, [])
   useEffect(() => { void load() }, [load])

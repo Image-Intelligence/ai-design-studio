@@ -138,7 +138,7 @@ export async function POST(req: Request) {
           // row itself: completion order is not the order things were asked for.
           const queueRow = await prisma.generationQueue.findFirst({
             where: { falRequestId: requestId },
-            select: { createdAt: true },
+            select: { createdAt: true, parameters: true },
             orderBy: { id: 'desc' },
           })
           const created = await prisma.generatedImage.create({
@@ -165,6 +165,8 @@ export async function POST(req: Request) {
                 motionVideoUrl:       motionVideoUrl || null,
                 keepOriginalSound:    keepOriginalSound ?? true,
                 characterOrientation: characterOrientation || null,
+                // What it was given (lib/gen-inputs), as the route kept it on the queue row
+                ...(() => { const i = (queueRow?.parameters as { inputs?: unknown } | null)?.inputs; return i && typeof i === 'object' ? { inputs: i } : {} })(),
               } as any,
             },
             select: { id: true },

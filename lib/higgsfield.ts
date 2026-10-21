@@ -281,6 +281,8 @@ export async function settleHiggsfieldRow(row: Row): Promise<SettleResult> {
             aspectRatio: params.aspectRatio || '16:9',
             audioEnabled: !!params.generateAudio,
             provider: 'higgsfield',
+            // What it was given (lib/gen-inputs), as the submit route kept it
+            ...(params.inputs && typeof params.inputs === 'object' ? { inputs: params.inputs } : {}),
           },
         } : {}),
       },

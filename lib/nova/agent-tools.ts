@@ -25,7 +25,7 @@ import { submitChatVideo } from '@/lib/chat-video-submit'
 import { VIDEO_MODEL_IDS, VIDEO_FILE_EXTS } from '@/lib/fal-video-endpoints'
 import { getAudioStudioModel, audioTicketCost, spokenCharCount } from '@/lib/audio-studio'
 import { toolTickets } from '@/lib/threed/catalog'
-import { listAssets, findAsset, insertAsset, updateAsset, countAssets, withRefs, storedRefs, assetKind, assetName, assetNotes, MAX_USER_ASSETS } from '@/lib/user-assets'
+import { listAssets, findAsset, insertAsset, updateAsset, countAssets, withRefs, storedRefs, assetKind, assetName, assetNotes, assetClips, MAX_USER_ASSETS } from '@/lib/user-assets'
 import { addLinks } from '@/lib/generation-folder-links'
 import { deductGenerationTickets } from '@/lib/ticket-gate'
 import { describeModels, novaImageModels, novaVideoModels, novaAudioModels, novaThreeDTools, estimateCreate, type NovaKind } from '@/lib/nova/catalog'
@@ -484,27 +484,29 @@ export function makeNovaTools(ctx: NovaTurnCtx): ToolSet {
     execute: async () => {
       const rows = await listAssets(uid)
       newStep(ctx, { tool: 'list_assets', label: 'Read your assets', status: 'done', note: `${rows.length} assets` })
-      return { assets: rows.map(a => ({ id: a.id, kind: a.kind, name: a.name, notes: clip(a.notes, 200), pictures: storedRefs(a.refs).length })) }
+      return { assets: rows.map(a => { const refs = storedRefs(a.refs), clips = assetClips(refs).length; return { id: a.id, kind: a.kind, name: a.name, notes: clip(a.notes, 200), pictures: refs.length - clips, ...(clips ? { clips } : {}) } }) }
     },
   })
 
   const asset_pictures = tool({
-    description: 'Get an asset\'s pictures as My Generations ids, to use as references for a generation (a character\'s face, a product).',
+    description: 'Get an asset\'s pictures (and any video clips it holds) as My Generations ids - pictures to use as references for a generation (a character\'s face, a product), clips to edit or cut (trim_media, assemble_cut, edit_clip).',
     inputSchema: jsonSchema<{ asset_id: number }>({ type: 'object', properties: { asset_id: { type: 'integer' } }, required: ['asset_id'] }),
     execute: async (input) => {
       const a = await findAsset(uid, input.asset_id)
       if (!a) return { error: 'No such asset' }
       const urls = storedRefs(a.refs).map(r => r.url)
       // Map the pictures back to the user's rows (only rows can be references)
-      const rows = urls.length ? await prisma.generatedImage.findMany({ where: { userId: uid, isDeleted: false, imageUrl: { in: urls } }, select: { id: true, imageUrl: true, prompt: true } }) : []
+      const rows = urls.length ? await prisma.generatedImage.findMany({ where: { userId: uid, isDeleted: false, imageUrl: { in: urls } }, select: { id: true, imageUrl: true, prompt: true, model: true, videoMetadata: true } }) : []
       rows.forEach(r => ctx.seenIds.add(r.id))
-      newStep(ctx, { tool: 'asset_pictures', label: `Opened asset "${a.name}"`, status: 'done', note: `${rows.length} pictures` })
-      return { asset: { id: a.id, name: a.name, kind: a.kind, notes: clip(a.notes, 400) }, pictures: rows.map(r => ({ id: r.id, prompt: clip(r.prompt, 100) })) }
+      // Clips (assets hold video since 2026-10-21) are listed apart: they are footage to edit, not stills to reference
+      const pics = rows.filter(r => kindOf(r) === 'image'), clips = rows.filter(r => kindOf(r) === 'video' || kindOf(r) === 'cut')
+      newStep(ctx, { tool: 'asset_pictures', label: `Opened asset "${a.name}"`, status: 'done', note: `${pics.length} pictures${clips.length ? `, ${clips.length} clips` : ''}` })
+      return { asset: { id: a.id, name: a.name, kind: a.kind, notes: clip(a.notes, 400) }, pictures: pics.map(r => ({ id: r.id, prompt: clip(r.prompt, 100) })), ...(clips.length ? { clips: clips.map(r => ({ id: r.id, prompt: clip(r.prompt, 100) })) } : {}) }
     },
   })
 
   const save_asset = tool({
-    description: 'Create an Asset from generations (e.g. the character sheet you just made) or add pictures to an existing one. Assets keep characters and products consistent across later work.',
+    description: 'Create an Asset from generations (e.g. the character sheet you just made) or add pictures or video clips to an existing one. Assets keep characters and products consistent across later work.',
     inputSchema: jsonSchema<{ ids: number[]; name?: string; kind?: string; notes?: string; asset_id?: number }>({
       type: 'object',
       properties: {
@@ -516,9 +518,9 @@ export function makeNovaTools(ctx: NovaTurnCtx): ToolSet {
       required: ['ids'],
     }),
     execute: async (input) => {
-      const rows = (await ownedRows(uid, input.ids)).filter(r => kindOf(r) === 'image')
-      if (!rows.length) return { error: 'An asset needs at least one of the user\'s images' }
-      const urls = rows.map(r => r.imageUrl)
+      const rows = (await ownedRows(uid, input.ids)).filter(r => kindOf(r) === 'image' || kindOf(r) === 'video' || kindOf(r) === 'cut')
+      if (!rows.length) return { error: 'An asset needs at least one of the user\'s images or clips' }
+      const urls = rows.map(r => (kindOf(r) === 'image' ? r.imageUrl : { url: r.imageUrl, kind: 'video' as const }))
       if (typeof input.asset_id === 'number') {
         const a = await findAsset(uid, input.asset_id)
         if (!a) return { error: 'No such asset' }

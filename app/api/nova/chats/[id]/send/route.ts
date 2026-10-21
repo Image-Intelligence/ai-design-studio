@@ -2,7 +2,8 @@ import { jsonPrivate } from '@/lib/api-json'
 import { requireAgentUser } from '@/lib/nova/auth'
 import { runNovaTurn } from '@/lib/nova/agent'
 import { enforceContentFilter } from '@/lib/content-filter'
-import { canonicalisePayload } from '@/lib/media-url'
+import { canonicalMediaUrl, canonicalisePayload, isOurMedia } from '@/lib/media-url'
+import { ownedMediaSet } from '@/lib/media-ownership'
 import { cleanRunBudget } from '@/lib/nova/config'
 
 /**
@@ -33,11 +34,20 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
   }
   const num = (v: unknown) => Number.isInteger(Number(v)) ? Number(v) : NaN
+  /*
+   * Asset pictures sent by link (ones with no My Generations row) are fetched
+   * and shown to the model, so only the account's OWN files in our storage
+   * pass (2026-10-21): no outside address for the server to fetch, and no
+   * other account's private picture read back through the model.
+   */
+  const sentUrls: string[] = Array.isArray(body.attachmentUrls) ? body.attachmentUrls.filter((u: unknown): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 4) : []
+  const ownUrls = sentUrls.length ? await ownedMediaSet(a.user.id, sentUrls) : new Set<string>()
+  const attachmentUrls = sentUrls.filter(u => isOurMedia(u) && ownUrls.has(canonicalMediaUrl(u)))
   const out = await runNovaTurn({
     user: a.user, isAdmin: a.isAdmin, sources: a.sources, chatId, text,
     attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds.map(num).filter((n: number) => n > 0).slice(0, 8) : [],
     assetIds: Array.isArray(body.assetIds) ? body.assetIds.map(num).filter((n: number) => n > 0).slice(0, 6) : [],
-    attachmentUrls: Array.isArray(body.attachmentUrls) ? body.attachmentUrls.filter((u: unknown): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 4) : [],
+    attachmentUrls,
     model: typeof body.model === 'string' ? body.model : undefined,
     approvePlan: body.approvePlan && num(body.approvePlan.messageId) > 0 ? { messageId: num(body.approvePlan.messageId), tickets: Number(body.approvePlan.tickets) } : undefined,
     declinePlan: body.declinePlan && num(body.declinePlan.messageId) > 0 ? { messageId: num(body.declinePlan.messageId) } : undefined,

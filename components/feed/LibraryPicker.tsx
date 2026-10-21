@@ -1,8 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Boxes, Check, ChevronLeft, Folder, Images, Loader2, Search, X } from "lucide-react"
+import { Boxes, Check, ChevronLeft, Folder, Images, Loader2, Play, Search, X } from "lucide-react"
 
 /*
  * "Choose from My Generations" (2026-10-08) - pick pictures for a video
@@ -16,21 +16,31 @@ import { Boxes, Check, ChevronLeft, Folder, Images, Loader2, Search, X } from "l
  * with openLibraryPicker({ max }) and gets back the chosen pictures' links
  * (signed - they work as previews, and the generate route stores them
  * canonical), or [] when closed. No props threaded through the panels.
+ *
+ * CLIPS (2026-10-21, owner: "users should be able to choose from their
+ * generated videos to use in each model as an input"): `media: "video"` lists
+ * the account's videos instead - My Generations' clips and the clips saved in
+ * Assets - for the video models' clip slots (reference videos, a tool's source
+ * clip, motion / lip-sync / edit sources) and Nova's attachments.
  */
 type Folder = { id: number; name: string; parentId: number | null }
 type Pic = { id: string; url: string; thumb: string; kind?: "video" | "audio" }
-type Asset = { id: number; name: string; kind: string; refs: { id: string; url: string; thumb?: string | null }[] }
-/** `media: "all"` (Nova Studio's references, 2026-10-19) lists videos and audio too; the default is pictures only. */
-type Request = { max: number; title?: string; media?: "image" | "all"; resolve: (urls: string[]) => void; resolveItems?: (items: PickedItem[]) => void }
-/** A picked picture with its My Generations row id (null for an asset's own uploaded picture). */
-export type PickedItem = { url: string; thumb: string; generationId: number | null }
+type Asset = { id: number; name: string; kind: string; refs: { id: string; url: string; kind?: "video"; thumb?: string | null }[] }
+/**
+ * What the picker lists: pictures (the default), clips ("video", 2026-10-21),
+ * or everything incl. audio ("all" - Nova Studio's references, 2026-10-19).
+ */
+export type LibraryMedia = "image" | "video" | "all"
+type Request = { max: number; title?: string; media?: LibraryMedia; resolve: (urls: string[]) => void; resolveItems?: (items: PickedItem[]) => void }
+/** A picked item with its My Generations row id (null for an asset's own uploaded picture or clip). */
+export type PickedItem = { url: string; thumb: string; generationId: number | null; kind: "image" | "video" | "audio" }
 
 let setRequestGlobal: ((r: Request | null) => void) | null = null
-/** Open the picker; resolves with up to `max` picture links ([] if closed). */
-export function openLibraryPicker(o: { max?: number; title?: string } = {}): Promise<string[]> {
+/** Open the picker; resolves with up to `max` picture (or, with media "video", clip) links ([] if closed). */
+export function openLibraryPicker(o: { max?: number; title?: string; media?: LibraryMedia } = {}): Promise<string[]> {
   return new Promise(resolve => {
     if (!setRequestGlobal) { resolve([]); return }
-    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, resolve })
+    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, resolve })
   })
 }
 
@@ -40,7 +50,7 @@ export function openLibraryPicker(o: { max?: number; title?: string } = {}): Pro
  * pictures are generations when they were added from My Generations; one
  * uploaded straight into an asset has no row, so its id is null.
  */
-export function openLibraryPickerItems(o: { max?: number; title?: string; media?: "image" | "all" } = {}): Promise<PickedItem[]> {
+export function openLibraryPickerItems(o: { max?: number; title?: string; media?: LibraryMedia } = {}): Promise<PickedItem[]> {
   return new Promise(resolve => {
     if (!setRequestGlobal) { resolve([]); return }
     setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, resolve: () => {}, resolveItems: resolve })
@@ -63,19 +73,34 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
   const close = (urls: string[]) => closeUrls(urls, urls.map(url => {
     const p = seen.get(url)
     const n = p && /^\d+$/.test(p.id) ? Number(p.id) : null
-    return { url, thumb: p?.thumb ?? url, generationId: n }
+    return { url, thumb: p?.thumb ?? url, generationId: n, kind: p?.kind ?? "image" }
   }))
+  const media: LibraryMedia = req.media ?? "image"
+  // What the picker holds, in words
+  const noun = (n: number) => (media === "video" ? (n === 1 ? "clip" : "clips") : media === "all" ? (n === 1 ? "item" : "items") : (n === 1 ? "picture" : "pictures"))
+  // An asset's refs this picker can offer (an asset holds pictures and, since 2026-10-21, clips)
+  const assetRefs = (a: Asset) => a.refs.filter(r => (media === "video" ? r.kind === "video" : media === "image" ? r.kind !== "video" : true))
   const [tab, setTab] = useState<"gens" | "assets">("gens")
   const [folders, setFolders] = useState<Folder[]>([])
   const [folderId, setFolderId] = useState<number | "root" | "all">("all")
   const [q, setQ] = useState("")
   const [pics, setPics] = useState<Pic[]>([])
-  const [page, setPage] = useState(1)
+  // Where the next page starts (keyset: older than this row) - see load()
+  const cursorRef = useRef<{ before: string; beforeId: number } | null>(null)
   const [more, setMore] = useState(false)
+  // Only the latest request's answer is used (a folder switched mid-load, a second "Load more")
+  const loadSeq = useRef(0)
   const [loading, setLoading] = useState(false)
   const [assets, setAssets] = useState<Asset[] | null>(null)
   const [openAsset, setOpenAsset] = useState<Asset | null>(null)
   const [picked, setPicked] = useState<string[]>([])
+  /*
+   * A clip watched before it is chosen (2026-10-21, owner: "I need to be able
+   * to view the videos from that popup so I can know which video it is" - a
+   * poster frame does not show the footage). Tiles play while hovered; the
+   * play button opens it full size with sound.
+   */
+  const [preview, setPreview] = useState<Pic | null>(null)
 
   useEffect(() => {
     fetch("/api/user/generation-folders").then(r => (r.ok ? r.json() : null)).then(d => setFolders(d?.folders ?? [])).catch(() => {})
@@ -85,13 +110,24 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
     fetch("/api/user/assets").then(r => (r.ok ? r.json() : null)).then(d => setAssets(d?.assets ?? [])).catch(() => setAssets([]))
   }, [tab, assets])
 
-  // A folder's pictures (images only), a page at a time
-  const load = useCallback(async (p: number, reset: boolean) => {
+  /*
+   * A folder's pictures, a page at a time - by CURSOR (2026-10-21, owner: some
+   * thumbnails showed twice). Pages by offset slid whenever a new generation
+   * landed while the picker was open (the owner generates in big batches), so
+   * "Load more" fetched rows already shown. The cursor is the last row's
+   * (createdAt, id); rows are de-duplicated by id anyway, and a stale answer
+   * (folder switched, a double tap on Load more) is dropped.
+   */
+  const load = useCallback(async (reset: boolean) => {
+    const seq = ++loadSeq.current
     setLoading(true)
     try {
       const fq = folderId === "all" ? "" : `&folderId=${folderId}`
-      const r = await fetch(`/api/my-images?${req.media === "all" ? "" : "type=image&"}page=${p}&limit=${PAGE}&count=0${fq}`)
+      const cur = reset ? null : cursorRef.current
+      const cq = cur ? `&before=${encodeURIComponent(cur.before)}&beforeId=${cur.beforeId}` : ""
+      const r = await fetch(`/api/my-images?${media === "all" ? "" : `type=${media}&`}cursor=1&limit=${PAGE}${fq}${cq}`)
       const d = r.ok ? await r.json() : null
+      if (seq !== loadSeq.current) return
       const kindOf = (img: any): Pic["kind"] => {
         const u = String(img.imageUrl ?? "").split("?")[0].toLowerCase()
         if (img.videoMetadata?.isAudio || String(img.model ?? "").startsWith("audio:") || /\.(mp3|wav|flac|m4a|aac|ogg|opus)$/.test(u)) return "audio"
@@ -99,12 +135,17 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
         return undefined
       }
       const rows: Pic[] = (d?.images ?? []).map((img: any) => ({ id: String(img.id), url: img.imageUrl, thumb: thumbOf(img), kind: kindOf(img) }))
-      setPics(prev => (reset ? rows : [...prev, ...rows]))
-      setMore(rows.length === PAGE)
-      setPage(p)
-    } finally { setLoading(false) }
-  }, [folderId, req.media])
-  useEffect(() => { if (tab === "gens") load(1, true) }, [tab, folderId, load])
+      setPics(prev => {
+        const base = reset ? [] : prev
+        const have = new Set(base.map(x => x.id))
+        return [...base, ...rows.filter(x => !have.has(x.id) && (have.add(x.id), true))]
+      })
+      cursorRef.current = d?.nextCursor ?? null
+      setMore(!!d?.hasMore && !!d?.nextCursor)
+    } finally { if (seq === loadSeq.current) setLoading(false) }
+  }, [folderId, media])
+  // A new folder / tab starts from the newest
+  useEffect(() => { if (tab === "gens") void load(true) }, [tab, load])
 
   const toggle = (url: string) => setPicked(prev => {
     if (prev.includes(url)) return prev.filter(u => u !== url)
@@ -134,8 +175,22 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
         {/* eslint-disable-next-line @next/next/no-img-element */}
         {p.kind === "audio"
           ? <span className="w-full h-full flex items-center justify-center bg-gradient-to-br from-amber-500/20 to-slate-900 text-[10px] font-bold uppercase tracking-wider text-amber-200">Audio</span>
-          : <img src={p.thumb} alt="" loading="lazy" className="w-full h-full object-cover" />}
+          // A clip: its poster, the footage playing while hovered (no poster: its first frame)
+          : p.kind === "video"
+            ? <video src={p.thumb === p.url ? `${p.url}#t=0.1` : p.url} poster={p.thumb === p.url ? undefined : p.thumb} muted loop playsInline preload={p.thumb === p.url ? "metadata" : "none"}
+                onMouseEnter={e => { void e.currentTarget.play().catch(() => {}) }}
+                onMouseLeave={e => { e.currentTarget.pause() }}
+                className="w-full h-full object-cover pointer-events-auto" />
+            : <img src={p.thumb} alt="" loading="lazy" className="w-full h-full object-cover" />}
         {p.kind === "video" && <span className="absolute bottom-1.5 left-1.5 px-1 py-px rounded bg-black/70 text-[9px] font-bold uppercase tracking-wider text-white">Video</span>}
+        {p.kind === "video" && (
+          <span role="button" tabIndex={0} title="Watch this clip" aria-label="Watch this clip"
+            onClick={e => { e.stopPropagation(); setPreview(p) }}
+            onKeyDown={e => { if (e.key === "Enter") { e.stopPropagation(); setPreview(p) } }}
+            className="absolute bottom-1.5 right-1.5 w-7 h-7 rounded-full bg-black/70 border border-white/25 flex items-center justify-center text-white hover:bg-white hover:text-black transition-colors">
+            <Play size={12} />
+          </span>
+        )}
         {on && (
           <span className="absolute top-1.5 right-1.5 min-w-5 h-5 px-1 rounded-full bg-white text-black text-[10px] font-bold flex items-center justify-center">
             {req.max > 1 ? picked.indexOf(p.url) + 1 : <Check size={12} />}
@@ -153,10 +208,10 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
 
   return (
     <div data-keep-refs-open className="fixed inset-0 z-[10050] flex items-start justify-center p-3 pt-[6dvh] bg-black/75 backdrop-blur-sm" onClick={() => close([])}>
-      <div className="w-full max-w-5xl h-[84dvh] rounded-2xl silver-edge bg-[#070b14] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="relative w-full max-w-5xl h-[84dvh] rounded-2xl silver-edge bg-[#070b14] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Header: tabs, close */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.06]">
-          <p className="text-sm font-bold text-white mr-2">{req.title ?? (req.max > 1 ? `Choose up to ${req.max} pictures` : "Choose a picture")}</p>
+          <p className="text-sm font-bold text-white mr-2">{req.title ?? (req.max > 1 ? `Choose up to ${req.max} ${noun(2)}` : `Choose a ${noun(1)}`)}</p>
           <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/10 bg-black/40">
             {([["gens", "My Generations", Images], ["assets", "Assets", Boxes]] as const).map(([k, label, Icon]) => (
               <button key={k} onClick={() => { setTab(k); setOpenAsset(null) }}
@@ -179,7 +234,7 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
                     className="w-full pl-7 pr-2 py-1.5 rounded-md bg-black/40 border border-white/10 text-[12px] text-white placeholder:text-slate-600 focus:outline-none focus:border-white/30" />
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] space-y-0.5">
-                  {!q.trim() && folderBtn("all", "All pictures", 0, <Images size={12} className="shrink-0 text-slate-500" />)}
+                  {!q.trim() && folderBtn("all", `All ${noun(2)}`, 0, <Images size={12} className="shrink-0 text-slate-500" />)}
                   {!q.trim() && folderBtn("root", "Unfiled")}
                   {shown.map(({ f, depth }) => folderBtn(f.id, f.name, depth))}
                 </div>
@@ -189,16 +244,16 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
                 {/* Phones: the folder list as a dropdown */}
                 <select value={String(folderId)} onChange={e => setFolderId(e.target.value === "all" || e.target.value === "root" ? e.target.value : Number(e.target.value))}
                   className="sm:hidden w-full mb-3 rounded-lg bg-black/40 border border-white/10 px-2 py-2 text-[12px] text-white">
-                  <option value="all">All pictures</option>
+                  <option value="all">All {noun(2)}</option>
                   <option value="root">Unfiled</option>
                   {tree.map(({ f, depth }) => <option key={f.id} value={f.id}>{"  ".repeat(depth)}{f.name}</option>)}
                 </select>
                 <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">{pics.map(tile)}</div>
-                {!loading && pics.length === 0 && <p className="py-16 text-center text-sm text-slate-500">No pictures in this folder</p>}
+                {!loading && pics.length === 0 && <p className="py-16 text-center text-sm text-slate-500">No {noun(2)} in this folder</p>}
                 {loading && <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin text-slate-400" /></div>}
                 {more && !loading && (
                   <div className="flex justify-center py-4">
-                    <button onClick={() => load(page + 1, false)} className="px-4 py-2 rounded-lg border border-white/15 bg-white/[0.05] text-xs text-slate-200 hover:bg-white/10">Load more</button>
+                    <button onClick={() => void load(false)} className="px-4 py-2 rounded-lg border border-white/15 bg-white/[0.05] text-xs text-slate-200 hover:bg-white/10">Load more</button>
                   </div>
                 )}
               </div>
@@ -212,42 +267,61 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
                   <button onClick={() => setOpenAsset(null)} className="mb-3 flex items-center gap-1 text-xs text-slate-400 hover:text-white"><ChevronLeft size={13} /> All assets</button>
                   <p className="mb-2 text-sm font-bold text-white">{openAsset.name} <span className="text-[10px] font-mono uppercase text-slate-500">{openAsset.kind}</span></p>
                   <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">
-                    {openAsset.refs.map(r => tile({ id: r.id, url: r.url, thumb: r.thumb || r.url }))}
+                    {assetRefs(openAsset).map(r => tile({ id: r.id, url: r.url, thumb: r.thumb || r.url, kind: r.kind }))}
                   </div>
                 </>
-              ) : assets.length === 0 ? (
-                <p className="py-16 text-center text-sm text-slate-500">No assets yet - make them on My Generations</p>
+              ) : !assets.some(a => assetRefs(a).length) ? (
+                <p className="py-16 text-center text-sm text-slate-500">{media === "video" ? "No clips in your assets yet - add videos to an asset on My Generations" : "No assets yet - make them on My Generations"}</p>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-                  {assets.map(a => (
+                  {assets.filter(a => assetRefs(a).length).map(a => { const refs = assetRefs(a); return (
                     <button key={a.id} onClick={() => setOpenAsset(a)} className="text-left rounded-xl overflow-hidden silver-edge hover:-translate-y-0.5 transition-transform">
                       <div className="aspect-square grid grid-cols-2 grid-rows-2 gap-px bg-black/40">
                         {[0, 1, 2, 3].map(k => (
                           <div key={k} className="relative overflow-hidden bg-white/[0.03]">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
-                            {a.refs[k] && <img src={a.refs[k].thumb || a.refs[k].url} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />}
+                            {refs[k] && (refs[k].kind === "video" && !refs[k].thumb
+                              ? <video src={`${refs[k].url}#t=0.1`} muted playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover" />
+                              : <img src={refs[k].thumb || refs[k].url} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />)}
                           </div>
                         ))}
                       </div>
                       <div className="px-2.5 py-2">
                         <p className="text-[12px] font-bold text-white truncate">{a.name}</p>
-                        <p className="text-[10px] font-mono uppercase text-slate-500">{a.kind} · {a.refs.length} picture{a.refs.length === 1 ? "" : "s"}</p>
+                        <p className="text-[10px] font-mono uppercase text-slate-500">{a.kind} · {refs.length} {noun(refs.length)}</p>
                       </div>
                     </button>
-                  ))}
+                  ) })}
                 </div>
               )}
             </div>
           )}
         </div>
 
+        {/* A clip watched full size, with sound, before choosing it */}
+        {preview && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/85 p-4" onClick={() => setPreview(null)}>
+            <div className="w-full max-w-3xl space-y-3" onClick={e => e.stopPropagation()}>
+              <video src={preview.url} poster={preview.thumb !== preview.url ? preview.thumb : undefined} controls autoPlay playsInline loop
+                className="w-full max-h-[62dvh] rounded-xl bg-black object-contain" />
+              <div className="flex items-center gap-2">
+                <button onClick={() => setPreview(null)} className="px-3 py-1.5 rounded-lg text-xs text-slate-300 hover:text-white">Back</button>
+                <button onClick={() => { if (!picked.includes(preview.url)) toggle(preview.url); setPreview(null) }}
+                  className="ml-auto px-4 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-bold hover:bg-slate-200">
+                  {picked.includes(preview.url) ? "Chosen" : `Choose this ${noun(1) === "item" ? "clip" : noun(1)}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center gap-2 px-4 py-3 border-t border-white/[0.06]">
-          <span className="text-[11px] text-slate-500">{picked.length ? `${picked.length} chosen` : "Tap a picture to choose it"}</span>
+          <span className="text-[11px] text-slate-500">{picked.length ? `${picked.length} chosen` : `Tap a ${noun(1)} to choose it`}</span>
           <button onClick={() => close([])} className="ml-auto px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-white">Cancel</button>
           <button onClick={() => close(picked)} disabled={!picked.length}
             className="px-4 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-bold hover:bg-slate-200 disabled:opacity-40">
-            Use {picked.length > 1 ? `${picked.length} pictures` : "picture"}
+            Use {picked.length > 1 ? `${picked.length} ${noun(2)}` : noun(1)}
           </button>
         </div>
       </div>

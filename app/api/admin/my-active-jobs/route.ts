@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { STUDIO_RUNNING, STUDIO_STALE_MS, expireStudioJobs } from '@/lib/studio-activity'
+import { signPayload } from '@/lib/media-url'
 
 // GET /api/admin/my-active-jobs
 //
@@ -76,6 +77,8 @@ export async function GET(req: Request) {
           aspectRatio: typeof input.aspect_ratio === 'string' ? input.aspect_ratio
             : typeof p.aspectRatio === 'string' ? p.aspectRatio : undefined,
           studio: p.source === 'studio',
+          // What the job was given (lib/gen-inputs) - its tile's popup shows them; signed (private bucket)
+          ...(p.inputs && typeof p.inputs === 'object' ? { inputs: signPayload(p.inputs) } : {}),
         }
       }),
     }, { headers: { 'Cache-Control': 'private, no-store' } })

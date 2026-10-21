@@ -243,6 +243,9 @@ export function novaInstructions(o: { persona?: NovaPersonaId; isAdmin: boolean;
     '- CONTINUITY ACROSS CUTS: when the next shot continues the same moment, extract_frame the LAST frame of the previous clip and use it as the next start_image_id.',
     '- EVERY OTHER VIDEO MODEL: use_video_tool runs the rest of the site\'s video models by name - upscalers (Topaz, FlashVSR, Flux, Kandinsky), reframes, Luma restyle, extends (PixVerse, H3 Turbo, Veo), translate / dub / subtitles, relight, camera moves, depth, tracking, background removal, audio-to-video (LTX, PixVerse Music Video, HeyGen Avatar), Kling Motion Control, Higgsfield. Image upscalers (Clarity, AuraSR, ESRGAN, DRCT) are image models: generate_image with the picture as the reference and settings {"factor":"2"}. Recordings (voice changer, stem splitter, clean-up, voice cloning, video-to-music) go through generate_audio with input_id.',
     '- CLIPS ARE EDITABLE: edit_clip runs the site\'s clip tools on any clip (upscale, edit with words, recast a face, remove an object, extend, lip-sync, sound effects); talking_head makes a still talk to a voice line; make_loop checks and repairs a loop\'s seam; trim_media trims, speeds up, mutes, fades or levels one clip or sound for free. Fix a clip before re-rendering it from scratch.',
+    // 2026-10-21 (owner): users attach their own clips (several at once) and ask for them to be cut
+    // together or changed - "instead of having them regenerate them. This allows users to use more of their assets."
+    '- THE USER\'S OWN FOOTAGE: when the user attaches or references clips (#ids marked video / cut, uploads, an asset\'s clips) and asks to edit them, EDIT THOSE CLIPS - never regenerate them unless they ask for new footage. Join several into one film with assemble_cut (clips in the order the user gives, or the order that tells the story; trim_start / trim_end to cut each one down, transitions, music / voice / captions / titles, at most 16 clips and 120 seconds); one clip trimmed, sped up, muted, faded or levelled with trim_media (free); restyled, upscaled, extended, relit or reframed with edit_clip / use_video_tool; a still pulled out with extract_frame. Watch them first (watch_video, or inspect_media for timings) when where to cut depends on what happens in them.',
     '- WATCH, DO NOT GUESS: frames miss motion. watch_video lets the strong model watch clips with their sound (a face that morphs, flicker, lips against words, how a cut flows) - use it on anything that moves before you call it done.',
     '- FINISHING A CUT: assemble_cut can match_color (shots from different renders look like one film - use it whenever clips come from different renders), add a look (a grade), overlays (titles, lower thirds, end-card text, a logo ON the video - exact words), and auto_captions (word-timed captions of everything spoken). To change a cut later use recut with only what changes - never rebuild it from memory.',
     '- RESEARCH: web_search finds facts you need (a brand\'s colours or tagline, what a real place or object looks like, a style\'s references). Do not use it to copy someone\'s artwork or a real person\'s likeness.',
@@ -524,8 +527,10 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
 
   // ── which model runs this turn: an admin's pinned model, else the router ──
   const lastReply = (await prisma.chatMessage.findFirst({ where: { chatId: chat.id, role: 'assistant' }, orderBy: { id: 'desc' }, select: { content: true } }))?.content ?? ''
+  // Attached clips (2026-10-21): "cut these together" is an edit of the user's footage - never a light, tool-less turn
+  const attachedClips = input.attachmentIds.length ? (await ownedRows(user.id, input.attachmentIds)).filter(r => kindOf(r) === 'video' || kindOf(r) === 'cut').length : 0
   const routed = pinned === NOVA_AUTO
-    ? await routeTurn(userText, { planActive: !!state.plan, continuing: !!input.continueRenders, attachments: input.attachmentIds.length, lastReply })
+    ? await routeTurn(userText, { planActive: !!state.plan, continuing: !!input.continueRenders, attachments: input.attachmentIds.length + input.attachmentUrls.length, clips: attachedClips, lastReply })
     : { tier: 'production' as NovaTier, model: pinned, usage: { inputTokens: 0, outputTokens: 0 }, why: 'pinned by an admin' }
   const model = routed.model
   const routerUsd = novaChatUsd('gemini-3.5-flash-lite', routed.usage)
@@ -569,10 +574,14 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
      */
     const picked = (await Promise.all((input.assetIds ?? []).slice(0, 6).map(id => findAsset(user.id, id)))).filter((a): a is NonNullable<typeof a> => !!a)
     const assetInfo = await Promise.all(picked.map(async a => {
-      const refs = storedRefs(a.refs)
-      const rows = refs.length ? await prisma.generatedImage.findMany({ where: { userId: user.id, isDeleted: false, imageUrl: { in: refs.map(r => r.url) } }, select: { id: true, imageUrl: true, thumbnailUrl: true } }) : []
+      // Pictures (shown, usable as references) and clips (footage to edit - assets hold video since 2026-10-21)
+      const all = storedRefs(a.refs)
+      const refs = all.filter(r => r.kind !== 'video'), clipRefs = all.filter(r => r.kind === 'video')
+      const rows = all.length ? await prisma.generatedImage.findMany({ where: { userId: user.id, isDeleted: false, imageUrl: { in: all.map(r => r.url) } }, select: { id: true, imageUrl: true, thumbnailUrl: true } }) : []
       const ids = refs.map(r => rows.find(x => x.imageUrl === r.url)?.id).filter((v): v is number => !!v)
-      return { a, refs, ids, thumb: rows[0]?.thumbnailUrl ?? refs[0]?.thumb ?? refs[0]?.url ?? null }
+      const clipIds = clipRefs.map(r => rows.find(x => x.imageUrl === r.url)?.id).filter((v): v is number => !!v)
+      const first = rows.find(x => x.imageUrl === refs[0]?.url)
+      return { a, refs, ids, clipIds, thumb: first?.thumbnailUrl ?? refs[0]?.url ?? (clipIds[0] ? `/api/images/${clipIds[0]}?thumb=1` : null) }
     }))
     const assetMeta = assetInfo.map(x => ({ id: x.a.id, name: x.a.name, kind: x.a.kind, thumb: x.thumb }))
     const seenAssetIds: number[] = []
@@ -585,6 +594,17 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
     const chatRefs = await resolveChatRefs(user.id, state.refs)
     const refsNew = refsKey(chatRefsIds(chatRefs)) !== (state.refsShown ?? '')
     const attachments = attachRows.map(r => ({ id: r.id, url: r.imageUrl, kind: kindOf(r) as NovaMediaKind }))
+    /*
+     * Attached clips are not shown as pictures (2026-10-21): Nova is told each
+     * one's length and shape so it can plan a cut from them, and watches them
+     * (watch_video / inspect_media) when the edit depends on what happens.
+     */
+    const clipFacts = (r: (typeof attachRows)[number]) => {
+      const m = (r.videoMetadata ?? {}) as { duration?: unknown; durationSec?: unknown; aspectRatio?: unknown; upload?: boolean }
+      const sec = Number(m.durationSec ?? m.duration)
+      return [Number.isFinite(sec) && sec > 0 ? `${m.upload || m.durationSec ? '' : 'about '}${Math.round(sec * 10) / 10}s` : '', typeof m.aspectRatio === 'string' ? m.aspectRatio : ''].filter(Boolean).join(', ')
+    }
+    const attachLabel = (r: (typeof attachRows)[number]) => { const k = kindOf(r); const f = k === 'video' || k === 'cut' ? clipFacts(r) : ''; return `#${r.id} (${k}${f ? `, ${f}` : ''}${r.model === 'nova-upload' ? ', uploaded' : ''})` }
     // Prism files what it makes in one top-level "Prism" folder; each Nova chat gets its own under "Nova Studio"
     if (!state.folderId) state.folderId = persona === 'prism' ? await ensureChatFolder(user.id, 'Prism', null) : await ensureChatFolder(user.id, chat.title === 'New chat' ? (clip(userText, 60) || 'New chat') : chat.title)
     const userRow = await prisma.chatMessage.create({
@@ -608,21 +628,22 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       const m = toNovaMessage(r)
       return m.role === 'user' ? { role: 'user' as const, content: digest(m) } : { role: 'assistant' as const, content: digest(m) || '(no reply)' }
     })
-    const assetText = assetInfo.map(x => `- Asset ${x.a.id} "${x.a.name}" (${x.a.kind})${x.a.notes ? ` - notes: ${clip(x.a.notes, 500)}` : ''}\n  pictures (use as reference_ids, most representative first): ${x.ids.length ? x.ids.map(i => `#${i}`).join(', ') : 'none in My Generations'}${x.refs.length > x.ids.length ? ` (+${x.refs.length - x.ids.length} uploaded straight into the asset - shown, not usable as references)` : ''}`).join('\n')
+    const assetText = assetInfo.map(x => `- Asset ${x.a.id} "${x.a.name}" (${x.a.kind})${x.a.notes ? ` - notes: ${clip(x.a.notes, 500)}` : ''}\n  pictures (use as reference_ids, most representative first): ${x.ids.length ? x.ids.map(i => `#${i}`).join(', ') : 'none in My Generations'}${x.refs.length > x.ids.length ? ` (+${x.refs.length - x.ids.length} uploaded straight into the asset - shown, not usable as references)` : ''}${x.clipIds.length ? `\n  video clips (the user's footage - edit / cut these): ${x.clipIds.map(i => `#${i}`).join(', ')}` : ''}`).join('\n')
     const refsText = chatRefsText(chatRefs)
-    const parts: any[] = [{ type: 'text', text: `${userText}${attachments.length ? `\n[attached: ${attachments.map(a => `#${a.id} (${a.kind})`).join(', ')}]` : ''}${assetText ? `\n[The user picked these Assets - this is what they mean; keep them consistent with these pictures and notes:\n${assetText}]` : ''}${refsText ? `\n${refsText}` : ''}` }]
+    const attachedClipCount = attachRows.filter(r => kindOf(r) === 'video' || kindOf(r) === 'cut').length
+    const parts: any[] = [{ type: 'text', text: `${userText}${attachRows.length ? `\n[attached: ${attachRows.map(attachLabel).join(', ')}]${attachedClipCount ? `\n[${attachedClipCount > 1 ? `These ${attachedClipCount} clips are` : 'This clip is'} the user's own footage, in the order attached - edit it as asked (see THE USER'S OWN FOOTAGE); do not regenerate it unless they ask for new footage.]` : ''}` : ''}${assetText ? `\n[The user picked these Assets - this is what they mean; keep them consistent with these pictures and notes:\n${assetText}]` : ''}${refsText ? `\n${refsText}` : ''}` }]
     // The pictures attached to THIS message are shown, so Nova can see what the user means
     for (const a of attachRows.filter(r => kindOf(r) === 'image').slice(0, 4)) { const p = await imagePart(a.imageUrl); if (p) parts.push(p) }
     for (const url of input.attachmentUrls.slice(0, 2)) { const p = await imagePart(url); if (p) parts.push(p) }
     // The picked assets' first pictures (two each, four in all), so Nova sees who / what they are
     for (const x of assetInfo) for (const r of x.refs.slice(0, 2)) { if (parts.filter(p => p.type === 'file').length >= 6) break; const p = await imagePart(r.url); if (p) parts.push(p) }
-    for (const x of assetInfo) seenAssetIds.push(...x.ids)
+    for (const x of assetInfo) seenAssetIds.push(...x.ids, ...x.clipIds)
     // The chat's references: newly switched on -> their first pictures, so Nova sees them (six pictures in all at most)
     if (refsNew) {
-      const pics = [...chatRefs.assets.flatMap(a => a.pictures.slice(0, 1).map(p => p.url)), ...chatRefs.generations.filter(g => g.kind === 'image').map(g => g.url)]
+      const pics = [...chatRefs.assets.flatMap(a => a.pictures.filter(p => p.kind !== 'video').slice(0, 1).map(p => p.url)), ...chatRefs.generations.filter(g => g.kind === 'image').map(g => g.url)]
       for (const u of pics) { if (parts.filter(p => p.type === 'file').length >= 6) break; const p = await imagePart(u); if (p) parts.push(p) }
     }
-    for (const a of chatRefs.assets) seenAssetIds.push(...a.ids)
+    for (const a of chatRefs.assets) seenAssetIds.push(...a.ids, ...a.clipIds)
     seenAssetIds.push(...chatRefs.generations.map(g => g.id))
     if (input.attachmentUrls.length) parts.push({ type: 'text', text: '(The last picture(s) are from an asset and are not in My Generations: look at them, but they cannot be passed as references.)' })
     messages.push({ role: 'user', content: parts.map(p => p.type === 'file' ? { type: 'file', data: p.data.data, mediaType: p.mediaType } : p) as any })

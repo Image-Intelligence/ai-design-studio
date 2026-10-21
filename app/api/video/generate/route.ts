@@ -18,6 +18,8 @@ import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BA
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
+import { keepVideoInputs, videoInputLinks, videoInputsFromBody } from '@/lib/gen-inputs'
+import { mediaKeeper } from '@/lib/media-ownership'
 
 /** Gemini Omni binds references as <IMAGE_REF_0>, <IMAGE_REF_1>…; the portal writes @Image1, @Image2… */
 const omniRefTags = (t: string) => (t ?? '').replace(/@Image(\d+)/gi, (_m, n) => `<IMAGE_REF_${Math.max(0, parseInt(n) - 1)}>`)
@@ -125,6 +127,13 @@ export async function POST(request: NextRequest) {
       ])
       if (idGate) return idGate
     }
+    /*
+     * What this job was given, for its generating tile and the finished
+     * video (lib/gen-inputs, 2026-10-21): kept on the queue row and handed
+     * back SIGNED, so only the account's own links are kept.
+     */
+    const sentInputs = videoInputsFromBody(rawBody)
+    const queueInputs = _u ? keepVideoInputs(sentInputs, await mediaKeeper(_u.id, videoInputLinks(sentInputs))) : {}
 
     const {
       userId: userIdRaw,
@@ -1249,7 +1258,7 @@ export async function POST(request: NextRequest) {
             modelId:    model,
             modelType:  'video',
             prompt:     (prompt || '').trim(),
-            parameters: { falEndpoint, falInput, usePolling: true, clientSlotId, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+            parameters: { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
             status:     'queued',
             ticketCost: ticketCost, // real cost — admin video is debited client-side; refunded server-side on failure
           },
@@ -1316,7 +1325,7 @@ export async function POST(request: NextRequest) {
           modelId:     model,
           modelType:   'video',
           prompt:      (prompt || '').trim(),
-          parameters:  { falEndpoint, falInput, usePolling: true, clientSlotId, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+          parameters:  { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
           status:      'processing',
           ticketCost:  ticketCost,
           falRequestId: requestId,
@@ -1331,7 +1340,7 @@ export async function POST(request: NextRequest) {
           modelId:      model,
           modelType:    'video',
           prompt:       (prompt || '').trim(),
-          parameters:   { falEndpoint, falInput, usePolling: true, clientSlotId, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+          parameters:   { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
           status:       'processing',
           ticketCost:   ticketCost,
           falRequestId: requestId,

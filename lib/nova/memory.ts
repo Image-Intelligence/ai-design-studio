@@ -36,6 +36,16 @@ export async function addNovaNote(userId: number, text: string): Promise<NovaNot
   return next
 }
 
+/** A note's text rewritten by the user (the studio's memory panel, 2026-10-21); unknown ids are ignored. */
+export async function updateNovaNote(userId: number, id: string, text: string): Promise<NovaNote[]> {
+  const t = text.replace(/\s+/g, ' ').trim().slice(0, NOTE_MAX)
+  const notes = await loadNovaMemory(userId)
+  if (!t || !notes.some(n => n.id === id)) return notes
+  const next = notes.map(n => (n.id === id ? { ...n, text: t, at: new Date().toISOString() } : n))
+  await save(userId, next)
+  return next
+}
+
 export async function removeNovaNote(userId: number, id: string): Promise<NovaNote[]> {
   const next = (await loadNovaMemory(userId)).filter(n => n.id !== id)
   await save(userId, next)

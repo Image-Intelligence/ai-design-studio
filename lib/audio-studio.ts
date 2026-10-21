@@ -189,7 +189,7 @@ const murekaOut = (d: any): AudioOutput[] => (d?.audio?.url ? [{
 export function murekaPodcastTurns(i: AudioRunInput): { text: string; voice: string }[] {
   const out: { text: string; voice: string }[] = []
   for (const l of parseDialogue(i.text)) {
-    const voice = l.speaker ? (i.voice2 || 'Victoria') : (i.voice || 'Ethan')
+    const voice = l.speaker ? (i.voice2 || 'Luna') : (i.voice || 'Jake')
     let rest = l.text.trim()
     while (rest.length > 400) {
       const cut = Math.max(rest.lastIndexOf('. ', 399), rest.lastIndexOf('? ', 399), rest.lastIndexOf('! ', 399), rest.lastIndexOf(', ', 399), rest.lastIndexOf(' ', 399))
@@ -385,9 +385,10 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     // script at 12 characters a second (conservative - more seconds, not fewer)
     id: 'mureka-podcast', name: 'Mureka 9.5 Podcast', group: 'dialogue', provider: 'Mureka', endpoint: 'mureka/api/generate/podcast',
     blurb: 'A two-host podcast from a script. One line per speaker: "Name: line" - up to 10 turns.',
-    text: { label: 'Script', placeholder: 'Ethan: Welcome back to the show.\nVictoria: Today we are talking about the ocean at night.', max: 4000, required: true },
-    voices: { options: MUREKA_PODCAST_VOICES, default: 'Ethan', label: 'First host' },
-    voice2: { options: MUREKA_PODCAST_VOICES, default: 'Victoria' },
+    // The hosts start as Jake and Luna (2026-10-21, owner: not Ethan and Victoria); any of the five can be picked
+    text: { label: 'Script', placeholder: 'Jake: Welcome back to the show.\nLuna: Today we are talking about the ocean at night.', max: 4000, required: true },
+    voices: { options: MUREKA_PODCAST_VOICES, default: 'Jake', label: 'First host' },
+    voice2: { options: MUREKA_PODCAST_VOICES, default: 'Luna' },
     price: { usd: 0.1725, per: 'minute', charsPerSecond: 12 },
     validate: i => { const n = murekaPodcastTurns(i).length; return n === 0 ? 'Write the script' : n > 10 ? `That script makes ${n} turns - Mureka takes 10 at most (a turn is one line, or 400 characters of it)` : null },
     build: i => ({ conversations: murekaPodcastTurns(i) }),

@@ -19,8 +19,10 @@ import type { NovaMediaKind } from '@/lib/nova/config'
 export type ChatRefAsset = {
   id: number; name: string; kind: string; notes: string; thumb: string | null
   /** Its pictures (all of them, for showing) and the ones that are My Generations rows (usable as reference_ids). */
-  pictures: { url: string; thumb: string | null }[]
+  pictures: { url: string; thumb: string | null; kind?: 'video' }[]
   ids: number[]
+  /** Its video clips' My Generations ids (assets hold clips since 2026-10-21) - footage to edit, not references. */
+  clipIds: number[]
 }
 export type ChatRefGeneration = { id: number; kind: NovaMediaKind; url: string; thumb: string | null; prompt: string; model: string }
 export type ChatRefs = { assets: ChatRefAsset[]; generations: ChatRefGeneration[] }
@@ -40,11 +42,18 @@ export async function resolveChatRefs(userId: number, refs: { assets: number[]; 
   const assets: ChatRefAsset[] = rawAssets.map((a, i) => {
     const pics = assetPics[i]
     const rowOf = (u: string) => picRows.find(r => r.imageUrl === u)
+    const stills = pics.filter(p => p.kind !== 'video')
+    // A clip's thumbnail: its poster, or the library's poster proxy (it makes one)
+    const thumbOf = (p: { url: string; kind?: 'video'; thumb?: string | null }) => {
+      const row = rowOf(p.url)
+      return row?.thumbnailUrl ?? (p.kind === 'video' ? (row ? `/api/images/${row.id}?thumb=1` : null) : p.thumb ?? null)
+    }
     return {
       id: a.id, name: a.name, kind: a.kind, notes: a.notes ?? '',
-      thumb: rowOf(pics[0]?.url ?? '')?.thumbnailUrl ?? pics[0]?.thumb ?? pics[0]?.url ?? null,
-      pictures: pics.map(p => ({ url: p.url, thumb: rowOf(p.url)?.thumbnailUrl ?? p.thumb ?? null })),
-      ids: pics.map(p => rowOf(p.url)?.id).filter((v): v is number => !!v),
+      thumb: thumbOf(stills[0] ?? pics[0] ?? { url: '' }) ?? (stills[0]?.url ?? null),
+      pictures: pics.map(p => ({ url: p.url, thumb: thumbOf(p), ...(p.kind === 'video' ? { kind: 'video' as const } : {}) })),
+      ids: stills.map(p => rowOf(p.url)?.id).filter((v): v is number => !!v),
+      clipIds: pics.filter(p => p.kind === 'video').map(p => rowOf(p.url)?.id).filter((v): v is number => !!v),
     }
   })
   // In the order they were picked
@@ -62,7 +71,7 @@ export async function resolveChatRefs(userId: number, refs: { assets: number[]; 
 export function chatRefsText(r: ChatRefs): string {
   if (!r.assets.length && !r.generations.length) return ''
   const lines: string[] = []
-  for (const a of r.assets) lines.push(`- Asset ${a.id} "${a.name}" (${a.kind})${a.notes ? ` - notes: ${clip(a.notes, 400)}` : ''}; pictures usable as reference_ids: ${a.ids.length ? a.ids.map(i => `#${i}`).join(', ') : 'none in My Generations'}`)
+  for (const a of r.assets) lines.push(`- Asset ${a.id} "${a.name}" (${a.kind})${a.notes ? ` - notes: ${clip(a.notes, 400)}` : ''}; pictures usable as reference_ids: ${a.ids.length ? a.ids.map(i => `#${i}`).join(', ') : 'none in My Generations'}${a.clipIds.length ? `; its video clips (the user's footage - edit / cut these): ${a.clipIds.map(i => `#${i}`).join(', ')}` : ''}`)
   for (const g of r.generations) lines.push(`- #${g.id} (${g.kind}, ${g.model})${g.prompt ? `: ${g.prompt}` : ''}`)
   return `[References the user has switched on for this chat - what they mean by "the character", "my product", "that shot" unless they say otherwise; keep work consistent with them and pass their ids as reference_ids when you make something with them:\n${lines.join('\n')}]`
 }

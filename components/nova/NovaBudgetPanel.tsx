@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Bookmark, KeyRound, Loader2, ShieldCheck, X } from "lucide-react"
+import { Bookmark, Check, KeyRound, Loader2, Pencil, Plus, ShieldCheck, X } from "lucide-react"
 import { DEFAULT_NOVA_BUDGET, sanitizeNovaBudget, type NovaBudget, type NovaSpend } from "@/lib/nova/config"
 import { BrandButton } from "@/components/employees/StudioBrand"
 import type { NovaBackground, NovaNote } from "./novaApi"
@@ -16,6 +16,8 @@ import { usePersona } from "./persona"
  * Also "What Nova remembers" (2026-10-19): the preferences and brand rules
  * Nova saved with its remember tool - the user can read them and remove any
  * (DELETE /api/nova/settings?note=<id>). Nova follows them in every chat.
+ * Since 2026-10-21 the user can also write them here - add one, or edit one
+ * in place (PUT /api/nova/settings { note } / { editNote }).
  */
 const FIELDS: { key: keyof NovaBudget; label: string; help: string }[] = [
   { key: "askAbove", label: "Default run budget", help: "Where the budget in the prompt box starts: how much it may spend on one request without asking. You can change it for each run in the prompt box. Anything bigger comes to you as a plan to approve." },
@@ -24,13 +26,16 @@ const FIELDS: { key: keyof NovaBudget; label: string; help: string }[] = [
   { key: "monthly", label: "Per month", help: "The most that may be spent in one calendar month." },
 ]
 
-export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForget, focusMemory, background, onToggleBackground }: {
+export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForget, onAddNote, onEditNote, focusMemory, background, onToggleBackground }: {
   budget: NovaBudget
   spend: NovaSpend
   onClose: () => void
   onSave: (b: NovaBudget) => Promise<void>
   memory?: NovaNote[]
   onForget?: (id: string) => Promise<void>
+  /** Write a note yourself / rewrite one */
+  onAddNote?: (text: string) => Promise<void>
+  onEditNote?: (id: string, text: string) => Promise<void>
   /** Opened from "What Nova remembers": scroll straight to it. */
   focusMemory?: boolean
   /** Background runs: a revocable API key of the user's own that lets a production carry on with the tab closed. */
@@ -48,6 +53,24 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
   const [confirmForget, setConfirmForget] = useState<string | null>(null)
   const [forgetting, setForgetting] = useState<string | null>(null)
   const memRef = useRef<HTMLDivElement>(null)
+  // A note being written, and one being edited in place
+  const [newNote, setNewNote] = useState("")
+  const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const addNote = async () => {
+    const t = newNote.trim()
+    if (!t || !onAddNote) return
+    setAdding(true); setError(null)
+    try { await onAddNote(t); setNewNote("") } catch (e: any) { setError(String(e?.message || e)) } finally { setAdding(false) }
+  }
+  const saveEdit = async () => {
+    if (!editing || !onEditNote) return
+    const t = editing.text.trim()
+    if (!t) return
+    setSavingEdit(true); setError(null)
+    try { await onEditNote(editing.id, t); setEditing(null) } catch (e: any) { setError(String(e?.message || e)) } finally { setSavingEdit(false) }
+  }
   useEffect(() => { if (focusMemory) memRef.current?.scrollIntoView({ block: "start" }) }, [focusMemory])
   const forget = async (id: string) => {
     if (!onForget) return
@@ -141,11 +164,37 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
               <p className="text-[13px] font-bold text-white">What {name} remembers</p>
               {!!memory.length && <span className="ml-auto text-[10.5px] text-slate-500 tabular-nums">{memory.length}</span>}
             </div>
-            <p className="text-[10.5px] text-slate-500 leading-snug mb-2.5">{name} follows these in every chat. Remove anything that is wrong or out of date.</p>
+            <p className="text-[10.5px] text-slate-500 leading-snug mb-2.5">{name} follows these in every chat. Add your own, edit, or remove anything that is wrong or out of date.</p>
+            {onAddNote && (
+              <div className="mb-2.5 flex items-start gap-1.5">
+                <textarea value={newNote} onChange={e => setNewNote(e.target.value)} rows={2} maxLength={240}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void addNote() } }}
+                  placeholder={`Something ${name} should always remember - e.g. "My brand colours are navy and gold" or "Never show prices"`}
+                  className="flex-1 min-w-0 px-2.5 py-2 rounded-lg bg-black/40 border border-white/10 text-[12px] text-white placeholder:text-slate-600 focus:outline-none focus:border-white/30 resize-none" />
+                <BrandButton size="sm" onClick={() => void addNote()} disabled={adding || !newNote.trim()} busy={adding} icon={adding ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}>
+                  Add
+                </BrandButton>
+              </div>
+            )}
             {memory.length ? (
               <ul className="space-y-1.5">
                 {memory.map(n => (
                   <li key={n.id} className="flex items-start gap-2 px-2.5 py-2 rounded-lg border border-violet-400/15 bg-violet-500/[0.04]">
+                    {editing?.id === n.id ? (
+                      <span className="flex-1 min-w-0 flex items-start gap-1.5">
+                        <textarea value={editing.text} onChange={e => setEditing({ id: n.id, text: e.target.value })} rows={2} maxLength={240} autoFocus
+                          // the cursor at the end, ready to add to it
+                          onFocus={e => { const l = e.currentTarget.value.length; e.currentTarget.setSelectionRange(l, l) }}
+                          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void saveEdit() } if (e.key === "Escape") setEditing(null) }}
+                          className="flex-1 min-w-0 px-2 py-1.5 rounded-md bg-black/40 border border-white/15 text-[12px] text-white focus:outline-none focus:border-white/35 resize-none" />
+                        {savingEdit
+                          ? <Loader2 size={13} className="shrink-0 mt-1 animate-spin text-slate-400" />
+                          : <>
+                              <button onClick={() => void saveEdit()} className="shrink-0 p-0.5 mt-0.5 text-emerald-300 hover:text-emerald-200" aria-label="Save" title="Save"><Check size={14} /></button>
+                              <button onClick={() => setEditing(null)} className="shrink-0 p-0.5 mt-0.5 text-slate-500 hover:text-white" aria-label="Cancel" title="Cancel"><X size={13} /></button>
+                            </>}
+                      </span>
+                    ) : (<>
                     <span className="flex-1 min-w-0">
                       <span className="block text-[12px] text-slate-200 leading-snug break-words">{n.text}</span>
                       <span className="block mt-0.5 text-[9.5px] text-slate-500">{(() => { const d = new Date(n.at); return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) })()}</span>
@@ -158,14 +207,18 @@ export function NovaBudgetPanel({ budget, spend, onClose, onSave, memory, onForg
                     ) : forgetting === n.id ? (
                       <Loader2 size={13} className="shrink-0 mt-0.5 animate-spin text-slate-400" />
                     ) : (
-                      <button onClick={() => setConfirmForget(n.id)} className="shrink-0 p-0.5 text-slate-500 hover:text-red-300" aria-label="Remove" title="Remove"><X size={13} /></button>
+                      <span className="shrink-0 flex items-center gap-0.5">
+                        {onEditNote && <button onClick={() => { setConfirmForget(null); setEditing({ id: n.id, text: n.text }) }} className="p-0.5 text-slate-500 hover:text-white" aria-label="Edit" title="Edit"><Pencil size={12} /></button>}
+                        <button onClick={() => setConfirmForget(n.id)} className="p-0.5 text-slate-500 hover:text-red-300" aria-label="Remove" title="Remove"><X size={13} /></button>
+                      </span>
                     )}
+                    </>)}
                   </li>
                 ))}
               </ul>
             ) : (
               <p className="px-2.5 py-3 rounded-lg border border-dashed border-white/10 text-[11px] text-slate-500 leading-snug">
-                {name} saves your preferences and brand rules here when you say so (e.g. &lsquo;remember: never show prices&rsquo;).
+                Nothing yet. Write one above, or tell {name} in a chat (e.g. &lsquo;remember: never show prices&rsquo;) and it is saved here.
               </p>
             )}
           </div>

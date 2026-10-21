@@ -24,16 +24,20 @@ import { NOVA_ROUTES, type NovaTier, type NovaUsage } from '@/lib/nova/config'
 
 const ROUTER_MODEL = 'gemini-3.5-flash-lite'
 
-function heuristic(text: string, o: { planActive: boolean; continuing: boolean; attachments: number }): NovaTier {
+const EDIT_WORDS = /\b(edit|cut|trim|join|stitch|combine|merge|splice|together|sequence|montage|compile|speed|slow|reverse|shorten|crop|reframe|fade|transition|caption|subtitle|title|music|soundtrack|mute|grade|colou?r)\b/
+
+function heuristic(text: string, o: { planActive: boolean; continuing: boolean; attachments: number; clips?: number }): NovaTier {
   const t = text.toLowerCase()
   if (o.continuing || o.planActive) return 'run'
+  // The user's own clips to edit (2026-10-21): a cut of existing footage
+  if (o.clips && EDIT_WORDS.test(t)) return 'create'
   if (/\b(advert|ad|commercial|trailer|film|movie|campaign|storyboard|series|episodes?|scene|video|clip|loop(ing)?|animat\w*|gif|cinemagraph|talking|lip-?sync|consistent|same (character|person|product))\b/.test(t)
     || /\b([2-9]|two|three|four|five|six)\s+(shots?|scenes?|clips?|poses?|images?|pictures?|angles?|versions?)\b/.test(t)) return 'production'
   if (/\b(make|create|generate|design|draw|animate|render|video|image|picture|logo|song|music|voice|3d)\b/.test(t) || o.attachments) return 'create'
   return 'light'
 }
 
-export async function routeTurn(text: string, o: { planActive: boolean; continuing: boolean; attachments: number; lastReply: string }): Promise<{ tier: NovaTier; model: string; usage: NovaUsage; why: string }> {
+export async function routeTurn(text: string, o: { planActive: boolean; continuing: boolean; attachments: number; clips?: number; lastReply: string }): Promise<{ tier: NovaTier; model: string; usage: NovaUsage; why: string }> {
   const usage = { inputTokens: 0, outputTokens: 0 }
   const fallback = heuristic(text, o)
   // Carrying out an approved plan or waking after renders: execution, not planning - no need to ask
@@ -42,10 +46,11 @@ export async function routeTurn(text: string, o: { planActive: boolean; continui
     const prompt = [
       'Classify the user\'s message to an AI creative studio assistant into ONE tier. Reply with JSON {"tier":"light"|"create"|"production","why":"few words"}.',
       'light: questions, chat, organising or finding things in their library, renaming, small talk - no new media.',
-      'create: one or two new images, a picture edit or fix, one sound / voice line / song, a simple cut of EXISTING clips - no new video and nothing that has to match other images.',
+      'create: one or two new images, a picture edit or fix, one sound / voice line / song, a cut or edit of EXISTING clips (the user\'s attached footage trimmed, joined, sped up, captioned, scored) - no new video and nothing that has to match other images.',
+      'An edit of clips the user attached is NEVER light.',
       'production: ANY new video (even one clip, a loop, an animation, a talking character), anything that must keep a character, product or place consistent across 2+ images or shots, ads, scenes, films, campaigns, series, or a stated budget above about 15 tickets.',
       `Assistant's last reply (context): "${o.lastReply.slice(0, 300)}"`,
-      `User: "${text.slice(0, 1200)}"${o.attachments ? ` [attached ${o.attachments} item(s)]` : ''}`,
+      `User: "${text.slice(0, 1200)}"${o.attachments ? ` [attached ${o.attachments} item(s)${o.clips ? `, ${o.clips} of them video clips` : ''}]` : ''}`,
     ].join('\n')
     const res = await geminiGenerate(ROUTER_MODEL, { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 120, responseMimeType: 'application/json' } }, { signal: AbortSignal.timeout(8_000) })
     if (res.ok) {
@@ -53,7 +58,9 @@ export async function routeTurn(text: string, o: { planActive: boolean; continui
       usage.inputTokens = data.usageMetadata?.promptTokenCount ?? 0
       usage.outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0
       const j = JSON.parse(geminiText(data).trim().replace(/^```(?:json)?\s*|\s*```$/g, ''))
-      const tier: NovaTier = j.tier === 'light' || j.tier === 'create' || j.tier === 'production' ? j.tier : fallback
+      let tier: NovaTier = j.tier === 'light' || j.tier === 'create' || j.tier === 'production' ? j.tier : fallback
+      // Attached clips never get a light (tool-less) turn - the edit tools are needed even for "what's in these?"
+      if (tier === 'light' && o.clips) tier = 'create'
       return { tier, model: NOVA_ROUTES[tier], usage, why: String(j.why ?? '').slice(0, 80) }
     }
   } catch { /* fall back */ }

@@ -124,7 +124,7 @@ export function NovaReferences({ refs, saving, error, onChange, bible, onClearBi
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[11.5px] font-semibold text-white truncate">{a.name}</span>
-                <span className="block text-[9.5px] text-slate-400">{kindLabel(a.kind)} · {a.pictures.length} picture{a.pictures.length === 1 ? "" : "s"}</span>
+                <span className="block text-[9.5px] text-slate-400">{kindLabel(a.kind)} · {(() => { const c = a.pictures.filter(p => p.kind === "video").length, n = a.pictures.length - c; return [n || !c ? `${n} picture${n === 1 ? "" : "s"}` : "", c ? `${c} clip${c === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ") })()}</span>
               </span>
               <button onClick={() => toggleAsset(a.id)} className="p-1 text-fuchsia-200/60 hover:text-white" aria-label={`Stop referencing ${a.name}`} title="Stop referencing"><X size={12} /></button>
             </div>
@@ -230,7 +230,8 @@ function NewAssetForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const pick = async () => {
-    const items = await openLibraryPickerItems({ max: Math.max(1, 8 - pics.length), title: "Pictures of this asset" })
+    // Pictures and clips (assets hold video since 2026-10-21) - not sounds
+    const items = (await openLibraryPickerItems({ max: Math.max(1, 8 - pics.length), title: "Pictures or clips of this asset", media: "all" })).filter(i => i.kind !== "audio")
     setPics(p => [...p, ...items.filter(i => i.generationId !== null && !p.some(x => x.generationId === i.generationId))].slice(0, 8))
   }
   const create = async () => {
@@ -263,12 +264,13 @@ function NewAssetForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
           <span key={p.url} className="relative w-10 h-10 rounded-md overflow-hidden border border-white/15">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={p.thumb || p.url} alt="" className="w-full h-full object-cover" />
-            <button onClick={() => setPics(xs => xs.filter(x => x.url !== p.url))} className="absolute top-0 right-0 p-0.5 bg-black/70 text-slate-200" aria-label="Remove picture"><X size={9} /></button>
+            {p.kind === "video" && <span className="absolute bottom-0 left-0 px-0.5 bg-black/70 text-[7px] font-bold uppercase text-white">Clip</span>}
+            <button onClick={() => setPics(xs => xs.filter(x => x.url !== p.url))} className="absolute top-0 right-0 p-0.5 bg-black/70 text-slate-200" aria-label="Remove"><X size={9} /></button>
           </span>
         ))}
         {pics.length < 8 && (
           <button onClick={() => void pick()} className="h-10 px-2 rounded-md border border-dashed border-white/20 text-[10px] text-slate-400 hover:text-white hover:border-white/40 flex items-center gap-1">
-            <Images size={11} /> {pics.length ? "More" : "Pictures"}
+            <Images size={11} /> {pics.length ? "More" : "Pictures / clips"}
           </button>
         )}
       </div>

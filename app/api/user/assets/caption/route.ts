@@ -9,7 +9,7 @@ import { canonicalMediaUrl } from '@/lib/media-url'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { assetCaptionTickets, geminiUsage } from '@/lib/ai-text-pricing'
 import { ASSET_KINDS, MAX_ASSET_REFS, cleanCaption, cleanTags } from '@/lib/storyboard'
-import { assetsOut, findAsset, ownedImageUrls, storedRefs, updateAsset, withCaptions } from '@/lib/user-assets'
+import { assetClips, assetImages, assetsOut, findAsset, ownedImageUrls, storedRefs, updateAsset, withCaptions } from '@/lib/user-assets'
 
 /**
  * POST /api/user/assets/caption - Auto caption (+ sort) an asset's pictures.
@@ -99,7 +99,9 @@ export async function POST(req: Request) {
   // What is being captioned: a saved asset's pictures, or a board asset's (owned only)
   const row = Number.isInteger(Number(body.assetId)) && body.assetId ? await findAsset(user.id, Number(body.assetId)) : null
   if (body.assetId && !row) return jsonPrivate({ error: 'Not found' }, { status: 404 })
-  const savedRefs = row ? storedRefs(row.refs) : []
+  // Pictures only - an asset's clips (2026-10-21) keep their captions and go back after them
+  const allRefs = row ? storedRefs(row.refs) : []
+  const savedRefs = assetImages(allRefs)
   const urls = row ? savedRefs.map(r => r.url) : (await ownedImageUrls(user.id, Array.isArray(body.urls) ? body.urls : [])).slice(0, MAX_ASSET_REFS)
   if (!urls.length) return jsonPrivate({ error: 'Add pictures first' }, { status: 400 })
   const name = (row?.name ?? String(body.name ?? '')).slice(0, 80) || 'this asset'
@@ -169,7 +171,7 @@ export async function POST(req: Request) {
     if (row) {
       const captions = Object.fromEntries(savedRefs.map((r, i) => [r.id, byIndex.get(i)?.caption ?? r.caption ?? '']))
       const tags = Object.fromEntries(savedRefs.map((r, i) => [r.id, byIndex.get(i)?.tags ?? r.tags ?? []]))
-      const refs = withCaptions(savedRefs, { captions, tags, order: order.map(i => savedRefs[i].id) })
+      const refs = [...withCaptions(savedRefs, { captions, tags, order: order.map(i => savedRefs[i].id) }), ...assetClips(allRefs)]
       const updated = await updateAsset(user.id, row.id, { kind: row.kind, name: row.name, notes: row.notes, refs })
       const [asset] = await assetsOut(user.id, [updated])
       return jsonPrivate({ asset, tickets: charged, ...(charged ? { balance: paid.newBalance } : {}) })

@@ -68,7 +68,8 @@ const STREAM_ID = -2
 /** Messages per page in Prism's chat. */
 const PRISM_PAGE = 40
 const USER_TEMP_ID = -1
-const MAX_ATTACH = 6
+// 8 (was 6) - the send route's cap; several clips to cut together (2026-10-21)
+const MAX_ATTACH = 8
 
 type Overview = { isAdmin: boolean; budget: NovaBudget; spend: NovaSpend; balance: number | null }
 
@@ -396,7 +397,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
     if (opts?.optimisticText !== undefined || (body.attachmentIds?.length ?? 0) > 0 || (body.assetIds?.length ?? 0) > 0) {
       optimistic.push({
         id: USER_TEMP_ID, role: "user", content: opts?.optimisticText ?? body.text, createdAt: now,
-        attachments: attach.map(a => ({ id: a.generationId ?? 0, url: a.thumb || a.url, kind: "image" as const })),
+        attachments: attach.map(a => ({ id: a.generationId ?? 0, url: a.kind === "image" ? (a.thumb || a.url) : a.url, kind: a.kind })),
         ...(pickedAssets.length ? { assets: pickedAssets } : {}),
       })
     }
@@ -666,7 +667,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
         const r = await fetch("/api/nova/uploads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: pj.url, name: f.name, chatId: id }) })
         const j = await r.json().catch(() => ({}))
         if (!r.ok) throw new Error(j.error || "Could not add the upload")
-        setAttach(a => (a.length >= MAX_ATTACH ? a : [...a, { url: j.url, thumb: j.kind === "image" ? j.url : "", generationId: j.id }]))
+        setAttach(a => (a.length >= MAX_ATTACH ? a : [...a, { url: j.url, thumb: j.kind === "image" ? j.url : "", generationId: j.id, kind: j.kind === "video" || j.kind === "audio" ? j.kind : "image" }]))
       } catch (e: any) {
         setError({ msg: String(e?.message || e), needTickets: false })
       } finally {
@@ -678,7 +679,8 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   const pickAttachments = async () => {
     const room = MAX_ATTACH - attach.length
     if (room <= 0) return
-    const items = await openLibraryPickerItems({ max: room, title: "Attach from your library" })
+    // Pictures, clips and sounds (2026-10-21, owner: attach several clips and have them cut together or edited)
+    const items = await openLibraryPickerItems({ max: room, title: "Attach pictures, clips or sounds from your library", media: "all" })
     if (items.length) setAttach(a => [...a, ...items.filter(i => !a.some(x => x.url === i.url))].slice(0, MAX_ATTACH))
   }
 
@@ -716,6 +718,14 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
   }
   const forgetNote = async (id: string) => {
     const r = await novaApi.forgetNote(id)
+    setMemory(r.memory ?? [])
+  }
+  const addNote = async (text: string) => {
+    const r = await novaApi.addNote(text)
+    setMemory(r.memory ?? [])
+  }
+  const editNote = async (id: string, text: string) => {
+    const r = await novaApi.editNote(id, text)
     setMemory(r.memory ?? [])
   }
 
@@ -1117,7 +1127,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
             {/* Prism's panel is narrow: the text box gets its own row and the buttons sit under it */}
             <div className={`flex ${isPrism ? "flex-wrap items-center gap-x-1.5 gap-y-1" : "items-end gap-2"} rounded-2xl silver-edge bg-[#0b0f1a] p-2 shadow-[0_10px_40px_-20px_rgba(0,0,0,0.9)]`}>
               <button onClick={() => void pickAttachments()} disabled={busy || attach.length >= MAX_ATTACH}
-                className="shrink-0 p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-40" title="Attach from My Generations or Assets" aria-label="Attach">
+                className="shrink-0 p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-40" title="Attach pictures, clips or sounds from My Generations or Assets" aria-label="Attach">
                 <Paperclip size={17} />
               </button>
               <button onClick={() => uploadInput.current?.click()} disabled={busy || uploading > 0 || attach.length >= MAX_ATTACH}
@@ -1173,7 +1183,7 @@ export function NovaStudio({ isAdmin, onBalanceChange, onOpenMedia, persona = "n
 
       {budgetOpen && ov && (
         <NovaBudgetPanel budget={ov.budget} spend={spend} onClose={() => setBudgetOpen(false)} onSave={saveBudget}
-          memory={memory ?? []} onForget={forgetNote} focusMemory={budgetOpen === "memory"}
+          memory={memory ?? []} onForget={forgetNote} onAddNote={addNote} onEditNote={editNote} focusMemory={budgetOpen === "memory"}
           background={background} onToggleBackground={toggleBackground} />
       )}
       {viewing && <Lightbox url={viewing} onClose={() => setViewing(null)} />}

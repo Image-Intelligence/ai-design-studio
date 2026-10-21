@@ -23,8 +23,10 @@ import {
   type AudioStudioModel,
 } from "@/lib/audio-studio"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
-import { AdminTag, ADMIN_BORDER, ADMIN_BUTTON, ADMIN_TEXT } from "@/components/ui/admin-mark"
+import { AdminTag, ADMIN_BORDER, ADMIN_TEXT } from "@/components/ui/admin-mark"
 import { cn } from "@/lib/utils"
+import { GenInputsView } from "@/components/feed/GenInputs"
+import { aud as inAud } from "@/lib/gen-inputs"
 
 type AudioItem = {
   id: number
@@ -35,8 +37,63 @@ type AudioItem = {
   videoMetadata?: { label?: string | null; modelName?: string; provider?: string; voice?: string | null; murekaSongId?: string } | null
 }
 /** Mureka Lyrics Video settings, picked on the song's card. */
-type LyricsVideoOpts = { layout: string; aspect: string; title: string }
-type Pending = { requestId: string; modelId: string; name: string; prompt: string; startedAt: number; ticketCost: number }
+/** What a run was given (2026-10-21) - its generating card opens them, laid out for its model (AudioPendingDetail). */
+/*
+ * A generating audio run's popup (2026-10-21, owner: every generating tile
+ * should show its inputs, laid out for its model). The model's spec says
+ * what it takes and what each is called (its text box's label, Style,
+ * Voice / Hosts, Language, Length, its pickers' labels, the recording it
+ * works on); only what the run was given is shown.
+ */
+function AudioPendingDetail({ p, onClose }: { p: Pending; onClose: () => void }) {
+  const m = getAudioStudioModel(p.modelId)
+  const i = p.inputs ?? {}
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
+    window.addEventListener("keydown", h)
+    return () => window.removeEventListener("keydown", h)
+  }, [onClose])
+  const rows: { label: string; value: string; long?: boolean }[] = []
+  if (i.text) rows.push({ label: m?.text?.label ?? "Text", value: i.text, long: true })
+  if (i.lyrics) rows.push({ label: "Lyrics", value: i.lyrics, long: true })
+  if (i.style) rows.push({ label: m?.style?.label ?? "Style", value: i.style })
+  if (i.voice) rows.push({ label: m?.voice2 ? "Hosts" : (m?.voices?.label ?? "Voice"), value: m?.voice2 && i.voice2 ? `${i.voice} & ${i.voice2}` : i.voice })
+  if (i.language) rows.push({ label: "Language", value: i.language })
+  if (i.duration) rows.push({ label: "Length", value: `${i.duration}s` })
+  if (i.instrumental) rows.push({ label: "Instrumental", value: "Yes - no vocals" })
+  for (const o of m?.options ?? []) {
+    const v = i.options?.[o.key]
+    if (v) rows.push({ label: o.label, value: o.values.find(([k]) => k === v)?.[1] ?? v })
+  }
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0a101d] p-4 space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-white">{p.name} <span className="font-normal text-slate-500">· generating</span></p>
+            <p className="text-[10.5px] text-slate-500">{m?.blurb}</p>
+          </div>
+          <button onClick={onClose} className="p-1 text-slate-500 hover:text-white" aria-label="Close"><X size={15} /></button>
+        </div>
+        <p className="text-[10px] font-mono uppercase tracking-widest text-slate-600">Inputs</p>
+        {i.audio && <GenInputsView groups={[{ label: m?.audioIn?.label ?? "Recording", items: [inAud(i.audio.url)], note: i.audio.name }]} />}
+        {rows.map(r => (
+          <div key={r.label}>
+            <p className="mb-1 text-[9px] font-mono uppercase tracking-[0.18em] text-slate-500">{r.label}</p>
+            <p className={`text-[12px] text-slate-200 ${r.long ? "whitespace-pre-wrap max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/30 px-2.5 py-2" : ""}`}>{r.value}</p>
+          </div>
+        ))}
+        {!i.audio && !rows.length && <p className="text-[11px] italic text-slate-600">{p.inputs ? "No inputs" : "Started before inputs were kept - " + p.prompt}</p>}
+      </div>
+    </div>
+  )
+}
+
+type PendingInputs = {
+  text?: string; lyrics?: string; style?: string; voice?: string; voice2?: string; language?: string
+  duration?: number; instrumental?: boolean; audio?: { name: string; url: string }; options?: Record<string, string>
+}
+type Pending = { requestId: string; modelId: string; name: string; prompt: string; startedAt: number; ticketCost: number; inputs?: PendingInputs }
 type Failed = { key: string; name: string; prompt: string; error: string }
 
 const PENDING_KEY = "pv2-audio-pending"
@@ -92,19 +149,13 @@ function VideoCard({ item }: { item: AudioItem }) {
 }
 
 /** One clip: its waveform, a play button, the prompt, model and a download. */
-function AudioCard({ item, onUsePrompt, onLyricsVideo }: { item: AudioItem; onUsePrompt?: (t: string) => void; onLyricsVideo?: (item: AudioItem, o: LyricsVideoOpts) => Promise<void> }) {
+function AudioCard({ item, onUsePrompt }: { item: AudioItem; onUsePrompt?: (t: string) => void }) {
   const ref = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState({ cur: 0, dur: 0 })
   const m = getAudioStudioModel(item.model)
   const g = m ? groupOf(m) : AUDIO_GROUPS[0]
   const label = item.videoMetadata?.label
-  // A Mureka song can become a lyrics video (its Mureka id is on the row)
-  const lv = getAudioStudioModel("mureka-lyrics-video")
-  const canLyricsVideo = !!onLyricsVideo && !!item.videoMetadata?.murekaSongId && !!lv
-  const [lvOpen, setLvOpen] = useState(false)
-  const [lvBusy, setLvBusy] = useState(false)
-  const [lvOpts, setLvOpts] = useState<LyricsVideoOpts>({ layout: "layout_1", aspect: "9:16", title: "" })
   const fmt = (s: number) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00")
   const toggle = () => {
     const a = ref.current
@@ -160,35 +211,8 @@ function AudioCard({ item, onUsePrompt, onLyricsVideo }: { item: AudioItem; onUs
               <Wand2 size={11} /> Reuse text
             </button>
           )}
-          {/* Lyrics video: admin accounts only (red) */}
-          {canLyricsVideo && (
-            <button onClick={() => setLvOpen(o => !o)} className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] ${ADMIN_BUTTON} ${lvOpen ? "ring-1 ring-red-400/50" : ""}`}>
-              <Clapperboard size={11} /> Lyrics video
-            </button>
-          )}
         </div>
-        {canLyricsVideo && lvOpen && lv && (
-          <div className={`mt-2 rounded-lg border ${ADMIN_BORDER} bg-red-500/[0.05] p-2 space-y-1.5`}>
-            <div className="grid grid-cols-2 gap-1.5">
-              {lv.options!.map(o => (
-                <select key={o.key} value={lvOpts[o.key as "layout" | "aspect"]} onChange={e => setLvOpts(v => ({ ...v, [o.key]: e.target.value }))}
-                  className="rounded-md bg-black/50 border border-white/10 px-1.5 py-1 text-[10px] text-white">
-                  {o.values.map(([val, lab]) => <option key={val} value={val}>{lab}</option>)}
-                </select>
-              ))}
-            </div>
-            <input value={lvOpts.title} onChange={e => setLvOpts(v => ({ ...v, title: e.target.value.slice(0, 100) }))} placeholder="Title on the video (optional)"
-              className="w-full rounded-md bg-black/50 border border-white/10 px-1.5 py-1 text-[10px] text-white placeholder:text-slate-500" />
-            <button
-              disabled={lvBusy}
-              onClick={async () => { setLvBusy(true); try { await onLyricsVideo!(item, lvOpts); setLvOpen(false) } finally { setLvBusy(false) } }}
-              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-white text-slate-900 text-[11px] font-bold hover:bg-slate-200 disabled:opacity-50"
-            >
-              {lvBusy ? <Loader2 size={11} className="animate-spin" /> : <Clapperboard size={11} />} Make the lyrics video
-              <span className="flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-slate-900/20 font-mono"><Ticket size={10} />{audioTicketCost(lv, {})}</span>
-            </button>
-          </div>
-        )}
+        {/* A Mureka song becomes a lyrics video in the VIDEO models now (2026-10-21) - Video > Mureka Lyrics Video */}
       </div>
     </div>
   )
@@ -539,6 +563,9 @@ export function AudioStudio({
     } finally { setAudioUploading(false) }
   }
 
+  // A generating card opened: what the run was given
+  const [pendingOpen, setPendingOpen] = useState<Pending | null>(null)
+
   // ── Generate ──
   const generate = async () => {
     if (!canGenerate) return
@@ -566,7 +593,15 @@ export function AudioStudio({
       if (!res.ok || !d.success) throw new Error(d.error || "Generation failed")
       if (d.charged) onTicketsSpent(d.charged)
       const shownPrompt = (model.text && text) || (model.lyrics && lyrics) || (audio ? `${model.name} · ${audio.name}` : model.name)
-      const p: Pending = { requestId: d.requestId, modelId: model.id, name: model.name, prompt: shownPrompt, startedAt: Date.now(), ticketCost: d.ticketCost }
+      // What it was given - only what this model takes, as sent
+      const inputs: PendingInputs = {
+        ...(model.text && text ? { text } : {}), ...(model.lyrics && lyrics ? { lyrics } : {}), ...(model.style && style ? { style } : {}),
+        ...(model.voices && voice ? { voice } : {}), ...(model.voice2 && voice2 ? { voice2 } : {}), ...(model.languages && language ? { language } : {}),
+        ...(model.duration ? { duration } : {}), ...(model.instrumental ? { instrumental } : {}),
+        ...(model.audioIn && audio ? { audio: { name: audio.name, url: audio.url } } : {}),
+        ...(model.options ? { options } : {}),
+      }
+      const p: Pending = { requestId: d.requestId, modelId: model.id, name: model.name, prompt: shownPrompt, startedAt: Date.now(), ticketCost: d.ticketCost, inputs }
       setPending(ps => { const next = [p, ...ps]; writePending(next); return next })
     } catch (e: any) {
       setError(e?.message || "Generation failed")
@@ -585,21 +620,6 @@ export function AudioStudio({
     } catch (e: any) { setError(e?.message || "Could not write lyrics"); return null }
   }
 
-  // A Mureka song's card -> Mureka Lyrics Video (the server reads the song's Mureka id)
-  const makeLyricsVideo = async (item: AudioItem, o: LyricsVideoOpts) => {
-    setError(null)
-    try {
-      const res = await fetch("/api/audio/generate", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "mureka-lyrics-video", songAssetId: item.id, text: o.title || undefined, options: { layout: o.layout, aspect: o.aspect } }),
-      })
-      const d = await res.json().catch(() => ({}))
-      if (!res.ok || !d.success) throw new Error(d.error || "Could not start the lyrics video")
-      if (d.charged) onTicketsSpent(d.charged)
-      const p: Pending = { requestId: d.requestId, modelId: "mureka-lyrics-video", name: "Mureka Lyrics Video", prompt: item.prompt, startedAt: Date.now(), ticketCost: d.ticketCost }
-      setPending(ps => { const next = [p, ...ps]; writePending(next); return next })
-    } catch (e: any) { setError(e?.message || "Could not start the lyrics video") }
-  }
 
   const settingsProps = {
     model, onModelChange, voice, setVoice, voice2, setVoice2, language, setLanguage, duration, setDuration,
@@ -614,6 +634,7 @@ export function AudioStudio({
 
   return (
     <div style={{ height: `calc(100dvh - ${topOffsetPx}px)` }} className="flex overflow-hidden relative">
+      {pendingOpen && <AudioPendingDetail p={pendingOpen} onClose={() => setPendingOpen(null)} />}
       {/* Settings - desktop sidebar */}
       <div className="hidden sm:block w-72 shrink-0 border-r border-white/5 overflow-y-auto pb-24">
         <AudioSettings {...settingsProps} />
@@ -632,7 +653,9 @@ export function AudioStudio({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
             {!adminFeed && pending.map(p => (
-              <div key={p.requestId} className="rounded-2xl border border-white/10 bg-slate-900/70 overflow-hidden">
+              <div key={p.requestId} role="button" tabIndex={0} onClick={() => setPendingOpen(p)} onKeyDown={e => { if (e.key === "Enter") setPendingOpen(p) }}
+                title="See what this run was given"
+                className="rounded-2xl border border-white/10 bg-slate-900/70 overflow-hidden cursor-pointer hover:border-white/25 transition-colors">
                 <div className="relative h-24 px-4 pt-4 pb-3 bg-gradient-to-br from-white/[0.06] via-transparent to-black/40">
                   <div className="h-full text-slate-500/60"><Waveform seed={p.startedAt % 997} playing /></div>
                   <Loader2 size={22} className="absolute inset-0 m-auto animate-spin text-white/80" />
@@ -655,7 +678,7 @@ export function AudioStudio({
             ))}
             {shown.map(item => item.model === "mureka-lyrics-video" || /\.mp4(\?|$)/i.test(item.imageUrl)
               ? <VideoCard key={item.id} item={item} />
-              : <AudioCard key={item.id} item={item} onUsePrompt={t => setText(t)} onLyricsVideo={isAdmin ? makeLyricsVideo : undefined} />)}
+              : <AudioCard key={item.id} item={item} onUsePrompt={t => setText(t)} />)}
           </div>
 
           {!shown.length && !pending.length && !loadingPast && (

@@ -7,6 +7,8 @@ import { isGenerationBlocked } from '@/lib/generation-guard'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
+import { keepVideoInputs, videoInputLinks, videoInputsFromBody } from '@/lib/gen-inputs'
+import { mediaKeeper } from '@/lib/media-ownership'
 import { queueHiggsfieldJob, higgsfieldConfigured } from '@/lib/higgsfield'
 import {
   HIGGSFIELD_ENDPOINTS, HIGGSFIELD_VIDEO_MODELS, HF_ENDPOINT_PREFIX, GENJUTSU_MODELS, genjutsuMaxSec, genjutsuSeconds,
@@ -141,6 +143,8 @@ export async function POST(req: Request) {
         resolution: (input.resolution as string) || resolution, duration, aspectRatio,
         generateAudio: model === 'higgsfield-cinema-4' ? b.generateAudio !== false : true,
         referenceImageUrls: images, listTickets,
+        // What it was given, for its generating tile (lib/gen-inputs) - the account's own links only
+        inputs: await (async () => { const i = videoInputsFromBody(b); return keepVideoInputs(i, await mediaKeeper(user.id, videoInputLinks(i))) })(),
       },
       ticketCost: charge,
     })

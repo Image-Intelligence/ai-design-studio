@@ -1,5 +1,6 @@
 import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, batch1007TicketCost } from '@/lib/batch-1007-video'
 import { HIGGSFIELD_VIDEO_MODELS, higgsfieldVideoTicketCost } from '@/lib/higgsfield-models'
+import { getAudioStudioModel, audioTicketCost } from '@/lib/audio-studio'
 // ── Ticket pricing: ONE source of truth ──────────────────────────────────────
 // The per-generation video ticket cost used to live inline in
 // app/api/video/generate/route.ts. It is a BILLING path, so it now lives here
@@ -336,7 +337,11 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   const isWanLora = model === 'wan-2.2-lora'
 
   let ticketCost: number
-  if (model === 'pixelcut-looping-video' || model === 'pixelcut-video-bg-removal') {
+  if (model === 'mureka-lyrics-video') {
+    // In the video menu since 2026-10-21, run by the Audio Studio's route: its price
+    const m = getAudioStudioModel('mureka-lyrics-video')
+    ticketCost = m ? audioTicketCost(m, {}) : 5
+  } else if (model === 'pixelcut-looping-video' || model === 'pixelcut-video-bg-removal') {
     // Ahead of the generic tool branch, which would price by a flat placeholder
     ticketCost = pixelcutVideoTicketCost(model, { duration, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps })
   } else if (isLipsync) {

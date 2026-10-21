@@ -524,7 +524,10 @@ export const NovaMessageView = memo(function NovaMessageView({ message, streamin
                 {a.kind === "image"
                   // eslint-disable-next-line @next/next/no-img-element
                   ? <img src={a.url} alt="" loading="lazy" className="w-full h-full object-cover" />
-                  : <span className="w-full h-full flex items-center justify-center text-slate-400">{(() => { const I = kindIcon(a.kind); return <I size={18} /> })()}</span>}
+                  // An attached clip: its first frame
+                  : a.kind === "video" || a.kind === "cut"
+                    ? <video src={`${a.url}#t=0.1`} muted playsInline preload="metadata" className="w-full h-full object-cover pointer-events-none" />
+                    : <span className="w-full h-full flex items-center justify-center text-slate-400">{(() => { const I = kindIcon(a.kind); return <I size={18} /> })()}</span>}
                 {a.id > 0 && <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/70 text-[8.5px] font-mono text-slate-300">#{a.id}</span>}
               </button>
             ))}

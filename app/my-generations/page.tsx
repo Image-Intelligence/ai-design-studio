@@ -435,12 +435,12 @@ export default function MyGenerationsPage() {
   }
 
   // --- Asset handlers ---
-  /** These pictures into an asset; says how many went in (videos and duplicates do not). */
+  /** These pictures and clips into an asset; says how many went in (sounds and duplicates do not). */
   const addIdsToAsset = async (a: UserAsset, ids: number[]) => {
     const { asset, added } = await assetsApi.update({ id: a.id, addImageIds: ids })
     const skipped = ids.length - added
     flash(added === 0
-      ? `Nothing added to ${asset.name} - already there, videos, or the asset is full`
+      ? `Nothing added to ${asset.name} - already there, sounds, or the asset is full`
       : `Added ${added} picture${added === 1 ? "" : "s"} to ${asset.name}${skipped > 0 ? ` (${skipped} skipped)` : ""}`)
     return asset
   }
@@ -973,8 +973,8 @@ export default function MyGenerationsPage() {
                   {pickingFor && (
                     <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5 text-[12px] text-slate-300">
                       <ImagePlus size={13} className="text-slate-200" />
-                      Pick pictures for <span className="font-bold text-white">{pickingFor.name}</span>
-                      <span className="text-slate-500">- any folder; videos are skipped</span>
+                      Pick pictures or videos for <span className="font-bold text-white">{pickingFor.name}</span>
+                      <span className="text-slate-500">- any folder; sounds are skipped</span>
                     </div>
                   )}
                   <div className="flex items-center gap-2 flex-wrap p-2.5">
@@ -1063,7 +1063,7 @@ export default function MyGenerationsPage() {
               masonryMode={feed.masonryMode}
               tileRes={feed.tileRes}
               showHidden={feedShowHidden}
-              typeFilter={pickingFor ? "image" : typeFilter}
+              typeFilter={typeFilter}
               folderId={currentFolderId}
               pageSize={feed.pageSize}
               selectMode={isSelectMode}

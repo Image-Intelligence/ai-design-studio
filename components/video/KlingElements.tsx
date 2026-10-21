@@ -97,7 +97,8 @@ function AssetPicker({ onPick, onClose }: { onPick: (a: LibAsset) => void; onClo
   const [err, setErr] = useState<string | null>(null)
   useEffect(() => {
     fetch("/api/user/assets", { cache: "no-store" }).then(r => r.json())
-      .then(j => setAssets(Array.isArray(j.assets) ? j.assets : []))
+      // An element is pictures (front view + angles): an asset's clips (2026-10-21) are left out
+      .then(j => setAssets(Array.isArray(j.assets) ? j.assets.map((a: Omit<LibAsset, "refs"> & { refs: (LibAsset["refs"][number] & { kind?: string })[] }) => ({ ...a, refs: a.refs.filter(r => r.kind !== "video") })) : []))
       .catch(() => setErr("Couldn't load My Assets"))
   }, [])
   if (typeof document === "undefined") return null
