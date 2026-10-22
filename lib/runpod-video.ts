@@ -32,8 +32,10 @@ const API = 'https://api.runpod.ai/v2'
 // enough for a cold start and a queue
 const RP_LINK_TTL = 24 * 3600
 // RunPod's per-job ceiling (the endpoint's default is 10 minutes - too short
-// for a cold start plus a render)
-const EXECUTION_TIMEOUT_MS = 90 * 60 * 1000
+// for a cold start plus a render). 160 min: the workers' own render cap is 150
+// (MoCha 720p Full at 161 frames is ~70 min, H3 Character Swap 30 s at 768p
+// ~80); the stuck-job rule below (3 h) still sits above it
+const EXECUTION_TIMEOUT_MS = 160 * 60 * 1000
 // A job still running this long after it was sent has hung - give up on it
 const STALE_MS = 3 * 3600 * 1000
 // A job RunPod no longer knows and whose output never appeared

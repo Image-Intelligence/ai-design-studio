@@ -10,6 +10,7 @@ import { canonicalisePayload } from '@/lib/media-url'
 import { keepVideoInputs, videoInputLinks, videoInputsFromBody } from '@/lib/gen-inputs'
 import { mediaKeeper } from '@/lib/media-ownership'
 import { cleanVideoAdvanced } from '@/lib/video-advanced'
+import { viggleRepaintTickets } from '@/lib/ticket-pricing'
 import { submitRunpodVideoJob, runpodVideoConfigured, runpodEndpointEnvName, runpodMedia } from '@/lib/runpod-video'
 import { RUNPOD_VIDEO_MODELS, RUNPOD_MAX_SOURCE_SEC, RP_ENDPOINT_PREFIX, runpodVideoTicketCost, type RunpodVideoModelId } from '@/lib/runpod-video-models'
 import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
@@ -108,13 +109,18 @@ export async function POST(req: Request) {
       duration = String(Math.max(1, Math.round(Math.min(probed.seconds, maxSeconds))))
       if (model === 'runpod-viggle') {
         resolution = '480p'
-        // Viggle animates a REPAINTED frame of the clip: made here, before any charge
-        try {
-          repaint = await (await import('@/lib/viggle-repaint')).viggleRepaint(clip, images[0])
-        } catch (e: any) {
-          return jsonPrivate({ success: false, error: `Couldn't repaint the clip's first frame with the character: ${e?.body?.detail?.[0]?.msg || e?.message || 'NanoBanana refused it'}` }, { status: 400 })
+        if (b.videoChoice === 'mine') {
+          // "My own frame": the picture IS the repainted first frame
+          input = { action: 'viggle', video: runpodMedia(clip), ref: runpodMedia(images[0]), max_seconds: maxSeconds }
+        } else {
+          // Viggle animates a REPAINTED frame of the clip: made here, before any charge
+          try {
+            repaint = await (await import('@/lib/viggle-repaint')).viggleRepaint(clip, images[0])
+          } catch (e: any) {
+            return jsonPrivate({ success: false, error: `Couldn't repaint the clip's first frame with the character: ${e?.body?.detail?.[0]?.msg || e?.message || 'NanoBanana refused it'}` }, { status: 400 })
+          }
+          input = { action: 'viggle', video: runpodMedia(clip), ref: { url: repaint.repaintUrl }, max_seconds: maxSeconds }
         }
-        input = { action: 'viggle', video: runpodMedia(clip), ref: { url: repaint.repaintUrl }, max_seconds: maxSeconds }
       } else {
         resolution = b.resolution === '480p' ? '480p' : '768p'
         // SAM's word for who gets swapped (the worker's Relay graph asks for
@@ -127,7 +133,11 @@ export async function POST(req: Request) {
     }
 
     // By GPU time (lib/runpod-video-models): MoCha's quality, the seconds the H3 pair renders
-    const listTickets = runpodVideoTicketCost(model, { resolution, choice: typeof b.videoChoice === 'string' ? b.videoChoice : undefined, sourceSec: Number(duration) })
+    const listTickets = runpodVideoTicketCost(model, { resolution, choice: typeof b.videoChoice === 'string' ? b.videoChoice : undefined, advanced: settings,
+      // MoCha: the clip's own length (its frames are worked out from it); the H3 pair: the seconds rendered
+      sourceSec: model === 'runpod-mocha' ? probed.seconds : Number(duration) })
+      // Viggle's automatic repaint, at NanoBanana 2.1 Edit's own price
+      + (model === 'runpod-viggle' ? viggleRepaintTickets(typeof b.videoChoice === 'string' ? b.videoChoice : undefined) : 0)
     const charge = isAdmin ? 0 : listTickets
     if (charge > 0) {
       const paid = await deductGenerationTickets(user.id, user.email, charge)

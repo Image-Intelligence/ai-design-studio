@@ -59,7 +59,7 @@ import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateE
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
 import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
 import { HIGGSFIELD_IMAGE_MODELS, isHiggsfieldModel, higgsfieldImageTicketCost } from "@/lib/higgsfield-models"
-import { isRunpodModel } from "@/lib/runpod-video-models"
+import { isRunpodModel, runpodRenderSec } from "@/lib/runpod-video-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -1619,7 +1619,11 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     sourceClipImages: { max: 2, label: "Character", hint: "Who replaces the person in the clip: a clear full picture of them, plus (optional) a front-facing face close-up. Start the clip on a clear shot of the person - their first frame is what gets masked.", required: true } },
   // The MiniMax H3 pair on our own RunPod worker (2026-10-22, admin): AI/h3-worker
   { id: "runpod-viggle", name: "Viggle Animate", durations: [], resolutions: ["480p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
-    sourceClipImages: { max: 1, label: "Character", hint: "Who replaces the person in the clip - the site paints them into the clip's first frame (NanoBanana) and Viggle carries that through the clip. Start on a clear, front-on shot of the person.", required: true } },
+    // Viggle animates the clip's first frame REPAINTED with the character: the
+    // site makes it (NanoBanana 2.1 Edit, charged at its usual price), or you
+    // bring your own (2026-10-22, owner)
+    choice: { label: "First frame", note: "Viggle carries a repainted first frame through the clip", options: [{ value: "auto", label: "Auto repaint" }, { value: "mine", label: "My own frame" }] },
+    sourceClipImages: { max: 1, label: "Character", hint: "Auto repaint: a clear picture of who replaces the person - the site paints them into the clip's first frame with NanoBanana (its usual price is added). My own frame: the clip's first frame already repainted with your character, same framing and pose - no NanoBanana step.", required: true } },
   { id: "runpod-h3-swap", name: "H3 Character Swap", durations: [], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
     sourceClipImages: { max: 1, label: "Character", hint: "Who replaces the person in the clip (the largest person is masked and tracked through it). One clear picture of them.", required: true } },
   { id: "dreamactor-v2", name: "DreamActor v2", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
@@ -7496,10 +7500,16 @@ function FrameExtractorModal({ onClose, onAddRefs, canUseLayers = false }: {
  * still works.
  */
 const TRIM_FRAMES = 10
-function TrimFilmstrip({ url, duration, start, len, now, onMove }: {
+function TrimFilmstrip({ url, duration, start, len, now, onMove, readOnly, hint, keptLabel }: {
   url: string; duration: number; start: number; len: number; now: number
   /** the kept part's new start, from a drag on the strip */
   onMove: (start: number) => void
+  /** A guide, not a control: no dragging, no playhead (ClipPortionGuide) */
+  readOnly?: boolean
+  /** Replaces "Drag the strip to move the kept part" */
+  hint?: string
+  /** Replaces "Kept" in the legend (e.g. "Rendered") */
+  keptLabel?: string
 }) {
   const canvases = useRef<(HTMLCanvasElement | null)[]>([])
   const strip = useRef<HTMLDivElement>(null)
@@ -7544,9 +7554,9 @@ function TrimFilmstrip({ url, duration, start, len, now, onMove }: {
   return (
     <div className="space-y-1">
       <div ref={strip}
-        onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); moveTo(e.clientX) }}
-        onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) moveTo(e.clientX) }}
-        className="relative h-14 rounded-lg overflow-hidden bg-white/[0.06] cursor-grab active:cursor-grabbing select-none touch-none">
+        onPointerDown={readOnly ? undefined : e => { e.currentTarget.setPointerCapture(e.pointerId); moveTo(e.clientX) }}
+        onPointerMove={readOnly ? undefined : e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) moveTo(e.clientX) }}
+        className={cn("relative h-14 rounded-lg overflow-hidden bg-white/[0.06] select-none", !readOnly && "cursor-grab active:cursor-grabbing touch-none")}>
         {/* the frames */}
         <div className="absolute inset-0 flex">
           {Array.from({ length: TRIM_FRAMES }, (_, i) => (
@@ -7567,7 +7577,7 @@ function TrimFilmstrip({ url, duration, start, len, now, onMove }: {
           <span className="absolute -right-0.5 inset-y-2 w-1 rounded-full bg-white" />
         </div>
         {/* playhead */}
-        <div className="absolute inset-y-0 w-0.5 bg-amber-300 pointer-events-none" style={{ left: pct(now) }} />
+        {!readOnly && <div className="absolute inset-y-0 w-0.5 bg-amber-300 pointer-events-none" style={{ left: pct(now) }} />}
       </div>
       {/* ruler + what is kept and cut */}
       <div className="relative h-3 text-[9px] font-mono text-slate-500">
@@ -7578,12 +7588,67 @@ function TrimFilmstrip({ url, duration, start, len, now, onMove }: {
         {end / duration < 0.92 ? <span className="absolute right-0">{duration.toFixed(1)}s</span> : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pt-1 text-[10px]">
-        <span className="flex items-center gap-1 text-slate-200"><span className="w-2.5 h-2.5 rounded-sm border-2 border-white" />Kept {len.toFixed(1)}s</span>
+        <span className="flex items-center gap-1 text-slate-200"><span className="w-2.5 h-2.5 rounded-sm border-2 border-white" />{keptLabel ?? "Kept"} {len.toFixed(1)}s</span>
         <span className="flex items-center gap-1 text-red-200/80"><span className="w-2.5 h-2.5 rounded-sm bg-red-400/40" />{
           [cutBefore > 0.05 ? `Cut ${cutBefore.toFixed(1)}s from the start` : "", cutAfter > 0.05 ? `${cutBefore > 0.05 ? "" : "Cut "}${cutAfter.toFixed(1)}s from the end` : ""].filter(Boolean).join(" · ") || "Nothing cut"
         }</span>
-        <span className="ml-auto text-slate-600">Drag the strip to move the kept part</span>
+        <span className="ml-auto text-slate-600">{hint ?? "Drag the strip to move the kept part"}</span>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Which part of the source clip a clip tool renders (2026-10-22, owner: "I
+ * want to be able to see which portion of the source clip I am selecting").
+ * Our RunPod workers render from the clip's START, so this is the trim strip
+ * as a read-only guide: the rendered part boxed, the rest marked cut.
+ *  - MoCha: its Length is FRAMES at its frame rate, cut the way the worker
+ *    cuts it (AI/mocha-worker prepare_clip: the first max_frames frames at
+ *    fps, then down to 4n+1)
+ *  - Viggle Animate / H3 Character Swap: their Length is seconds
+ */
+function clipToolRenderSec(modelId: string, clipSec: number, values: Record<string, string | number | boolean>): { sec: number; detail: string } | null {
+  if (!(clipSec > 0)) return null
+  if (modelId === "runpod-mocha") {
+    const fps = Number(values.fps ?? 24) === 16 ? 16 : 24
+    const maxFrames = Number(values.max_frames ?? 81) || 81
+    const n = Math.min(maxFrames, Math.floor(clipSec * fps + 1e-6))
+    if (n < 17) return { sec: 0, detail: `the clip is too short - MoCha needs at least 17 frames (${(17 / fps).toFixed(1)}s at ${fps} fps)` }
+    const frames = Math.floor((n - 1) / 4) * 4 + 1
+    return { sec: frames / fps, detail: `${frames} frames at ${fps} fps` }
+  }
+  if (modelId === "runpod-viggle" || modelId === "runpod-h3-swap") {
+    const max = Number(values.max_seconds ?? (modelId === "runpod-viggle" ? 10 : 15))
+    const sec = Math.min(clipSec, max)
+    return { sec, detail: `up to ${max} s of the clip` }
+  }
+  return null
+}
+const CLIP_PORTION_MODELS = new Set(["runpod-mocha", "runpod-viggle", "runpod-h3-swap"])
+
+function ClipPortionGuide({ modelId, url, clipSec, values, resolution, choice }: {
+  modelId: string; url: string; clipSec: number; values: Record<string, string | number | boolean>
+  /** What the run's GPU time depends on besides the length (lib/runpod-video-models runpodRenderSec) */
+  resolution?: string; choice?: string
+}) {
+  const r = clipToolRenderSec(modelId, clipSec, values)
+  if (!r) return null
+  // Its GPU time, as priced (2026-10-22: a 720p Full 161-frame MoCha ran past
+  // the worker's old 50-minute cap - the owner had no way to know it was long)
+  const renderMin = Math.max(1, Math.round(runpodRenderSec(modelId, { resolution, choice, sourceSec: clipSec, advanced: values }) / 60))
+  return (
+    <div className="space-y-1.5 rounded-lg border border-white/8 bg-black/30 p-2">
+      <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Portion rendered <span className="text-slate-600 normal-case font-normal">({r.sec > 0 ? `${r.sec.toFixed(1)}s of the ${clipSec.toFixed(1)}s clip - ${r.detail}` : r.detail})</span></p>
+      {r.sec > 0 && (
+        <p className={cn("text-[10px]", renderMin >= 30 ? "text-amber-300/90" : "text-slate-500")}>
+          About {renderMin} min of rendering once a GPU picks it up{renderMin >= 30 ? " - a long run: lower the resolution, quality or length to speed it up" : ""}
+        </p>
+      )}
+      {r.sec > 0 && (
+        <TrimFilmstrip url={url} duration={clipSec} start={0} len={Math.min(r.sec, clipSec)} now={0} onMove={() => {}}
+          readOnly keptLabel="Rendered" hint="Always from the start of the clip - trim the clip to use a later part" />
+      )}
     </div>
   )
 }
@@ -23742,12 +23807,14 @@ function VideoRunSettings({ chips }: { chips: { label: string; value: string }[]
  * the rest (fal's defaults, or the site's own where a knob has falDefault),
  * which each control shows until it is touched.
  */
-function VideoAdvancedSettings({ knobs: allKnobs, values, onChange, isAdmin }: {
+function VideoAdvancedSettings({ knobs: allKnobs, values, onChange, isAdmin, after }: {
   knobs: VideoKnob[]
   values: Record<string, string | number | boolean>
   onChange: (v: Record<string, string | number | boolean>) => void
   /** Shows the admin-only knobs (a safety checker fal runs by default) */
   isAdmin?: boolean
+  /** Something to show under a knob (the clip tools' ClipPortionGuide) */
+  after?: (key: string, values: Record<string, string | number | boolean>) => ReactNode
 }) {
   const knobs = allKnobs.filter(k => !k.adminOnly || isAdmin)
   const changed = knobs.filter(k => values[k.key] !== undefined).length
@@ -23824,6 +23891,7 @@ function VideoAdvancedSettings({ knobs: allKnobs, values, onChange, isAdmin }: {
                     )}
                   </div>
                 )}
+                {after?.(k.key, values)}
               </div>
             )
           })}
@@ -24092,6 +24160,7 @@ function VideoCustomizationPanel({
         sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         audioDurationSec: audioSec, videoChoice: choiceValue,
         promptWords: (promptText ?? "").trim().split(/\s+/).filter(Boolean).length,
+        advanced: advanced ?? undefined,
         ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}) })
 
   const btnBase   = "py-1.5 rounded-lg text-[11px] font-mono transition-all border"
@@ -24636,7 +24705,14 @@ function VideoCustomizationPanel({
 
           {/* The model's own advanced settings (lib/video-advanced - Wan 2.2 Animate) */}
           {VIDEO_ADVANCED_KNOBS[model.id] && onAdvancedChange && (
-            <VideoAdvancedSettings knobs={VIDEO_ADVANCED_KNOBS[model.id]} values={advanced ?? {}} onChange={onAdvancedChange} isAdmin={isAdminAccount} />
+            <VideoAdvancedSettings knobs={VIDEO_ADVANCED_KNOBS[model.id]} values={advanced ?? {}} onChange={onAdvancedChange} isAdmin={isAdminAccount}
+              // Our RunPod clip tools: which part of the clip the Length gives (under Frame rate for MoCha - both decide it)
+              after={CLIP_PORTION_MODELS.has(model.id) && videoRefVideoUrls?.[0] && videoRefVideoDuration ? (key, vals) =>
+                key === (model.id === "runpod-mocha" ? "fps" : "max_seconds")
+                  ? <ClipPortionGuide modelId={model.id} url={videoRefVideoUrls[0] ?? ""} clipSec={videoRefVideoDuration} values={vals}
+                      resolution={resolution} choice={choiceValue || model.choice?.options[0]?.value} />
+                  : null
+              : undefined} />
           )}
 
           {/* H3 Max Insert Shot: the new shot replaces the source from "start" to "resume" */}
@@ -25829,9 +25905,12 @@ function VideoPromptBar({
   toolTargetFps = "60",
   audioSeconds,
   choiceValue,
+  advanced,
 }: {
   model: VideoModelConfig
   onGenerate: (prompt: string) => void
+  /** The model's Advanced settings - some price by them (MoCha's Length / Frame rate) */
+  advanced?: Record<string, string | number | boolean>
   /** The uploaded track's length - audio-driven models are priced by it. */
   audioSeconds?: number
   /** The model's choice picker value (voice, style, draft…) - some price by it. */
@@ -25957,7 +26036,7 @@ function VideoPromptBar({
         videoUpscaleFactor: toolFactor, videoCreativity: toolCreativity, targetFps: toolTargetFps,
         sourceWidth: editSourceDims?.w, sourceHeight: editSourceDims?.h,
         // The same inputs the settings panel prices with, so the two quotes agree
-        audioDurationSec: audioSeconds, videoChoice: choiceValue,
+        audioDurationSec: audioSeconds, videoChoice: choiceValue, advanced,
         promptWords: prompt.trim().split(/\s+/).filter(Boolean).length,
         ...(model.id === "seedance-2.5" && choiceValue === "draft" ? { resolution: "480p" } : {}),
         sd20Mode: (model.id.startsWith("gemini-omni") || model.id === "flux-3") && sourceSeconds > 0 ? "edit" : undefined })
@@ -28055,6 +28134,7 @@ export default function PortalV2Page() {
   const videoDraftReady = useRef(false)          // never save before the first load
   const videoDraftSavedAt = useRef(0)            // newest draft this tab knows about
   const videoDraftTouched = useRef(0)            // when the user last changed something
+  const videoUserInputAt = useRef(0)             // the last click / key / drop in THIS tab
   const [flux3VideoSafetyChecker, setFlux3VideoSafetyChecker] = useState(true)
   const [wan30VideoSafetyChecker, setWan30VideoSafetyChecker] = useState(true)
   const [videoLtxFps, setVideoLtxFps] = useState("25")
@@ -29562,9 +29642,30 @@ export default function PortalV2Page() {
     return () => { cancelled = true }
   }, [user, applyVideoDraft])
 
-  // Save, debounced, whenever anything in the composer changes
+  /*
+   * Only a tab someone is using saves the draft (2026-10-22, owner: on a
+   * refresh the composer kept coming back on Wan 2.2 Animate - and before that
+   * Kling 3.0 - with inputs cleared many times over). The draft is one per
+   * account, and every open copy of the page saved its WHOLE composer on ANY
+   * change to it: a load settling, a clip being measured, an upload landing.
+   * So a stale copy - a background tab, a sleeping iPad, another window -
+   * wrote its old composer back over the real one, and the next load showed
+   * it. A save now needs a click, key or drop in this tab within the last
+   * minute (long enough for an upload it started to land), with the tab on
+   * screen.
+   */
+  useEffect(() => {
+    const mark = () => { videoUserInputAt.current = Date.now() }
+    const opts = { capture: true, passive: true } as const
+    for (const t of ["pointerdown", "keydown", "drop", "paste"] as const) window.addEventListener(t, mark, opts)
+    return () => { for (const t of ["pointerdown", "keydown", "drop", "paste"] as const) window.removeEventListener(t, mark, opts) }
+  }, [])
+
+  // Save, debounced, whenever the user changes anything in the composer
   useEffect(() => {
     if (!user || !videoDraftReady.current) return
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+    if (Date.now() - videoUserInputAt.current > 60_000) return
     videoDraftTouched.current = Date.now()
     const draft = buildVideoDraft()
     const id = setTimeout(() => {
@@ -33694,6 +33795,7 @@ function employeePending(
             editSourceDims={videoRefVideoDims}
             audioSeconds={videoAudioSec}
             choiceValue={videoChoice}
+            advanced={videoAdvanced[selectedVideoModel.id]}
             toolFactor={videoToolFactor}
               toolTargetFps={videoToolTargetFps}
             toolCreativity={videoToolCreativity}

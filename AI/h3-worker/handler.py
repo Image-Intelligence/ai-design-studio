@@ -58,7 +58,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v3'
+HANDLER_VERSION = '2026-10-22-v4'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_MODELS = os.path.join(COMFY_DIR, 'models')
@@ -93,7 +93,7 @@ SWAP_FILES = [
 # Viggle-Animate's trained sizes (constant ~400k-pixel area): the clip goes to the nearest shape
 VIGGLE_LADDER = [(416, 960), (448, 896), (480, 832), (544, 736), (640, 640), (736, 544), (832, 480), (896, 448), (960, 416)]
 MAX_INPUT_BYTES = 1024 * 1024 * 1024
-PROMPT_TIMEOUT_S = 80 * 60
+PROMPT_TIMEOUT_S = 150 * 60  # the longest settings run ~70-80 min (2026-10-22: 50 was too short)
 
 _comfy_proc = None
 
@@ -307,7 +307,7 @@ def run_prompt(graph, job):
                 raise RuntimeError(f"{detail.get('node_type', 'a node')} failed: {detail.get('exception_message', 'unknown error')}".strip())
             return h.get('outputs', {})
         if time.time() - t0 > PROMPT_TIMEOUT_S:
-            raise RuntimeError('the render took longer than 80 minutes')
+            raise RuntimeError(f'the render took longer than {PROMPT_TIMEOUT_S // 60} minutes')
         if time.time() - last_note > 30:
             runpod.serverless.progress_update(job, f'rendering ({int(time.time() - t0)}s)')
             last_note = time.time()

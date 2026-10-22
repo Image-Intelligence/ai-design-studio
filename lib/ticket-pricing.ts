@@ -113,6 +113,8 @@ export interface VideoTicketCostInput {
   videoChoice?: string
   /** The prompt's word count (HeyGen Avatar IV bills the seconds the script takes to say). */
   promptWords?: number
+  /** The model's Advanced settings (lib/video-advanced) - MoCha's Length and Frame rate set its GPU time. */
+  advanced?: Record<string, string | number | boolean>
 }
 
 /*
@@ -422,7 +424,8 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     ticketCost = higgsfieldVideoTicketCost(model, { resolution, duration, sourceSec: editVideoDurationSec, refVideoSec: referenceVideoDurationSec })
   } else if (RUNPOD_VIDEO_MODELS.has(model)) {
     // Our own RunPod workers (admin only, lib/runpod-video-models): by GPU time
-    ticketCost = runpodVideoTicketCost(model, { resolution, choice: input.videoChoice, sourceSec: editVideoDurationSec })
+    ticketCost = runpodVideoTicketCost(model, { resolution, choice: input.videoChoice, sourceSec: editVideoDurationSec, advanced: input.advanced })
+      + (model === 'runpod-viggle' ? viggleRepaintTickets(input.videoChoice) : 0)
   } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {
     // Ahead of the generic tool branch: Vidu Q4 by length x resolution, Relight by the source's length
     ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps, refVideoSec: referenceVideoDurationSec })
@@ -1577,4 +1580,13 @@ export function nb21RunCostUsd(o: { quality?: string; thinking?: string; refCoun
 /** Tickets for one NanoBanana 2.1 image - the portal, Image Studio and the server all price with this. */
 export function nb21TicketCost(o: { quality?: string; thinking?: string; refCount?: number; webSearch?: boolean }): number {
   return Math.max(1, Math.ceil(nb21RunCostUsd(o) / NB21_USD_PER_TICKET - 1e-9))
+}
+
+/**
+ * Viggle Animate's automatic first-frame repaint (lib/viggle-repaint): a normal
+ * NanoBanana 2.1 Edit run - 1K, two pictures (the clip's frame and the
+ * character) - at its normal price. "My own frame" skips it.
+ */
+export function viggleRepaintTickets(choice?: string): number {
+  return choice === 'mine' ? 0 : nb21TicketCost({ quality: '1k', refCount: 2 })
 }

@@ -54,7 +54,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v3'
+HANDLER_VERSION = '2026-10-22-v4'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_URL = 'http://127.0.0.1:8188'
@@ -76,7 +76,7 @@ MODEL_FILES = {
 
 SIZES = {'480p': (832, 480), '720p': (1280, 720)}
 MAX_INPUT_BYTES = 1024 * 1024 * 1024
-PROMPT_TIMEOUT_S = 50 * 60
+PROMPT_TIMEOUT_S = 150 * 60  # the longest settings run ~70-80 min (2026-10-22: 50 was too short)
 
 _comfy_proc = None
 _yolo = None
@@ -444,7 +444,7 @@ def run_prompt(graph, job):
                 raise RuntimeError(f"{detail.get('node_type', 'a node')} failed: {detail.get('exception_message', 'unknown error')}".strip())
             return h.get('outputs', {})
         if time.time() - t0 > PROMPT_TIMEOUT_S:
-            raise RuntimeError('the render took longer than 50 minutes')
+            raise RuntimeError(f'the render took longer than {PROMPT_TIMEOUT_S // 60} minutes')
         if time.time() - last_note > 30:
             runpod.serverless.progress_update(job, f'rendering ({int(time.time() - t0)}s)')
             last_note = time.time()

@@ -76,34 +76,65 @@ export const RUNPOD_MAX_SOURCE_SEC: Record<RunpodVideoModelId, number> = {
  *    own (a run every few minutes shares one worker and pays it once).
  *  - mocha endpoint (RTX PRO 6000): $2.12 for 2,189 billed seconds on its first
  *    day = $0.00097/s. MoCha 480p Fast measured 155 s of render for 81 frames.
- *  - h3-swap endpoint (80 GB H100 / RTX PRO 6000): priced at $0.0012/s.
- *    Viggle rendered in ~4 min; H3 Character Swap is not measured yet (an
- *    estimate from its 124-frame windows) - re-measure before it goes public.
+ *  - h3-swap endpoint (80 GB H100 / RTX PRO 6000): $0.675 for its first 507
+ *    billed seconds = $0.00133/s. Viggle measured 230 s for a 5.25 s clip;
+ *    H3 Character Swap ~850 s of masking + rendering for one 5.25 s window at
+ *    768p (its first run - re-measure a warm one before it goes public).
  */
 const RP_OVERHEAD_S = 300
 const MOCHA_USD_PER_S = 0.00097
-const H3_USD_PER_S = 0.0012
+const H3_USD_PER_S = 0.00133
 const toTickets = (usd: number) => Math.max(1, Math.ceil(usd / 0.04))
 
-export function runpodVideoTicketCost(model: string, o: { resolution?: string; choice?: string; sourceSec?: number }): number {
+/** The frames MoCha renders: the first max_frames of the clip at its frame rate, down to 4n+1 (AI/mocha-worker prepare_clip). */
+export function mochaRenderFrames(advanced: Record<string, unknown> | undefined, sourceSec?: number): number {
+  const fps = Number(advanced?.fps ?? 24) === 16 ? 16 : 24
+  const maxFrames = Math.max(17, Math.min(161, Number(advanced?.max_frames ?? 81) || 81))
+  const n = sourceSec && sourceSec > 0 ? Math.min(maxFrames, Math.floor(sourceSec * fps + 1e-6)) : maxFrames
+  return Math.max(17, Math.floor((n - 1) / 4) * 4 + 1)
+}
+
+type RunpodRunOpts = { resolution?: string; choice?: string; sourceSec?: number; advanced?: Record<string, unknown> }
+
+/**
+ * The GPU seconds a run's render takes (estimated from the measured runs) -
+ * what its price is built on, and what the panel shows as its time. 0 for an
+ * unknown model.
+ */
+export function runpodRenderSec(model: string, o: RunpodRunOpts): number {
   if (model === 'runpod-mocha') {
-    // Render seconds for the default 81 frames: 480p Fast measured; 720p ~2.8x
-    // (2.3x the pixels); Full is 30 sampling steps to Fast's 6 (~4.2x)
+    // The default 81 frames: 480p Fast measured; 720p ~2.8x (2.3x the pixels);
+    // Full is 30 sampling steps to Fast's 6 (~4.2x). Longer runs (Length
+    // 121/161 frames) scale a little faster than the frame count - attention
+    // grows with the frames - so by (frames/81)^1.2. (720p Full at 161 frames
+    // ran past the worker's old 50-minute cap on 2026-10-22: this says ~68 min.)
     const fast = o.resolution === '720p' ? 440 : 165
-    const render = o.choice === 'full' ? fast * 4.2 : fast
-    return toTickets((RP_OVERHEAD_S + render) * MOCHA_USD_PER_S)
+    const frames = mochaRenderFrames(o.advanced, o.sourceSec)
+    return (o.choice === 'full' ? fast * 4.2 : fast) * Math.pow(frames / 81, 1.2)
   }
   // The seconds of the clip each renders (the panel's default length when the clip is longer)
   if (model === 'runpod-viggle') {
-    // ~40 s of render per clip second (480-class), plus ~$0.08 of NanoBanana repaint
+    // ~44 s per clip second (480-class - measured: 230 s for a 5.25 s clip on 2026-10-22)
     const sec = Math.min(15, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10)
-    return toTickets((RP_OVERHEAD_S + 40 * Math.max(5.2, sec)) * H3_USD_PER_S + 0.08)
+    return 44 * Math.max(5.2, sec)
   }
   if (model === 'runpod-h3-swap') {
-    // ~60 s of render per clip second at 768p, ~25 at 480p (estimate), plus ~$0.01 of SAM
-    const sec = Math.min(30, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 15)
-    const perSec = o.resolution === '480p' ? 25 : 60
-    return toTickets((RP_OVERHEAD_S + perSec * sec) * H3_USD_PER_S + 0.01)
+    // ~160 s of masking + render per clip second at 768p (measured: ~850 s for a
+    // 5.25 s clip, one 124-frame window), ~65 at 480p (2.4x fewer pixels);
+    // a clip shorter than one window still renders the whole window
+    const sec = Math.max(5.2, Math.min(30, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 15))
+    return (o.resolution === '480p' ? 65 : 160) * sec
   }
-  return 1
+  return 0
+}
+
+export function runpodVideoTicketCost(model: string, o: RunpodRunOpts): number {
+  const render = runpodRenderSec(model, o)
+  if (!render) return 1
+  if (model === 'runpod-mocha') return toTickets((RP_OVERHEAD_S + render) * MOCHA_USD_PER_S)
+  // Viggle: GPU only - the automatic first-frame repaint is added by the
+  // callers at NanoBanana's own price (viggleRepaintTickets)
+  if (model === 'runpod-viggle') return toTickets((RP_OVERHEAD_S + render) * H3_USD_PER_S)
+  // H3 Character Swap: plus ~$0.01 of SAM
+  return toTickets((RP_OVERHEAD_S + render) * H3_USD_PER_S + 0.01)
 }
