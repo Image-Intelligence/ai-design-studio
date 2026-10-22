@@ -103,14 +103,14 @@ type RunpodRunOpts = { resolution?: string; choice?: string; sourceSec?: number;
  */
 export function runpodRenderSec(model: string, o: RunpodRunOpts): number {
   if (model === 'runpod-mocha') {
-    // The default 81 frames: 480p Fast measured; 720p ~2.8x (2.3x the pixels);
-    // Full is 30 sampling steps to Fast's 6 (~4.2x). Longer runs (Length
-    // 121/161 frames) scale a little faster than the frame count - attention
-    // grows with the frames - so by (frames/81)^1.2. (720p Full at 161 frames
-    // ran past the worker's old 50-minute cap on 2026-10-22: this says ~68 min.)
-    const fast = o.resolution === '720p' ? 440 : 165
+    // The default 81 frames: 480p Fast measured (155 s); 720p ~2.8x (2.3x the
+    // pixels); Full is 30 sampling steps to Fast's 6 (~4.2x). Longer runs scale
+    // faster than the frame count - attention grows with the frames - by
+    // (frames/81)^1.5: 720p Fast at 161 frames measured 1,291 s (2026-10-22).
+    // (720p Full at 161 frames ran past the worker's old 50-minute cap: ~90 min.)
+    const fast = o.resolution === '720p' ? 460 : 165
     const frames = mochaRenderFrames(o.advanced, o.sourceSec)
-    return (o.choice === 'full' ? fast * 4.2 : fast) * Math.pow(frames / 81, 1.2)
+    return (o.choice === 'full' ? fast * 4.2 : fast) * Math.pow(frames / 81, 1.5)
   }
   // The seconds of the clip each renders (the panel's default length when the clip is longer)
   if (model === 'runpod-viggle') {

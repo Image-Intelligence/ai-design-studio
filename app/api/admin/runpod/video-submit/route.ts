@@ -125,7 +125,15 @@ export async function POST(req: Request) {
         resolution = b.resolution === '480p' ? '480p' : '768p'
         // SAM's word for who gets swapped (the worker's Relay graph asks for
         // "person" - see firstMatchingSubject); left to the worker if this fails
-        const subject = await (await import('@/lib/vace-mask')).firstMatchingSubject(clip, ['person', 'figure']).catch(() => null)
+        const vm = await import('@/lib/vace-mask')
+        // H3 builds the new person FROM this picture: a frame of the clip itself
+        // (a Viggle-style repainted frame) makes it reproduce the clip unchanged
+        // - refused here, before any charge, instead of after a half-hour render
+        const diff = await vm.differenceFromFirstFrame(clip, images[0]).catch(() => null)
+        if (diff !== null && diff < 20) {
+          return jsonPrivate({ success: false, error: "That picture looks like a frame of the clip itself. H3 Character Swap needs a picture of the character on their own (full body, plain background) - it builds the new person from it. For a repainted first frame, use Viggle Animate's My own frame." }, { status: 400 })
+        }
+        const subject = await vm.firstMatchingSubject(clip, ['person', 'figure']).catch(() => null)
         input = { action: 'h3-swap', video: runpodMedia(clip), ref: runpodMedia(images[0]), resolution: resolution === '480p' ? '480' : '768', max_seconds: maxSeconds, ...(subject ? { subject } : {}) }
       }
       input.keep_audio = settings.keep_audio !== false

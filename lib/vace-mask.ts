@@ -112,6 +112,25 @@ export async function firstMatchingSubject(videoUrl: string, prompts: string[]):
   return null
 }
 
+/**
+ * How different a picture is from a clip's first frame: the mean absolute
+ * difference of the two as 48x27 grey thumbnails (0-255). A frame of the clip
+ * itself, even with a character painted in, comes out ~10; a separate
+ * character picture ~80 (2026-10-22: H3 Character Swap given the clip's own
+ * frame as its character returned the clip unchanged after a 34-minute run).
+ */
+export async function differenceFromFirstFrame(videoUrl: string, imageUrl: string): Promise<number> {
+  const W = 48, H = 27
+  const grey = (buf: Buffer) => sharp(buf).resize(W, H, { fit: 'cover' }).greyscale().raw().toBuffer()
+  const frame = await firstFrame(videoUrl)
+  const res = await fetch(signMediaUrl(imageUrl, 600), { signal: AbortSignal.timeout(30_000) })
+  if (!res.ok) throw new Error(`picture ${res.status}`)
+  const [a, b] = await Promise.all([grey(frame), grey(Buffer.from(await res.arrayBuffer()))])
+  let sum = 0
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i])
+  return sum / a.length
+}
+
 /** ffmpeg with optional stdin, its stdout as a Buffer (raw frames in and out). */
 function ffmpegPipe(args: string[], input?: Buffer, timeoutMs = 120_000): Promise<{ out: Buffer; err: string }> {
   return new Promise((resolve, reject) => {
