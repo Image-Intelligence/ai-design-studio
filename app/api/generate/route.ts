@@ -1120,6 +1120,8 @@ export async function POST(request: Request) {
             // which fal bills per input image on top - charge the edit's price
             if (priceAs === 'grok-imagine-2' && falImageUrls.length > 0) ticketCost = getTicketCost('grok-imagine-2-edit', quality)
             if (priceAs === 'mai-image-2.5-pro' && falImageUrls.length > 0) ticketCost = getTicketCost('mai-image-2.5-pro-edit', quality)
+            // Ideogram Vector: high quality WITH references is fal's dearer tier ($0.32 an SVG)
+            if (priceAs === 'ideogram-vector' && falImageUrls.length > 0 && quality === 'high') ticketCost = 8
             // NanoBanana 2.1: priced on the references that really go (max 14)
             if (priceAs === 'nano-banana-2.1') ticketCost = nb21TicketCost({ quality, thinking: body.nb21Thinking, refCount: Math.min(14, falImageUrls.length), webSearch: body.nb21WebSearch === true })
             // Qwen Image 3 (measured 2026-10-02): $0.04 at 1K -> 1 ticket, $0.075

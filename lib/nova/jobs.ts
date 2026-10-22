@@ -99,6 +99,18 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
     return { status: 'pending' }
   }
 
+  // Our own RunPod workers (MoCha): their settler saves the worker's output
+  if (p.provider === 'runpod') {
+    const { settleRunpodRow } = await import('@/lib/runpod-video')
+    const out = await settleRunpodRow(job).catch(() => null)
+    if (out?.status === 'failed') return { status: 'error', error: out.error }
+    if (out?.status === 'completed') {
+      const done = await finished()
+      return done.status === 'done' || !out.urls[0] ? done : { status: 'done', url: out.urls[0], generationId: out.imageIds[0] }
+    }
+    return { status: 'pending' }
+  }
+
   // Video still rendering: ask fal through the site's status handler, which
   // re-hosts the clip, writes the feed row and refunds a failure
   if (job.modelType === 'video' && job.falRequestId && p.falEndpoint) {

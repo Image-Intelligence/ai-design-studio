@@ -66,7 +66,9 @@ export async function GET(req: Request) {
           falRequestId: j.falRequestId ?? null,
           falEndpoint: typeof p.falEndpoint === 'string' ? p.falEndpoint
             // Higgsfield jobs: the poller's marker (lib/higgsfield-models)
-            : p.provider === 'higgsfield' && typeof p.hfEndpoint === 'string' ? `higgsfield:${p.hfEndpoint}` : undefined,
+            : p.provider === 'higgsfield' && typeof p.hfEndpoint === 'string' ? `higgsfield:${p.hfEndpoint}`
+            // Our RunPod workers: "runpod:<model>" (lib/runpod-video-models)
+            : p.provider === 'runpod' ? `runpod:${j.modelId}` : undefined,
           clientSlotId: typeof p.clientSlotId === 'string' ? p.clientSlotId : null,
           // What the job costs - a tile whose submit reply was lost settles its charge from this
           ticketCost: j.ticketCost ?? 0,

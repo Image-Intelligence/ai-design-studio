@@ -18,7 +18,8 @@
 
 import { getCreateModel, computeCreateCost } from '@/lib/chat-hub-models'
 import { getTicketCost } from '@/config/ai-models.config'
-import { flux3ImageTicketCost, gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, kleinTicketCost, krea3TicketCost } from '@/lib/ticket-pricing'
+import { flux3ImageTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, kleinTicketCost, krea3TicketCost } from '@/lib/ticket-pricing'
+import { ELEVEN_VOICES, getAudioStudioModel } from '@/lib/audio-studio'
 
 export type StoryboardShot = {
   id: string
@@ -131,7 +132,7 @@ export type VoiceLine = {
   /** Who says it (a cast name or "Narrator") - shown on the lane, told to the planner. */
   speaker: string
   text: string
-  /** An ElevenLabs voice (ELEVEN_VOICES). */
+  /** One of its model's voices (voicesFor) - ElevenLabs names on the ElevenLabs models. */
   voice: string
   /** STORYBOARD_VOICE_MODELS id. */
   model: string
@@ -167,8 +168,44 @@ export const STORYBOARD_VOICE_MODELS = [
   { id: 'eleven-v4', label: 'ElevenLabs v4' },
   { id: 'eleven-v4-turbo', label: 'ElevenLabs v4 Turbo' },
   { id: 'eleven-v3', label: 'ElevenLabs v3 (audio tags)' },
+  // Every other public single-voice model of the Audio Studio (2026-10-22):
+  // each speaks from the words and one of its OWN voices (voicesFor) - the
+  // dialogue models, voice changers and the ones that need a recording to
+  // clone are left out. HeyGen Voice runs Standard (its spec.endpoint)
+  { id: 'eleven-multilingual-v2', label: 'ElevenLabs Multilingual v2' },
+  { id: 'eleven-turbo-v2.5', label: 'ElevenLabs Turbo v2.5' },
+  { id: 'heygen-voice', label: 'HeyGen Voice' },
+  { id: 'gemini-3.8-flash-tts', label: 'Gemini 3.8 Flash TTS' },
+  { id: 'gemini-3.8-flash-lite-tts', label: 'Gemini 3.8 Flash Lite TTS' },
+  { id: 'gemini-3.1-flash-tts', label: 'Gemini 3.1 Flash TTS' },
+  { id: 'minimax-speech-2.8-hd', label: 'MiniMax Speech 2.8 HD' },
+  { id: 'minimax-speech-2.8-turbo', label: 'MiniMax Speech 2.8 Turbo' },
+  { id: 'inworld-tts', label: 'Inworld TTS 1.5 Max' },
+  { id: 'xai-tts', label: 'xAI Grok TTS' },
+  { id: 'qwen3-tts', label: 'Qwen 3 TTS' },
+  { id: 'qwen-audio-3-tts', label: 'Qwen Audio 3 TTS' },
+  { id: 'chatterbox-hd', label: 'Chatterbox HD' },
+  { id: 'chatterbox-multilingual', label: 'Chatterbox Multilingual (300 characters)' },
+  { id: 'seed-speech-v2', label: 'ByteDance Seed Speech' },
+  { id: 'orpheus-tts', label: 'Orpheus TTS' },
+  { id: 'kokoro', label: 'Kokoro (American English)' },
 ] as const
 export const DEFAULT_VOICE_MODEL = 'eleven-v4'
+/**
+ * The voices a line's model speaks in - its own list from lib/audio-studio
+ * (Kokoro's af_heart, Gemini's Kore...). The planner casts ElevenLabs names,
+ * which only the ElevenLabs models have; Brian stays the ElevenLabs default.
+ */
+export function voicesFor(model: string): { options: readonly string[]; def: string } {
+  const v = getAudioStudioModel(model)?.voices
+  if (!v) return { options: ELEVEN_VOICES, def: 'Brian' }
+  return { options: v.options, def: v.options.includes('Brian') ? 'Brian' : v.default }
+}
+/** The line's voice when its model has it, else that model's default (what the audio route records). */
+export const lineVoice = (model: string, voice: string) => {
+  const v = voicesFor(model)
+  return v.options.includes(voice) ? voice : v.def
+}
 /*
  * The lane's cue is the bed of sound under a stretch of shots: music, or
  * (2026-10-21, owner: "music or ambient noises/sound effects") ambience and
@@ -182,6 +219,22 @@ export const STORYBOARD_MUSIC_MODELS = [
   { id: 'cassette-music', label: 'CassetteAI (quick)', kind: 'music' },
   { id: 'sonilo-sfx', label: 'Sonilo Sound (ambience, sound design)', kind: 'sound' },
   { id: 'eleven-sfx-v2', label: 'ElevenLabs Sound Effects (up to 22s)', kind: 'sound' },
+  // Every other public text-to-music and text-to-sound model (2026-10-22).
+  // Left out: the ones that need lyrics (MiniMax Music 3, DiffRhythm, Mureka
+  // Song) or a recording / clip (Sonilo Video to Music, Mirelo Video to Sound).
+  // Lyria and Mureka pick their own length - the cue's span is not sent to them
+  { id: 'lyria-3.5', label: 'Lyria 3.5', kind: 'music' },
+  { id: 'lyria-3-pro', label: 'Lyria 3 Pro', kind: 'music' },
+  { id: 'minimax-music-2.6', label: 'MiniMax Music 2.6', kind: 'music' },
+  { id: 'stable-audio-2.5', label: 'Stable Audio 2.5 (up to 3 min)', kind: 'music' },
+  { id: 'ace-step', label: 'ACE-Step (cheap, open)', kind: 'music' },
+  { id: 'mureka-instrumental', label: 'Mureka 9.5 Instrumental', kind: 'music' },
+  { id: 'mureka-song-prompt', label: 'Mureka 9.5 Song (sung, dear)', kind: 'music' },
+  { id: 'mirelo-sfx2', label: 'Mirelo SFX 2.0 (up to 60s)', kind: 'sound' },
+  { id: 'mirelo-sfx', label: 'Mirelo SFX 1.6 (up to 60s)', kind: 'sound' },
+  { id: 'stable-audio-3-sfx', label: 'Stable Audio 3 SFX (up to 2 min)', kind: 'sound' },
+  { id: 'cassette-sfx', label: 'CassetteAI SFX (up to 30s)', kind: 'sound' },
+  { id: 'mmaudio-v2', label: 'MMAudio V2 (up to 30s)', kind: 'sound' },
 ] as const
 export const DEFAULT_MUSIC_MODEL = 'sonilo-music'
 /** The planner's "ambience" cues: Sonilo's sound design runs up to 3 minutes, so one cue covers a long stretch. */
@@ -243,7 +296,8 @@ export function linesFromPlan(raw: unknown, existing: VoiceLine[] | undefined, v
     const same = old.findIndex(l => l.text.trim() === text)
     if (same >= 0) { out.push({ ...old[same], speaker, offset: at }); old.splice(same, 1); return }
     const slot = old.length && k < (existing?.length ?? 0) ? old.shift() : undefined
-    out.push(slot ? { ...slot, speaker, text, voice: voiceFor(speaker), offset: at } : newVoiceLine({ speaker, text, voice: voiceFor(speaker), offset: at }))
+    // A reused slot keeps its model, so the cast voice must be one that model has
+    out.push(slot ? { ...slot, speaker, text, voice: lineVoice(slot.model, voiceFor(speaker)), offset: at } : newVoiceLine({ speaker, text, voice: voiceFor(speaker), offset: at }))
   })
   return out
 }
@@ -991,6 +1045,33 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
     { key: 'ideogramRenderingSpeed', label: 'Speed', options: o(['TURBO', 'Turbo'], ['BALANCED', 'Balanced'], ['QUALITY', 'Quality']), def: 'BALANCED' },
     { key: 'ideogramExpansionModel', label: 'Magic prompt', options: o(['None', 'Off'], ['Medium', 'Medium'], ['Large', 'Large']), def: 'Medium', hint: 'Lets Ideogram expand the prompt - Off keeps it word for word' },
   ],
+  // 2026-10-22: v4's other tiers, as the portal's Ideogram v4 config offers
+  // them. Fast and Instant's own endpoints stop at Medium expansion; Instant
+  // has no speed (a reference moves it to image-to-image at TURBO - the
+  // builder does it and ideogramTicketCost prices it)
+  'ideogram-v4-fast': [
+    RES(['1k', '2k'], '2k'),
+    { key: 'ideogramRenderingSpeed', label: 'Speed', options: o(['TURBO', 'Turbo'], ['BALANCED', 'Balanced'], ['QUALITY', 'Quality']), def: 'BALANCED' },
+    { key: 'ideogramExpansionModel', label: 'Magic prompt', options: o(['None', 'Off'], ['Medium', 'Medium']), def: 'Medium', hint: 'Lets Ideogram expand the prompt - Off keeps it word for word' },
+  ],
+  'ideogram-v4-instant': [
+    RES(['1k', '2k'], '2k'),
+    { key: 'ideogramExpansionModel', label: 'Magic prompt', options: o(['None', 'Off'], ['Medium', 'Medium']), def: 'Medium', hint: 'Lets Ideogram expand the prompt - Off keeps it word for word' },
+  ],
+  // A seamless texture whose edges join up when repeated (wallpaper, fabric) - not a scene
+  'ideogram-v4-tiling': [
+    RES(['1k', '2k'], '2k'),
+    { key: 'tilingMode', label: 'Repeats', options: o(['both', 'Both ways'], ['horizontal', 'Side to side'], ['vertical', 'Top to bottom']), def: 'both', hint: 'Which edges join up seamlessly' },
+    { key: 'ideogramRenderingSpeed', label: 'Speed', options: o(['TURBO', 'Turbo'], ['BALANCED', 'Balanced'], ['QUALITY', 'Quality']), def: 'BALANCED' },
+    { key: 'ideogramExpansionModel', label: 'Magic prompt', options: o(['None', 'Off'], ['Medium', 'Medium'], ['Large', 'Large']), def: 'Medium', hint: 'Lets Ideogram expand the prompt - Off keeps it word for word' },
+  ],
+  /*
+   * Z-Image Base is built by hand in buildFalCall (no registry spec), but its
+   * sizes are listed here: the catalog offers a 4k it cannot make (z-image
+   * stops at 2048 a side - /api/generate renders "4k" as 2k), and the
+   * portal charges it getTicketCost's flat 1 at every size.
+   */
+  'z-image-base': [RES(['1k', '2k'], '2k')],
   'flux-3-image': [RES(['1k', '2k', '4k'], '2k')],
   // 2026-10-17: the 2026-10-15 batch, public 2026-10-16 - the portal's sizes
   'flux-3-klein': [RES(['1k', '2k', '4k'], '2k')],
@@ -1099,7 +1180,8 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
         case 'flux-3-klein': case 'flux-3-klein-base': return kleinTicketCost(id, { quality: q, aspectRatio: aspect })
         case 'krea-3': return krea3TicketCost({ quality: q, aspectRatio: aspect, refs })
         case 'qwen-image-3': return (q === '1k' ? 1 : 2) + (refs > 0 ? 1 : 0)
-        case 'ideogram-v4': return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })
+        case 'ideogram-v4': case 'ideogram-v4-fast': case 'ideogram-v4-instant': case 'ideogram-v4-tiling':
+          return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })
         case 'grok-imagine-2': return getTicketCost(refs > 0 ? 'grok-imagine-2-edit' : id, q)
         case 'mai-image-2.5-pro': return getTicketCost(refs > 0 ? 'mai-image-2.5-pro-edit' : id, q)
         default: return getTicketCost(id, q)
@@ -1107,6 +1189,8 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
     }
     // The chat catalog prices Z-Image Turbo flat; the portal charges by size
     if (id === 'z-image-turbo') return q === '4k' ? 8 : q === '2k' ? 2 : 1
+    // FLUX.1 Dev by megapixel, image-to-image (a reference) dearer - as /api/generate charges it
+    if (id === 'flux-1-dev') return flux1DevTicketCost({ quality: q, aspectRatio: aspect, i2i: refs > 0 })
     const size = id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[aspect] ?? '1024x1024') : aspect
     return computeCreateCost(m, q ? { quality: q, aspect: size } : { aspect: size })
   } catch { return m.ticketCost ?? 0 }
@@ -1213,6 +1297,17 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'krea-3', label: 'Krea 3', refs: true },
   // Public 2026-10-20: the still's aspect picks MOSS's nearest named size (2 tickets)
   { id: 'moss-image', label: 'MOSS Image', refs: false },
+  // Public models the Storyboard had not listed (added 2026-10-22): FLUX 1 Dev
+  // and Z-Image Base are hand-built cases of buildFalCall (one reference =
+  // FLUX's image-to-image; Z-Image Base takes none), the Ideogram v4 tiers go
+  // through lib/fal-image-models like v4 itself. Ideogram Vector is left out:
+  // it answers with an SVG, which the still pipeline would save under a .jpg
+  // name and the shot could not animate (fal's video models take raster frames)
+  { id: 'flux-1-dev', label: 'FLUX 1 Dev', refs: true },
+  { id: 'z-image-base', label: 'Z-Image Base', refs: false },
+  { id: 'ideogram-v4-fast', label: 'Ideogram v4 Fast', refs: true },
+  { id: 'ideogram-v4-instant', label: 'Ideogram v4 Instant', refs: true },
+  { id: 'ideogram-v4-tiling', label: 'Ideogram v4 Tiling', refs: true },
 ]
 // NanoBanana 2.1 since the Studio went public (2026-10-07): Pro 2 is admin-only
 export const DEFAULT_IMAGE_MODEL = 'nano-banana-2.1'
@@ -1235,11 +1330,17 @@ export const STORYBOARD_VIDEO_MODELS = [
   // Public image-to-video models the Storyboard had not listed (added 2026-10-17):
   // each animates the still as its start frame
   'Happy Horse 1.1', 'Kling O3', 'H3 Max Camera Controls',
+  // 2026-10-22: HeyGen Video (the still routes it to its image-to-video
+  // endpoint; it always needs the prompt, which a shot always has), Pixelcut's
+  // looping product video, and H3 Max References - which takes the still as a
+  // REFERENCE (re-stages its subject) rather than as the first frame
+  'HeyGen Video', 'Pixelcut Loop', 'H3 Max References',
 ] as const
 export const DEFAULT_VIDEO_MODEL = 'SeeDance 2.5'
 /**
  * The plan label -> the site's video model id (lib/chat-video-catalog), which is
- * what /api/video/generate takes. Every one of these animates a start frame.
+ * what /api/video/generate takes. Every one of these animates a start frame,
+ * save H3 Max References (the still goes in as its reference picture).
  */
 export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
   'SeeDance 2.5': 'seedance-2.5', 'SeeDance 2.0': 'seedance-2.0', 'Kling 3.0': 'kling-v3', 'Kling O3 Pro': 'kling-o3-pro',
@@ -1258,6 +1359,7 @@ export const STORYBOARD_VIDEO_IDS: Record<string, string> = {
   'Kandinsky 6 Pro': 'kandinsky6-pro', 'Kandinsky 6 Lite': 'kandinsky6-lite',
   'Vidu Q4': 'vidu-q4',
   'Happy Horse 1.1': 'happy-horse-1.1', 'Kling O3': 'kling-o3', 'H3 Max Camera Controls': 'minimax-h3-max-camera',
+  'HeyGen Video': 'heygen-video', 'Pixelcut Loop': 'pixelcut-looping-video', 'H3 Max References': 'minimax-h3-max-ref',
 }
 
 /**
@@ -1291,6 +1393,11 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'flux-3-klein': 'very cheap, fast FLUX 3 at up to 4K; quick drafts and filler, edits with up to 10 refs',
   'flux-3-klein-base': 'the fuller Klein - more detail and range than Klein, still cheap; up to 4K and 10 refs',
   'krea-3': 'newest Krea: aesthetic, art-directed photographic looks; keeps characters across up to 8 refs',
+  'flux-1-dev': 'classic FLUX look - crisp graphic compositions, posters, concept art; one ref restyles that picture',
+  'z-image-base': 'cheapest full-quality stills (1 ticket), strong realism; text only, no refs',
+  'ideogram-v4-fast': 'Ideogram v4 lettering, quicker and cheaper; signage and labels in scene',
+  'ideogram-v4-instant': 'fastest, cheapest Ideogram - draft title cards and signage',
+  'ideogram-v4-tiling': 'SEAMLESS REPEATING TEXTURES only (wallpaper, fabric, ground cover) - never a shot; for a pattern asset',
   // videos (by plan label)
   'SeeDance 2.5': 'best general motion and acting, native audio; refuses close-ups of realistic faces',
   'SeeDance 2.0': 'multi-reference motion with audio', 'SeeDance 2.0 Fast': 'cheaper SeeDance 2.0',
@@ -1316,6 +1423,9 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'Happy Horse 1.1': 'newer Happy Horse: 3-15s at up to 1080p, lively character animation',
   'Kling O3': 'Kling O3 standard: 3-15s, expressive motion with optional audio, cheaper than O3 Pro',
   'H3 Max Camera Controls': 'the scene holds still while the camera moves (orbit, push, crane) - establishing and reveal shots',
+  'HeyGen Video': 'newest HeyGen: 5-15s with sound from the still, up to 2K; natural people, presenters and everyday scenes',
+  'Pixelcut Loop': 'PRODUCT LOOPS only: a seamless 5-15s loop that starts and ends on the still, gentle motion - packshots, not story beats',
+  'H3 Max References': 'the still is a REFERENCE, not the first frame - re-stages its subject in a new shot with strong prompt following; when the opening need not match the still',
 }
 
 /** The planner's menu: one line per model, image ids and video labels. */

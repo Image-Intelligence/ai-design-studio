@@ -1,5 +1,7 @@
 import { startStudioJob, finishStudioJob, failStudioJob } from '@/lib/studio-activity'
-import { fitRefsForModel } from '@/lib/fal-image-fit'
+import { fitRefsForModel, fitImageForFal } from '@/lib/fal-image-fit'
+import { getFalImageModelSpec, buildFalImageInput } from '@/lib/fal-image-models'
+import { LAYERIZE_MODELS, saveLayerizeResult, type FalLayer, type SavedLayer } from '@/lib/layerize-save'
 import { enforcePublicModeration } from '@/lib/public-moderation'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { NextRequest } from 'next/server'
@@ -20,6 +22,7 @@ import { mediaKeeper } from '@/lib/media-ownership'
 import {
   type StudioGenOp, FILL_MAX_PIXELS, EXPAND_MAX_PIXELS, UPSCALE_MAX_SIDE, ERASE_TICKETS, EXPAND_TICKETS,
   fillTickets, isUpscaler, upscaleFactor, upscaleTickets, UPSCALERS, STUDIO_IMAGE_MODELS, genTickets, canEdit, isAdminOnlyModel, validAspect,
+  pictureTool, pictureToolTickets, PICTURE_TOOL_OPTIONS, PICTURE_FRAMES, nearestAspect,
 } from '@/lib/image-studio-ai'
 
 /**
@@ -38,8 +41,14 @@ import {
  *   upscale   image + upscaler + factor (+ maxSide: the long edge it may reach)
  *   edit      image + prompt (the instruction) + model / quality / aspect
  *   generate  prompt + model / quality / aspect (+ image as a reference)
+ *   tool      image + tool (a PICTURE_TOOLS id) (+ prompt, aspect - Reframe's
+ *             new frame, quality - Ideogram Vectorize's 'simple', options -
+ *             PICTURE_TOOL_OPTIONS, refs - the second picture of a two-picture
+ *             tool). Built by the model's lib/fal-image-models spec, as
+ *             /api/generate builds it. An SVG comes back rasterised (the SVG
+ *             itself is what My Generations keeps); Layerize adds `layers`.
  *
- * Returns: { url, width, height, tickets, balance, imageId }
+ * Returns: { url, width, height, tickets, balance, imageId, svg?, layers? }
  *
  * Priced by lib/image-studio-ai - the same functions that price the page's
  * buttons - from the inputs as measured HERE, never from what the page says.
@@ -77,7 +86,7 @@ async function studioFolder(userId: number, title: string): Promise<number> {
 }
 
 const LABEL: Record<StudioGenOp, string> = {
-  fill: 'Generative fill', erase: 'Remove object', expand: 'Generative expand', upscale: 'Upscale', edit: 'AI edit', generate: 'Generate',
+  fill: 'Generative fill', erase: 'Remove object', expand: 'Generative expand', upscale: 'Upscale', edit: 'AI edit', generate: 'Generate', tool: 'Picture tool',
 }
 
 export async function POST(req: NextRequest, ctx: Ctx) {
@@ -103,6 +112,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const op = body.op as StudioGenOp
   if (!(op in LABEL)) return jsonPrivate({ error: 'Unknown AI tool' }, { status: 400 })
   const bad = (error: string) => jsonPrivate({ error }, { status: 400 })
+  // What the run is called in the feed and My Generations (a picture tool by its own name)
+  const what = op === 'tool' ? pictureTool(body.tool)?.label ?? LABEL.tool : LABEL[op]
 
   // Inputs: only files this account uploaded for the studio
   const own = (v: unknown) => {
@@ -131,8 +142,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   let input: Record<string, unknown> = {}
   let model = ''
   let quality: string | undefined
+  // The source's long side (an SVG result is rasterised to it)
+  let srcLong = 0
   try {
     const src = image ? await readImage(image) : null
+    srcLong = src ? Math.max(src.w, src.h) : 0
     if (op === 'fill' || op === 'erase') {
       if (src!.w * src!.h > FILL_MAX_PIXELS * 1.05) return bad('The region is too large - the page sends at most 2 megapixels')
       // The mask must match the picture pixel for pixel
@@ -201,10 +215,53 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           endpoint = 'fal-ai/drct-super-resolution'
           input = { image_url: srcUrl, upscale_factor: 4 }
           break
+        case 'topaz-img-upscale-creative':
+        case 'topaz-img-upscale-generative':
+        case 'topaz-img-upscale-transparent': {
+          // Built by the model's own spec (its default model, PNG out), as /api/generate builds it
+          const built = buildFalImageInput(getFalImageModelSpec(body.upscaler)!, { prompt: '', aspectRatio: '', quality: '', imageUrls: [srcUrl], options: { topazUpscaleFactor: f } })
+          endpoint = built.endpoint; input = built.input
+          break
+        }
         default:
           endpoint = 'topaz/upscale/image/precision'
           input = { image_url: image, upscale_factor: f, output_format: 'png' }
       }
+    } else if (op === 'tool') {
+      const tool = pictureTool(body.tool)
+      const spec = tool ? getFalImageModelSpec(tool.id) : undefined
+      if (!tool || !spec) return bad('Unknown picture tool')
+      // The popup is open to everyone: an admin-only model stays admin-only (as in /api/generate)
+      if (isAdminOnlyModel(tool.id) && !(await checkIsAdmin(user.email))) return jsonPrivate({ error: 'This tool is not available' }, { status: 403 })
+      if (tool.prompt?.need && !prompt) return bad(`${tool.label} needs a prompt`)
+      // A two-picture tool's second picture (and more): the account's own, after the source
+      const more = tool.extra ? extraRefs.filter(u => u !== image).slice(0, tool.extra.max) : []
+      if (tool.extra && more.length < tool.extra.need) return bad(`${tool.label}: add ${tool.extra.label.toLowerCase()} first`)
+      // The source at the size /api/generate sends this model (Marigold and the
+      // vectorizers 2048, Ideogram also under 4 MB, Multi-Angle 1536)
+      const lead = tool.maxSide ? await fitImageForFal(image, tool.maxSide, tool.id.startsWith('ideogram') ? 4 * 1024 * 1024 : Infinity) : image
+      // Only the knobs a tool has (each spec clamps its own values); Pixelcut's
+      // background is transparent or a colour - never a URL from the page
+      const sent = body.options && typeof body.options === 'object' ? body.options as Record<string, unknown> : {}
+      const options: Record<string, unknown> = Object.fromEntries(PICTURE_TOOL_OPTIONS.filter(k => k in sent).map(k => [k, sent[k]]))
+      if (tool.models) options.topazModel = typeof sent.topazModel === 'string' && tool.models.includes(sent.topazModel) ? sent.topazModel : tool.models[0]
+      if (tool.id === 'pixelcut-product-photo') options.pixelcutBackgroundMode = sent.pixelcutBackgroundMode === 'Color' ? 'Color' : 'Transparent'
+      // Embed Product places the product in the scene's own pixels
+      options.refDims = { width: src!.w, height: src!.h }
+      // Reframe: the new frame picked (one of the model's); the rest size their
+      // output (Recraft, Pixelcut Product Photo) from the frame nearest the source
+      let aspectRatio = nearestAspect(src!.w, src!.h, PICTURE_FRAMES)
+      if (tool.place === 'reframe') {
+        if (typeof body.aspect !== 'string' || !spec.aspectRatios?.includes(body.aspect)) return bad('Pick the new frame')
+        aspectRatio = body.aspect
+      }
+      const built = buildFalImageInput(spec, {
+        prompt: tool.prompt ? prompt : '', aspectRatio, imageUrls: [lead, ...more], options,
+        // Ideogram Vectorize reads its mode from the quality; the image-size models take 2K
+        quality: tool.id === 'ideogram-vectorize' ? (body.quality === 'simple' ? 'simple' : 'default') : '2k',
+      })
+      endpoint = built.endpoint; input = built.input
+      cost = pictureToolTickets(tool.id, src!.w, src!.h, { topazModel: options.topazModel as string | undefined }); model = tool.id
     } else {
       const spec = STUDIO_IMAGE_MODELS.find(m => m.id === body.model)
       if (!spec) return bad('Unknown image model')
@@ -249,14 +306,48 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
 
   // The feed's generating tile for it (lib/studio-activity)
-  const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: model, prompt: `${LABEL[op]}${prompt ? `: ${prompt}` : ''} (Image Studio)`, studio: 'image-studio', quality: quality || undefined })
+  const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: model, prompt: `${what}${prompt ? `: ${prompt}` : ''} (Image Studio)`, studio: 'image-studio', quality: quality || undefined })
   try {
     const out: any = await fal.subscribe(endpoint, { input })
+    /*
+     * Layerize: the background and each object, saved together as ONE card the
+     * way the fal webhook saves it (lib/layerize-save); the page gets every
+     * layer and its box in the background's pixels, to place as layers.
+     */
+    if (LAYERIZE_MODELS.has(model) && Array.isArray(out?.data?.layers) && out.data.layers.length) {
+      const saved = await saveLayerizeResult({
+        userId: user.id, prompt: `${what}${prompt ? `: ${prompt}` : ''} (Image Studio)`, modelId: model,
+        falRequestId: typeof out?.requestId === 'string' ? out.requestId : null, createdAt: new Date(), ticketCost: cost,
+        referenceImageUrls: [image], layers: out.data.layers as FalLayer[],
+      })
+      if (!saved) throw new Error('The model returned no layers')
+      const row = await prisma.generatedImage.update({ where: { id: saved.id }, data: { folderId: await studioFolder(user.id, canvas.title) }, select: { videoMetadata: true } })
+      const lz = (row.videoMetadata as { layerize?: { width: number; height: number; layers: SavedLayer[] } } | null)?.layerize
+      if (!lz?.layers?.length) throw new Error('The model returned no layers')
+      await ensureThumbnail(saved.id).catch(() => {})
+      await finishStudioJob(track, [saved.id], saved.url)
+      return jsonPrivate({ url: saved.url, width: lz.width, height: lz.height, tickets: cost, balance: paid.newBalance, imageId: saved.id, layers: lz.layers.map(l => ({ url: l.url, name: l.name, box: l.box })) })
+    }
     const falUrl: string | undefined = out?.data?.images?.[0]?.url ?? out?.data?.image?.url
     if (!falUrl) throw new Error('The model returned no image')
     const res = await fetch(falUrl)
     if (!res.ok) throw new Error('Could not fetch the result')
-    const buf = Buffer.from(await res.arrayBuffer())
+    let buf: Buffer = Buffer.from(await res.arrayBuffer())
+    /*
+     * An SVG (the vectorizers, Recraft's vector models - detected as the fal
+     * webhook does): the SVG itself is what My Generations keeps; the layer
+     * gets it rasterised by sharp, its long side at the source's (1024-4096px).
+     */
+    const falType = (res.headers.get('content-type') || '').split(';')[0].trim()
+    const head = buf.subarray(0, 400).toString('utf8').trimStart()
+    let svgUrl = ''
+    if (falType === 'image/svg+xml' || /\.svg(\?|#|$)/i.test(falUrl) || head.startsWith('<svg') || (head.startsWith('<?xml') && head.includes('<svg'))) {
+      svgUrl = await uploadToR2(userKey(user.id, `image-studio/ai-${op}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.svg`), buf, 'image/svg+xml')
+      const at72 = await sharp(buf).metadata()
+      const want = Math.min(4096, Math.max(1024, srcLong || 2048))
+      const density = Math.max(1, Math.min(2400, 72 * want / Math.max(at72.width ?? 1024, at72.height ?? 1024, 1)))
+      buf = await sharp(buf, { density }).png().toBuffer()
+    }
     const meta = await sharp(buf).metadata()
     const ct = meta.format === 'png' ? 'image/png' : meta.format === 'webp' ? 'image/webp' : 'image/jpeg'
     const ext = ct === 'image/png' ? 'png' : ct === 'image/webp' ? 'webp' : 'jpg'
@@ -264,18 +355,18 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const w = meta.width ?? 0, h = meta.height ?? 0, g = w && h ? gcd(w, h) : 1
     const row = await prisma.generatedImage.create({
       data: {
-        userId: user.id, prompt: `${LABEL[op]}${prompt ? `: ${prompt}` : ''} (Image Studio)`, imageUrl: url, model, ticketCost: cost,
+        userId: user.id, prompt: `${what}${prompt ? `: ${prompt}` : ''} (Image Studio)`, imageUrl: svgUrl || url, model, ticketCost: cost,
         referenceImageUrls: [image, mask].filter(Boolean), folderId: await studioFolder(user.id, canvas.title),
         expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
         ...(quality ? { quality } : {}), ...(w && h ? { aspectRatio: `${w / g}:${h / g}` } : {}),
       },
     })
     await ensureThumbnail(row.id).catch(() => {})
-    await finishStudioJob(track, [row.id], url)
-    return jsonPrivate({ url, width: w, height: h, tickets: cost, balance: paid.newBalance, imageId: row.id })
+    await finishStudioJob(track, [row.id], svgUrl || url)
+    return jsonPrivate({ url, width: w, height: h, tickets: cost, balance: paid.newBalance, imageId: row.id, ...(svgUrl ? { svg: svgUrl } : {}) })
   } catch (e) {
     await refundGenerationTickets(user.id, user.email, cost)
     await failStudioJob(track, failText(e))
-    return jsonPrivate({ error: `${LABEL[op]} failed: ${failText(e).slice(0, 240)}`, balance: paid.newBalance >= 0 ? paid.newBalance + cost : paid.newBalance }, { status: 502 })
+    return jsonPrivate({ error: `${what} failed: ${failText(e).slice(0, 240)}`, balance: paid.newBalance >= 0 ? paid.newBalance + cost : paid.newBalance }, { status: 502 })
   }
 }

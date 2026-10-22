@@ -112,6 +112,9 @@ export async function POST(request: NextRequest) {
       }
 
       const actualPrompt = result.data?.actual_prompt || prompt;
+      // Its real length, measured (a clip tool's request carries no length - the cron sends none at all)
+      const measuredSec = (await (await import('@/lib/video-probe')).probeRemoteVideo(falVideoUrl).catch(() => null))?.seconds
+      const savedDuration = measuredSec && measuredSec > 0 ? String(Math.max(1, Math.round(measuredSec))) : (duration || '5')
 
       // Idempotency: if this requestId was already saved, return the existing record
       const existingVideo = await prisma.generatedImage.findFirst({
@@ -194,7 +197,7 @@ export async function POST(request: NextRequest) {
           expiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
           falRequestId: requestId,
           videoMetadata: {
-            duration: duration || '5',
+            duration: savedDuration,
             resolution: result.data?.draft_id ? 'draft' : (resolution || '1080p'),
             isVideo: true,
             ...(result.data?.draft_id ? { seedanceDraftId: String(result.data.draft_id) } : {}),

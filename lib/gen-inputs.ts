@@ -14,6 +14,8 @@
  * Client-safe (no server imports): the page and the routes share it.
  */
 
+import { cleanVideoAdvanced } from './video-advanced'
+
 export type GenInputVideo = {
   /** start frame / character picture / a single image */
   imageUrl?: string
@@ -31,6 +33,8 @@ export type GenInputVideo = {
   klingElements?: { frontal: string; views: string[] }[]
   /** SeeDance / Omni: which run it became (t2v / i2v / r2v / edit) */
   mode?: string
+  /** The model's Advanced settings this run really used (lib/video-advanced) - only the non-default ones */
+  settings?: Record<string, string | number | boolean>
   /** Mureka Lyrics Video: the song it was made from */
   song?: { url: string; name: string; id?: number }
   /**
@@ -109,6 +113,8 @@ export function videoInputsFromBody(b: Record<string, unknown> | null | undefine
     lipsyncVideoUrl: url(b.lipsyncVideoUrl), lipsyncAudioUrl: url(b.lipsyncAudioUrl), audioUrl: url(b.audioUrl),
     ...(els.length ? { klingElements: els } : {}),
     ...(typeof b.sd20Mode === 'string' ? { mode: b.sd20Mode.slice(0, 8) } : {}),
+    // As asked; the generate route replaces it with what the fal input really carries
+    ...(() => { const s = cleanVideoAdvanced(String(b.model ?? ''), b.videoAdvanced); return Object.keys(s).length ? { settings: s } : {} })(),
     rescan: cleanRescan(b.rescan),
   }
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined)) as GenInputVideo
@@ -136,6 +142,7 @@ export function keepVideoInputs(i: GenInputVideo, keep: (u: string) => boolean):
     lipsyncVideoUrl: one(i.lipsyncVideoUrl), lipsyncAudioUrl: one(i.lipsyncAudioUrl), audioUrl: one(i.audioUrl),
     ...(els.length ? { klingElements: els } : {}),
     ...(i.mode ? { mode: i.mode } : {}),
+    ...(i.settings ? { settings: i.settings } : {}),
     ...(i.song && keep(i.song.url) ? { song: i.song } : {}),
     ...(i.rescan ? { rescan: keepRescanLinks(i.rescan, keep) as Record<string, unknown> } : {}),
   }

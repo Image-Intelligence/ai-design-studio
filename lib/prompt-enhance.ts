@@ -162,7 +162,7 @@ function modelGuidance(target: 'image' | 'video', modelName = ''): string {
   const m = modelName.toLowerCase()
   if (target === 'video') {
     const base = 'Write it as a SHOT for a video model: the subject, what MOVES and how (action, pace), the camera (e.g. slow push in, orbit, tracking, handheld, static), lighting and mood. Describe one continuous moment, present tense - no lists of separate scenes.'
-    if (/lip sync|avatar|heygen/.test(m)) return 'This is for a talking-head model: write ONLY the words to be spoken, natural and conversational, no stage directions.'
+    if (/lip sync|avatar|heygen/.test(m) && !/heygen video/.test(m)) return 'This is for a talking-head model: write ONLY the words to be spoken, natural and conversational, no stage directions.'
     if (/music video/.test(m)) return 'This is for a music-video model: write lyrics-style lines to show as subtitles, short and singable.'
     if (/sfx|mirelo/.test(m)) return 'This is for a sound-effects model: describe only the sounds - sources, texture, distance, rhythm.'
     return base

@@ -7,7 +7,7 @@ import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-g
 import { canonicalisePayload } from '@/lib/media-url'
 import { fal } from '@/lib/fal-client'
 import { jsonPrivate } from '@/lib/api-json'
-import { AUDIO_MODEL_PREFIX, audioTicketCost, spokenCharCount, getAudioStudioModel, type AudioRunInput } from '@/lib/audio-studio'
+import { AUDIO_MODEL_PREFIX, audioTicketCost, audioModeOf, spokenCharCount, getAudioStudioModel, type AudioRunInput } from '@/lib/audio-studio'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 
 /**
@@ -152,14 +152,17 @@ export async function POST(req: Request) {
       spokenChars: spokenCharCount((input.text ?? '') + (input.lyrics ?? '')),
       seconds: input.duration,
       inputSeconds,
+      options: input.options,
     })
     const charge = await deductGenerationTickets(user.id, user.email, ticketCost)
     if (!charge.ok) return jsonPrivate({ error: `Insufficient tickets. Need ${charge.need}, you have ${charge.have}.` }, { status: 402 })
 
     const falInput = spec.build(input)
+    // A model with modes (HeyGen Voice / Turbo) runs on the chosen one's endpoint
+    const runEndpoint = audioModeOf(spec, input.options).endpoint
     let requestId: string
     try {
-      const sub = await fal.queue.submit(spec.endpoint, { input: falInput })
+      const sub = await fal.queue.submit(runEndpoint, { input: falInput })
       requestId = sub.request_id
     } catch (e: any) {
       await refundGenerationTickets(user.id, user.email, ticketCost)
@@ -178,7 +181,7 @@ export async function POST(req: Request) {
           ? `${spec.name}${input.text ? ` · ${input.text}` : ''} · ${sourceSong.prompt}`
           : input.text || input.lyrics || (params_fileName(body) ? `${spec.name} · ${params_fileName(body)}` : spec.name)).slice(0, 5000),
         parameters: {
-          falEndpoint: spec.endpoint,
+          falEndpoint: runEndpoint,
           falInput: falInput as object,
           voice: input.voice ?? null,
           voice2: input.voice2 ?? null,

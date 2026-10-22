@@ -525,6 +525,9 @@ function topazSimple<T extends string>(models: readonly T[], fallback: T) {
 // registry
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Ideogram Vector's aspect ratios (fal schema 2026-10-22). */
+const IDEOGRAM_VECTOR_ASPECTS: string[] = ['auto', '1:1', '1:4', '1:3', '1:2', '9:16', '10:16', '2:3', '3:4', '4:5', '5:4', '4:3', '3:2', '16:10', '16:9', '2:1', '3:1', '4:1']
+
 export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
   // ── Qwen Image 3 ───────────────────────────────────────────────────────────
   /*
@@ -1102,6 +1105,36 @@ export const FAL_IMAGE_MODELS: Record<string, FalImageModelSpec> = {
       // so the edges wrap; without, it invents one from the prompt.
       ...(ctx.imageUrls[0] ? { image_url: ctx.imageUrls[0], strength: ideogramStrength(ctx.options) } : {}),
     }),
+  },
+
+  // ── Ideogram Vector (2026-10-22) ───────────────────────────────────────────
+  // True SVG out. Text to vector (with up to 5 optional reference pictures -
+  // the first is the primary source) at low / medium / high quality, and
+  // Vectorize (a picture traced to SVG, default or simple shapes - the tool's
+  // quality picker carries the mode). fal per SVG: $0.13 / $0.16 / $0.20,
+  // high with references $0.32; vectorize $0.10 (either mode).
+  'ideogram-vector': {
+    id: 'ideogram-vector',
+    endpoint: 'ideogram/vector/text-to-vector',
+    needsImage: false, imageParam: 'image_urls', maxInputImages: 5,
+    promptRequired: true, promptMin: 1, promptMax: 10000,
+    aspectRatios: IDEOGRAM_VECTOR_ASPECTS, usesImageSize: false,
+    notes: 'SVG out (images[].url); quality low|medium|high is the price; references optional (high + refs costs more)',
+    build: (ctx) => ({
+      prompt: ctx.prompt,
+      quality: ctx.quality === 'low' || ctx.quality === 'high' ? ctx.quality : 'medium',
+      num_images: 1,
+      aspect_ratio: IDEOGRAM_VECTOR_ASPECTS.includes(ctx.aspectRatio) ? ctx.aspectRatio : 'auto',
+      ...(ctx.imageUrls.length ? { image_urls: ctx.imageUrls.slice(0, 5) } : {}),
+    }),
+  },
+  'ideogram-vectorize': {
+    id: 'ideogram-vectorize',
+    endpoint: 'ideogram/vector/image-to-vector',
+    needsImage: true, imageParam: 'image_url', maxInputImages: 1, promptRequired: false,
+    aspectRatios: null, usesImageSize: false,
+    notes: 'Raster -> SVG (images[].url). mode default keeps finer detail; simple uses fewer shapes',
+    build: (ctx) => ({ image_url: ctx.imageUrls[0], mode: ctx.quality === 'simple' ? 'simple' : 'default' }),
   },
 
   // ── Ideogram 4.5 ───────────────────────────────────────────────────────────
@@ -2152,6 +2185,9 @@ export const PUBLIC_FAL_IMAGE_MODEL_IDS = new Set<string>([
   'qwen-image-3', 'qwen-image-3-edit',
   // Public on arrival 2026-10-02: Ideogram 4.5 (+edit), fal per image by tier
   'ideogram-4.5', 'ideogram-4.5-edit',
+  // Public 2026-10-22 after UI runs: Ideogram Vector (text to SVG) and
+  // Vectorize (picture to SVG), fal per SVG - 4 / 4 / 5 (high + refs 8) and 3 tickets
+  'ideogram-vector', 'ideogram-vectorize',
   // Public on arrival 2026-10-02: FLUX 3 Image (+edit), per megapixel
   'flux-3-image', 'flux-3-image-edit',
   // Public 2026-10-02: Recraft V4 (style / style pro / vector / vector pro; fal

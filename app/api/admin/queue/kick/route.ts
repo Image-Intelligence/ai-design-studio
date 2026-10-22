@@ -1,4 +1,4 @@
-import { HIGGSFIELD_MODEL_IDS } from '@/lib/higgsfield-models'
+import { OWN_QUEUE_MODEL_IDS } from '@/lib/runpod-video-models'
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
@@ -17,7 +17,7 @@ export async function POST() {
     const [globalLimit, queuedCount] = await Promise.all([
       prisma.modelConcurrencyLimit.findUnique({ where: { modelId: FAL_GLOBAL_ID } }),
       // fal's line only: Higgsfield's waits on its own (lib/higgsfield)
-      prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: HIGGSFIELD_MODEL_IDS } } }),
+      prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: OWN_QUEUE_MODEL_IDS } } }),
     ])
 
     if (!globalLimit) {

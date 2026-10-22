@@ -83,9 +83,11 @@ export const needsPicture = (id: string) => !!getFalImageModelSpec(id)?.needsIma
  * Video TOOLS that work on an existing clip (upscale, edit, extend, relight,
  * subtitles, dubbing, lip sync...): generate_video only sends pictures, so they
  * would fail - and listing ~40 of them only costs context. Left out until Nova
- * has a video-in tool of its own.
+ * has a video-in tool of its own. `-reference` (2026-10-22): Kling O3's
+ * video-to-video reference needs a source clip too - it was offered to
+ * generate_video and failed; it runs through use_video_tool now.
  */
-const VIDEO_IN_TOOL = /upscale|vsr|seedvr|topaz|modify|reframe|-edit|extend|relight|subtitles|translate|sfx|removal|depth|insert|recast|lipsync|animate-replace|animate-move|dreamactor|lucy|camera|music-video|omnihuman|interpolate|deblur|sdr-to-hdr/
+const VIDEO_IN_TOOL = /upscale|vsr|seedvr|topaz|modify|reframe|-edit|-reference|extend|relight|subtitles|translate|sfx|removal|depth|insert|recast|lipsync|animate-replace|animate-move|dreamactor|lucy|camera|music-video|omnihuman|interpolate|deblur|sdr-to-hdr/
 
 export function novaVideoModels(isAdmin: boolean): ChatCreateModel[] {
   return usableCreateModels(isAdmin).filter(m => m.kind === 'video' && !m.disabled && !VIDEO_IN_TOOL.test(m.id) && !novaVideoTool(m.id) && (isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(m.id)))

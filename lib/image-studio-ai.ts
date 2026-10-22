@@ -13,6 +13,9 @@
  *   upscale   SeedVR2 / Topaz        the portal's own upscaler prices
  *   edit      any image model with references (lib/storyboard stillTickets)
  *   generate  any image model                  (lib/storyboard stillTickets)
+ *   tool      the picture tools (PICTURE_TOOLS) - the portal's own price for
+ *             each: Topaz per output MP (topazImageTicketCost), the rest the
+ *             catalogue's (getTicketCost), as /api/generate charges them
  */
 import { getTicketCost } from '@/config/ai-models.config'
 import { topazImageTicketCost, clarityUpscaleTicketCost, seedvrUpscaleTicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
@@ -21,7 +24,7 @@ import { ADMIN_ONLY_IMAGE_MODELS } from '@/lib/chat-image-catalog'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import { getFalImageModelSpec } from '@/lib/fal-image-models'
 
-export type StudioGenOp = 'fill' | 'erase' | 'expand' | 'upscale' | 'edit' | 'generate'
+export type StudioGenOp = 'fill' | 'erase' | 'expand' | 'upscale' | 'edit' | 'generate' | 'tool'
 
 /** The region a fill / erase sends: at most this many pixels (it is scaled down to fit, then the result scaled back). */
 export const FILL_MAX_PIXELS = 2_000_000
@@ -54,6 +57,12 @@ export const UPSCALERS = [
   { id: 'esrgan', label: 'ESRGAN', hint: 'Classic Real-ESRGAN - clean, quick and cheap', maxFactor: 8, fixed: 0, maxOut: UPSCALE_MAX_SIDE },
   { id: 'aura-sr', label: 'AuraSR', hint: 'Fast GAN upscaler, tuned for FLUX-style renders', maxFactor: 4, fixed: 4, maxOut: UPSCALE_MAX_SIDE },
   { id: 'drct', label: 'DRCT', hint: 'Detail-preserving transformer - sharp, no invented detail', maxFactor: 4, fixed: 4, maxOut: UPSCALE_MAX_SIDE },
+  // The rest of the public Topaz suite (2026-10-22), each built by its
+  // lib/fal-image-models spec on the spec's default model (Bloom 2 / Wonder 3).
+  // Transparent renders a fixed 4x (no factor in its schema)
+  { id: 'topaz-img-upscale-creative', label: 'Topaz Bloom', hint: 'Creative - Topaz Bloom 2 re-imagines texture and detail as it enlarges', maxFactor: 4, fixed: 0, maxOut: UPSCALE_MAX_SIDE },
+  { id: 'topaz-img-upscale-generative', label: 'Topaz Wonder', hint: 'Generative - Topaz Wonder 3 rebuilds detail in soft or small pictures, faces too', maxFactor: 4, fixed: 0, maxOut: UPSCALE_MAX_SIDE },
+  { id: 'topaz-img-upscale-transparent', label: 'Topaz Transparent', hint: 'Keeps transparency - cut-outs, logos, stickers', maxFactor: 4, fixed: 4, maxOut: UPSCALE_MAX_SIDE },
 ] as const
 export type UpscalerId = (typeof UPSCALERS)[number]['id']
 export const isUpscaler = (v: unknown): v is UpscalerId => UPSCALERS.some(u => u.id === v)
@@ -78,7 +87,133 @@ export function upscaleTickets(id: UpscalerId, factor: number, w: number, h: num
   if (id === 'clarity-upscaler') return clarityUpscaleTicketCost(factor, w, h)
   if (id === 'esrgan' || id === 'aura-sr') return 1
   if (id === 'drct') return Math.max(1, Math.ceil((w * factor) * (h * factor) / 1e6 * 0.5))
+  // Transparent's 4x runs on the source shrunk to factor / 4 (the route): the
+  // portal's price for that smaller picture
+  if (id === 'topaz-img-upscale-transparent') return topazImageTicketCost(id, { width: w * factor / 4, height: h * factor / 4 })
   return topazImageTicketCost(id, { upscaleFactor: factor, width: w, height: h })
+}
+
+/*
+ * The picture tools (2026-10-22, owner: every public model usable in the
+ * studios): the site's public one-picture fal tools, each run on the selected
+ * layer or the whole image and placed back as a layer. The fal input is built
+ * by the model's own lib/fal-image-models spec (the one /api/generate uses)
+ * and each is priced as the portal prices it (pictureToolTickets).
+ *
+ *   place  same     the result takes the source's box (cropped to its shape,
+ *                   centred, as an AI edit); the source is hidden, not deleted
+ *          reframe  a new frame around the source (Luma Reframe)
+ *          layers   Layerize: the background and each object as its own layer
+ *   maxSide   the longest side fal gets - the shrink /api/generate does for
+ *             the same model (Marigold, the vectorizers 2048, Multi-Angle 1536)
+ *   extra     pictures added after the source (the panel's reference strip):
+ *             how many it takes, how many it needs
+ *   keepAlpha the tool returns an opaque picture: the source's transparency goes back on
+ *   svg       SVG out: rasterised for the layer, the SVG itself kept in My Generations
+ *
+ * Not here: Luma Photon Modify (Luma Photon / Photon Flash in "Edit this
+ * layer" already run it) and the text-to-SVG Ideogram Vector (no picture in).
+ */
+export type PictureTool = {
+  id: string
+  label: string
+  group: string
+  hint: string
+  place: 'same' | 'reframe' | 'layers'
+  /** the prompt box: whether it is needed, and what it asks for */
+  prompt?: { need: boolean; placeholder: string }
+  /** Topaz: the models it offers, the spec's default first (mirrors lib/fal-image-models) */
+  models?: readonly string[]
+  maxSide?: number
+  extra?: { max: number; need: number; label: string }
+  keepAlpha?: boolean
+  svg?: boolean
+}
+export const PICTURE_TOOLS: readonly PictureTool[] = [
+  // ── retouch (Topaz, priced per output MP) ──
+  { id: 'topaz-adjust', label: 'Topaz Adjust', group: 'Retouch', place: 'same', keepAlpha: true, models: ['Adjust V2', 'White Balance', 'Colorize'],
+    hint: 'Auto exposure, colour and contrast - or fix the white balance, or colourise a black-and-white photo' },
+  { id: 'topaz-sharpen', label: 'Topaz Sharpen', group: 'Retouch', place: 'same', keepAlpha: true,
+    models: ['Standard', 'Strong', 'Lens Blur V2', 'Motion Blur', 'Natural', 'Refocus', 'Wildlife', 'Portrait', 'Auto Sharpen', 'Super Focus V3', 'Super Focus V2'],
+    hint: 'Removes blur - lens, motion or soft focus' },
+  { id: 'topaz-denoise', label: 'Topaz Denoise', group: 'Retouch', place: 'same', keepAlpha: true, models: ['Normal', 'Strong', 'Extreme', 'Denoise Max'],
+    hint: 'Cleans grain and noise, keeps the detail' },
+  { id: 'topaz-restore', label: 'Topaz Restore', group: 'Retouch', place: 'same', keepAlpha: true, models: ['Recover 3', 'Dust-Scratch V2'],
+    hint: 'Brings back old, damaged or low-quality photos; Dust-Scratch V2 cleans dust and scratches' },
+  // ── cut-out and background ──
+  { id: 'pixelcut-bg-removal', label: 'Background Removal', group: 'Cut-out & background', place: 'same',
+    hint: 'Pixelcut - the subject cut out on transparency, as a new layer' },
+  { id: 'bria-replace-background', label: 'Replace Background', group: 'Cut-out & background', place: 'same',
+    prompt: { need: true, placeholder: 'The new background - “a sunlit beach”, “a marble studio”…' },
+    hint: 'Bria - keeps the subject, paints a new background from your words' },
+  { id: 'pixelcut-product-photo', label: 'Product Photo', group: 'Cut-out & background', place: 'same',
+    hint: 'Pixelcut - the product cut out and centred as a clean studio shot, on transparency or a colour' },
+  // ── the shot ──
+  { id: 'qwen-multi-angle', label: 'Multi-Angle Reshoot', group: 'The shot', place: 'same', maxSide: 1536,
+    prompt: { need: false, placeholder: 'Anything to add (optional)' },
+    hint: 'The same scene re-shot from another camera angle' },
+  { id: 'luma-photon-reframe', label: 'Luma Photon Reframe', group: 'The shot', place: 'reframe',
+    prompt: { need: false, placeholder: 'What the new space shows (optional)' },
+    hint: 'Extends the picture to a new frame - a new layer around it' },
+  { id: 'luma-photon-flash-reframe', label: 'Luma Photon Flash Reframe', group: 'The shot', place: 'reframe',
+    prompt: { need: false, placeholder: 'What the new space shows (optional)' },
+    hint: 'The faster, cheaper Reframe' },
+  // ── style and vector ──
+  { id: 'recraft-v4-style', label: 'Recraft v4 Style', group: 'Style & vector', place: 'same', extra: { max: 9, need: 0, label: 'More style pictures' },
+    prompt: { need: true, placeholder: 'What to make, in this picture’s style…' },
+    hint: 'A new picture in the look of this one (it is the style reference)' },
+  { id: 'recraft-v4-style-pro', label: 'Recraft v4 Style Pro', group: 'Style & vector', place: 'same', extra: { max: 9, need: 0, label: 'More style pictures' },
+    prompt: { need: true, placeholder: 'What to make, in this picture’s style…' },
+    hint: 'The Pro model - finer, richer results in this picture’s style' },
+  { id: 'recraft-v4-vector', label: 'Recraft v4 Vector', group: 'Style & vector', place: 'same', svg: true, extra: { max: 9, need: 0, label: 'More style pictures' },
+    prompt: { need: true, placeholder: 'What to draw as vector art, in this picture’s style…' },
+    hint: 'Vector art (SVG) in this picture’s style - placed as pixels, the SVG kept in My Generations' },
+  { id: 'recraft-v4-vector-pro', label: 'Recraft v4 Vector Pro', group: 'Style & vector', place: 'same', svg: true, extra: { max: 9, need: 0, label: 'More style pictures' },
+    prompt: { need: true, placeholder: 'What to draw as vector art, in this picture’s style…' },
+    hint: 'The Pro vector model - placed as pixels, the SVG kept in My Generations' },
+  { id: 'recraft-vectorize', label: 'Recraft Vectorize', group: 'Style & vector', place: 'same', svg: true, maxSide: 2048,
+    hint: 'Traces the picture into flat vector shapes (best on logos and flat art) - the SVG is kept in My Generations' },
+  { id: 'ideogram-vectorize', label: 'Ideogram Vectorize', group: 'Style & vector', place: 'same', svg: true, maxSide: 2048,
+    hint: 'Traces the picture into an editable SVG - Default keeps finer detail, Simple uses fewer shapes' },
+  // ── layers and depth ──
+  { id: 'seedream-5-pro-layerize', label: 'SeeDream 5 Layerize', group: 'Layers & depth', place: 'layers',
+    prompt: { need: false, placeholder: 'What to separate (optional)' },
+    hint: 'Splits the picture into layers - the background, then each object on its own, in a group' },
+  { id: 'seedream-5-flash-layerize', label: 'SeeDream 5 Flash Layerize', group: 'Layers & depth', place: 'layers',
+    prompt: { need: false, placeholder: 'What to separate (optional)' },
+    hint: 'The faster Layerize' },
+  { id: 'marigold-v2', label: 'Marigold Depth Map', group: 'Layers & depth', place: 'same', maxSide: 2048,
+    hint: 'A depth map of the picture - near is warm, far is cool' },
+  // ── people and products: a second picture from the strip ──
+  { id: 'google-virtual-try-on', label: 'Virtual Try-On', group: 'People & products', place: 'same', extra: { max: 1, need: 1, label: 'The garment or product' },
+    hint: 'Dresses the person in this picture in the garment you add' },
+  { id: 'bria-product-holding', label: 'Product in Hand', group: 'People & products', place: 'same', extra: { max: 3, need: 1, label: 'The product (1-3 shots)' },
+    prompt: { need: false, placeholder: 'How they hold it (optional)' },
+    hint: 'Puts the product you add in the hands of the person in this picture' },
+  { id: 'bria-embed-product', label: 'Embed Product', group: 'People & products', place: 'same', extra: { max: 1, need: 1, label: 'The product' },
+    hint: 'Places the product you add into this scene' },
+]
+export const pictureTool = (id: unknown) => PICTURE_TOOLS.find(t => t.id === id)
+/** Reframe's new frames: the model's own list. */
+export const pictureToolFrames = (id: string): string[] => getFalImageModelSpec(id)?.aspectRatios ?? []
+/** The option keys a picture tool may send (each spec clamps its own values). */
+export const PICTURE_TOOL_OPTIONS = ['topazModel', 'angleH', 'angleV', 'angleZoom', 'pixelcutBackgroundMode', 'pixelcutBackgroundColor', 'embedPlace', 'embedSize'] as const
+/** The frames a picture tool sizes its output from (lib/fal-image-models' image sizes): the nearest to the source. */
+export const PICTURE_FRAMES = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9', '9:21', '2:1', '1:2']
+/** A tool's source is sent at most this big on its long side (the editor's fitWithin). */
+export const PICTURE_TOOL_MAX_SIDE = 4096
+export const pictureToolSendSize = (w: number, h: number) => {
+  const k = Math.min(1, PICTURE_TOOL_MAX_SIDE / Math.max(w, h, 1))
+  return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) }
+}
+/**
+ * Tickets for one run of a picture tool on a w x h source - what /api/generate
+ * charges for the same model: Topaz by output megapixels on the measured source
+ * (and the model picked), every other one the catalogue's flat price.
+ */
+export function pictureToolTickets(id: string, w: number, h: number, o: { topazModel?: string } = {}): number {
+  if (id.startsWith('topaz-')) return topazImageTicketCost(id, { topazModel: o.topazModel, width: w, height: h })
+  return getTicketCost(id)
 }
 
 /** Every image model of the site's catalog the studio offers (the Storyboard roster). */

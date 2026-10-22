@@ -29,8 +29,9 @@
  * $0.04 a ticket - Vidu at its REGULAR rates: the 30% promo ends Nov 30).
  */
 
-export const BATCH_1007_GENERATORS = new Set(['vidu-q4', 'kling-v4'])
-export const BATCH_1007_TOOLS = new Set(['minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro', 'minimax-h3-max-reframe', 'kling-v4-edit', 'wan-2.2-animate-move'])
+// 2026-10-22 additions: HeyGen Video (one entry, three endpoints) and Wan VACE Video Edit (a clip tool)
+export const BATCH_1007_GENERATORS = new Set(['vidu-q4', 'kling-v4', 'heygen-video'])
+export const BATCH_1007_TOOLS = new Set(['minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro', 'minimax-h3-max-reframe', 'kling-v4-edit', 'wan-2.2-animate-move', 'wan-vace-edit'])
 /** The clip tools that put the character from a picture (the first reference image) into the clip. */
 export const BATCH_1007_NEEDS_CHARACTER = new Set(['wan-2.2-animate-replace', 'wan-2.2-animate-move', 'dreamactor-v2'])
 /** Longest source clip each takes, seconds (DreamActor: fal's 30s; the others held to the panel's 15s). */
@@ -41,6 +42,8 @@ export const BATCH_1007_MAX_SEC: Record<string, number> = {
   'minimax-h3-max-reframe': 15,
   // Kling 4.0 Edit: fal's 3-30s
   'kling-v4-edit': 30,
+  // Wan VACE Video Edit: ~241 frames after fal's downsampling - held to 15s
+  'wan-vace-edit': 15,
 }
 /**
  * Promoted after a priced, end-to-end run through the portal UI: all five,
@@ -52,6 +55,10 @@ export const BATCH_1007_MAX_SEC: Record<string, number> = {
 export const BATCH_1007_PUBLIC = new Set<string>([
   'vidu-q4', 'minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro',
   'minimax-h3-max-reframe',
+  // HeyGen Video public 2026-10-22 after UI runs of all three endpoints, each
+  // charge measured on fal's balance: 768p 5s $0.10 (image and references),
+  // 1080p 5s $0.30 - billed exactly at fal's $0.02 / $0.06 a second
+  'heygen-video',
 ])
 
 export const BATCH_1007_ENDPOINTS: Record<string, string> = {
@@ -66,7 +73,40 @@ export const BATCH_1007_ENDPOINTS: Record<string, string> = {
   'kling-v4-t2v': 'kling/v4/text-to-video',
   'kling-v4-r2v': 'kling/v4/reference-to-video',
   'kling-v4-edit': 'kling/v4/video-to-video/edit',
+  'heygen-video-t2v': 'heygen/heygen-video/text-to-video',
+  'heygen-video-i2v': 'heygen/heygen-video/image-to-video',
+  'heygen-video-r2v': 'heygen/heygen-video/reference-to-video',
+  // NOT fal-ai/wan-vace-apps/video-edit: every run there - fal's own example
+  // too - failed "Internal Server Error" (2026-10-22); inpainting works
+  'wan-vace-edit': 'fal-ai/wan-vace-14b/inpainting',
 }
+
+/*
+ * -- HeyGen Video (2026-10-22) ------------------------------------------------
+ * One picker entry on three fal endpoints, chosen by what is given: nothing
+ * -> text to video; one start picture -> image to video; reference pictures,
+ * clips or sounds -> reference to video (5-15 s with sound, keeping the
+ * people / products / places of the references). fal's pricing API: $0.02 a
+ * second at 480p / 768p, $0.06 at 1080p / 2K (the model page).
+ * Seed, prompt enhancement and the safety checker are its Advanced settings
+ * (lib/video-advanced) - the checker stays on unless an admin turns it off.
+ */
+const HEYGEN_VIDEO_USD: Record<string, number> = { '480p': 0.02, '768p': 0.02, '1080p': 0.06, '2k': 0.06 }
+export const HEYGEN_VIDEO_RESOLUTIONS = ['480p', '768p', '1080p', '2k'] as const
+const HEYGEN_T2V_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] as const
+/** HeyGen Video's length: whole seconds, 5-15. */
+export const heygenVideoSeconds = (d: string | number | undefined) => Math.min(15, Math.max(5, parseInt(String(d ?? '5')) || 5))
+
+/*
+ * -- Wan VACE Video Edit (2026-10-22, admin while under test) ----------------
+ * Replace a subject in a clip: the route masks the subject (person / animal /
+ * vehicle - the panel's choice) on the first frame (lib/vace-mask), fal tracks
+ * it through the clip and repaints it from the prompt and the reference
+ * pictures. fal (wan-vace-14b/inpainting): $0.04 / $0.06 / $0.08 per video
+ * second at 480p / 580p / 720p, counted at 16 fps - fal downsamples a
+ * high-frame-rate clip and interpolates it back, so about the clip's length.
+ */
+const WAN_VACE_EDIT_USD: Record<string, number> = { '480p': 0.04, '580p': 0.06, '720p': 0.08 }
 
 /*
  * ── Kling 4.0 (2026-10-21) ─────────────────────────────────────────────────
@@ -94,7 +134,12 @@ const KLING_V4_USD: Record<string, number> = { '720p': 0.157, '1080p': 0.235 }
 const KLING_V4_CLIP_USD: Record<string, number> = { '720p': 0.094, '1080p': 0.141 }
 
 /** Vidu Q4: references (r2v) when they are given, else the start frame (i2v). Kling 4.0: references when there are any. */
-export function batch1007EndpointKey(model: string, p: { referenceImageUrls?: string[]; effectiveMode?: string; referenceVideoUrls?: string[]; klingElements?: unknown; imageUrl?: string | null }): string {
+export function batch1007EndpointKey(model: string, p: { referenceImageUrls?: string[]; effectiveMode?: string; referenceVideoUrls?: string[]; referenceAudioUrls?: string[]; klingElements?: unknown; imageUrl?: string | null }): string {
+  if (model === 'heygen-video') {
+    // Any reference (picture, clip or sound) -> references; else a start picture -> image; else text
+    const refs = (p.referenceImageUrls?.length ?? 0) + (p.referenceVideoUrls?.length ?? 0) + (p.referenceAudioUrls?.length ?? 0)
+    return refs > 0 ? 'heygen-video-r2v' : p.imageUrl ? 'heygen-video-i2v' : 'heygen-video-t2v'
+  }
   if (model === 'kling-v4') {
     const any = (p.referenceImageUrls?.length ?? 0) + (p.referenceVideoUrls?.length ?? 0) + cleanKlingElements(p.klingElements).length + (p.imageUrl ? 1 : 0)
     return any > 0 ? 'kling-v4-r2v' : 'kling-v4-t2v'
@@ -138,6 +183,12 @@ export interface Batch1007Params {
   sourceHeight?: number
   /** Kling 4.0: reference clips and elements. */
   referenceVideoUrls?: string[]
+  /** HeyGen Video: reference sounds. */
+  referenceAudioUrls?: string[]
+  /** A tool's picker (Wan VACE Edit: what to replace). */
+  choice?: string
+  /** Wan VACE Edit: the subject's first-frame mask (lib/vace-mask). */
+  maskImageUrl?: string
   klingElements?: unknown
   /** The model's Advanced settings, already cleaned (lib/video-advanced cleanVideoAdvanced). */
   advanced?: Record<string, string | number | boolean>
@@ -246,6 +297,40 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
         ...(els.length ? { elements: els.map(e => ({ frontal_image_url: e.frontal, reference_image_urls: e.views })) } : {}),
       }
     }
+    case 'heygen-video': {
+      const key = batch1007EndpointKey(model, p)
+      const base = {
+        prompt: prompt.slice(0, 5000), duration: heygenVideoSeconds(p.duration),
+        resolution: pick(HEYGEN_VIDEO_RESOLUTIONS, res, '768p'),
+        // On unless an admin's Advanced setting says otherwise
+        enable_safety_checker: true,
+      }
+      if (key === 'heygen-video-i2v') return { ...base, image_url: p.imageUrl, ...p.advanced }
+      if (key === 'heygen-video-t2v') return { ...base, aspect_ratio: pick(HEYGEN_T2V_RATIOS, p.aspectRatio, '16:9'), ...p.advanced }
+      // References: a start picture is just one more reference here
+      const imgs = [...(p.imageUrl ? [p.imageUrl] : []), ...refs]
+      const vids = (p.referenceVideoUrls ?? []).filter(Boolean)
+      const auds = (p.referenceAudioUrls ?? []).filter(Boolean)
+      return {
+        ...base, aspect_ratio: pick(['adaptive', ...HEYGEN_T2V_RATIOS], p.aspectRatio, 'adaptive'),
+        ...(imgs.length ? { reference_image_urls: imgs } : {}),
+        ...(vids.length ? { reference_video_urls: vids } : {}),
+        ...(auds.length ? { reference_audio_urls: auds } : {}),
+        ...p.advanced,
+      }
+    }
+    case 'wan-vace-edit':
+      // The masked subject repainted from the prompt and the pictures; the
+      // whole clip at its own length and frame rate (fal downsamples it to
+      // fit and interpolates back)
+      return {
+        prompt: prompt.slice(0, 2000), video_url: p.editVideoUrl, mask_image_url: p.maskImageUrl,
+        ...(refs.length ? { ref_image_urls: refs.slice(0, 4) } : {}),
+        resolution: pick(['480p', '580p', '720p'], res, '720p'),
+        match_input_num_frames: true, match_input_frames_per_second: true, enable_auto_downsample: true,
+        acceleration: 'regular', enable_safety_checker: true,
+        ...p.advanced,
+      }
     case 'minimax-h3-max-reframe':
       // The clip is fitted inside the new frame and the rest is outpainted;
       // fal captions the clip itself, so the prompt only steers the new space
@@ -284,6 +369,15 @@ export function batch1007TicketCost(model: string, o: { duration?: string | numb
       usd = (o.refVideoSec ?? 0) > 0
         ? KLING_V4_CLIP_USD[r] * Math.max(Math.ceil(o.refVideoSec! - 0.05) + out, 2 * out)
         : KLING_V4_USD[r] * out
+      break
+    }
+    case 'heygen-video':
+      usd = heygenVideoSeconds(o.duration) * (HEYGEN_VIDEO_USD[res] ?? HEYGEN_VIDEO_USD['1080p'])
+      break
+    case 'wan-vace-edit': {
+      // Video seconds = the clip's length (15s when unknown), whole seconds with a tenth's grace
+      const src = o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 15
+      usd = Math.max(1, Math.ceil(Math.min(BATCH_1007_MAX_SEC['wan-vace-edit'], src) - 0.1)) * (WAN_VACE_EDIT_USD[res] ?? WAN_VACE_EDIT_USD['720p'])
       break
     }
     case 'kling-v4-edit': {

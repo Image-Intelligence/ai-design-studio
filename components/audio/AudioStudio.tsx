@@ -459,7 +459,7 @@ export function AudioStudio({
 
   // Mirelo Video to Sound stops at the clip's end - priced (as the route charges) on no more than the clip
   const billedSeconds = model.duration ? (model.durationFromInput && audio?.seconds ? Math.max(model.duration.min, Math.min(duration, Math.ceil(audio.seconds))) : duration) : undefined
-  const cost = audioTicketCost(model, { chars: text.length + (lyrics?.length ?? 0), spokenChars: spokenCharCount(text + (lyrics ?? '')), seconds: billedSeconds, inputSeconds: audio?.seconds })
+  const cost = audioTicketCost(model, { chars: text.length + (lyrics?.length ?? 0), spokenChars: spokenCharCount(text + (lyrics ?? '')), seconds: billedSeconds, inputSeconds: audio?.seconds, options })
   const missing =
     (model.text?.required && !text.trim()) ? `Fill in "${model.text.label}"` :
     (model.lyrics?.required && !lyrics.trim()) ? "Add lyrics" :

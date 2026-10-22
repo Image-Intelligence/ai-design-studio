@@ -30,6 +30,7 @@ export async function GET(req: Request) {
         errorMessage: true,
         parameters: true,
         resultImageId: true,
+        modelId: true,
       },
     })
 
@@ -42,7 +43,9 @@ export async function GET(req: Request) {
       status: job.status,          // 'queued' | 'processing' | 'completed' | 'failed'
       falRequestId: job.falRequestId,
       // Higgsfield's queued videos carry their poller marker (lib/higgsfield-models)
-      falEndpoint: params?.falEndpoint ?? (params?.provider === 'higgsfield' && params?.hfEndpoint ? `higgsfield:${params.hfEndpoint}` : undefined),
+      falEndpoint: params?.falEndpoint ?? (params?.provider === 'higgsfield' && params?.hfEndpoint ? `higgsfield:${params.hfEndpoint}`
+        // ... and our RunPod workers' (lib/runpod-video-models)
+        : params?.provider === 'runpod' ? `runpod:${job.modelId}` : undefined),
       errorMessage: job.errorMessage,
       // A studio video (lib/studio-activity) finishes with no fal request: the feed fetches this row
       resultImageId: job.resultImageId,

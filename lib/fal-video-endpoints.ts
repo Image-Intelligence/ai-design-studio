@@ -1,4 +1,5 @@
 import { BATCH_0929_ENDPOINTS } from '@/lib/batch-0929-video'
+import { RUNPOD_VIDEO_MODELS, RUNPOD_VIDEO_PUBLIC } from '@/lib/runpod-video-models'
 import { BATCH_1003_ENDPOINTS, BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PUBLIC } from '@/lib/batch-1003-video'
 import { PIXELCUT_VIDEO_ENDPOINTS } from '@/lib/pixelcut-video'
 import { BATCH_1007_ENDPOINTS, BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_PUBLIC } from '@/lib/batch-1007-video'
@@ -203,6 +204,8 @@ export const FAL_IMAGE_APPS_IN_USE: string[] = [
  * missing here shows up in the wrong feed. Add new video models here.
  */
 export const VIDEO_MODEL_IDS: string[] = [
+  // Our own RunPod workers (2026-10-22 - not fal; lib/runpod-video-models)
+  ...RUNPOD_VIDEO_MODELS,
   // Higgsfield exclusives (admin, 2026-10-13 - not fal; lib/higgsfield-models)
   'higgsfield-genjutsu-motion', 'higgsfield-genjutsu-swap', 'higgsfield-cinema-4',
   'higgsfield-genjutsu-lite-motion', 'higgsfield-genjutsu-lite-swap',
@@ -244,6 +247,10 @@ export const VIDEO_MODEL_IDS: string[] = [
   'marey-motion-transfer', 'marey-pose-transfer',
   'minimax-h3-max-turbo-extend', 'minimax-h3-max-recast',
   'minimax-h3-max-relight', 'minimax-h3-max-reframe', 'kling-v4-edit',
+  // Every model of the 2026-10-03 and 2026-10-07 batches (incl. HeyGen Video
+  // and Wan VACE Edit, 2026-10-22) - 22 of them were missing here (audit
+  // 2026-10-22); the feed's file-extension and isVideo checks had covered it
+  ...BATCH_1003_GENERATORS, ...BATCH_1003_TOOLS, ...BATCH_1007_GENERATORS, ...BATCH_1007_TOOLS,
 ]
 
 /** File extensions that mean "this row is a video" regardless of its model. */
@@ -262,6 +269,8 @@ export const ADMIN_ONLY_VIDEO_MODELS = new Set<string>([
   // The 2026-10-07 batch while under test - all five public 2026-10-08
   // (BATCH_1007_PUBLIC), H3 Max Reframe 2026-10-21
   ...[...BATCH_1007_GENERATORS, ...BATCH_1007_TOOLS].filter(id => !BATCH_1007_PUBLIC.has(id)),
+  // Our own RunPod workers (MoCha, 2026-10-22) while under test (RUNPOD_VIDEO_PUBLIC)
+  ...[...RUNPOD_VIDEO_MODELS].filter(id => !RUNPOD_VIDEO_PUBLIC.has(id)),
   // Pixelcut video: looping public 2026-10-01, background removal 2026-10-02
   // (priced per measured frame)
   // Public 2026-10-01 (priced, tested): gemini-omni-flash, gemini-omni-1.1,

@@ -36,6 +36,8 @@ const nextConfig: NextConfig = {
     // Higgsfield Genjutsu / Cinema Studio measure the source and reference
     // clips to price them, and refuse a clip they cannot read (lib/video-probe)
     '/api/admin/higgsfield/video-submit': ['./node_modules/ffmpeg-static/**'],
+    // Viggle Animate's repainted first frame (lib/viggle-repaint, 2026-10-22)
+    '/api/admin/runpod/video-submit': ['./node_modules/ffmpeg-static/**'],
     // VOID results are re-timed to the source's speed as they are saved (lib/video-probe retimeVideo)
     '/api/video/status': ['./node_modules/ffmpeg-static/**'],
     // ...and the portal's own poller, which re-times VOID the same way

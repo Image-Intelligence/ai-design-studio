@@ -1,5 +1,6 @@
 import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, batch1007TicketCost } from '@/lib/batch-1007-video'
 import { HIGGSFIELD_VIDEO_MODELS, higgsfieldVideoTicketCost } from '@/lib/higgsfield-models'
+import { RUNPOD_VIDEO_MODELS, runpodVideoTicketCost } from '@/lib/runpod-video-models'
 import { getAudioStudioModel, audioTicketCost } from '@/lib/audio-studio'
 // ── Ticket pricing: ONE source of truth ──────────────────────────────────────
 // The per-generation video ticket cost used to live inline in
@@ -66,6 +67,8 @@ export const INPUT_ROUTED_MODELS = new Set([
   'happy-horse-1.1',
   // 2026-10-07: same routing (priced by batch1007TicketCost)
   'vidu-q4',
+  // 2026-10-22: HeyGen Video - references, a start picture, or text
+  'heygen-video',
 ])
 
 export interface VideoTicketCostInput {
@@ -417,6 +420,9 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
   } else if (HIGGSFIELD_VIDEO_MODELS.has(model)) {
     // Higgsfield exclusives (admin only, lib/higgsfield-models)
     ticketCost = higgsfieldVideoTicketCost(model, { resolution, duration, sourceSec: editVideoDurationSec, refVideoSec: referenceVideoDurationSec })
+  } else if (RUNPOD_VIDEO_MODELS.has(model)) {
+    // Our own RunPod workers (admin only, lib/runpod-video-models) - placeholder until measured
+    ticketCost = runpodVideoTicketCost(model, { resolution })
   } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {
     // Ahead of the generic tool branch: Vidu Q4 by length x resolution, Relight by the source's length
     ticketCost = batch1007TicketCost(model, { duration, resolution, sourceSec: editVideoDurationSec, sourceFps: input.sourceFps, refVideoSec: referenceVideoDurationSec })
@@ -1167,6 +1173,8 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   // 2026-10-07 (admin): lib/batch-1007-video
   { id: 'vidu-q4', label: 'Vidu Q4', kind: 'generator', durations: ['3', '5', '8', '10', '16'], resolutions: ['540p', '720p', '1080p', '2k', '4k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.045 / $0.095 / $0.12 / $0.19 / $0.39 per s (regular rates; 30% off until Nov 30). Audio free.' },
   { id: 'minimax-h3-max-relight', label: 'H3 Max Relight', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 / $0.32 per s of the source (15s max).' },
+  { id: 'heygen-video', label: 'HeyGen Video', kind: 'generator', durations: ['5', '8', '10', '15'], resolutions: ['480p', '768p', '1080p', '2k'], supportsAudio: true, durationSource: 'none', note: 'fal $0.02 per s at 480p / 768p, $0.06 at 1080p / 2K; with sound. Text, a start picture, or references (pictures, clips, sounds).' },
+  { id: 'wan-vace-edit', label: 'Wan VACE Video Edit', kind: 'tool', durations: [], resolutions: ['480p', '580p', '720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal wan-vace-14b/inpainting $0.04 / $0.06 / $0.08 per video second (480p / 580p / 720p), plus ~$0.01 for the SAM 3.1 mask. Admin only.' },
   { id: 'kling-v4', label: 'Kling 4.0', kind: 'generator', durations: ['3', '5', '10', '15', '30'], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'none', note: 'fal $0.157 / $0.235 per s (720p / 1080p); with reference clips $0.094 / $0.141 per s of input + output (min 2x output). Admin only.' },
   { id: 'kling-v4-edit', label: 'Kling 4.0 Edit', kind: 'tool', durations: [], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'priced as clip references: $0.094 / $0.141 per s of source + output (2x the clip). Admin only.' },
   { id: 'minimax-h3-max-reframe', label: 'H3 Max Reframe', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 per s of the source (1080p measured 2026-10-21; billed by the second, 15s max).' },

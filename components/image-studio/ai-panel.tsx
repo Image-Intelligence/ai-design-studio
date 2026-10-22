@@ -3,7 +3,9 @@
 /*
  * Image Studio - the AI panel (Phase 2): generative fill and object removal
  * in a selection, a new layer from a prompt, an AI edit of the selected
- * layer, upscaling, and the way to generative expand (the crop tool).
+ * layer, upscaling, the picture tools (Topaz retouching, cut-outs, reshoots,
+ * vectorizers, Layerize, depth, try-on - 2026-10-22) and the way to
+ * generative expand (the crop tool).
  *
  * Presentational, like ./panels: it keeps what the user typed and picked and
  * hands a request to the editor (onRun), which prepares the pixels, runs it
@@ -12,16 +14,18 @@
  * functions the route charges with - and the exact model it runs.
  */
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Wand2, ImagePlus, PenLine, ArrowUpRight, Crop, Plus, X, Images, Library, Loader2, Check } from "lucide-react"
+import { Wand2, ImagePlus, PenLine, ArrowUpRight, Crop, Plus, X, Images, Library, Loader2, Check, Sparkles } from "lucide-react"
 import { createPortal } from "react-dom"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { AiButton } from "./ai-button"
 import { deviceMaxSide } from "./engine"
+import { Slider } from "./panels"
 import { type StudioDoc, type StudioLayer, MAX_CANVAS_SIDE } from "@/lib/image-studio"
 import {
   type UpscalerId, UPSCALERS, UPSCALE_MAX_SIDE, STUDIO_IMAGE_MODELS, STUDIO_EDIT_MODELS,
   ERASE_TICKETS, EXPAND_TICKETS, upscaleFactor, upscaleTickets, genTickets, studioModelsFor, defaultGenModel,
   modelAspects, defaultAspect, editAspect as editFrame, isAdminOnlyModel,
+  PICTURE_TOOLS, pictureToolTickets, pictureToolSendSize, pictureToolFrames,
 } from "@/lib/image-studio-ai"
 import { stillModelSpec } from "@/lib/storyboard"
 import { cn } from "@/lib/utils"
@@ -35,6 +39,8 @@ export type GenRequest =
   | { op: "upscale"; target: "canvas" | "layer"; upscaler: UpscalerId; factor: number }
   | { op: "edit"; prompt: string; model: string; quality?: string; options?: Record<string, string>; refs?: string[] }
   | { op: "generate"; prompt: string; model: string; quality?: string; aspect: string; ref: "none" | "canvas" | "layer"; options?: Record<string, string>; refs?: string[] }
+  /** A picture tool (lib/image-studio-ai PICTURE_TOOLS) on the selected layer or the whole image */
+  | { op: "tool"; tool: string; target: "canvas" | "layer"; prompt?: string; aspect?: string; quality?: string; options?: Record<string, unknown>; refs?: string[] }
 
 export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = null, fillCost, busy, focusFill, onRun, onCrop, refPreviews = {} }: {
   /** small previews of what the tools send themselves (the canvas, the selected layer, the selection) */
@@ -135,6 +141,26 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
   const canvasF = upscaleFactor(upscaler, factor, doc.width, doc.height, deviceMaxSide(doc.width, doc.height, MAX_CANVAS_SIDE))
   const layerF = layerPx ? upscaleFactor(upscaler, factor, layerPx.w, layerPx.h, deviceMaxSide(layerPx.w, layerPx.h, UPSCALE_MAX_SIDE)) : 0
 
+  /*
+   * ── picture tools ── (2026-10-22) the site's public one-picture tools:
+   * Topaz retouching, cut-outs, reshoots, vectorizers, Layerize, depth, and the
+   * two-picture ones (the second from the reference strip). Each tool keeps its
+   * own knobs (`toolOpts`), priced on the size really sent.
+   */
+  const toolList = useMemo(() => PICTURE_TOOLS.filter(t => admin || !isAdminOnlyModel(t.id)), [admin])
+  const [toolPick, setToolPick] = useState<string>(PICTURE_TOOLS[0].id)
+  const tool = toolList.find(t => t.id === toolPick) ?? toolList[0]
+  const [toolTarget, setToolTarget] = useState<"layer" | "canvas">("layer")
+  const [toolPrompt, setToolPrompt] = useState("")
+  const [toolOpts, setToolOpts] = useState<Record<string, Record<string, unknown>>>({})
+  const [toolExtra, setToolExtra] = useState<string[]>([])
+  const opt = <T,>(key: string, def: T): T => (toolOpts[tool.id]?.[key] as T | undefined) ?? def
+  const setToolOpt = (key: string, v: unknown) => setToolOpts(o => ({ ...o, [tool.id]: { ...o[tool.id], [key]: v } }))
+  const toolFrames = tool.place === "reframe" ? pictureToolFrames(tool.id) : []
+  const toolFrame = opt("frame", toolFrames.includes("16:9") ? "16:9" : toolFrames[0] ?? "")
+  const toolModel = tool.models ? opt("topazModel", tool.models[0]) : undefined
+  const toolSent = tool.extra ? usable(toolExtra, 0, tool.extra.max) : []
+
   // Each model priced at the frame it would really use
   const priced = (models: readonly { id: string; label: string }[], aspect: (id: string) => string, refs: number) =>
     models.map(m => ({ ...m, price: genTickets(m.id, genQuality[m.id] ?? (stillModelSpec(m.id).defQuality || undefined), aspect(m.id), refs) }))
@@ -171,6 +197,31 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
   // A group or an adjustment layer has no picture of its own to edit
   const editable = layer && (layer.kind === "raster" || layer.kind === "text" || layer.kind === "shape") ? layer : null
   const upLabel = UPSCALERS.find(u => u.id === upscaler)?.label ?? upscaler
+  // A picture tool runs on the selected layer (when it has a picture) or on the image as it looks
+  const toolOn: "layer" | "canvas" = toolTarget === "layer" && editable ? "layer" : "canvas"
+  const toolBox = toolOn === "layer" && editable ? (editable.kind === "raster" && layerPx ? layerPx : { w: editable.w, h: editable.h }) : { w: doc.width, h: doc.height }
+  const toolSize = pictureToolSendSize(toolBox.w, toolBox.h)
+  const toolCost = pictureToolTickets(tool.id, toolSize.w, toolSize.h, { topazModel: toolModel })
+  const toolReady = (!tool.prompt?.need || !!toolPrompt.trim()) && toolSent.length >= (tool.extra?.need ?? 0) && (tool.place !== "reframe" || !!toolFrame)
+  const toolGroups = [...new Set(toolList.map(t => t.group))]
+  const runTool = () => {
+    if (!toolReady) return
+    const options: Record<string, unknown> = {}
+    if (toolModel) options.topazModel = toolModel
+    if (tool.id === "qwen-multi-angle") Object.assign(options, { angleH: opt("angleH", 45), angleV: opt("angleV", 0), angleZoom: opt("angleZoom", 5) })
+    if (tool.id === "bria-embed-product") Object.assign(options, { embedPlace: opt("embedPlace", "center"), embedSize: opt("embedSize", "medium") })
+    if (tool.id === "pixelcut-product-photo") {
+      const mode = opt<string>("pixelcutBackgroundMode", "Transparent"), hex = opt("color", "#ffffff")
+      options.pixelcutBackgroundMode = mode
+      if (mode === "Color") options.pixelcutBackgroundColor = { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16) }
+    }
+    onRun({
+      op: "tool", tool: tool.id, target: toolOn, options, refs: toolSent,
+      ...(tool.prompt && toolPrompt.trim() ? { prompt: toolPrompt.trim() } : {}),
+      ...(tool.place === "reframe" ? { aspect: toolFrame } : {}),
+      ...(tool.id === "ideogram-vectorize" ? { quality: opt("detail", "default") } : {}),
+    })
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -279,6 +330,74 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
           )}
         </div>
         <Hint>The image: the canvas grows (up to {MAX_CANVAS_SIDE}px) and the upscaled picture becomes the top layer. A layer: sharper pixels in the same place.</Hint>
+      </Card>
+
+      {/* ── picture tools ── */}
+      <Card title="Picture tools" icon={<Sparkles size={12} />}>
+        <Field label="Tool">
+          <select value={tool.id} onChange={e => setToolPick(e.target.value)} className={select}>
+            {toolGroups.map(g => (
+              <optgroup key={g} label={g}>
+                {toolList.filter(t => t.group === g).map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </Field>
+        <Hint>{tool.hint}</Hint>
+        <Field label="Run on">
+          <Seg value={toolOn} options={[...(editable ? ["layer"] : []), "canvas"]} labels={{ layer: "This layer", canvas: "The image" }} onChange={v => setToolTarget(v as "layer" | "canvas")} />
+        </Field>
+        {tool.models && (
+          <Field label="Model">
+            {tool.models.length <= 4
+              ? <Seg value={toolModel ?? ""} options={[...tool.models]} onChange={v => setToolOpt("topazModel", v)} />
+              : <select value={toolModel} onChange={e => setToolOpt("topazModel", e.target.value)} className={select}>
+                  {tool.models.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>}
+          </Field>
+        )}
+        {tool.place === "reframe" && <Field label="New frame"><Seg value={toolFrame} options={toolFrames} onChange={v => setToolOpt("frame", v)} /></Field>}
+        {tool.id === "qwen-multi-angle" && (
+          <>
+            <Slider label="Turn around" value={opt("angleH", 45)} min={0} max={360} step={15} suffix="°" onChange={v => setToolOpt("angleH", v)} />
+            <Slider label="Tilt (up / down)" value={opt("angleV", 0)} min={-30} max={90} step={5} suffix="°" onChange={v => setToolOpt("angleV", v)} />
+            <Slider label="Zoom" value={opt("angleZoom", 5)} min={0} max={10} step={1} onChange={v => setToolOpt("angleZoom", v)} />
+          </>
+        )}
+        {tool.id === "ideogram-vectorize" && <Field label="Detail"><Seg value={opt("detail", "default")} options={["default", "simple"]} labels={{ default: "Default", simple: "Simple" }} onChange={v => setToolOpt("detail", v)} /></Field>}
+        {tool.id === "pixelcut-product-photo" && (
+          <Field label="Background">
+            <div className="flex items-center gap-2">
+              <Seg value={opt<string>("pixelcutBackgroundMode", "Transparent")} options={["Transparent", "Color"]} labels={{ Color: "Colour" }} onChange={v => setToolOpt("pixelcutBackgroundMode", v)} />
+              {opt<string>("pixelcutBackgroundMode", "Transparent") === "Color" && (
+                <input type="color" value={opt("color", "#ffffff")} onChange={e => setToolOpt("color", e.target.value)} className="h-6 w-7 rounded border border-white/15 bg-transparent p-0 cursor-pointer" />
+              )}
+            </div>
+          </Field>
+        )}
+        {tool.id === "bria-embed-product" && (
+          <>
+            <Field label="Where"><Seg value={opt("embedPlace", "center")} options={["left", "center", "right", "top", "bottom"]} labels={{ left: "Left", center: "Centre", right: "Right", top: "Top", bottom: "Bottom" }} onChange={v => setToolOpt("embedPlace", v)} /></Field>
+            <Field label="Size"><Seg value={opt("embedSize", "medium")} options={["small", "medium", "large"]} labels={{ small: "Small", medium: "Medium", large: "Large" }} onChange={v => setToolOpt("embedSize", v)} /></Field>
+          </>
+        )}
+        {tool.prompt && <textarea rows={2} value={toolPrompt} onChange={e => setToolPrompt(e.target.value)} placeholder={tool.prompt.placeholder} className={area} />}
+        {tool.extra && (
+          <>
+            <RefStrip lead={[{ src: toolOn === "layer" ? refPreviews.layer : refPreviews.canvas, label: toolOn === "layer" ? "This layer" : "The image" }]}
+              extra={toolExtra} max={1 + tool.extra.max} model={tool.label} onChange={setToolExtra} />
+            <Hint>{tool.extra.label}: {tool.extra.need ? "add" : "you can add"} {tool.extra.max === 1 ? "one picture" : `up to ${tool.extra.max} pictures`} after {toolOn === "layer" ? "this layer" : "the image"}.</Hint>
+          </>
+        )}
+        <AiButton primary className="w-full" size="md" busy={busy === "tool"} disabled={!!busy || !toolReady} cost={toolCost}
+          model={[tool.label, toolModel, tool.place === "reframe" ? toolFrame : ""].filter(Boolean).join(" · ")} onClick={runTool}>
+          <span className="truncate max-w-[170px]">{toolOn === "layer" && editable ? `Run on “${editable.name}”` : "Run on the image"}</span>
+        </AiButton>
+        <Hint>{tool.place === "layers"
+          ? "Comes back as a group of layers - the background, then each object - over the source, which is hidden, not deleted."
+          : tool.place === "reframe"
+            ? "Comes back as a new layer in the new frame, around the source (which is hidden, not deleted)."
+            : "Comes back as a new layer in the same place, above the source; the source is hidden, not deleted."}</Hint>
       </Card>
 
       {/* ── expand ── */}

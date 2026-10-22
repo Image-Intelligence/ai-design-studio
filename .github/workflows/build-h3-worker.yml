@@ -1,0 +1,51 @@
+name: Build H3 Worker
+
+# The MiniMax H3 character-swap RunPod worker (AI/h3-worker: Viggle-Animate + H3 Character Swap) - built like the
+# FLUX worker (build-worker.yml), pushed to Docker Hub as h3-worker.
+on:
+  push:
+    paths:
+      - 'AI/h3-worker/**'
+      - '.github/workflows/build-h3-worker.yml'
+  workflow_dispatch:  # also allow manual trigger from GitHub UI
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: AI/h3-worker
+          file: AI/h3-worker/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/h3-worker:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/h3-worker:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/h3-worker:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/h3-worker:buildcache,mode=max

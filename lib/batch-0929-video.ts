@@ -127,6 +127,8 @@ export interface Batch0929Params {
   aspectRatio: string
   generateAudio: boolean
   effectiveMode?: string
+  /** The model's Advanced settings, already cleaned (lib/video-advanced cleanVideoAdvanced) - H3 Max Recast */
+  advanced?: Record<string, string | number | boolean>
 }
 
 const pick = (allowed: string[], v: string, fallback: string) => (allowed.includes(v) ? v : fallback)
@@ -155,10 +157,13 @@ export function batch0929Input(model: string, p: Batch0929Params): Record<string
   if (model === 'minimax-h3-max-recast') {
     // One photo per new person; by default they replace the main people left
     // to right. The prompt is optional ("who becomes whom"). Source 5-30s.
+    // The panel's Advanced settings (lib/video-advanced): enhance realism,
+    // seed, and - admins only - the safety checker
     return {
       video_url: p.editVideoUrl, reference_image_urls: refs.slice(0, 4),
       resolution: mmRes(p.resolution, ['768P', '1080P']),
       ...(prompt ? { prompt } : {}),
+      ...p.advanced,
     }
   }
   if (model === 'minimax-h3-max-extend') {

@@ -119,6 +119,13 @@ export interface AudioStudioModel {
   durationFromInput?: boolean
   /** A last check on the input the shape alone can't make (a message = refused before any charge). */
   validate?: (i: AudioRunInput) => string | null
+  /**
+   * One model on several endpoints (HeyGen Voice and its Turbo, 2026-10-22 -
+   * owner: "one for the voice model with a turbo mode"): the `options` picker
+   * keyed 'mode' chooses, and each of its values names the endpoint it runs
+   * on and what that costs. Unset, or an unknown value, is `endpoint` / `price`.
+   */
+  modes?: Record<string, { endpoint: string; price: AudioPrice }>
   price: AudioPrice
   build: (i: AudioRunInput) => Record<string, unknown>
   outputs: (data: any) => AudioOutput[]
@@ -136,6 +143,9 @@ const QWEN3_VOICES = ["Vivian","Serena","Uncle_Fu","Dylan","Eric","Ryan","Aiden"
 const QWEN_LANGS = ["Auto","English","Chinese","Spanish","French","German","Italian","Japanese","Korean","Portuguese","Russian"]
 const QWEN_AUDIO3_VOICES = ["Cherry","Serena","Ethan","Chelsie","Momo","Vivian","Moon","Maia","Kai","Nofish","Bella","Jennifer","Ryan","Katerina","Aiden","Mia","Mochi","Bellona","Vincent","Bunny","Neil","Elias","Arthur","Nini","Seren","Pip","Stella","Bodega","Sonrisa","Alek","Dolce","Sohee","Lenn","Emilien","Andre","Jada","Dylan","Li","Marcus","Roy","Peter","Sunny","Eric","Rocky","Kiki"]
 const QWEN_AUDIO3_LANGS = ["Auto","Chinese","English","Spanish","Russian","Italian","French","Korean","Japanese","German","Portuguese"]
+// HeyGen Voice's public voices (fal schema, 2026-10-22)
+const HEYGEN_TTS_VOICES = ["Jonah","Nadine","Tabitha","Soren","Elowen","Vincent","Jocelyn","Marielle","Corinne","Lucian","Kieran","Hugh","Noelle","Bram","Ewan","Iona","Cecily","Simon","Weston","Felicity","Gareth","Rory","Meredith","Sabrina"]
+const HEYGEN_TTS_LANGS = ["ar","be","bg","ca","cs","da","de","el","en","es","fa","fi","fr","he","hi","hr","hu","id","it","ja","ko","mk","ms","nl","pl","pt","ro","ru","sk","sl","sr","sv","ta","th","tl","tr","uk","vi","zh"]
 const CHATTERBOX_HD_VOICES = ["Aurora","Blade","Britney","Carl","Cliff","Richard","Rico","Siobhan","Vicky"]
 const CHATTERBOX_LANGS = ["english","arabic","danish","german","greek","spanish","finnish","french","hebrew","hindi","italian","japanese","korean","malay","dutch","norwegian","polish","portuguese","russian","swedish","swahili","turkish","chinese"]
 const SEED_SPEECH_VOICES = ["vivi_mixed_en_zh_ja_es_id","mindy_en_es_id_pt_zh","stokie_en","dacey_en","tim_en","kian_en_zh","cedric_en_zh","sophie_en_zh","jean_en_zh","magnus_en_zh","mabel_en_zh","nadia_en_zh","opal_en_zh","pearl_en_zh","quentin_en_zh","vienna_mixed_en_zh","alina_mixed_en_zh","corinne_mixed_en_zh","esther_mixed_en_zh","freya_mixed_en_zh","gigi_mixed_en_zh","holly_mixed_en_zh","lyla_mixed_en_zh","daisy_mixed_en_zh","tracy_es_zh","jess_ja_es_id_pt_en_zh","pinky_es_ko_mixed_en_zh","sweety_ja_es","sandy_es_mixed_en_zh","sven_de","minimi_ja","usseau_fr","felipe_es","han_id","martins_pt","enzo_it","shane_ko","bonnie_zh","felix_zh","celeste_zh","monkey_king_zh"]
@@ -288,6 +298,33 @@ export const AUDIO_STUDIO_MODELS: AudioStudioModel[] = [
     price: { usd: 0.009, per: 'inSecond' },
     build: i => clean({ video_url: i.audioUrl, num_samples: 1, prompt: i.text?.trim() || undefined }),
     outputs: (d: any) => (Array.isArray(d?.audios) && d.audios.length ? d.audios : d?.audio ? [d.audio] : []).filter((a: any) => a?.url).map((a: any) => ({ url: a.url })),
+  },
+  {
+    // 2026-10-22: HeyGen's own voices on fal - one model, Standard or Turbo
+    // (heygen/heygen-voice $0.03 / turbo $0.004 per 1,000 characters, fal's
+    // pricing API); a recording clones a voice instead of the picked one
+    id: 'heygen-voice', name: 'HeyGen Voice', group: 'tts', provider: 'HeyGen', endpoint: 'heygen/heygen-voice',
+    blurb: 'HeyGen’s natural voices in 39 languages - Turbo is far cheaper and faster; attach a recording to clone a voice.',
+    text: SPEECH(5000), voices: { options: HEYGEN_TTS_VOICES, default: 'Jonah' },
+    languages: { options: ['Auto', ...HEYGEN_TTS_LANGS], default: 'Auto' },
+    audioIn: { label: 'Voice to clone (optional)', required: false, maxMinutes: 3, hint: 'one speaker - up to 3 minutes are used', clonesVoice: true },
+    options: [
+      { key: 'mode', label: 'Mode', values: [['standard', 'Standard'], ['turbo', 'Turbo']], default: 'standard' },
+      { key: 'expressiveness', label: 'Expressiveness', values: [['1', 'Full'], ['0.75', 'High'], ['0.5', 'Medium'], ['0.25', 'Low'], ['0', 'Flat']], default: '1' },
+    ],
+    modes: {
+      standard: { endpoint: 'heygen/heygen-voice', price: { usd: 0.03, per: 'kchar' } },
+      turbo: { endpoint: 'heygen/heygen-voice/turbo', price: { usd: 0.004, per: 'kchar' } },
+    },
+    price: { usd: 0.03, per: 'kchar' },
+    build: i => clean({
+      text: i.text,
+      voice: i.audioUrl ? undefined : (i.voice || 'Jonah'),
+      reference_audio_url: i.audioUrl,
+      language: i.language && i.language !== 'Auto' ? i.language : undefined,
+      expressiveness_boost: i.options?.expressiveness ? Math.min(1, Math.max(0, parseFloat(i.options.expressiveness) || 1)) : undefined,
+    }),
+    outputs: (d: any) => (d?.audio?.url ? [{ url: d.audio.url, ...(typeof d.duration === 'number' ? { meta: { durationSec: d.duration } } : {}) }] : []),
   },
   {
     id: 'chatterbox-hd', name: 'Chatterbox HD', group: 'tts', provider: 'Resemble AI', endpoint: 'resemble-ai/chatterboxhd/text-to-speech',
@@ -691,6 +728,12 @@ export const AUDIO_STUDIO_MODEL_IDS = AUDIO_STUDIO_MODELS.map(m => m.id)
 export const getAudioStudioModel = (id: string) => AUDIO_STUDIO_MODELS.find(m => m.id === id || `${AUDIO_MODEL_PREFIX}${m.id}` === id)
 export const getAudioStudioModelByName = (name: string) => AUDIO_STUDIO_MODELS.find(m => m.name === name)
 
+/** The endpoint and price a run uses: its mode's (`modes`, by options.mode), or the model's own. */
+export function audioModeOf(m: AudioStudioModel, options?: Record<string, string> | null): { endpoint: string; price: AudioPrice } {
+  const mode = options?.mode ? m.modes?.[options.mode] : undefined
+  return mode ?? { endpoint: m.endpoint, price: m.price }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // pricing
 // ─────────────────────────────────────────────────────────────────────────────
@@ -711,6 +754,8 @@ export interface AudioPriceQuery {
   seconds?: number
   /** Length of the uploaded input audio. */
   inputSeconds?: number
+  /** The run's pickers - a model with `modes` is priced by the one chosen. */
+  options?: Record<string, string> | null
 }
 
 /**
@@ -729,7 +774,7 @@ export function spokenCharCount(text: string): number {
 
 /** What fal charges for one run, in USD (buffered). */
 export function audioRunCostUsd(m: AudioStudioModel, q: AudioPriceQuery): number {
-  const p = m.price
+  const p = audioModeOf(m, q.options).price
   const chars = Math.max(q.chars ?? 0, 100)
   // Output length: what was asked for, or - for speech billed by output - an estimate from the text
   const inSec = Math.max(q.inputSeconds ?? 60, 1)

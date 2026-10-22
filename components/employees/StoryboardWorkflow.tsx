@@ -10,12 +10,12 @@ import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import { useThumb } from "@/components/employees/still-thumbs"
 import {
   shotAspect, stillModelSpec, SHOT_ASPECTS, MAX_LINES_PER_SHOT, STORYBOARD_VOICE_MODELS, STORYBOARD_MUSIC_MODELS, cueKindOf,
-  newVoiceLine, newMusicCue, musicSpanSeconds, liveAudio, lineStale, fmtRuntime,
+  newVoiceLine, newMusicCue, musicSpanSeconds, liveAudio, lineStale, fmtRuntime, voicesFor, lineVoice,
   type StoryboardDoc, type StoryboardShot, type VoiceLine, type MusicCue, type FinalCutState, type FinalCutVersion, type ReviseDraft, type ReviseEdit,
 } from "@/lib/storyboard"
 import { STILL_TOOLS, STILL_EDIT_DEFAULT_MODEL, EXPAND_ZOOMS, stillToolTickets, CLIP_TOOLS, CLIP_TOOL_GROUPS, type StillToolId, type ClipTool } from "@/lib/storyboard-tools"
 import { STUDIO_EDIT_MODELS, studioModelsFor, isAdminOnlyModel } from "@/lib/image-studio-ai"
-import { ELEVEN_VOICES, getAudioStudioModel, audioTicketCost, spokenCharCount } from "@/lib/audio-studio"
+import { getAudioStudioModel, audioTicketCost, spokenCharCount } from "@/lib/audio-studio"
 
 /*
  * Storyboard Studio - the workflow's new phases (2026-10-19): the Still edits
@@ -230,7 +230,8 @@ export function ClipEditTools({ board, shot, running, onRun }: {
 
 // ── The audio lane ───────────────────────────────────────────────────────────
 
-const VOICE_OPTIONS = ELEVEN_VOICES.map(v => ({ value: v, label: v }))
+/** A line's voice picker: its model's own voices (2026-10-22 - the lane has more than ElevenLabs). */
+const voiceOptions = (model: string) => voicesFor(model).options.map(v => ({ value: v, label: v }))
 const lineTickets = (l: Pick<VoiceLine, "model" | "text">) => {
   const m = getAudioStudioModel(l.model)
   return m && l.text.trim() ? audioTicketCost(m, { chars: l.text.length, spokenChars: spokenCharCount(l.text) }) : 0
@@ -431,7 +432,7 @@ export function AudioLane({ board, onChangeShot, onRecordLine, onRecordCue, onPl
                       <div key={l.id} className="rounded-lg border border-white/[0.07] p-2 space-y-1.5">
                         <div className="flex items-center gap-1.5">
                           <input value={l.speaker} onChange={e => setLine(shot, l.id, { speaker: e.target.value })} list={`sb-speakers-${board.id}`} className="sb-input !w-28 !py-1" placeholder="Speaker" />
-                          <Dropdown value={l.voice} options={VOICE_OPTIONS} onChange={v => setLine(shot, l.id, { voice: v })} className="w-24" />
+                          <Dropdown value={lineVoice(l.model, l.voice)} options={voiceOptions(l.model)} onChange={v => setLine(shot, l.id, { voice: v })} className="w-24" />
                           <label className="flex items-center gap-1 text-[10px] text-slate-400" title="Seconds into the shot it starts">
                             at +<input type="number" min={0} max={30} step={0.1} value={l.offset} onChange={e => setLine(shot, l.id, { offset: Math.max(0, Math.min(30, Number(e.target.value) || 0)) })} className="sb-input !w-14 !py-1" />s
                           </label>
@@ -439,7 +440,7 @@ export function AudioLane({ board, onChangeShot, onRecordLine, onRecordCue, onPl
                         </div>
                         <textarea value={l.text} onChange={e => setLine(shot, l.id, { text: e.target.value })} rows={2} className="sb-input" placeholder={l.model === "eleven-v3" ? "What they say - [whispers], [laughs] work here" : "What they say"} />
                         <div className="flex items-center gap-1.5">
-                          <Dropdown value={l.model} options={STORYBOARD_VOICE_MODELS.map(m => ({ value: m.id, label: m.label }))} onChange={v => setLine(shot, l.id, { model: v })} className="w-44" />
+                          <Dropdown value={l.model} options={STORYBOARD_VOICE_MODELS.map(m => ({ value: m.id, label: m.label }))} onChange={v => setLine(shot, l.id, { model: v, voice: lineVoice(v, l.voice) })} className="w-44" />
                           <PlayAudio url={l.url} />
                           <span className={`text-[10px] truncate ${liveAudio(l) === "failed" ? "text-red-300" : "text-slate-500"}`}>{l.url ? `${l.seconds.toFixed(1)}s${lineStale(l) ? " · edited since" : ""}` : statusText(l)}</span>
                           <BrandButton size="xs" primary={!l.url || lineStale(l)} busy={busy} disabled={busy || !l.text.trim()} onClick={() => rec(shot, l)} className="ml-auto">
@@ -452,7 +453,7 @@ export function AudioLane({ board, onChangeShot, onRecordLine, onRecordCue, onPl
                     )
                   })}
                   {(shot.lines?.length ?? 0) < MAX_LINES_PER_SHOT && (
-                    <button onClick={() => onChangeShot(shot.id, { lines: [...(shot.lines ?? []), newVoiceLine({ offset: (shot.lines ?? []).reduce((m, l) => Math.max(m, l.offset + (l.seconds || 2) + 0.3), 0.3), speaker: shot.lines?.at(-1)?.speaker ?? "Narrator", voice: shot.lines?.at(-1)?.voice ?? "Brian" })] })}
+                    <button onClick={() => onChangeShot(shot.id, { lines: [...(shot.lines ?? []), newVoiceLine({ offset: (shot.lines ?? []).reduce((m, l) => Math.max(m, l.offset + (l.seconds || 2) + 0.3), 0.3), speaker: shot.lines?.at(-1)?.speaker ?? "Narrator", voice: shot.lines?.at(-1)?.voice ?? "Brian", ...(shot.lines?.at(-1) ? { model: shot.lines.at(-1)!.model } : {}) })] })}
                       className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg border border-dashed border-white/15 text-[10.5px] font-semibold text-slate-400 hover:text-white hover:border-white/35">
                       <Plus size={12} /> Add a line
                     </button>

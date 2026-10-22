@@ -53,6 +53,9 @@ export async function GET(request: Request) {
         // Higgsfield jobs (admin exclusives) are finished here and by the cron (lib/higgsfield)
         try { await (await import('@/lib/higgsfield')).harvestHiggsfieldJobs({ userId: user.id, limit: 4, budgetMs: 20_000 }) }
         catch (e) { console.error('[jobs] higgsfield harvest failed:', e) }
+        // And jobs on our own RunPod workers (lib/runpod-video)
+        try { await (await import('@/lib/runpod-video')).harvestRunpodJobs({ userId: user.id, limit: 4, budgetMs: 15_000 }) }
+        catch (e) { console.error('[jobs] runpod harvest failed:', e) }
         finally { harvesting.delete(user.id) }
       })
     }

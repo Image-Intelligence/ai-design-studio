@@ -173,8 +173,11 @@ export async function submitClipTool(
   if (!Number.isInteger(queueId) || queueId <= 0) return { error: 'The render was not queued' }
   const v: ShotVideo = {
     queueId, status: 'rendering', url: null, error: null, model: tool.id,
-    // An extend adds its seconds; the rest keep the clip's length
-    seconds: Math.round(((cur.seconds || shot.duration) + (tool.id.includes('extend') ? Number(tool.seconds) || 0 : 0)) * 10) / 10,
+    // An extend adds its seconds; a reshoot from the clip (Kling O3 reference)
+    // is as long as was asked; the rest keep the clip's length
+    seconds: tool.id.endsWith('-reference') && Number(tool.settings?.duration) > 0
+      ? Number(tool.settings?.duration)
+      : Math.round(((cur.seconds || shot.duration) + (tool.id.includes('extend') ? Number(tool.seconds) || 0 : 0)) * 10) / 10,
     // Still the same shot: an edit never makes it "out of date" with its still
     fromStill: cur.fromStill, fromPrompt: cur.fromPrompt, at: Date.now(),
     // A lip-synced line stays "in the clip" through later edits (an upscale of it still speaks it)

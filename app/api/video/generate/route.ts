@@ -14,12 +14,12 @@ import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
 import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, OMNIHUMAN_AUDIO_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
-import { cleanVideoAdvanced } from '@/lib/video-advanced'
+import { cleanVideoAdvanced, videoSettingsFromInput } from '@/lib/video-advanced'
 import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BATCH_1007_MAX_SEC, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input, cleanKlingElements } from '@/lib/batch-1007-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
-import { keepVideoInputs, videoInputLinks, videoInputsFromBody } from '@/lib/gen-inputs'
+import { keepVideoInputs, videoInputLinks, videoInputsFromBody, type GenInputVideo } from '@/lib/gen-inputs'
 import { mediaKeeper } from '@/lib/media-ownership'
 
 /** Gemini Omni binds references as <IMAGE_REF_0>, <IMAGE_REF_1>…; the portal writes @Image1, @Image2… */
@@ -115,6 +115,9 @@ export async function POST(request: NextRequest) {
     // lib/id-verification). Checked on the links as sent, before
     // normalizeVideoRefs re-encodes the pictures into new files.
     const rawBody = canonicalisePayload(await request.json())
+    // Wan 2.2 Animate is one model with two modes (2026-10-22): Move runs on
+    // its own endpoint and is saved as its own id, so its tile says which ran
+    if (rawBody?.model === 'wan-2.2-animate-replace' && rawBody?.videoChoice === 'move') rawBody.model = 'wan-2.2-animate-move'
     // The portal tile that asked (2026-10-12): stored on the queue row, so a page
     // reloaded while this request was still answering puts the job back in it
     const clientSlotId = typeof rawBody?.clientSlotId === 'string' ? rawBody.clientSlotId.slice(0, 80) : null
@@ -386,6 +389,8 @@ export async function POST(request: NextRequest) {
       'ltx-2.5-audio-pro', 'ltx-2.5-audio-fast', 'seedance-2.5-complete',
       // Kling 4.0: text to video (or elements alone, which route it to references)
       'kling-v4',
+      // HeyGen Video (2026-10-22): text, a start picture, or references
+      'heygen-video',
     ])
     const hasNonImageInput = !!editVideoUrl || !!motionVideoUrl
       || (Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0)
@@ -500,6 +505,9 @@ export async function POST(request: NextRequest) {
       if (BATCH_1007_NEEDS_CHARACTER.has(model) && !(Array.isArray(referenceImageUrls) && referenceImageUrls.length > 0) && !imageUrl) {
         return NextResponse.json({ success: false, error: 'Add the character\'s picture next to the clip.' }, { status: 400 });
       }
+      if (model === 'wan-vace-edit' && !prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Describe what goes in its place - e.g. "a woman in a red coat, as in the picture".' }, { status: 400 });
+      }
       if (model === 'lucy-edit-pro' && !prompt?.trim()) {
         return NextResponse.json({ success: false, error: 'Describe the edit - e.g. "make him a chrome robot".' }, { status: 400 });
       }
@@ -560,6 +568,11 @@ export async function POST(request: NextRequest) {
       }
       if (refVideoList.length && referenceVideoDurationSec > 30.5) {
         return NextResponse.json({ success: false, error: 'Kling 4.0 takes up to 30 seconds of reference clips in all - trim them first.' }, { status: 400 });
+      }
+    } else if (model === 'heygen-video') {
+      // HeyGen Video: always a prompt (text, a start picture, or references)
+      if (!prompt?.trim()) {
+        return NextResponse.json({ success: false, error: 'Describe the video - HeyGen Video always needs a prompt.' }, { status: 400 });
       }
     } else if (BATCH_1007_GENERATORS.has(model)) {
       // Vidu Q4: a start frame (prompt optional), or references (prompt required)
@@ -746,7 +759,7 @@ export async function POST(request: NextRequest) {
       : BATCH_0928_GENERATORS.has(model)
       ? FAL_ENDPOINTS[`${model}-${batchMode}`]
       : BATCH_1007_GENERATORS.has(model)
-      ? FAL_ENDPOINTS[batch1007EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode, referenceVideoUrls: refVideoList, klingElements, imageUrl })]
+      ? FAL_ENDPOINTS[batch1007EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode, referenceVideoUrls: refVideoList, referenceAudioUrls: Array.isArray(referenceAudioUrls) ? referenceAudioUrls as string[] : [], klingElements, imageUrl })]
       : BATCH_1003_GENERATORS.has(model)
       ? FAL_ENDPOINTS[batch1003EndpointKey(model, { referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [], effectiveMode: effectiveSd20Mode })]
       : BATCH_0929_GENERATORS.has(model)
@@ -893,14 +906,37 @@ export async function POST(request: NextRequest) {
         choice: typeof videoChoice === 'string' ? videoChoice : undefined,
       });
     } else if (BATCH_1007_TOOLS.has(model) || BATCH_1007_GENERATORS.has(model)) {
+      // Wan VACE Edit: the subject's first-frame mask, made here (lib/vace-mask)
+      let maskImageUrl: string | undefined
+      if (model === 'wan-vace-edit' && editVideoUrl) {
+        const subject = typeof videoChoice === 'string' ? videoChoice : 'person'
+        const mask = await (await import('@/lib/vace-mask')).vaceSubjectMask(editVideoUrl, subject).catch((e: any) => {
+          console.error('[wan-vace] mask failed:', e?.message || e)
+          return null
+        })
+        if (!mask) {
+          // Charged already (above): give it back, as a failed submit does below
+          if (!adminMode && userId) {
+            await prisma.ticket.update({
+              where: { userId },
+              data: { balance: { increment: ticketCost }, totalUsed: { decrement: ticketCost } },
+            }).catch(() => {})
+          }
+          return NextResponse.json({ success: false, error: `Couldn't find a ${subject} in the clip's first frame - start the clip on a clear shot of it.` }, { status: 400 })
+        }
+        maskImageUrl = mask
+      }
       // lib/batch-1007-video builds the exact input (inputs checked above)
       falInput = batch1007Input(model, {
+        maskImageUrl,
         prompt, imageUrl, editVideoUrl,
         referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
         duration, resolution, aspectRatio: klingAspectRatio, effectiveMode: effectiveSd20Mode, generateAudio,
         sourceWidth: probed?.width, sourceHeight: probed?.height,
         referenceVideoUrls: refVideoList, klingElements,
-        advanced: cleanVideoAdvanced(model, videoAdvanced),
+        referenceAudioUrls: Array.isArray(referenceAudioUrls) ? referenceAudioUrls as string[] : [],
+        choice: typeof videoChoice === 'string' ? videoChoice : undefined,
+        advanced: cleanVideoAdvanced(model, videoAdvanced, { isAdmin: isAdminUser }),
       });
     } else if (BATCH_1003_TOOLS.has(model) || BATCH_1003_GENERATORS.has(model)) {
       // lib/batch-1003-video builds the exact input (inputs checked above)
@@ -919,6 +955,7 @@ export async function POST(request: NextRequest) {
         prompt, imageUrl, endImageUrl, editVideoUrl,
         referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
         duration, resolution, aspectRatio: klingAspectRatio, generateAudio, effectiveMode: effectiveSd20Mode,
+        advanced: cleanVideoAdvanced(model, videoAdvanced, { isAdmin: isAdminUser }),
       });
     } else if (BATCH_0928_TOOLS.has(model) || BATCH_0928_GENERATORS.has(model)) {
       // lib/batch-0928-video builds the exact input (tools' prompts checked above)
@@ -1220,6 +1257,12 @@ export async function POST(request: NextRequest) {
       if (audioUrl) falInput.audio_url = audioUrl;
     }
 
+    // The Advanced settings the popup shows: the ones this input really carries
+    {
+      const used = videoSettingsFromInput(model, falInput)
+      if (Object.keys(used).length) (queueInputs as GenInputVideo).settings = used
+      else delete (queueInputs as GenInputVideo).settings
+    }
     console.log(`Submitting ${model} job to FAL queue:`, JSON.stringify({ falEndpoint, ...falInput }, null, 2));
 
     // Admin mode: resolve the target user, sync counter, then claim a slot or queue for later

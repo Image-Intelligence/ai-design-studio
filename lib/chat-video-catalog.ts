@@ -56,6 +56,8 @@ const REFS: Record<string, { maxRefs: number; needsRef?: boolean; endFrame?: boo
   'happy-horse':         { maxRefs: 1, needsRef: true },
   'lipsync-v3':          { maxRefs: 0 },
   'pixelcut-looping-video': { maxRefs: 1, needsRef: true },
+  // HeyGen Video: text, a start picture, or references (fal sets no count; 4 keeps runs sane)
+  'heygen-video':        { maxRefs: 4 },
 }
 
 /** A model's one extra choice (the portal's `choice` menu), sent to the route as videoChoice. */
@@ -75,6 +77,7 @@ function groupOf(id: string): string {
   if (id.startsWith('minimax')) return 'MiniMax'
   if (id.startsWith('happy')) return 'Alibaba'
   if (id.startsWith('pixelcut')) return 'Pixelcut'
+  if (id.startsWith('heygen')) return 'HeyGen'
   return 'Video'
 }
 

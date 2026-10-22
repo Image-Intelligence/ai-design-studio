@@ -647,6 +647,12 @@ export const AI_MODELS: AIModel[] = [
     isAvailable: true,
     provider: 'fal'
   },
+  // Ideogram Vector (2026-10-22) - SVG; fal per SVG: low $0.13 / medium $0.16
+  // / high $0.20 (high with reference pictures $0.32) -> 4 / 4 / 5 / 8 tickets
+  // (getTicketCost by quality; /api/generate re-prices high once references
+  // are counted). Vectorize: $0.10 per SVG -> 3.
+  { id: 'ideogram-vector', name: 'ideogram/vector/text-to-vector', displayName: 'Ideogram Vector', description: 'Ideogram SVG vector graphics from text, with optional reference pictures', ticketCost: 4, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
+  { id: 'ideogram-vectorize', name: 'ideogram/vector/image-to-vector', displayName: 'Ideogram Vectorize', description: 'Trace a picture into an editable SVG', ticketCost: 3, category: 'standard', rateLimit: { rpm: 0, rpd: 0 }, quality: 'high', isAvailable: true, provider: 'fal' },
   // Ideogram 4.5 (2026-10-02) - fal per image by quality tier, any size:
   // low $0.03 / medium $0.06 / high $0.22 -> 1 / 2 / 6 tickets (getTicketCost
   // prices by quality; these are the medium defaults)
@@ -1082,6 +1088,10 @@ export function getTicketCost(modelId: string, quality?: '2k' | '4k' | string): 
   // Ideogram 4.5: fal bills per image by tier (low $0.03 / medium $0.06 / high $0.22)
   if (modelId === 'ideogram-4.5' || modelId === 'ideogram-4.5-edit') {
     return quality === 'high' ? 6 : quality === 'low' ? 1 : 2
+  }
+  // Ideogram Vector: per SVG, $0.13 / $0.16 / $0.20 (high + references: 8, priced in /api/generate)
+  if (modelId === 'ideogram-vector') {
+    return quality === 'high' ? 5 : 4
   }
 
   if (modelId === 'nano-banana-pro-2') {

@@ -8,9 +8,9 @@ import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
 import { withShotsLock } from '@/lib/storyboard-store'
 import { boardFolder } from '@/lib/storyboard-shoot'
-import { AUDIO_MODEL_PREFIX, ELEVEN_VOICES, getAudioStudioModel, audioTicketCost, spokenCharCount } from '@/lib/audio-studio'
+import { AUDIO_MODEL_PREFIX, getAudioStudioModel, audioTicketCost, spokenCharCount } from '@/lib/audio-studio'
 import {
-  sanitizeShots, liveAudio, musicSpanSeconds, newVoiceLine, newMusicCue, MAX_LINES_PER_SHOT,
+  sanitizeShots, liveAudio, musicSpanSeconds, newVoiceLine, newMusicCue, MAX_LINES_PER_SHOT, lineVoice,
   STORYBOARD_VOICE_MODELS, STORYBOARD_MUSIC_MODELS, type VoiceLine, type MusicCue,
 } from '@/lib/storyboard'
 
@@ -86,7 +86,11 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!text) return jsonPrivate({ error: 'Write the line first' }, { status: 400 })
     const model = STORYBOARD_VOICE_MODELS.some(m => m.id === l.model) ? String(l.model) : 'eleven-v4'
     spec = getAudioStudioModel(model)
-    const voice = (ELEVEN_VOICES as readonly string[]).includes(String(l.voice)) ? String(l.voice) : 'Brian'
+    // The model's own length limit (Chatterbox Multilingual takes 300 characters), before anything is charged
+    if (spec?.text && text.length > spec.text.max) return jsonPrivate({ error: `${spec.name} takes lines up to ${spec.text.max} characters - shorten it or pick another voice model` }, { status: 400 })
+    // One of THIS model's voices (2026-10-22: the lane has models beyond
+    // ElevenLabs - an ElevenLabs name sent to Kokoro would be refused by fal)
+    const voice = lineVoice(model, String(l.voice ?? ''))
     const prev = (shot.lines ?? []).find(x => x.id === l.id)
     if (prev && liveAudio(prev) === 'making') return jsonPrivate({ error: 'This line is being recorded already', busy: true }, { status: 409 })
     if (!prev && (shot.lines?.length ?? 0) >= MAX_LINES_PER_SHOT) return jsonPrivate({ error: `A shot takes up to ${MAX_LINES_PER_SHOT} lines` }, { status: 400 })

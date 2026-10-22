@@ -1,4 +1,4 @@
-import { HIGGSFIELD_MODEL_IDS } from '@/lib/higgsfield-models'
+import { OWN_QUEUE_MODEL_IDS } from '@/lib/runpod-video-models'
 import { after, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
@@ -307,6 +307,14 @@ export async function GET(request: Request) {
       console.error('[cron-drain] higgsfield pass failed:', e)
     }
 
+    // ── 1a-runpod. Finish jobs on our own RunPod workers (MoCha, lib/runpod-video) ──
+    try {
+      const n = await (await import('@/lib/runpod-video')).harvestRunpodJobs({ limit: 8, budgetMs: 20_000 })
+      if (n) console.log(`[cron-drain] settled ${n} RunPod video job(s)`)
+    } catch (e) {
+      console.error('[cron-drain] runpod pass failed:', e)
+    }
+
     // ── 1a-3d. Finish 3D jobs whose page is gone ───────────────────────────
     // A model finished at fal is saved (files copied to our storage, viewer
     // copy built) whether or not anyone has the 3D studio open; a job fal lost
@@ -351,7 +359,7 @@ export async function GET(request: Request) {
     const [globalLimit, queuedCount] = await Promise.all([
       prisma.modelConcurrencyLimit.findUnique({ where: { modelId: FAL_GLOBAL_ID } }),
       // fal's line only: Higgsfield's waits on its own (lib/higgsfield)
-      prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: HIGGSFIELD_MODEL_IDS } } }),
+      prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: OWN_QUEUE_MODEL_IDS } } }),
     ])
 
     let promoted = 0

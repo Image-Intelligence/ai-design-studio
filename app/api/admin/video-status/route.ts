@@ -8,6 +8,7 @@ import { uploadToR2 } from '@/lib/r2'
 import { jsonPrivate } from '@/lib/api-json'
 import { fetchMedia } from '@/lib/media-fetch'
 import { isHiggsfieldEndpoint } from '@/lib/higgsfield-models'
+import { isRunpodEndpoint } from '@/lib/runpod-video-models'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -48,6 +49,22 @@ export async function POST(req: Request) {
       return jsonPrivate({ status: 'in_progress' })
     }
 
+    // A job on our own RunPod workers (MoCha, 2026-10-22): lib/runpod-video settles it
+    if (isRunpodEndpoint(falEndpoint)) {
+      const row = await prisma.generationQueue.findFirst({
+        where: { falRequestId: requestId },
+        select: { id: true, userId: true, modelId: true, modelType: true, prompt: true, ticketCost: true, createdAt: true, startedAt: true, falRequestId: true, parameters: true, status: true, errorMessage: true },
+        orderBy: { id: 'desc' },
+      })
+      if (!row || row.userId !== sessionUser.id) return jsonPrivate({ status: 'failed', error: 'Unknown job' })
+      if (row.status === 'failed') return jsonPrivate({ status: 'failed', error: row.errorMessage || 'Generation failed' })
+      const { settleRunpodRow } = await import('@/lib/runpod-video')
+      const out = await settleRunpodRow(row)
+      if (out.status === 'completed') return jsonPrivate({ status: 'completed', videoUrl: out.urls[0], videoId: out.imageIds[0] ?? null })
+      if (out.status === 'failed') return jsonPrivate({ status: 'failed', error: out.error })
+      return jsonPrivate({ status: 'in_progress' })
+    }
+
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
 
     if (status.status === 'COMPLETED') {
@@ -58,7 +75,24 @@ export async function POST(req: Request) {
         select: { id: true },
       })
 
-      const result = await fal.queue.result<any>(falEndpoint, { requestId })
+      // A finished job whose result IS an error is final (2026-10-22: Wan VACE
+      // Edit runs that crashed at fal answer COMPLETED, then 500 "Internal Server
+      // Error" for the result - read as a network blip, the tile polled on for
+      // ever beside the error tile the cron had already made). Only a reply
+      // without a status (the network itself) is worth asking again.
+      let result: any
+      try {
+        result = await fal.queue.result<any>(falEndpoint, { requestId })
+      } catch (e: any) {
+        if (typeof e?.status !== 'number') throw e
+        const raw = typeof e.body?.detail === 'string' ? e.body.detail
+          : Array.isArray(e.body?.detail) ? e.body.detail.map((d: any) => d?.msg || d?.message).filter(Boolean).join('; ')
+          : e.message || `HTTP ${e.status}`
+        const { friendlyFalVideoError } = await import('@/lib/fal-friendly-errors')
+        const detail = friendlyFalVideoError(raw)
+        await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
+        return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
+      }
       // Some endpoints return the video as a one-item list
       const falVideoUrl: string | undefined = result.data?.video?.url ?? result.data?.video?.[0]?.url ?? result.data?.videos?.[0]?.url
       // A SeeDance 2.5 draft: its id is what "Complete in 1080p" re-renders
@@ -84,6 +118,12 @@ export async function POST(req: Request) {
       }
 
       console.log(`✓ Video generation completed [${requestId}] model=${model} duration=${duration} url=${falVideoUrl}`)
+
+      // Its real length, measured: clip tools (Wan Animate, Recast...) have no
+      // length picker, so the page's number was the composer's leftover "5"
+      // and a 14s swap was recorded - and shown in its popup - as 5s
+      const measuredSec = (await (await import('@/lib/video-probe')).probeRemoteVideo(falVideoUrl).catch(() => null))?.seconds
+      const savedDuration = measuredSec && measuredSec > 0 ? String(Math.max(1, Math.round(measuredSec))) : (duration || '5')
 
       // Upload video to Vercel Blob for permanent storage (FAL URLs expire after ~24–48h)
       let permanentVideoUrl = falVideoUrl
@@ -157,7 +197,7 @@ export async function POST(req: Request) {
               expiresAt:   new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
               falRequestId: requestId,
               videoMetadata: {
-                duration:             duration || '5',
+                duration:             savedDuration,
                 resolution:           draftId ? 'draft' : (resolution || '1080p'),
                 aspectRatio:          aspectRatio || '16:9',
                 isVideo:              true,
@@ -199,7 +239,7 @@ export async function POST(req: Request) {
 
       await releaseQueueSlot(requestId, false)
       // draft: the session tile marks itself a draft so its viewer offers "Complete in 1080p"
-      return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId, ...(framesZip ? { framesZipUrl: framesZip.url } : {}) })
+      return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId, duration: savedDuration, ...(framesZip ? { framesZipUrl: framesZip.url } : {}) })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
       await releaseQueueSlot(requestId, true, 'Video generation failed on FAL servers')
@@ -223,6 +263,12 @@ export async function POST(req: Request) {
       const detail = friendlyFalVideoError(rawDetail)
       if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
       return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
+    }
+    // A job another poller (the cron) has already settled as failed is over -
+    // say so, or this tile keeps "generating" beside its own error tile
+    if (requestId) {
+      const row = await prisma.generationQueue.findFirst({ where: { falRequestId: requestId }, select: { status: true, errorMessage: true }, orderBy: { id: 'desc' } }).catch(() => null)
+      if (row?.status === 'failed') return jsonPrivate({ status: 'failed', error: row.errorMessage || 'Generation failed' })
     }
     // Return in_progress on transient network/server errors so the client keeps polling
     return jsonPrivate({ status: 'in_progress', error: error.message })

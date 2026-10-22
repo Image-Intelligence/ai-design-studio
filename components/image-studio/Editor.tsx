@@ -44,7 +44,7 @@ import { AiButton } from "./ai-button"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import {
   fillRegion, fillTickets, editAspect, EXPAND_MAX_SIDE, EXPAND_MAX_PIXELS, EXPAND_TICKETS, UPSCALE_MAX_SIDE,
-  UPSCALERS, upscaleFactor, upscaleTickets, type UpscalerId,
+  UPSCALERS, upscaleFactor, upscaleTickets, type UpscalerId, pictureTool, PICTURE_TOOL_MAX_SIDE,
 } from "@/lib/image-studio-ai"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
@@ -1762,7 +1762,8 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     const j = await r.json().catch(() => ({}))
     if (typeof j.balance === "number" && j.balance >= 0) onBalanceChange?.(j.balance)
     if (!r.ok || !j.url) throw new Error(j.error || "The AI tool failed")
-    return j as { url: string; width: number; height: number; tickets: number }
+    // `layers`: Layerize's background and objects, each boxed in the background's pixels; `svg`: a vector result's SVG
+    return j as { url: string; width: number; height: number; tickets: number; svg?: string; layers?: { url: string; name: string; box: [number, number, number, number] }[] }
   }
   /** Any transparency at all? (sampled small - it only decides PNG over JPEG and whether to restore alpha) */
   const hasAlpha = (c: HTMLCanvasElement) => {
@@ -1912,6 +1913,104 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         })
         setSelectedId(layer.id); setMaskEdit(false)
         flash(`Edited - the original layer is hidden below it${paidNote(j.tickets)}`)
+      } else if (req.op === "tool") {
+        /*
+         * A picture tool (lib/image-studio-ai PICTURE_TOOLS) on the selected
+         * layer or the image as it looks. The result is placed as the tool says:
+         * in the source's box (an edit), in a new frame around it (Reframe), or
+         * as a group of layers (Layerize); the source is hidden, not deleted -
+         * on the whole image, every layer under the result is.
+         */
+        const t = pictureTool(req.tool)
+        if (!t) throw new Error("Pick a picture tool")
+        if (t.place === "layers" && d.layers.length + 18 > MAX_LAYERS) throw new Error(`${t.label} adds up to 18 layers - up to ${MAX_LAYERS} in all; merge or delete some first`)
+        const cur = d.layers.find(l => l.id === selectedIdRef.current)
+        const onLayer = req.target === "layer" && !!cur && (cur.kind === "raster" || cur.kind === "text" || cur.kind === "shape")
+        const content = onLayer && cur ? layerContent(cur, rtOf(cur.id)) : null
+        if (req.target === "layer" && !content) throw new Error("Pick an image, text or shape layer")
+        const src = fitWithin(content ?? onWhite(flatten(d, rts.current, true)), PICTURE_TOOL_MAX_SIDE)
+        const box: Rect = content && cur ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h } : { x: 0, y: 0, w: d.width, h: d.height }
+        const alpha = !!content && hasAlpha(src)
+        const image = await putBlob("ai", alpha ? await toBlob(src, "image/png") : await toBlob(src, "image/jpeg", 0.95))
+        const j = await postGen({ op: "tool", tool: t.id, image, prompt: req.prompt, aspect: req.aspect, quality: req.quality, options: req.options, refs: req.refs })
+        // The source hidden: the layer, or on the whole image every layer
+        const hideSource = (dd: StudioDoc): StudioDoc => ({ ...dd, layers: dd.layers.map(l => (content && cur ? (l.id === cur.id ? { ...l, visible: false } : l) : { ...l, visible: false })) })
+        const asSource = content && cur ? { rotation: cur.rotation, flipX: cur.flipX, flipY: cur.flipY, blend: cur.blend, opacity: cur.opacity } : {}
+        if (t.place === "layers") {
+          const parts = j.layers ?? []
+          if (!parts.length) throw new Error("The model returned no layers")
+          // Every layer into the source's box (their boxes are in the background's pixels).
+          // Not marked as uploaded: they are saved again under this account on the next save
+          const pixes = await Promise.all(parts.map(p => loadToCanvas(p.url, MAX_CANVAS_SIDE)))
+          const sx = box.w / Math.max(1, j.width), sy = box.h / Math.max(1, j.height)
+          // In a group of their own - unless the source is in one (a group never goes inside a group)
+          const gid = uid("g"), inGroup = !(content && cur?.parent)
+          const made = parts.map((p, i) => {
+            const [x1, y1, x2, y2] = p.box
+            const L = rasterLayer(p.name || `Layer ${i}`, pixes[i], { x: box.x + x1 * sx, y: box.y + y1 * sy, w: Math.max(1, (x2 - x1) * sx), h: Math.max(1, (y2 - y1) * sy) })
+            L.parent = inGroup ? gid : cur?.parent ?? null
+            return L
+          })
+          const g: StudioLayer = { id: gid, name: t.label, kind: "group", visible: true, locked: false, opacity: 1, blend: "normal", x: 0, y: 0, w: d.width, h: d.height, rotation: 0, flipX: false, flipY: false }
+          apply(t.label, dd => {
+            made.forEach((L, i) => rts.current.set(L.id, { pix: pixes[i] }))
+            if (inGroup) rts.current.set(gid, {})
+            const layers = [...hideSource(dd).layers]
+            const at = content && cur ? layers.findIndex(l => l.id === cur.id) + 1 : layers.length
+            layers.splice(at > 0 ? at : layers.length, 0, ...made, ...(inGroup ? [g] : []))
+            return { ...dd, layers: normalizeLayers(layers) }
+          })
+          setSelectedId(inGroup ? gid : made[made.length - 1].id); setMaskEdit(false)
+          flash(`${t.label} - ${made.length} layers${inGroup ? " in a group" : ""}${paidNote(j.tickets)}`)
+        } else if (t.place === "reframe") {
+          const pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
+          uploaded.current.set(pix, j.url)
+          // The new frame around the source, the source's picture at the same scale
+          const ar = pix.width / pix.height, wider = ar > box.w / box.h
+          const nw = wider ? box.h * ar : box.w, nh = wider ? box.h : box.w / ar
+          if (content && cur) {
+            const layer: StudioLayer = { ...rasterLayer(t.label, pix, { x: box.x + (box.w - nw) / 2, y: box.y + (box.h - nh) / 2, w: nw, h: nh }), ...asSource }
+            apply(t.label, dd => hideSource(insertLayer(dd, layer, { pix })))
+            setSelectedId(layer.id)
+          } else {
+            // The image takes the new frame (held to MAX_CANVAS_SIDE); its layers keep their place in it, hidden
+            const k = Math.min(1, MAX_CANVAS_SIDE / Math.max(nw, nh))
+            const W = Math.round(nw * k), H = Math.round(nh * k), ox = (W - d.width * k) / 2, oy = (H - d.height * k) / 2
+            const layer = rasterLayer(t.label, pix, { x: 0, y: 0, w: W, h: H })
+            apply(t.label, dd => addOnTop({
+              ...dd, width: W, height: H,
+              layers: dd.layers.map(l => ({ ...l, visible: false, x: l.x * k + ox, y: l.y * k + oy, w: l.w * k, h: l.h * k, ...(l.text ? { text: { ...l.text, size: l.text.size * k } } : {}) })),
+            }, layer, { pix }))
+            setSelectedId(layer.id); setSelection(null)
+            requestAnimationFrame(() => fitView())
+          }
+          setMaskEdit(false)
+          flash(`${t.label} - a new layer in the new frame${paidNote(j.tickets)}`)
+        } else {
+          let pix = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
+          // The source's exact box: a result of another shape is cropped to it, centred (as an AI edit)
+          const ar = pix.width / pix.height, boxAr = box.w / box.h
+          const cropped = Math.abs(Math.log(ar / boxAr)) > 0.02
+          if (cropped) {
+            const cw = ar > boxAr ? Math.round(pix.height * boxAr) : pix.width, ch = ar > boxAr ? pix.height : Math.round(pix.width / boxAr)
+            const crop = newCanvas(cw, ch)
+            ctx2d(crop).drawImage(pix, (pix.width - cw) / 2, (pix.height - ch) / 2, cw, ch, 0, 0, cw, ch)
+            pix = crop
+          }
+          // A retouch returns an opaque picture: the source's transparency goes back on
+          const reAlpha = !!t.keepAlpha && alpha
+          if (reAlpha) { const x = ctx2d(pix); x.globalCompositeOperation = "destination-in"; x.drawImage(src, 0, 0, pix.width, pix.height); x.globalCompositeOperation = "source-over" }
+          if (!cropped && !reAlpha) uploaded.current.set(pix, j.url)
+          const layer: StudioLayer = { ...rasterLayer(t.label, pix, box), ...asSource }
+          if (content && cur) {
+            // Same box, so the source's mask fits it as is (shared - pixels are never edited in place)
+            const curMask = cur.mask ? rtOf(cur.id).mask : undefined
+            if (cur.mask && curMask) layer.mask = { ...cur.mask, src: null }
+            apply(t.label, dd => hideSource(insertLayer(dd, layer, { pix, mask: curMask })))
+          } else apply(t.label, dd => addOnTop(hideSource(dd), layer, { pix }))
+          setSelectedId(layer.id); setMaskEdit(false)
+          flash(`${t.label} - a new layer${j.svg ? " (the SVG is in My Generations)" : ""}${paidNote(j.tickets)}`)
+        }
       } else {
         let image: string | undefined
         if (req.ref === "canvas") image = await putBlob("ai", await toBlob(fitWithin(onWhite(flatten(d, rts.current, true)), 4096), "image/jpeg", 0.92))

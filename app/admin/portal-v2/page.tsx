@@ -2,7 +2,7 @@
 import { listenForNewMedia } from "@/lib/feed-events"
 
 import { HEYGEN_VOICES, DUB_LANGUAGES } from '@/lib/batch-1003-video'
-import { VIDEO_ADVANCED_KNOBS, type VideoKnob } from "@/lib/video-advanced"
+import { VIDEO_ADVANCED_KNOBS, videoSettingChips, type VideoKnob } from "@/lib/video-advanced"
 import { useState, useEffect, useRef, useCallback, useMemo, useReducer, useSyncExternalStore, cloneElement, isValidElement, startTransition, type ReactNode, type ReactElement } from "react"
 import { getTicketCost as configTicketCost } from "@/config/ai-models.config"
 import { seedvrUpscaleTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, videoTicketCost, topazImageTicketCost, flux3ImageTicketCost, kleinTicketCost, krea3TicketCost, mossTicketCost, mossSide, mossSize, MOSS_PRESETS, MOSS_MIN_SIDE, MOSS_MAX_SIDE, KREA3_REALTIME_BLOCK_TICKETS, KREA3_REALTIME_BLOCK_SEC, nb21TicketCost, clarityUpscaleTicketCost, NB21_THINKING, type Nb21Thinking, TICKET_PACKAGES } from "@/lib/ticket-pricing"
@@ -59,6 +59,7 @@ import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateE
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
 import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
 import { HIGGSFIELD_IMAGE_MODELS, isHiggsfieldModel, higgsfieldImageTicketCost } from "@/lib/higgsfield-models"
+import { isRunpodModel } from "@/lib/runpod-video-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -144,7 +145,8 @@ type AspectRatio = "auto" | "1:1" | "2:3" | "3:2" | "4:5" | "5:4" | "3:4" | "4:3
   | "1024x768" | "1024x1024" | "1024x1536" | "1920x1080" | "2560x1440" | "3840x2160"
   // MOSS Image takes fal's named sizes (lib/ticket-pricing MOSS_PRESETS) or a custom W x H
   | "square_hd" | "square" | "portrait_4_3" | "portrait_16_9" | "landscape_4_3" | "landscape_16_9" | "custom"
-type Quality = "1k" | "2k" | "3k" | "4k" | "low" | "medium" | "high"
+// "default" / "simple": Ideogram Vectorize's mode, on the tool's quality picker
+type Quality = "1k" | "2k" | "3k" | "4k" | "low" | "medium" | "high" | "default" | "simple"
 
 // --- IMAGE MODEL CONFIG ---
 interface ImageModelConfig {
@@ -205,6 +207,8 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   { id: "bria-fibo",            apiId: "bria-fibo",                name: "Bria Fibo 1.5",       aspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"], supportsQuality: true, qualityOptions: ["1k", "4k"], maxReferenceImages: 10, isFal: true, maxImages: 4 },
   // Ideogram 4.5: one entry; references switch it to the edit endpoint (first = the source)
   { id: "ideogram-4.5",         apiId: "ideogram-4.5",             name: "Ideogram v4.5",       aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "2:1", "1:2"], supportsQuality: true, qualityOptions: ["low", "medium", "high"], maxReferenceImages: 5, isFal: true, maxImages: 4 },
+  // Ideogram Vector (2026-10-22): SVG from text (+ optional references); Vectorize traces a picture
+  { id: "ideogram-vector",      apiId: "ideogram-vector",          name: "Ideogram Vector",     aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "2:1", "1:2", "4:1", "1:4"], supportsQuality: true, qualityOptions: ["low", "medium", "high"], maxReferenceImages: 5, isFal: true, maxImages: 4 },
   { id: "ideogram-v4",          apiId: "ideogram-v4",              name: "Ideogram v4",         aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-instant",  apiId: "ideogram-v4-instant",      name: "Ideogram v4 Instant", aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
   { id: "ideogram-v4-fast",     apiId: "ideogram-v4-fast",         name: "Ideogram v4 Fast",    aspectRatios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], supportsQuality: true, qualityOptions: ["1k", "2k"], maxReferenceImages: 1, isFal: true, maxImages: 4 },
@@ -234,6 +238,8 @@ const IMAGE_MODEL_CONFIGS: ImageModelConfig[] = [
   // 2026-10-03 image tools (admin): one image in (Bria: two, on the try-on picker)
   { id: "pixelcut-bg-removal",  apiId: "pixelcut-bg-removal",      name: "Background Removal",  aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "recraft-vectorize",    apiId: "recraft-vectorize",        name: "Recraft Vectorize",   aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
+  // The quality picker is Ideogram's mode: default keeps finer detail, simple uses fewer shapes
+  { id: "ideogram-vectorize",   apiId: "ideogram-vectorize",       name: "Ideogram Vectorize",  aspectRatios: ["1:1"], supportsQuality: true, qualityOptions: ["default", "simple"], maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "seedream-5-pro-layerize", apiId: "seedream-5-pro-layerize", name: "SeeDream 5 Layerize", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "qwen-multi-angle",     apiId: "qwen-multi-angle",         name: "Multi-Angle Reshoot", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 1, isFal: true, maxImages: 1, isUpscaler: true },
   { id: "bria-product-holding", apiId: "bria-product-holding",     name: "Bria Product in Hand", aspectRatios: ["1:1"], supportsQuality: false, maxReferenceImages: 0, isFal: true, maxImages: 1, isUpscaler: true, isTryOn: true },
@@ -331,6 +337,8 @@ function calcTicketCost(modelId: string, quality: Quality, aspectRatio?: AspectR
   // A named size; the composer prices Custom from its W x H (a bare "custom" reads as 1024 square)
   if (modelId === "moss-image")          return mossTicketCost({ size: aspectRatio })
   if (modelId === "ideogram-4.5")        return quality === "high" ? 6 : quality === "low" ? 1 : 2   // fal $0.03 / $0.06 / $0.22 an image
+  if (modelId === "ideogram-vector")     return quality === "high" ? (hasRefImages ? 8 : 5) : 4   // fal $0.13 / $0.16 / $0.20 an SVG, high + refs $0.32
+  if (modelId === "ideogram-vectorize")  return 3   // fal $0.10 an SVG
   if (modelId === "qwen-image-3")        return (quality === "1k" ? 1 : 2) + (hasRefImages ? 1 : 0)   // fal $0.04 1K / $0.075 2K; edit +1
   // Topaz bills by OUTPUT megapixels; the server prices the measured source.
   // Shown here for a typical 2048x2048 source at the default 2x.
@@ -884,7 +892,9 @@ const BATCH_0928_VIDEO = new Set([
   "vidu-q4", "minimax-h3-max-relight", "wan-2.2-animate-replace", "dreamactor-v2", "lucy-edit-pro",
   // 2026-10-21: H3 Max Reframe; Kling 4.0 + its edit (admin)
   "minimax-h3-max-reframe", "kling-v4", "kling-v4-edit",
-  // 2026-10-22: Wan 2.2 Animate Move (admin)
+  // 2026-10-22: HeyGen Video; Wan VACE Video Edit (admin)
+  "heygen-video", "wan-vace-edit",
+  // 2026-10-22: Wan 2.2 Animate's Move mode (admin)
   "wan-2.2-animate-move",
 ])
 
@@ -1554,6 +1564,16 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // a picture tagged S is the start frame. lib/batch-1007-video routes it.
   { id: "kling-v4", name: "Kling 4.0", durations: ["3","4","5","6","7","8","9","10","11","12","13","14","15","20","25","30"], resolutions: ["720p","1080p"], aspectRatios: ["16:9","9:16","1:1","21:9","auto"], supportsEndFrame: false, audioType: "none", textToVideo: true,
     supportsReferenceVideo: true, refLimits: { images: 10, videos: 5, audios: 0 }, frameTags: "start", startOnlyWhenTagged: true, klingElements: true, refVideoWindow: { count: 5, minSec: 3, totalSec: 30 } },
+  // 2026-10-22: HeyGen Video - one entry on three fal endpoints (lib/batch-1007-video):
+  // the prompt alone, a start picture (tag one S), or references - pictures,
+  // clips and sounds it keeps the people, products and places of. 5-15s with sound
+  { id: "heygen-video", name: "HeyGen Video", durations: ["5","6","7","8","9","10","11","12","13","14","15"], resolutions: ["480p","768p","1080p","2k"], aspectRatios: ["16:9","9:16","21:9","4:3","1:1","3:4"], supportsEndFrame: false, audioType: "none", textToVideo: true,
+    supportsReferenceVideo: true, refLimits: { images: 4, videos: 2, audios: 2 }, frameTags: "start", startOnlyWhenTagged: true },
+  // 2026-10-22 (admin): Wan VACE Video Edit - the clip changed in words ("replace
+  // the man with the woman in the picture"); fal finds and masks the subject itself
+  { id: "wan-vace-edit", name: "Wan VACE Video Edit", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    choice: { label: "Replace", note: "the largest one in the clip's first frame is masked and tracked", options: [{ value: "person", label: "Person" }, { value: "animal", label: "Animal" }, { value: "vehicle", label: "Vehicle" }] },
+    sourceClipImages: { max: 4, label: "References", hint: "Who or what to put in (optional) - describe them in the prompt too. Start the clip on a clear shot of the subject: its first frame is what gets masked.", required: false } },
   // Kling 4.0 Edit: the clip (@Video1, 3-30s, 700px+) edited from words, with optional pictures and elements
   { id: "kling-v4-edit", name: "Kling 4.0 Edit", durations: [], resolutions: ["720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 30, klingElements: true,
     sourceClipImages: { max: 10, label: "Reference images (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (3-30s, at least 700px each way)." } },
@@ -1565,11 +1585,29 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
   // is fitted into the chosen frame and the rest outpainted; prompt optional
   { id: "minimax-h3-max-reframe", name: "H3 Max Reframe", durations: [], resolutions: ["480p","768p","1080p"], aspectRatios: ["16:9","9:16","1:1","4:3","3:4","21:9","9:21"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 15 },
   // Character swap: the person in the clip becomes the one in the picture; the footage stays
-  { id: "wan-2.2-animate-replace", name: "Wan 2.2 Animate Replace", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
-    sourceClipImages: { max: 1, label: "Character", hint: "Who to put in the clip - one clear picture, framed like the person in it (full body for a full-body shot).", required: true } },
-  // Character animation: the picture's character performs the clip's motion, in the picture's own setting
+  // Wan 2.2 Animate (2026-10-22: one model, two modes - fal's two endpoints).
+  // Replace: the person in the clip becomes the picture's character, the
+  // footage stays. Move: the picture's character performs the clip's motion
+  // in the picture's own setting - sent and saved as wan-2.2-animate-move
+  // (admins only while under test; everyone else gets Replace)
+  { id: "wan-2.2-animate-replace", name: "Wan 2.2 Animate", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
+    choice: { label: "Mode", note: "Replace keeps the clip's footage; Move keeps the picture's setting", adminOnly: true, options: [{ value: "replace", label: "Replace" }, { value: "move", label: "Move" }] },
+    sourceClipImages: { max: 1, label: "Character", hint: "One clear picture, framed like the person in the clip (full body for a full-body shot). Replace puts them into the footage; Move animates the picture itself.", required: true } },
+  // Wan 2.2 Animate's Move mode, as its runs are saved - not in the picker
+  // (its tiles, popups and Rescan read this; Rescan opens Wan 2.2 Animate on Move)
   { id: "wan-2.2-animate-move", name: "Wan 2.2 Animate Move", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
     sourceClipImages: { max: 1, label: "Character", hint: "Who performs the clip's motion - one clear picture; the video keeps the picture's setting, so frame it like the clip (full body for a full-body move).", required: true } },
+  // Our own RunPod worker (2026-10-22, admin while under test): MoCha
+  // character replacement - lib/runpod-video-models, AI/mocha-worker. The
+  // worker masks the clip's person itself; it renders the first 81-161 frames
+  { id: "runpod-mocha", name: "MoCha", durations: [], resolutions: ["480p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
+    choice: { label: "Quality", note: "Fast is a 6-step speed-up; Full renders 30 steps - slower, sometimes cleaner", options: [{ value: "fast", label: "Fast" }, { value: "full", label: "Full" }] },
+    sourceClipImages: { max: 2, label: "Character", hint: "Who replaces the person in the clip: a clear full picture of them, plus (optional) a front-facing face close-up. Start the clip on a clear shot of the person - their first frame is what gets masked.", required: true } },
+  // The MiniMax H3 pair on our own RunPod worker (2026-10-22, admin): AI/h3-worker
+  { id: "runpod-viggle", name: "Viggle Animate", durations: [], resolutions: ["480p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
+    sourceClipImages: { max: 1, label: "Character", hint: "Who replaces the person in the clip - the site paints them into the clip's first frame (NanoBanana) and Viggle carries that through the clip. Start on a clear, front-on shot of the person.", required: true } },
+  { id: "runpod-h3-swap", name: "H3 Character Swap", durations: [], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
+    sourceClipImages: { max: 1, label: "Character", hint: "Who replaces the person in the clip (the largest person is masked and tracked through it). One clear picture of them.", required: true } },
   { id: "dreamactor-v2", name: "DreamActor v2", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
     sourceClipImages: { max: 1, label: "Character", hint: "Who performs the clip - one clear picture; people, cartoon characters and pets all work. The video takes the PICTURE's shape, so frame it like the clip.", required: true } },
   { id: "lucy-edit-pro", name: "Lucy Edit Pro", durations: [], resolutions: ["720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 15 },
@@ -1743,6 +1781,8 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "higgsfield-soul":     "$$",
   "higgsfield-marketing-image": "$$$",
   "ideogram-4.5":        "$$",
+  "ideogram-vector":     "$$",
+  "ideogram-vectorize":  "$$",
   "flash-scanner-v2.5": "$",
   "seedream-4.5":        "$",
   "seedream-5-lite":     "$",
@@ -1803,6 +1843,11 @@ const IMAGE_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
   "local-neosr":         "$",
 }
 const VIDEO_MODEL_COST: Record<string, "$" | "$$" | "$$$" | "$$$+"> = {
+  "heygen-video": "$",
+  "wan-vace-edit": "$$",
+  "runpod-mocha": "$",
+  "runpod-viggle": "$$",
+  "runpod-h3-swap": "$$",
   "higgsfield-genjutsu-motion": "$$$+",
   "higgsfield-genjutsu-swap":   "$$$+",
   "higgsfield-genjutsu-lite-motion": "$$",
@@ -2063,7 +2108,7 @@ const IMAGE_MODEL_GROUPS = [
   { label: "Z-Image",           type: "text to image",             accent: "text-cyan-400",    dot: "bg-cyan-400",    items: ["Z-Image Base", "Z-Image Turbo"] },
   // Public since 2026-09-25. The tier (v4, Fast, Instant, Tiling) is picked
   // inside the model, so one item stands for all four.
-  { label: "Ideogram",          type: "text in images · edit",     accent: "text-amber-400",   dot: "bg-amber-400",   items: ["Ideogram v4.5", "Ideogram v4"] },
+  { label: "Ideogram",          type: "text in images · edit",     accent: "text-amber-400",   dot: "bg-amber-400",   items: ["Ideogram v4.5", "Ideogram v4", "Ideogram Vector", "Ideogram Vectorize"] },
   // Google, distinct from the Gemini row above: Virtual Try-On is a Google
   // model but not a Gemini one, and filing it under Gemini would be wrong.
   { label: "Google",            type: "virtual try-on",            accent: "text-emerald-400", dot: "bg-emerald-400", items: ["Virtual Try-On"] },
@@ -2111,7 +2156,7 @@ const IMAGE_MODEL_SECTIONS: { label: string; note?: string; accent?: string; dot
 /** The home page's Upscale / Tools sub-sections, by model (see HomeView). */
 const HOME_IMAGE_UPSCALE_NAMES = ["SeedVR2 Upscale", "Clarity Upscaler", "AuraSR", "ESRGAN", "DRCT"]
 // Single-image tools with no upscale factor: no 2x/4x picker, no "2x" on the tile
-const NO_FACTOR_TOOLS = new Set(["bria-guided-remove-bg", "marigold-v2", "pixelcut-bg-removal", "recraft-vectorize", "seedream-5-pro-layerize", "qwen-multi-angle", "sam-3.1-image", "bria-replace-background", "seedream-5-flash-layerize"])
+const NO_FACTOR_TOOLS = new Set(["bria-guided-remove-bg", "marigold-v2", "pixelcut-bg-removal", "recraft-vectorize", "ideogram-vectorize", "seedream-5-pro-layerize", "qwen-multi-angle", "sam-3.1-image", "bria-replace-background", "seedream-5-flash-layerize"])
 // Single-image tools that take a short text: what it acts on (sent as the prompt)
 const TOOL_TEXT: Record<string, { label: string; placeholder: string; optional?: boolean }> = {
   "bria-guided-remove-bg": { label: "Guide", placeholder: "optional - what to keep or drop, e.g. keep the leash, drop the chair", optional: true },
@@ -2145,7 +2190,7 @@ const VIDEO_MODEL_GROUPS = [
   { label: "MiniMax", type: "image & text to video · references · extend · recast · lip sync · camera moves · insert a shot · relight · reframe", accent: "text-rose-400", dot: "bg-rose-400", items: ["MiniMax H3 Max", "MiniMax H3 Max Turbo", "MiniMax H3 Max References", "MiniMax H3 Max Extend", "MiniMax H3 Max Turbo Extend", "MiniMax H3 Max Recast", "H3 Max Lip Sync", "H3 Max Camera Controls", "H3 Max Insert Shot", "H3 Max Relight", "H3 Max Reframe"] },
   { label: "ByteDance",   type: "image & text to video · character swap · upscale · depth", accent: "text-emerald-400", dot: "bg-emerald-400", items: ["SeeDance 1.5", "SeeDance 2.0", "SeeDance 2.0 Fast", "SeeDance 2.0 Mini", "SeeDance 2.5", "OmniHuman v2", "DreamActor v2", "SeedVR2 Video", "ByteDance Video Upscale", "Depth Anything Video"] },
   { label: "Google Veo", type: "text · image · first/last · refs · audio · extend", accent: "text-blue-300", dot: "bg-blue-300", items: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite", "Veo 3.1 Extend", "Veo 3.1 Fast Extend"] },
-  { label: "Wan",         type: "image & text to video · character swap", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7", "Wan 2.2 Animate Replace"] },
+  { label: "Wan",         type: "image & text to video · character swap & animation", accent: "text-violet-400",  dot: "bg-violet-400",  items: ["Wan 2.5", "Wan 2.7", "Wan 2.2 Animate"] },
   { label: "Alibaba Wan 3.0", type: "text · image · refs · with audio", accent: "text-orange-400", dot: "bg-orange-400", items: ["Wan 3.0", "Wan 3.0 Prime"] },
   { label: "Pixelcut", type: "product loops · background removal", accent: "text-rose-400", dot: "bg-rose-400", items: ["Pixelcut Looping Video", "Pixelcut Video Background Removal"] },
   { label: "Tencent", type: "text & image to video", accent: "text-emerald-300", dot: "bg-emerald-300", items: ["Hunyuan Video 1.5"] },
@@ -2157,7 +2202,8 @@ const VIDEO_MODEL_GROUPS = [
   { label: "Open Source", type: "community models · upscale · object removal", accent: "text-slate-300", dot: "bg-slate-400", items: ["FlashVSR", "VOID Object Removal"] },
   // Public 2026-10-04: SAM 3.1 tracks what you name through a clip
   { label: "Meta", type: "track & mask objects through a clip", accent: "text-blue-400", dot: "bg-blue-400", items: ["SAM 3.1 Track"] },
-  { label: "HeyGen", type: "talking photo · translate with lip sync", accent: "text-teal-300", dot: "bg-teal-300", items: ["HeyGen Avatar 4", "HeyGen Translate", "HeyGen Translate Fast"] },
+  // HeyGen Video public 2026-10-22 (all three endpoints run through the UI, charges measured)
+  { label: "HeyGen", type: "scene video from text, a picture or references · talking photo · translate", accent: "text-teal-300", dot: "bg-teal-300", items: ["HeyGen Video", "HeyGen Avatar 4", "HeyGen Translate", "HeyGen Translate Fast"] },
   // Public 2026-10-04: captions, dubbing and sound for a clip you already have
   { label: "VEED", type: "animated subtitles", accent: "text-violet-300", dot: "bg-violet-300", items: ["VEED Subtitles"] },
   { label: "ElevenLabs", type: "dub a clip into another language", accent: "text-slate-200", dot: "bg-slate-200", items: ["ElevenLabs Dubbing"] },
@@ -2228,7 +2274,7 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
    *   { label: "Moonvalley", type: "licensed-data video", accent: "text-indigo-300", dot: "bg-indigo-300", items: ["Marey"] },
    *   "Pika 2 Turbo" to the Pika group, and the two Marey tools to Video Tools.
    */
-  { label: "Wan",    type: "LoRA video · pricing TBD",                        accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA"] },
+  { label: "Wan",    type: "LoRA video · pricing TBD · VACE edit (under test)", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 LoRA", "Wan VACE Video Edit"] },
   { label: "Topaz", type: "colorize · fal's endpoint is down", accent: "text-lime-400", dot: "bg-lime-400", items: ["Topaz Colorize"] },
   // Mirelo SFX 2.0 (2026-10-15) and OmniHuman v2 (2026-10-16) went public
   // 2026-10-16 and moved to their makers' groups above
@@ -2236,24 +2282,34 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   { label: "MiniMax Live", type: "direct a film live · named references · with sound", accent: "text-rose-400", dot: "bg-rose-400", items: ["H3 Max Director"] },
   // 2026-10-21 (under test): Kling 4.0 - text / references / elements, and its clip edit
   { label: "Kling", type: "text & references to video · elements · edit a clip", accent: "text-sky-300", dot: "bg-sky-300", items: ["Kling 4.0", "Kling 4.0 Edit"] },
-  // 2026-10-22 (under test): the picture's character performs a clip's motion
-  { label: "Wan Animate", type: "character animation from a clip's motion", accent: "text-violet-400", dot: "bg-violet-400", items: ["Wan 2.2 Animate Move"] },
+  // 2026-10-22 (under test): open models on our own RunPod GPUs (lib/runpod-video)
+  { label: "RunPod", type: "open models on our own GPUs · character swap", accent: "text-teal-300", dot: "bg-teal-300", items: ["MoCha", "Viggle Animate", "H3 Character Swap"] },
   // H3 Max Reframe and Genjutsu Lite (2026-10-21) went public the same day
   // after UI runs, into the MiniMax / Higgsfield groups above
   // The 2026-10-07 batch (Vidu Q4, H3 Max Relight, the character swaps) went
   // public 2026-10-08 and moved to its makers' groups above
 ]
 // Models fal runs without any prompt (their inputs are the image/audio)
-const PROMPTLESS_VIDEO_MODELS = new Set(["mureka-lyrics-video", "omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "wan-2.2-animate-move", "dreamactor-v2"])
+const PROMPTLESS_VIDEO_MODELS = new Set(["runpod-mocha", "runpod-viggle", "runpod-h3-swap", "mureka-lyrics-video", "omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "wan-2.2-animate-move", "dreamactor-v2"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
 /** Minutes the portal keeps polling a video before giving up (default 20) - the
  *  cron's own limit is 60 (STALE_MINUTES_VIDEO), so stay under it. */
 const SLOW_VIDEO_POLL_MIN: Record<string, number> = {
   "kandinsky6-pro": 55,
+  // a cold RunPod worker loads ~27 GB of weights before it renders
+  "runpod-mocha": 55,
+  "runpod-viggle": 55,
+  // windowed passes, plus a first download of ~47 GB of weights
+  "runpod-h3-swap": 110,
 }
 // How long a tile waits on a job fal still says it is working on
 const VIDEO_LIVE_POLL_MAX_MS = 120 * 60 * 1000
+/** What a run is called where the picker's name is the model's, not the mode it ran (Wan 2.2 Animate's two modes) */
+const VIDEO_RUN_NAMES: Record<string, string> = {
+  "wan-2.2-animate-replace": "Wan 2.2 Animate Replace",
+}
+const videoRunName = (id: string) => VIDEO_RUN_NAMES[id] ?? VIDEO_MODEL_CONFIGS.find(m => m.id === id)?.name ?? getModelDisplayName(id)
 
 const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "higgsfield-genjutsu-motion": "Optional - how the new characters should look or act",
@@ -2283,6 +2339,8 @@ const VIDEO_PROMPT_HINTS: Record<string, string> = {
   "minimax-h3-max-relight": "No prompt needed - add the clip and a picture of a lit sphere (the lighting to match) in References",
   "minimax-h3-max-reframe": "Optional - what fills the new space around the clip (pick the new shape on the left)",
   "kling-v4": "Describe the video - name references @Image1, @Video1 and elements @Element1",
+  "heygen-video": "Describe the scene - with references, say who or what from them appears and what happens",
+  "wan-vace-edit": "Say the change - e.g. replace the man with the woman in the picture",
   "mureka-lyrics-video": "Optional - a title shown on the video (pick the song on the left)",
   "kling-v4-edit": "Describe the edit - the clip is @Video1; pictures @Image1…, elements @Element1…",
   "wan-2.2-animate-replace": "No prompt needed - add the clip and your character's picture in References",
@@ -10404,6 +10462,7 @@ function PendingDetailModal({
   isQueued,
   videoMetadata,
   inputGroups,
+  runSettings,
   duration,
   onClose,
   onUsePrompt,
@@ -10413,6 +10472,8 @@ function PendingDetailModal({
   duration?: string
   /** The job's inputs, laid out for its model (videoInputGroups, or an image tool's slot) - replaces the start/end frame block */
   inputGroups?: GenInputGroup[]
+  /** The model's Advanced settings this run used (lib/video-advanced videoSettingChips) */
+  runSettings?: { label: string; value: string }[]
   prompt: string
   model: string
   quality?: string
@@ -10430,7 +10491,7 @@ function PendingDetailModal({
 }) {
   const [copied, setCopied] = useState(false)
   // Video models by their own names (getModelDisplayName knows the image ones)
-  const modelName = VIDEO_MODEL_CONFIGS.find(m => m.id === model)?.name ?? getModelDisplayName(model)
+  const modelName = videoRunName(model)
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
@@ -10550,6 +10611,7 @@ function PendingDetailModal({
                 </div>
               </div>
             )}
+            {runSettings && runSettings.length > 0 && <VideoRunSettings chips={runSettings} />}
             {inputGroups ? (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Inputs</p>
@@ -11261,7 +11323,7 @@ function ImageDetailModal({
 
   // A vector result (Recraft Vectorize writes an .svg): it can be zoomed much
   // further - it stays sharp - and downloads as an editable .svg
-  const isSvg = !image.failed && (/\.svg(\?|#|$)/i.test(image.imageUrl) || image.model === "recraft-vectorize")
+  const isSvg = !image.failed && (/\.svg(\?|#|$)/i.test(image.imageUrl) || image.model === "recraft-vectorize" || image.model === "ideogram-vectorize" || image.model === "ideogram-vector")
   // Pinch zoom on the image (plus the zoom bar / wheel / drag on desktop);
   // swipe nav pauses while zoomed
   const zoom = usePinchZoom(image.imageUrl, isSvg ? 16 : 4)
@@ -12089,7 +12151,7 @@ function VideoDetailModal({
   const videoPaneRef = useRef<HTMLDivElement>(null)
   const videoElRef = useRef<HTMLVideoElement>(null)
 
-  const modelName = getModelDisplayName(video.model)
+  const modelName = videoRunName(video.model)
   const formattedDate = video.createdAt
     ? new Date(video.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : null
@@ -12353,6 +12415,7 @@ function VideoDetailModal({
                 </p>
               </div>
             )}
+            {video.inputs?.settings && <VideoRunSettings chips={videoSettingChips(video.model, video.inputs.settings)} />}
             {video.inputs ? (
               <div>
                 <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-2">Inputs</p>
@@ -21564,12 +21627,13 @@ function PromptBox({
           )}
 
           {/* One-image tools with nothing to set: say what they do */}
-          {(model.id === "pixelcut-bg-removal" || model.id === "recraft-vectorize" || model.id === "seedream-5-pro-layerize" || model.id === "seedream-5-flash-layerize" || model.id === "marigold-v2") && (
+          {(model.id === "pixelcut-bg-removal" || model.id === "recraft-vectorize" || model.id === "ideogram-vectorize" || model.id === "seedream-5-pro-layerize" || model.id === "seedream-5-flash-layerize" || model.id === "marigold-v2") && (
             <div className="px-4 py-3 border-t border-white/[0.06] flex items-start gap-2">
-              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0 mt-0.5">{model.id === "pixelcut-bg-removal" ? "Cut-out" : model.id === "recraft-vectorize" ? "SVG" : model.id.includes("layerize") ? "Layers" : "Depth"}</span>
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider shrink-0 mt-0.5">{model.id === "pixelcut-bg-removal" ? "Cut-out" : model.id === "recraft-vectorize" || model.id === "ideogram-vectorize" ? "SVG" : model.id.includes("layerize") ? "Layers" : "Depth"}</span>
               <p className="text-[11px] text-slate-500 leading-relaxed">{
                 model.id === "pixelcut-bg-removal" ? "Removes the background and keeps the subject on transparency (PNG). No settings - pick a photo and generate."
                 : model.id === "recraft-vectorize" ? "Turns a logo or flat graphic into a scalable SVG. Works best on clean shapes and few colours."
+                : model.id === "ideogram-vectorize" ? "Traces a picture into an editable SVG. Default keeps finer detail; Simple uses fewer, cleaner shapes."
                 : model.id.includes("layerize") ? `Splits the image into a background plate and a transparent layer per object, saved as one card - switch layers in its viewer.${model.id.includes("flash") ? " Flash: faster and cheaper." : ""}`
                 : "A depth map of the photo: near is warm, far is cool. Useful for parallax, depth of field and relighting."
               }</p>
@@ -22136,6 +22200,26 @@ function PromptBox({
                       }`}
                     >
                       {f}x
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* Ideogram Vectorize's mode, carried as the tool's quality (lib/fal-image-models) */}
+            {model.id === "ideogram-vectorize" && (
+              <>
+                <div className="w-px h-3 bg-white/10 shrink-0 hidden sm:block" />
+                <div className="flex items-center rounded-md overflow-hidden border border-white/10 shrink-0" title="Default keeps finer detail; Simple uses fewer, cleaner shapes">
+                  {(["default", "simple"] as Quality[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setQuality(m)}
+                      className={`px-2.5 py-1 text-[11px] font-mono capitalize transition-colors ${
+                        (quality === "simple" ? "simple" : "default") === m ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
+                      }`}
+                    >
+                      {m}
                     </button>
                   ))}
                 </div>
@@ -23620,17 +23704,38 @@ function SD20RefPanel({
   )
 }
 
+/** A run's Advanced settings in its popup (only the ones changed from the defaults) */
+function VideoRunSettings({ chips }: { chips: { label: string; value: string }[] }) {
+  if (!chips.length) return null
+  return (
+    <div>
+      <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-1.5">Advanced</p>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map(c => (
+          <span key={c.label} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300 text-[11px] font-mono">
+            <span className="text-slate-500">{c.label}</span>{c.value}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /**
  * A model's advanced settings (2026-10-22, owner: "add all of the options for
  * this model's configuration"), drawn from its lib/video-advanced list and
- * folded away by default. Only what was changed is sent; the rest runs on
- * fal's defaults, which each control shows until it is touched.
+ * folded away by default. Only what was changed is sent; the server fills in
+ * the rest (fal's defaults, or the site's own where a knob has falDefault),
+ * which each control shows until it is touched.
  */
-function VideoAdvancedSettings({ knobs, values, onChange }: {
+function VideoAdvancedSettings({ knobs: allKnobs, values, onChange, isAdmin }: {
   knobs: VideoKnob[]
   values: Record<string, string | number | boolean>
   onChange: (v: Record<string, string | number | boolean>) => void
+  /** Shows the admin-only knobs (a safety checker fal runs by default) */
+  isAdmin?: boolean
 }) {
+  const knobs = allKnobs.filter(k => !k.adminOnly || isAdmin)
   const changed = knobs.filter(k => values[k.key] !== undefined).length
   const [open, setOpen] = useState(changed > 0)
   const set = (key: string, v: string | number | boolean | undefined) => {
@@ -23648,7 +23753,7 @@ function VideoAdvancedSettings({ knobs, values, onChange }: {
         <button type="button" onClick={() => setOpen(o => !o)} className="flex flex-1 items-center gap-1.5 text-left">
           <ChevronDown size={13} className={cn("text-slate-400 transition-transform", !open && "-rotate-90")} />
           <span className={label}>Advanced</span>
-          <span className={cn("text-[10px]", changed ? "text-slate-300" : "text-slate-600")}>{changed ? `${changed} changed` : "fal's defaults"}</span>
+          <span className={cn("text-[10px]", changed ? "text-slate-300" : "text-slate-600")}>{changed ? `${changed} changed` : "defaults"}</span>
         </button>
         {changed > 0 && (
           <button type="button" onClick={() => onChange({})} className="text-[10px] text-slate-400 hover:text-white">Reset</button>
@@ -23660,7 +23765,7 @@ function VideoAdvancedSettings({ knobs, values, onChange }: {
             const v = values[k.key]
             return (
               <div key={k.key} className="space-y-1.5">
-                <p className={label}>{k.label} {k.note && <span className={note}>({k.note})</span>}</p>
+                <p className={cn(label, k.adminOnly && "flex flex-wrap items-center gap-1.5")}>{k.label} {k.note && <span className={note}>({k.note})</span>}{k.adminOnly && <AdminTag />}</p>
                 {k.kind === "select" && (
                   <div className={cn("grid gap-1.5", k.options.length > 3 ? "grid-cols-4" : "grid-cols-3")}>
                     {k.options.map(o => (
@@ -23849,7 +23954,7 @@ function VideoCustomizationPanel({
   onLumaModeChange?: (mode: string) => void
   choiceValue?: string
   onChoiceChange?: (v: string) => void
-  /** The model's Advanced settings (lib/video-advanced), as set - unset ones run on fal's defaults. */
+  /** The model's Advanced settings (lib/video-advanced), as set - unset ones run on the defaults. */
   advanced?: Record<string, string | number | boolean>
   onAdvancedChange?: (v: Record<string, string | number | boolean>) => void
   /** The prompt box's text (HeyGen Avatar 4 is priced by how long the script takes to say). */
@@ -24517,7 +24622,7 @@ function VideoCustomizationPanel({
 
           {/* The model's own advanced settings (lib/video-advanced - Wan 2.2 Animate) */}
           {VIDEO_ADVANCED_KNOBS[model.id] && onAdvancedChange && (
-            <VideoAdvancedSettings knobs={VIDEO_ADVANCED_KNOBS[model.id]} values={advanced ?? {}} onChange={onAdvancedChange} />
+            <VideoAdvancedSettings knobs={VIDEO_ADVANCED_KNOBS[model.id]} values={advanced ?? {}} onChange={onAdvancedChange} isAdmin={isAdminAccount} />
           )}
 
           {/* H3 Max Insert Shot: the new shot replaces the source from "start" to "resume" */}
@@ -28801,12 +28906,16 @@ export default function PortalV2Page() {
     const slotId = `video-${Date.now()}`
     const startedAt = Date.now()
     const m = selectedVideoModel
+    // Wan 2.2 Animate's Move mode runs (and is saved) as its own model id
+    const runModelId = m.id === "wan-2.2-animate-replace" && videoChoice === "move" ? "wan-2.2-animate-move" : m.id
+    // A clip tool has no length picker: its video is as long as its source clip
+    const runDuration = !m.durations.length && videoToolSourceSec > 0 ? String(Math.max(1, Math.round(videoToolSourceSec))) : videoDuration
     const chosenAr = m.aspectRatios?.length && videoAspectRatio && videoAspectRatio !== "auto" ? videoAspectRatio : undefined
     const shapeFrom: { url: string; kind: "image" | "video" } | { ar: string } | null =
       m.id === "kling-v3-motion"
         ? (videoCharacterOrientation === "video" && videoMotionVideoUrl ? { url: videoMotionVideoUrl, kind: "video" } : videoStartFrameUrl ? { url: videoStartFrameUrl, kind: "image" } : null)
       : m.id === "lucy-edit-pro" ? { ar: "16:9" }
-      : m.id === "dreamactor-v2" ? (sdRefImageUrls[0] ? { url: sdRefImageUrls[0], kind: "image" } : null)
+      : m.id === "dreamactor-v2" || runModelId === "wan-2.2-animate-move" ? (sdRefImageUrls[0] ? { url: sdRefImageUrls[0], kind: "image" } : null)
       : sdMode === "edit" && sdEditVideoUrl ? (chosenAr ? { ar: chosenAr } : { url: sdEditVideoUrl, kind: "video" })
       : isLipsync ? null
       : sdImageUrl && sdMode !== "r2v" ? { url: sdImageUrl, kind: "image" }
@@ -28821,7 +28930,7 @@ export default function PortalV2Page() {
       duration:             videoDuration,
       resolution:           videoResolution,
       klingAspectRatio:     videoAspectRatio,
-      model:                selectedVideoModel.id,
+      model:                runModelId,
       sd20Mode:             sdMode,
       generateAudio:        videoAudioEnabled,
       audioUrl:             videoAudioUrl || undefined,
@@ -28885,7 +28994,7 @@ export default function PortalV2Page() {
     setVideoPendingSlots(prev => [{
       inputs: sentInputs,
       slotId, requestId: "", falEndpoint: "", submitting: true,
-      prompt: promptText, model: m.id, duration: videoDuration, resolution: videoResolution, ticketCost: 0, startedAt,
+      prompt: promptText, model: runModelId, duration: runDuration, resolution: videoResolution, ticketCost: 0, startedAt,
       aspectRatio: isLipsync ? videoLipsyncAspectRatio : (videoAspectRatio || undefined),
       startFrameUrl: videoStartFrameUrl || undefined, endFrameUrl: videoEndFrameUrl || undefined,
       ...(expectedAspect ? { expectedAspect } : {}),
@@ -28916,7 +29025,8 @@ export default function PortalV2Page() {
        */
       let data: any
       try {
-        const res = await fetch(isHiggsfieldModel(selectedVideoModel.id) ? "/api/admin/higgsfield/video-submit" : "/api/video/generate", submitInit(reqBody))
+        const res = await fetch(isHiggsfieldModel(selectedVideoModel.id) ? "/api/admin/higgsfield/video-submit"
+          : isRunpodModel(selectedVideoModel.id) ? "/api/admin/runpod/video-submit" : "/api/video/generate", submitInit(reqBody))
         data = await res.json()
       } catch (lost) {
         console.warn("Video submit got no answer - looking for its job:", lost)
@@ -28970,8 +29080,8 @@ export default function PortalV2Page() {
       const slotBase = {
         slotId,
         prompt:               promptText,
-        model:                selectedVideoModel.id,
-        duration:             data.duration || videoDuration,
+        model:                runModelId,
+        duration:             !m.durations.length ? runDuration : (data.duration || videoDuration),
         resolution:           videoResolution,
         ticketCost:           data.ticketCost,
         startedAt,
@@ -29025,7 +29135,7 @@ export default function PortalV2Page() {
       clearTimeout(freeButton)
       setVideoGenerating(false)
     }
-  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec, videoInsertTimes])
+  }, [videoStartFrameUrl, videoEndFrameUrl, videoDuration, videoResolution, videoAspectRatio, videoAudioEnabled, videoAudioUrl, selectedVideoModel, videoMotionVideoUrl, videoCharacterOrientation, videoKeepOriginalSound, videoMotionVideoDuration, videoSD20Mode, videoRefImageUrls, videoRefVideoUrls, videoRefAudioUrls, videoRefVideoDuration, videoRefStartIdx, videoRefEndIdx, videoLipsyncVideoUrl, videoLipsyncAudioUrl, videoLipsyncSyncMode, videoLipsyncVideoDuration, wan25VideoSafetyChecker, seedance15VideoSafetyChecker, wan27VideoSafetyChecker, h3MaxVideoSafetyChecker, flux3VideoSafetyChecker, wan30VideoSafetyChecker, videoLtxFps, videoLumaMode, videoChoice, videoEditSourceUrl, videoEditSourceDuration, videoToolSourceSec, videoInsertTimes, videoAdvanced])
 
   // Whatever filled it (a restored draft, a Ref switched on), a clip tool's
   // picture slot never holds more than the model takes
@@ -29042,7 +29152,9 @@ export default function PortalV2Page() {
     // Omni Flash defaults to 8s, Wan 2.7 to 5s (their API defaults) — durations[0] would seed the minimum
     setVideoDuration(model.id === "gemini-omni-flash" ? "8" : model.id === "wan-2.7" ? "5" : model.durations[0] ?? "5")
     setVideoAspectRatio(model.aspectRatios?.[0] ?? "16:9")
-    setVideoResolution(model.id === "pixelcut-looping-video" ? "1080p" : model.resolutions?.[1] ?? "1080p")
+    // Wan 2.2 Animate opens on 720p - its sharpest, and the least warping on faces
+    // MoCha opens on 480p - the size it was trained at
+    setVideoResolution(model.id === "pixelcut-looping-video" ? "1080p" : model.id.startsWith("wan-2.2-animate") ? "720p" : model.id === "runpod-mocha" ? "480p" : model.resolutions?.[1] ?? "1080p")
     setVideoChoice(model.choice?.options[0]?.value ?? "")
     // A tool's knobs start on its defaults (2x - or the model's own - fal's 60 fps, its first creativity)
     setVideoToolFactor(model.upscaleDefault ?? (model.upscaleFactors?.includes("2") ? "2" : model.upscaleFactors?.[0] ?? "2"))
@@ -29176,8 +29288,11 @@ export default function PortalV2Page() {
   // applyVideoModel, which deliberately clears uploads on a model switch.
   const applyVideoDraft = useCallback((d: Record<string, unknown>) => {
     if (!d || typeof d !== "object") return
-    const model = VIDEO_MODEL_CONFIGS.find(m => m.id === d.modelId)
+    // A draft saved on the old separate Move entry opens Wan 2.2 Animate on Move
+    const wasMove = d.modelId === "wan-2.2-animate-move"
+    const model = VIDEO_MODEL_CONFIGS.find(m => m.id === (wasMove ? "wan-2.2-animate-replace" : d.modelId))
     if (model) setSelectedVideoModel(model)
+    if (wasMove) setVideoChoice("move")
     const str = (k: string, fb = "") => typeof d[k] === "string" ? d[k] as string : fb
     const arr = (k: string) => Array.isArray(d[k]) ? d[k] as string[] : []
     const num = (k: string) => typeof d[k] === "number" ? d[k] as number : 0
@@ -29254,7 +29369,8 @@ export default function PortalV2Page() {
   const rescanSeq = useRef(0)
   const rescanVideo = useCallback((vid: VideoDetailData) => {
     setScannerMode("video")
-    const model = VIDEO_MODEL_CONFIGS.find(m => m.id === vid.model)
+    // A Move run reopens Wan 2.2 Animate, on Move (set below)
+    const model = VIDEO_MODEL_CONFIGS.find(m => m.id === (vid.model === "wan-2.2-animate-move" ? "wan-2.2-animate-replace" : vid.model))
     if (!model) { setVideoPromptOverride(prev => ({ text: vid.prompt, version: prev.version + 1 })); return }
     const snap = vid.inputs?.rescan
     const d: Record<string, unknown> = snap && snap.modelId === model.id ? { ...snap } : videoRescanFromRecord(vid, model)
@@ -29287,6 +29403,7 @@ export default function PortalV2Page() {
     if (ltx) setVideoLtxFps(ltx)
     if (luma) setVideoLumaMode(luma)
     if (choice && model.choice?.options.some(o => o.value === choice)) setVideoChoice(choice)
+    if (vid.model === "wan-2.2-animate-move") setVideoChoice("move")
     if (factor) setVideoToolFactor(factor)
     if (creativity) setVideoToolCreativity(creativity)
     if (fps) setVideoToolTargetFps(fps)
@@ -29299,7 +29416,7 @@ export default function PortalV2Page() {
     if (typeof safety.wan30 === "boolean") setWan30VideoSafetyChecker(safety.wan30)
     if (model.klingElements) restoreKlingElements(Array.isArray(d.klingElements) ? (d.klingElements as { frontal: string; views: string[] }[]).filter(e => typeof e?.frontal === "string") : [])
     if (model.murekaSong && typeof d.murekaSongId === "number") pickMurekaSong(d.murekaSongId)
-    // Its Advanced settings, as they were (none recorded = fal's defaults)
+    // Its Advanced settings, as they were (none recorded = the defaults)
     if (VIDEO_ADVANCED_KNOBS[model.id]) {
       const adv = d.advanced && typeof d.advanced === "object" ? d.advanced as Record<string, string | number | boolean> : {}
       setVideoAdvanced(prev => ({ ...prev, [model.id]: adv }))
@@ -33749,6 +33866,7 @@ function employeePending(
           startFrameUrl={videoPendingDetail.startFrameUrl}
           endFrameUrl={videoPendingDetail.endFrameUrl}
           inputGroups={videoPendingDetail.studio ? undefined : videoInputGroups(videoPendingDetail.model, videoPendingDetail.inputs, videoPendingDetail)}
+          runSettings={videoSettingChips(videoPendingDetail.model, videoPendingDetail.inputs?.settings)}
           isQueued={!!(videoPendingDetail.queueJobId && !videoPendingDetail.requestId)}
           onClose={() => setVideoPendingDetail(null)}
           onUsePrompt={(text) => { handleUsePrompt(text); setVideoPendingDetail(null) }}
