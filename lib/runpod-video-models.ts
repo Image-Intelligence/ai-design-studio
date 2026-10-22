@@ -68,11 +68,42 @@ export const RUNPOD_MAX_SOURCE_SEC: Record<RunpodVideoModelId, number> = {
   'runpod-h3-swap': 60,
 }
 
-export function runpodVideoTicketCost(model: string, o: { resolution?: string }): number {
-  if (model === 'runpod-mocha') return o.resolution === '720p' ? 20 : 8
-  // ~$0.05 of NanoBanana repaint, then a 1-3 minute render on an 80 GB card ($2.72/h)
-  if (model === 'runpod-viggle') return 10
-  // Windowed 124-frame passes: a 15s clip is ~4 windows on an 80 GB card
-  if (model === 'runpod-h3-swap') return o.resolution === '480p' ? 15 : 25
+/*
+ * Prices (2026-10-22, from the first real runs): tickets = GPU cost / $0.04,
+ * so a ticket sold at $0.08 keeps half (the site's floor).
+ *  - RunPod bills a worker's whole life, not just the render: boot plus the
+ *    endpoint's 240 s idle timeout comes to ~300 billed seconds per run on its
+ *    own (a run every few minutes shares one worker and pays it once).
+ *  - mocha endpoint (RTX PRO 6000): $2.12 for 2,189 billed seconds on its first
+ *    day = $0.00097/s. MoCha 480p Fast measured 155 s of render for 81 frames.
+ *  - h3-swap endpoint (80 GB H100 / RTX PRO 6000): priced at $0.0012/s.
+ *    Viggle rendered in ~4 min; H3 Character Swap is not measured yet (an
+ *    estimate from its 124-frame windows) - re-measure before it goes public.
+ */
+const RP_OVERHEAD_S = 300
+const MOCHA_USD_PER_S = 0.00097
+const H3_USD_PER_S = 0.0012
+const toTickets = (usd: number) => Math.max(1, Math.ceil(usd / 0.04))
+
+export function runpodVideoTicketCost(model: string, o: { resolution?: string; choice?: string; sourceSec?: number }): number {
+  if (model === 'runpod-mocha') {
+    // Render seconds for the default 81 frames: 480p Fast measured; 720p ~2.8x
+    // (2.3x the pixels); Full is 30 sampling steps to Fast's 6 (~4.2x)
+    const fast = o.resolution === '720p' ? 440 : 165
+    const render = o.choice === 'full' ? fast * 4.2 : fast
+    return toTickets((RP_OVERHEAD_S + render) * MOCHA_USD_PER_S)
+  }
+  // The seconds of the clip each renders (the panel's default length when the clip is longer)
+  if (model === 'runpod-viggle') {
+    // ~40 s of render per clip second (480-class), plus ~$0.08 of NanoBanana repaint
+    const sec = Math.min(15, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10)
+    return toTickets((RP_OVERHEAD_S + 40 * Math.max(5.2, sec)) * H3_USD_PER_S + 0.08)
+  }
+  if (model === 'runpod-h3-swap') {
+    // ~60 s of render per clip second at 768p, ~25 at 480p (estimate), plus ~$0.01 of SAM
+    const sec = Math.min(30, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 15)
+    const perSec = o.resolution === '480p' ? 25 : 60
+    return toTickets((RP_OVERHEAD_S + perSec * sec) * H3_USD_PER_S + 0.01)
+  }
   return 1
 }

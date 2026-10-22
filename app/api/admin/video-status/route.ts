@@ -68,13 +68,6 @@ export async function POST(req: Request) {
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
 
     if (status.status === 'COMPLETED') {
-      // Idempotency guard: if the GenerationQueue entry is already 'completed', a previous poll
-      // already saved this video to DB. Return the result without creating a duplicate row.
-      const existingJob = await prisma.generationQueue.findFirst({
-        where: { falRequestId: requestId, status: 'completed' },
-        select: { id: true },
-      })
-
       // A finished job whose result IS an error is final (2026-10-22: Wan VACE
       // Edit runs that crashed at fal answer COMPLETED, then 500 "Internal Server
       // Error" for the result - read as a network blip, the tile polled on for
@@ -101,21 +94,15 @@ export async function POST(req: Request) {
         return jsonPrivate({ status: 'failed', error: 'No video URL in FAL result' })
       }
 
-      if (existingJob) {
-        // Already processed — skip DB save to prevent duplicate.
+      // Saved exactly once (lib/video-save-guard): fal's file has to answer,
+      // then one call claims the job and only that call downloads and saves
+      const claim = await (await import('@/lib/video-save-guard')).claimVideoSave(requestId, falVideoUrl)
+      if (claim.kind === 'saved') {
         console.log(`⚡ Video already saved [${requestId}] — returning cached result`)
-        let cachedVideoId: number | null = null
-        let cachedVideoUrl = falVideoUrl
-        try {
-          const saved = await prisma.generatedImage.findFirst({
-            where: { falRequestId: requestId },
-            select: { id: true, imageUrl: true },
-            orderBy: { id: 'desc' },
-          })
-          if (saved) { cachedVideoId = saved.id; cachedVideoUrl = saved.imageUrl }
-        } catch {}
-        return jsonPrivate({ status: 'completed', videoUrl: cachedVideoUrl, videoId: cachedVideoId, draft: !!draftId })
+        return jsonPrivate({ status: 'completed', videoUrl: claim.imageUrl, videoId: claim.id, draft: !!draftId })
       }
+      if (claim.kind === 'wait') return jsonPrivate({ status: 'in_progress' })
+      if (claim.kind === 'failed') return jsonPrivate({ status: 'failed', error: claim.error })
 
       console.log(`✓ Video generation completed [${requestId}] model=${model} duration=${duration} url=${falVideoUrl}`)
 
@@ -128,7 +115,8 @@ export async function POST(req: Request) {
       // Upload video to Vercel Blob for permanent storage (FAL URLs expire after ~24–48h)
       let permanentVideoUrl = falVideoUrl
       try {
-        const videoRes = await fetchMedia(falVideoUrl)
+        // Bounded: a hung download used to hold every poll at once
+        const videoRes = await fetchMedia(falVideoUrl, { signal: AbortSignal.timeout(240_000) })
         if (videoRes.ok) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'
@@ -176,9 +164,8 @@ export async function POST(req: Request) {
         if (!sessionUser) {
           console.error('Admin video-status: no session user — skipping DB save')
         } else {
-          // Queue time for the feed's ordering key. existingJob above is the
-          // completed-dedupe probe (null here by definition), so ask for the
-          // row itself: completion order is not the order things were asked for.
+          // Queue time for the feed's ordering key: completion order is not
+          // the order things were asked for.
           const queueRow = await prisma.generationQueue.findFirst({
             where: { falRequestId: requestId },
             select: { createdAt: true, parameters: true },
@@ -237,7 +224,7 @@ export async function POST(req: Request) {
         console.error('Admin video-status: failed to save to DB (non-fatal):', dbErr)
       }
 
-      await releaseQueueSlot(requestId, false)
+      // (The job was settled by the claim above)
       // draft: the session tile marks itself a draft so its viewer offers "Complete in 1080p"
       return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId, duration: savedDuration, ...(framesZip ? { framesZipUrl: framesZip.url } : {}) })
 

@@ -117,13 +117,17 @@ export async function POST(req: Request) {
         input = { action: 'viggle', video: runpodMedia(clip), ref: { url: repaint.repaintUrl }, max_seconds: maxSeconds }
       } else {
         resolution = b.resolution === '480p' ? '480p' : '768p'
-        input = { action: 'h3-swap', video: runpodMedia(clip), ref: runpodMedia(images[0]), resolution: resolution === '480p' ? '480' : '768', max_seconds: maxSeconds }
+        // SAM's word for who gets swapped (the worker's Relay graph asks for
+        // "person" - see firstMatchingSubject); left to the worker if this fails
+        const subject = await (await import('@/lib/vace-mask')).firstMatchingSubject(clip, ['person', 'figure']).catch(() => null)
+        input = { action: 'h3-swap', video: runpodMedia(clip), ref: runpodMedia(images[0]), resolution: resolution === '480p' ? '480' : '768', max_seconds: maxSeconds, ...(subject ? { subject } : {}) }
       }
       input.keep_audio = settings.keep_audio !== false
       if (typeof settings.seed === 'number') input.seed = settings.seed
     }
 
-    const listTickets = runpodVideoTicketCost(model, { resolution })
+    // By GPU time (lib/runpod-video-models): MoCha's quality, the seconds the H3 pair renders
+    const listTickets = runpodVideoTicketCost(model, { resolution, choice: typeof b.videoChoice === 'string' ? b.videoChoice : undefined, sourceSec: Number(duration) })
     const charge = isAdmin ? 0 : listTickets
     if (charge > 0) {
       const paid = await deductGenerationTickets(user.id, user.email, charge)

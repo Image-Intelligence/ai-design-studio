@@ -75,8 +75,14 @@ export async function syncAndClaimFalSlot(): Promise<{ claimed: boolean; maxConc
  *
  * Uses `updateMany` with a `status: 'processing'` guard so concurrent poll calls
  * can't double-decrement.
+ *
+ * Resolves true for the one call that settled the job, false when it was
+ * already settled - the video status routes call it just before they save,
+ * so only that one call saves (2026-10-22: five polls waiting on one slow fal
+ * download each saved the same Wan Animate video).
  */
-export async function releaseQueueSlot(falRequestId: string, failed: boolean, errorMessage?: string): Promise<void> {
+export async function releaseQueueSlot(falRequestId: string, failed: boolean, errorMessage?: string): Promise<boolean> {
+  let claimed = false
   try {
     const updated = await prisma.generationQueue.updateMany({
       where: { falRequestId, status: 'processing' },
@@ -89,8 +95,9 @@ export async function releaseQueueSlot(falRequestId: string, failed: boolean, er
 
     if (updated.count === 0) {
       // Already settled (e.g., duplicate poll call) — nothing to do
-      return
+      return false
     }
+    claimed = true
 
     // Server-authoritative ticket refund on failure. Because the status flip
     // above is guarded by `status: 'processing'`, exactly one poll call reaches
@@ -131,4 +138,5 @@ export async function releaseQueueSlot(falRequestId: string, failed: boolean, er
   } catch (err) {
     console.error('[admin-queue-helpers] releaseQueueSlot error:', err)
   }
+  return claimed
 }

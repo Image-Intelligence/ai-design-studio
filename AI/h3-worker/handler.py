@@ -58,7 +58,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v2'
+HANDLER_VERSION = '2026-10-22-v3'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_MODELS = os.path.join(COMFY_DIR, 'models')
@@ -315,12 +315,22 @@ def run_prompt(graph, job):
 
 
 def output_video(outputs):
-    """The first video file any output node saved (SaveVideo reports it like an image)."""
-    for out in outputs.values():
+    """
+    The video the workflow SAVED: an output node's file of type "output", the
+    "save" node's first. LoadVideo reports its INPUT clip in the same shape
+    (type "input") - Viggle's first run took that and asked for
+    comfy-output/<job>-drive.mp4, which never exists (2026-10-22).
+    """
+    for node_id in sorted(outputs, key=lambda n: n != 'save'):
+        out = outputs[node_id] or {}
         for k in ('images', 'videos', 'gifs', 'animated'):
             for f in out.get(k) or []:
-                if isinstance(f, dict) and str(f.get('filename', '')).lower().endswith(('.mp4', '.webm', '.mkv')):
-                    return os.path.join(COMFY_OUT, f.get('subfolder') or '', f['filename'])
+                if not isinstance(f, dict) or (f.get('type') or 'output') != 'output':
+                    continue
+                if str(f.get('filename', '')).lower().endswith(('.mp4', '.webm', '.mkv')):
+                    path = os.path.join(COMFY_OUT, f.get('subfolder') or '', f['filename'])
+                    if os.path.isfile(path):
+                        return path
     found = sorted(glob.glob(os.path.join(COMFY_OUT, '**', '*.mp4'), recursive=True), key=os.path.getmtime)
     if found:
         return found[-1]
@@ -463,6 +473,11 @@ def swap_job(inp, job, work, jid):
         im.convert('RGB').save(os.path.join(COMFY_IN, ref_name))
     seed = int(inp['seed']) if str(inp.get('seed', '')).strip().isdigit() else random.randint(0, 2**31 - 1)
     graph = wf.character_swap_graph()
+    # What SAM looks for: Relay asks for "person"; the site sends "figure" when
+    # SAM finds no person in the first frame (a mannequin, a statue)
+    subject = str(inp.get('subject') or '').strip()
+    if subject and 'subject' in graph:
+        graph['subject']['inputs']['text'] = subject[:60]
     graph['source']['inputs']['file'] = source_name
     graph['reference']['inputs']['image'] = ref_name
     graph['prepare']['inputs']['resolution'] = '480' if str(inp.get('resolution')) == '480' else '768'

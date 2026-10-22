@@ -906,11 +906,21 @@ export async function POST(request: NextRequest) {
         choice: typeof videoChoice === 'string' ? videoChoice : undefined,
       });
     } else if (BATCH_1007_TOOLS.has(model) || BATCH_1007_GENERATORS.has(model)) {
-      // Wan VACE Edit: the subject's first-frame mask, made here (lib/vace-mask)
+      // Wan VACE Edit: its clip and mask, made here (lib/vace-mask vacePrepare -
+      // the subject greyed out and masked in blocks, frame by frame), or (if
+      // that fails) the untouched clip and the subject's first-frame outline
       let maskImageUrl: string | undefined
+      let maskVideoUrl: string | undefined
+      let vaceVideoUrl = editVideoUrl
       if (model === 'wan-vace-edit' && editVideoUrl) {
         const subject = typeof videoChoice === 'string' ? videoChoice : 'person'
-        const mask = await (await import('@/lib/vace-mask')).vaceSubjectMask(editVideoUrl, subject).catch((e: any) => {
+        const vm = await import('@/lib/vace-mask')
+        const prepared = await vm.vacePrepare(editVideoUrl, subject).catch((e: any) => {
+          console.error('[wan-vace] clip preparation failed:', e?.message || e)
+          return null
+        })
+        if (prepared) { maskVideoUrl = prepared.maskVideoUrl; vaceVideoUrl = prepared.videoUrl }
+        const mask = maskVideoUrl ? maskVideoUrl : await vm.vaceSubjectMask(editVideoUrl, subject).catch((e: any) => {
           console.error('[wan-vace] mask failed:', e?.message || e)
           return null
         })
@@ -924,12 +934,12 @@ export async function POST(request: NextRequest) {
           }
           return NextResponse.json({ success: false, error: `Couldn't find a ${subject} in the clip's first frame - start the clip on a clear shot of it.` }, { status: 400 })
         }
-        maskImageUrl = mask
+        if (!maskVideoUrl) maskImageUrl = mask
       }
       // lib/batch-1007-video builds the exact input (inputs checked above)
       falInput = batch1007Input(model, {
-        maskImageUrl,
-        prompt, imageUrl, editVideoUrl,
+        maskImageUrl, maskVideoUrl,
+        prompt, imageUrl, editVideoUrl: vaceVideoUrl,
         referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls as string[] : [],
         duration, resolution, aspectRatio: klingAspectRatio, effectiveMode: effectiveSd20Mode, generateAudio,
         sourceWidth: probed?.width, sourceHeight: probed?.height,

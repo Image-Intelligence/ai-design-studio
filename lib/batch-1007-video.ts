@@ -42,8 +42,9 @@ export const BATCH_1007_MAX_SEC: Record<string, number> = {
   'minimax-h3-max-reframe': 15,
   // Kling 4.0 Edit: fal's 3-30s
   'kling-v4-edit': 30,
-  // Wan VACE Video Edit: ~241 frames after fal's downsampling - held to 15s
-  'wan-vace-edit': 15,
+  // Wan VACE Video Edit: fal renders at most 241 frames - a 14.9s clip came
+  // back as 10.00s (2026-10-22) - so 10s, at up to 24 fps (lib/vace-mask)
+  'wan-vace-edit': 10,
 }
 /**
  * Promoted after a priced, end-to-end run through the portal UI: all five,
@@ -187,8 +188,10 @@ export interface Batch1007Params {
   referenceAudioUrls?: string[]
   /** A tool's picker (Wan VACE Edit: what to replace). */
   choice?: string
-  /** Wan VACE Edit: the subject's first-frame mask (lib/vace-mask). */
+  /** Wan VACE Edit: the subject's first-frame mask (lib/vace-mask) - the fallback when there is no mask video. */
   maskImageUrl?: string
+  /** Wan VACE Edit: the subject's blocks, frame by frame (lib/vace-mask vacePrepare - editVideoUrl is then its greyed clip). */
+  maskVideoUrl?: string
   klingElements?: unknown
   /** The model's Advanced settings, already cleaned (lib/video-advanced cleanVideoAdvanced). */
   advanced?: Record<string, string | number | boolean>
@@ -324,7 +327,8 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
       // whole clip at its own length and frame rate (fal downsamples it to
       // fit and interpolates back)
       return {
-        prompt: prompt.slice(0, 2000), video_url: p.editVideoUrl, mask_image_url: p.maskImageUrl,
+        prompt: prompt.slice(0, 2000), video_url: p.editVideoUrl,
+        ...(p.maskVideoUrl ? { mask_video_url: p.maskVideoUrl } : { mask_image_url: p.maskImageUrl }),
         ...(refs.length ? { ref_image_urls: refs.slice(0, 4) } : {}),
         resolution: pick(['480p', '580p', '720p'], res, '720p'),
         match_input_num_frames: true, match_input_frames_per_second: true, enable_auto_downsample: true,

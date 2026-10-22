@@ -112,30 +112,34 @@ export async function POST(request: NextRequest) {
       }
 
       const actualPrompt = result.data?.actual_prompt || prompt;
+
+      // Saved exactly once (lib/video-save-guard): fal's file has to answer,
+      // then one call claims the job and only that call downloads and saves.
+      // (This route is the cron's and the jobs poll's - it had only a check up
+      // front, so polls waiting on one slow download each saved a row.)
+      const claim = await (await import('@/lib/video-save-guard')).claimVideoSave(requestId, falVideoUrl)
+      if (claim.kind === 'saved') {
+        console.log(`↩ Video already saved [${requestId}] returning existing record ${claim.id}`)
+        return jsonPrivate({
+          status: 'completed',
+          videoUrl: claim.imageUrl,
+          thumbnailUrl: claim.imageUrl,
+          videoId: claim.id,
+          actualPrompt,
+        })
+      }
+      if (claim.kind === 'wait') return jsonPrivate({ status: 'in_progress' })
+      if (claim.kind === 'failed') return jsonPrivate({ status: 'failed', error: claim.error })
+
       // Its real length, measured (a clip tool's request carries no length - the cron sends none at all)
       const measuredSec = (await (await import('@/lib/video-probe')).probeRemoteVideo(falVideoUrl).catch(() => null))?.seconds
       const savedDuration = measuredSec && measuredSec > 0 ? String(Math.max(1, Math.round(measuredSec))) : (duration || '5')
 
-      // Idempotency: if this requestId was already saved, return the existing record
-      const existingVideo = await prisma.generatedImage.findFirst({
-        where: { falRequestId: requestId },
-        select: { id: true, imageUrl: true },
-      })
-      if (existingVideo) {
-        console.log(`↩ Video already saved [${requestId}] returning existing record ${existingVideo.id}`)
-        return jsonPrivate({
-          status: 'completed',
-          videoUrl: existingVideo.imageUrl,
-          thumbnailUrl: existingVideo.imageUrl,
-          videoId: existingVideo.id,
-          actualPrompt,
-        })
-      }
-
       // Upload video to Vercel Blob for permanent storage (FAL URLs expire after ~24–48h)
       let permanentVideoUrl = falVideoUrl
       try {
-        const videoRes = await fetch(falVideoUrl)
+        // Bounded: a hung download used to hold every poll at once
+        const videoRes = await fetch(falVideoUrl, { signal: AbortSignal.timeout(240_000) })
         if (videoRes.ok) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'
@@ -215,11 +219,18 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Settle the GenerationQueue row (admin/video-status already does this; without
-      // it the row lingers 'processing' until the 10-min auto-failer marks a SUCCESSFUL
-      // video as failed — which would show a phantom error tile in the feed)
-      const { releaseQueueSlot } = await import('@/lib/admin-queue-helpers')
-      await releaseQueueSlot(requestId, false).catch(() => {})
+      // (The GenerationQueue row was settled by the claim above. A recovered
+      // orphan claim can still meet a twin: the lowest id wins, as in
+      // admin/video-status)
+      const first = await prisma.generatedImage.findFirst({
+        where: { falRequestId: requestId, isDeleted: false },
+        orderBy: { id: 'asc' },
+        select: { id: true, imageUrl: true },
+      }).catch(() => null)
+      if (first && first.id !== savedVideo.id) {
+        await prisma.generatedImage.delete({ where: { id: savedVideo.id } }).catch(() => {})
+        return jsonPrivate({ status: 'completed', videoUrl: first.imageUrl, thumbnailUrl: first.imageUrl, videoId: first.id, actualPrompt })
+      }
 
       return jsonPrivate({
         status: 'completed',

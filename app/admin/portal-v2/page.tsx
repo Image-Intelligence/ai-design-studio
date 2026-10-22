@@ -1585,9 +1585,9 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     supportsReferenceVideo: true, refLimits: { images: 4, videos: 2, audios: 2 }, frameTags: "start", startOnlyWhenTagged: true },
   // 2026-10-22 (admin): Wan VACE Video Edit - the clip changed in words ("replace
   // the man with the woman in the picture"); fal finds and masks the subject itself
-  { id: "wan-vace-edit", name: "Wan VACE Video Edit", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 15,
-    choice: { label: "Replace", note: "the largest one in the clip's first frame is masked and tracked", options: [{ value: "person", label: "Person" }, { value: "animal", label: "Animal" }, { value: "vehicle", label: "Vehicle" }] },
-    sourceClipImages: { max: 4, label: "References", hint: "Who or what to put in (optional) - describe them in the prompt too. Start the clip on a clear shot of the subject: its first frame is what gets masked.", required: false } },
+  { id: "wan-vace-edit", name: "Wan VACE Video Edit", durations: [], resolutions: ["480p","580p","720p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 10,
+    choice: { label: "Replace", note: "the largest one is found, tracked through the clip and painted out - your prompt and pictures fill its place", options: [{ value: "person", label: "Person" }, { value: "animal", label: "Animal" }, { value: "vehicle", label: "Vehicle" }] },
+    sourceClipImages: { max: 4, label: "References", hint: "Who or what to put in (optional) - describe them in the prompt too. The whole clip is used, up to 10 seconds (VACE renders at most 241 frames, at up to 24 fps).", required: false } },
   // Kling 4.0 Edit: the clip (@Video1, 3-30s, 700px+) edited from words, with optional pictures and elements
   { id: "kling-v4-edit", name: "Kling 4.0 Edit", durations: [], resolutions: ["720p","1080p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, toolPromptRequired: true, supportsReferenceVideo: true, sourceClipMaxSec: 30, klingElements: true,
     sourceClipImages: { max: 10, label: "Reference images (optional)", hint: "Name them @Image1… in the prompt; the clip is @Video1 (3-30s, at least 700px each way)." } },
