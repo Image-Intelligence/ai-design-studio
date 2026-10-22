@@ -54,7 +54,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v1'
+HANDLER_VERSION = '2026-10-22-v2'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_URL = 'http://127.0.0.1:8188'
@@ -140,18 +140,83 @@ def upload(path, key, content_type):
 
 # ---------------------------------------------------------------- models + ComfyUI
 
+def _volume_gb():
+    """What the weights folder holds, in GB (for error reports)."""
+    total = 0
+    for root, _, files in os.walk(MODELS_ROOT):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return round(total / 1e9, 1)
+
+
+def _clear_partials():
+    """
+    Drop what an interrupted download left on the volume: our own .part files
+    that nobody has written to for 10 minutes (a second worker's live download
+    is left alone), and hf_hub_download's old local_dir/.cache folders.
+    """
+    now = time.time()
+    for root, dirs, files in os.walk(MODELS_ROOT):
+        if '.cache' in dirs:
+            shutil.rmtree(os.path.join(root, '.cache'), ignore_errors=True)
+            dirs.remove('.cache')
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                if f.endswith('.part') and now - os.path.getmtime(p) > 600:
+                    os.remove(p)
+            except OSError:
+                pass
+
+
+def _fetch(repo, path, target):
+    """
+    One weight file straight onto the volume: streamed to a .part file and
+    renamed once it is whole, so the volume holds exactly one copy of it.
+
+    Not hf_hub_download (2026-10-22): MoCha's first job on its 40 GB volume
+    died with "Disk quota exceeded" fetching ~27 GB of weights - an
+    interrupted attempt leaves its partial download under local_dir/.cache,
+    and the newer xet client keeps a chunk cache of its own on top.
+    """
+    token = os.environ.get('HF_TOKEN')
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    part = f'{target}.{os.getpid()}.part'
+    req = urllib.request.Request(f'https://huggingface.co/{repo}/resolve/main/{path}',
+                                 headers={'Authorization': f'Bearer {token}'} if token else {})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r, open(part, 'wb') as f:
+            size = int(r.headers.get('content-length') or 0)
+            shutil.copyfileobj(r, f, 16 << 20)
+        if size and os.path.getsize(part) != size:
+            raise RuntimeError(f'{path}: got {os.path.getsize(part)} of {size} bytes')
+        os.replace(part, target)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+
+
 def ensure_models():
     """Download whatever weights the volume is missing; returns {folder: ComfyUI file name}."""
-    from huggingface_hub import hf_hub_download
     names = {}
+    missing = [(f, r, p) for f, (r, p) in MODEL_FILES.items() if not os.path.isfile(os.path.join(MODELS_ROOT, f, p))]
+    if missing:
+        _clear_partials()
+    for folder, repo, path in missing:
+        log(f'downloading {repo}/{path}')
+        t0 = time.time()
+        try:
+            _fetch(repo, path, os.path.join(MODELS_ROOT, folder, path))
+        except Exception as e:
+            raise RuntimeError(f'Downloading {path} failed with {_volume_gb()} GB on the volume: {e}') from e
+        log(f'  done in {time.time() - t0:.0f}s')
     for folder, (repo, path) in MODEL_FILES.items():
-        local_dir = os.path.join(MODELS_ROOT, folder)
-        target = os.path.join(local_dir, path)
-        if not os.path.isfile(target):
-            log(f'downloading {repo}/{path} -> {local_dir}')
-            t0 = time.time()
-            hf_hub_download(repo_id=repo, filename=path, local_dir=local_dir, token=os.environ.get('HF_TOKEN') or None)
-            log(f'  done in {time.time() - t0:.0f}s')
         names[folder] = path  # ComfyUI lists files by their path under the folder
     return names
 

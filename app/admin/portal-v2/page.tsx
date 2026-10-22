@@ -919,12 +919,19 @@ interface VideoItem {
   failError?: string
   queueRowId?: number   // server GenerationQueue row backing a failed tile
   failKey?: string      // dedupe key for optimistic vs server fails
+  /** A server-loaded fail's fal/RunPod request id: the live tile's failKey was rf-<it>, so Rows finds its column again */
+  requestId?: string
   audioEnabled?: boolean
   startFrameUrl?: string
   endFrameUrl?: string
   motionVideoUrl?: string
   keepOriginalSound?: boolean
   characterOrientation?: "image" | "video"
+}
+
+/** A video job's queue time (see VideoPendingSlot.queuedAtMs), as a session tile's createdAt. */
+function videoSlotQueuedIso(slot: { queuedAtMs?: number; startedAt?: number }): string {
+  return new Date(slot.queuedAtMs ?? slot.startedAt ?? Date.now()).toISOString()
 }
 
 /** The fields a video job starts with (VideoPendingSlot minus the fal ids). */
@@ -963,6 +970,13 @@ interface VideoPendingSlot {
   resolution?: string
   ticketCost: number
   startedAt?: number
+  /**
+   * When the job was asked for - the feed's ordering key. Saved rows are
+   * backdated to their queue row's time, so a tile sorts the same live,
+   * finished and after a reload. Unlike startedAt it never changes (a queued
+   * job's startedAt is restamped when it is promoted).
+   */
+  queuedAtMs?: number
   aspectRatio?: string
   audioEnabled?: boolean
   startFrameUrl?: string
@@ -25107,6 +25121,16 @@ function VideoFeed({
   const VIDEO_HEAD_LAYOUT_KEY = "pv2-feed-head-layout-video"
   const VIDEO_HEAD_LAYOUT_MAX = 60
   const headLayoutRef = useRef<Array<{ id: number; col: number }>>([])
+  // Rows: the columns of tiles with no saved row yet, by slot (2026-10-22).
+  // The dbId layout above only learns a video once it is saved, so a tile
+  // still generating came back from a refresh in whichever column was shortest.
+  const VIDEO_SLOT_COLS_KEY = "pv2-feed-head-slots-video"
+  const slotColsRef = useRef(new Map<string, number>())
+  const slotColsHydratedRef = useRef(false)
+  // A finished video's session tile is keyed by its fal request id, not the
+  // slot it finished in - this maps it back, so it keeps the slot's column
+  // (it was handed the shortest column instead: tiles jumped on finishing)
+  const reqToSlotRef = useRef(new Map<string, string>())
   const [, setHeadLayoutLoaded] = useState(false) // re-render once hydrated
   useEffect(() => {
     try {
@@ -25116,6 +25140,13 @@ function VideoFeed({
           !!e && typeof e.id === "number" && typeof e.col === "number")
       }
     } catch {}
+    try {
+      const c = JSON.parse(localStorage.getItem(VIDEO_SLOT_COLS_KEY) || "null")
+      if (c && typeof c === "object" && !Array.isArray(c)) {
+        for (const [k, v] of Object.entries(c)) if (typeof v === "number") slotColsRef.current.set(k, v)
+      }
+    } catch {}
+    slotColsHydratedRef.current = true
     setHeadLayoutLoaded(true)
   }, [])
 
@@ -25341,8 +25372,22 @@ function VideoFeed({
   // Pending + session tiles form a HEAD list woven into the masonry column tops with
   // sticky assignments (same stability trick as the image feed — new generations
   // never reshuffle the already-loaded body).
-  const headNodes: { weight: number; node: ReactNode; key: string; presetCol?: number }[] = []
-  const nodes: { weight: number; node: ReactNode }[] = []
+  //
+  // Every tile carries `t`, its QUEUE time, and position is that and nothing
+  // else (2026-10-22, owner: a generating MoCha tile sat second, then jumped to
+  // first on refresh). The head used to be laid out in array order - pending
+  // slots above session tiles, each in insertion order - while a reload sorts
+  // saved rows by createdAt, which is backdated to queue time. Same key live,
+  // finished and reloaded, so nothing moves.
+  type VideoFeedNode = { weight: number; node: ReactNode; key: string; presetCol?: number; t?: number }
+  const headNodes: VideoFeedNode[] = []
+  const nodes: VideoFeedNode[] = []
+  // A session tile's column identity: the slot it finished in (see reqToSlotRef)
+  const laneOf = (item: VideoItem) => reqToSlotRef.current.get(item.id) ?? item.id
+  const byQueueTime = (a: VideoFeedNode, b: VideoFeedNode) => {
+    const d = (b.t ?? Infinity) - (a.t ?? Infinity)
+    return d !== 0 ? d : naturalKeyCompare(a.key, b.key)
+  }
   const vRowsMode = fullSize && fullSizeLayout === "masonry" && masonryMode === "rows"
 
   if (!curated) {
@@ -25352,9 +25397,10 @@ function VideoFeed({
     // (a motion clip's, a source clip's, the start image's, the chosen aspect),
     // laid out exactly as that VideoTile will be - so finishing doesn't jump
     pendingSlots.forEach(slot => {
+      if (slot.requestId) reqToSlotRef.current.set(slot.requestId, slot.slotId)
       const ar = slot.expectedAspect || (slot.aspectRatio && slot.aspectRatio !== "auto" ? slot.aspectRatio : undefined)
       const queued = !!slot.queueJobId && !slot.requestId
-      headNodes.push({ weight: tileWeight(ar), key: slot.slotId, node: (
+      headNodes.push({ weight: tileWeight(ar), key: slot.slotId, t: slot.queuedAtMs ?? slot.startedAt, node: (
         <BrandLoadingTile
           key={slot.slotId}
           label={queued ? "Queued" : "Generating"}
@@ -25368,7 +25414,8 @@ function VideoFeed({
     })
 
     // Session items (new this session)
-    items.forEach(item => headNodes.push(item.failed ? { weight: W169, key: item.id, node: (
+    const itemT = (item: VideoItem) => (item.createdAt ? Date.parse(item.createdAt) || undefined : undefined)
+    items.forEach(item => headNodes.push(item.failed ? { weight: W169, key: laneOf(item), t: itemT(item), node: (
       <div
         key={item.id}
         className="relative min-w-0 w-full overflow-hidden rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
@@ -25390,7 +25437,7 @@ function VideoFeed({
         <p className="w-full text-[10px] text-red-400/80 text-center line-clamp-2 [overflow-wrap:anywhere]">{plainFailError(item.failError)}</p>
         <p className="w-full text-center text-[9px] text-slate-600 italic line-clamp-1 [overflow-wrap:anywhere]">"{item.prompt}"</p>
       </div>
-    )} : { weight: tileWeight(item.aspectRatio), key: item.id, node: (
+    )} : { weight: tileWeight(item.aspectRatio), key: laneOf(item), t: itemT(item), node: (
       <VideoTile
         key={item.id}
         natural={fullSize && !letterbox}
@@ -25450,15 +25497,30 @@ function VideoFeed({
   // rejoin the HEAD strip at their saved column (see the image feed's notes)
   const vLayout = headLayoutRef.current
   const vLayoutCols = vRowsMode ? new Map(vLayout.map(e => [e.id, e.col])) : new Map<number, number>()
+  // A failed tile's saved column: stored under its failKey while it was live
+  // (rf-<request id> or qf-<queue row>), found again from either after a reload
+  const failSlotCol = (f: VideoItem): number | undefined => {
+    if (!vRowsMode) return undefined
+    for (const k of [f.failKey, f.requestId ? `rf-${f.requestId}` : undefined]) {
+      const c = k ? slotColsRef.current.get(k) : undefined
+      if (c !== undefined) return c
+    }
+    return undefined
+  }
   // Stale-layout guard: entries older than any non-strip body item don't restore
-  const vNewestBody = bodyEntries.find(e => !(e.kind === "db" && vLayoutCols.has(e.img.id)))
+  const vNewestBody = bodyEntries.find(e => e.kind === "db" ? !vLayoutCols.has(e.img.id) : failSlotCol(e.fail) === undefined)
   const vCutoffT = vNewestBody ? vNewestBody.t : -Infinity
-  const restoredVById = new Map<number, { weight: number; node: ReactNode; key: string; presetCol?: number }>()
+  const restoredVById = new Map<number, VideoFeedNode>()
+  // Rows mode only: a saved video newer than a tile still in the strip belongs
+  // ABOVE it - the strip is pinned to the column tops (see the image feed)
+  const vHeadFloor = headNodes.reduce((min, h) => Math.min(min, h.t ?? Infinity), Infinity)
+  const vForcedHead: VideoFeedNode[] = []
+  const restoredVFails: VideoFeedNode[] = []
 
   bodyEntries.forEach(entry => {
     if (entry.kind === "fail") {
       const item = entry.fail
-      nodes.push({ weight: W169, node: (
+      const failEntry: VideoFeedNode = { weight: W169, key: `sf-${item.id}`, t: entry.t, node: (
         <div
           key={`sf-${item.id}`}
           className="relative min-w-0 w-full overflow-hidden rounded-lg bg-slate-900 border border-red-500/20 flex flex-col items-center justify-center gap-2 p-4 cursor-pointer hover:border-red-500/40 transition-colors group/vfail"
@@ -25480,7 +25542,11 @@ function VideoFeed({
           <p className="w-full text-[10px] text-red-400/80 text-center line-clamp-2 [overflow-wrap:anywhere]">{plainFailError(item.failError)}</p>
           <p className="w-full text-center text-[9px] text-slate-600 italic line-clamp-1 [overflow-wrap:anywhere]">"{item.prompt}"</p>
         </div>
-      )})
+      )}
+      const fc = failSlotCol(item)
+      if (fc !== undefined && entry.t >= vCutoffT) restoredVFails.push({ ...failEntry, presetCol: fc })
+      else if (vRowsMode && entry.t > vHeadFloor) vForcedHead.push(failEntry)
+      else nodes.push(failEntry)
       return
     }
     const img = entry.img
@@ -25493,7 +25559,7 @@ function VideoFeed({
       const shapeW = Number(vm.aspectW) || Number(vm.width) || 0
       const shapeH = Number(vm.aspectH) || Number(vm.height) || 0
       const dbAr = shapeW > 0 && shapeH > 0 ? `${shapeW}:${shapeH}` : (img.videoMetadata?.aspectRatio || img.aspectRatio)
-      const vEntry = { weight: tileWeight(dbAr), node: (
+      const vEntry: VideoFeedNode = { weight: tileWeight(dbAr), key: `vdb-${img.id}`, t: entry.t, node: (
         isVideoUrl(img.imageUrl) ? (
           <VideoTile
             key={img.id}
@@ -25551,7 +25617,9 @@ function VideoFeed({
         )
       )}
       if (vLayoutCols.has(img.id) && entry.t >= vCutoffT) {
-        restoredVById.set(img.id, { ...vEntry, key: `vdb-${img.id}`, presetCol: vLayoutCols.get(img.id) })
+        restoredVById.set(img.id, { ...vEntry, presetCol: vLayoutCols.get(img.id) })
+      } else if (vRowsMode && entry.t > vHeadFloor) {
+        vForcedHead.push(vEntry)
       } else {
         nodes.push(vEntry)
       }
@@ -25563,6 +25631,10 @@ function VideoFeed({
     const r = restoredVById.get(e.id)
     if (r) headNodes.push(r)
   }
+  headNodes.push(...restoredVFails, ...vForcedHead)
+  // FINAL ordering pass: strict queue time, newest first (a batch sharing one
+  // millisecond falls back to its keys, read numerically)
+  headNodes.sort(byQueueTime)
 
   // Pick the layout from the Feed settings (same three modes as the image feed)
   let layoutEl: ReactNode
@@ -25575,8 +25647,10 @@ function VideoFeed({
     const liveKeys = new Set(headNodes.map(h => h.key))
     for (const k of Array.from(colMap.keys())) if (!liveKeys.has(k)) colMap.delete(k)
     // Restored tiles claim their SAVED columns before new tiles count occupancy
+    // (saved videos by dbId, tiles without a saved row yet by slot)
     headNodes.forEach(h => {
-      if (h.presetCol !== undefined && h.presetCol < n && !colMap.has(h.key)) colMap.set(h.key, h.presetCol)
+      const pc = h.presetCol ?? slotColsRef.current.get(h.key)
+      if (pc !== undefined && pc < n && !colMap.has(h.key)) colMap.set(h.key, pc)
     })
     const counts = new Array(n).fill(0)
     colMap.forEach(c => { if (c < n) counts[c]++ })
@@ -25597,7 +25671,7 @@ function VideoFeed({
     // map through their dbId; spinners (no dbId yet) are transient and skipped
     if (!curated) {
       try {
-        const keyToDbId = new Map(items.filter(i => i.dbId !== undefined && !i.failed).map(i => [i.id, i.dbId!]))
+        const keyToDbId = new Map(items.filter(i => i.dbId !== undefined && !i.failed).map(i => [laneOf(i), i.dbId!]))
         const next: Array<{ id: number; col: number }> = []
         for (const h of headNodes) {
           const c = colMap.get(h.key)
@@ -25615,6 +25689,25 @@ function VideoFeed({
           headLayoutRef.current = [...next, ...tail].slice(0, VIDEO_HEAD_LAYOUT_MAX)
           localStorage.setItem(VIDEO_HEAD_LAYOUT_KEY, JSON.stringify(headLayoutRef.current))
         }
+        // ...and the tiles with no saved row yet, by slot. Entries that are not
+        // on screen are kept (up to 40): the pending slots come back from
+        // storage a render after the feed does
+        if (slotColsHydratedRef.current) {
+          const slotCols = new Map<string, number>()
+          // A failed tile is also kept under its failKey: after a reload it is
+          // the server's copy (sf-qf-<row>), not this slot - see failSlotCol
+          const failKeyOf = new Map(items.filter(i => i.failed && i.failKey).map(i => [laneOf(i), i.failKey!]))
+          for (const h of headNodes) {
+            const c = colMap.get(h.key)
+            if (c === undefined || h.key.startsWith("vdb-") || keyToDbId.has(h.key)) continue
+            slotCols.set(h.key, c)
+            const fk = failKeyOf.get(h.key)
+            if (fk) slotCols.set(fk, c)
+          }
+          for (const [k, c] of slotColsRef.current) if (!slotCols.has(k) && slotCols.size < 40) slotCols.set(k, c)
+          slotColsRef.current = slotCols
+          localStorage.setItem(VIDEO_SLOT_COLS_KEY, JSON.stringify(Object.fromEntries(slotCols)))
+        }
       } catch {}
     }
     layoutEl = (
@@ -25630,14 +25723,16 @@ function VideoFeed({
     // Masonry "Flow": CSS multi-column — packs top-to-bottom down each column
     layoutEl = (
       <div className={`${cols ? FEED_MASONRY_CLASS[cols] ?? "columns-2 sm:columns-3" : "columns-2 sm:columns-3"} gap-2 [&>*]:mb-2 [&>*]:break-inside-avoid`}>
-        {[...headNodes, ...nodes].map(it => it.node)}
+        {[...headNodes, ...nodes].sort(byQueueTime).map(it => it.node)}
       </div>
     )
   } else {
     // Grid — uniform rows (natural aspect when Full Size, 16:9 crops otherwise)
     layoutEl = (
       <div className={`grid gap-2 ${fullSize ? "items-start" : "auto-rows-max"} ${cols ? FEED_COL_CLASS[cols] ?? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3"}`}>
-        {[...headNodes, ...nodes].map(it => it.node)}
+        {/* Grid and Flow have no packing to protect: head and body sort together,
+            so a tile still generating sits exactly where its saved row will */}
+        {[...headNodes, ...nodes].sort(byQueueTime).map(it => it.node)}
       </div>
     )
   }
@@ -28544,7 +28639,7 @@ export default function PortalV2Page() {
         inFlight = true
         try {
           if (++polls > 150) {
-            done({ id: slot.requestId, videoUrl: "", prompt: slot.prompt, model: slot.model, duration: slot.duration, failed: true, failError: "Generation timed out", failKey: `rf-${slot.requestId}`, inputs: slot.inputs, createdAt: new Date().toISOString() })
+            done({ id: slot.requestId, videoUrl: "", prompt: slot.prompt, model: slot.model, duration: slot.duration, failed: true, failError: "Generation timed out", failKey: `rf-${slot.requestId}`, inputs: slot.inputs, createdAt: videoSlotQueuedIso(slot) })
             return
           }
           const r = await fetch("/api/audio/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId: slot.requestId }) })
@@ -28552,9 +28647,9 @@ export default function PortalV2Page() {
           if (d?.status === "completed" && Array.isArray(d.items) && d.items[0]) {
             const it = d.items[0]
             const vm = it.videoMetadata || {}
-            done({ id: slot.requestId, dbId: it.id, videoUrl: it.imageUrl, prompt: it.prompt ?? slot.prompt, model: it.model ?? slot.model, duration: vm.duration ?? (vm.durationSec ? String(Math.round(vm.durationSec)) : slot.duration), aspectRatio: vm.options?.aspect ?? slot.aspectRatio, inputs: slot.inputs, createdAt: it.createdAt ?? new Date().toISOString() })
+            done({ id: slot.requestId, dbId: it.id, videoUrl: it.imageUrl, prompt: it.prompt ?? slot.prompt, model: it.model ?? slot.model, duration: vm.duration ?? (vm.durationSec ? String(Math.round(vm.durationSec)) : slot.duration), aspectRatio: vm.options?.aspect ?? slot.aspectRatio, inputs: slot.inputs, createdAt: it.createdAt ?? videoSlotQueuedIso(slot) })
           } else if (d?.status === "failed") {
-            done({ id: slot.requestId, videoUrl: "", prompt: slot.prompt, model: slot.model, duration: slot.duration, failed: true, failError: d.error || "The lyrics video failed - your tickets are back", failKey: `rf-${slot.requestId}`, inputs: slot.inputs, createdAt: new Date().toISOString() })
+            done({ id: slot.requestId, videoUrl: "", prompt: slot.prompt, model: slot.model, duration: slot.duration, failed: true, failError: d.error || "The lyrics video failed - your tickets are back", failKey: `rf-${slot.requestId}`, inputs: slot.inputs, createdAt: videoSlotQueuedIso(slot) })
           }
         } catch { /* the next tick tries again */ } finally { inFlight = false }
       }, 6000)
@@ -28588,7 +28683,7 @@ export default function PortalV2Page() {
         failError: "Generation timed out",
         failKey: `rf-${slot.requestId}`,
         inputs: slot.inputs,
-        createdAt: new Date().toISOString(),
+        createdAt: videoSlotQueuedIso(slot),
       }
       // Dedup guard — prevents duplicate tiles if this path is triggered more than once
       setVideoItems(prev => prev.some(i => i.id === timedOutItem.id) ? prev : [timedOutItem, ...prev])
@@ -28627,7 +28722,7 @@ export default function PortalV2Page() {
           failError: "Generation timed out",
           failKey: `rf-${slot.requestId}`,
           inputs: slot.inputs,
-          createdAt: new Date().toISOString(),
+          createdAt: videoSlotQueuedIso(slot),
         }
         // Dedup guard — prevents duplicate tiles if two ticks slipped the pollInFlight guard
         setVideoItems(prev => prev.some(i => i.id === timedOutItem.id) ? prev : [timedOutItem, ...prev])
@@ -28698,7 +28793,7 @@ export default function PortalV2Page() {
             characterOrientation: slot.characterOrientation,
             inputs:               slot.inputs,
             framesZipUrl:         typeof data.framesZipUrl === "string" ? data.framesZipUrl : undefined,
-            createdAt:            new Date().toISOString(),
+            createdAt:            videoSlotQueuedIso(slot),
           }, ...prev])
         } else if (data.status === "failed") {
           clearInterval(interval)
@@ -28714,7 +28809,7 @@ export default function PortalV2Page() {
             failError: data.error || "Generation failed",
             failKey: `rf-${slot.requestId}`,
             inputs: slot.inputs,
-            createdAt: new Date().toISOString(),
+            createdAt: videoSlotQueuedIso(slot),
           }
           setVideoItems(prev => [failedItem, ...prev])
           setSavedVideoFails(prev => prev.some(f => f.id === failedItem.id) ? prev : [failedItem, ...prev])
@@ -28777,7 +28872,7 @@ export default function PortalV2Page() {
         if (d.charged) setUser(prev => prev ? { ...prev, ticketBalance: Math.max(0, prev.ticketBalance - d.charged) } : prev)
         const slot: VideoPendingSlot = {
           slotId, requestId: d.requestId, falEndpoint: "audio:mureka-lyrics-video", prompt: promptText.trim() || "Lyrics video",
-          model: "mureka-lyrics-video", duration: "", ticketCost: 0, startedAt: Date.now(), aspectRatio: videoAspectRatio || "9:16", audioRun: true,
+          model: "mureka-lyrics-video", duration: "", ticketCost: 0, startedAt: Date.now(), queuedAtMs: Date.now(), aspectRatio: videoAspectRatio || "9:16", audioRun: true,
           ...(() => {
             const song = getMurekaSongItem()
             const rescan = { modelId: "mureka-lyrics-video", prompt: promptText, aspectRatio: videoAspectRatio || "9:16", choice: videoChoice, ...(song ? { murekaSongId: song.id } : {}) }
@@ -28994,7 +29089,7 @@ export default function PortalV2Page() {
     setVideoPendingSlots(prev => [{
       inputs: sentInputs,
       slotId, requestId: "", falEndpoint: "", submitting: true,
-      prompt: promptText, model: runModelId, duration: runDuration, resolution: videoResolution, ticketCost: 0, startedAt,
+      prompt: promptText, model: runModelId, duration: runDuration, resolution: videoResolution, ticketCost: 0, startedAt, queuedAtMs: startedAt,
       aspectRatio: isLipsync ? videoLipsyncAspectRatio : (videoAspectRatio || undefined),
       startFrameUrl: videoStartFrameUrl || undefined, endFrameUrl: videoEndFrameUrl || undefined,
       ...(expectedAspect ? { expectedAspect } : {}),
@@ -29085,6 +29180,7 @@ export default function PortalV2Page() {
         resolution:           videoResolution,
         ticketCost:           data.ticketCost,
         startedAt,
+        queuedAtMs:           startedAt,
         aspectRatio:          isLipsync ? videoLipsyncAspectRatio : (videoAspectRatio || undefined),
         audioEnabled:         videoAudioEnabled,
         startFrameUrl:        videoStartFrameUrl || undefined,
@@ -30070,7 +30166,7 @@ export default function PortalV2Page() {
           queueRowId: queueJobId,
           failKey: `qf-${queueJobId}`,
           inputs: slot.inputs,
-          createdAt: new Date().toISOString(),
+          createdAt: videoSlotQueuedIso(slot),
         }
         setVideoItems(prev => [timedOutItem, ...prev])
         setSavedVideoFails(prev => prev.some(f => f.id === timedOutItem.id) ? prev : [timedOutItem, ...prev])
@@ -30109,7 +30205,7 @@ export default function PortalV2Page() {
               duration: vm.duration ?? slot.duration,
               resolution: vm.resolution || undefined,
               aspectRatio: vm.aspectRatio || img.aspectRatio || slot.aspectRatio,
-              createdAt: img.createdAt ?? new Date().toISOString(),
+              createdAt: img.createdAt ?? videoSlotQueuedIso(slot),
             }, ...prev])
           }
         } else if (data.status === 'failed') {
@@ -30131,7 +30227,7 @@ export default function PortalV2Page() {
             queueRowId: queueJobId,
             failKey: `qf-${queueJobId}`,
             inputs: slot.inputs,
-            createdAt: new Date().toISOString(),
+            createdAt: videoSlotQueuedIso(slot),
           }
           setVideoItems(prev => [failedItem, ...prev])
           setSavedVideoFails(prev => prev.some(f => f.id === failedItem.id) ? prev : [failedItem, ...prev])
@@ -30203,6 +30299,7 @@ export default function PortalV2Page() {
               resolution: j.resolution,
               ticketCost: 0,
               startedAt: Date.parse(j.createdAt) || Date.now(),
+              queuedAtMs: Date.parse(j.createdAt) || Date.now(),
               aspectRatio: j.aspectRatio,
               ...(j.studio ? { studio: true } : {}),
               ...(j.inputs ? { inputs: j.inputs } : {}),
@@ -31987,6 +32084,7 @@ export default function PortalV2Page() {
           failError: r.error,
           queueRowId: r.id,
           failKey: `qf-${r.id}`,
+          ...(r.falRequestId ? { requestId: r.falRequestId } : {}),
           // What it was given + its composer (lib/gen-inputs): Try Again restores the run
           ...(r.inputs && typeof r.inputs === 'object' ? { inputs: r.inputs } : {}),
           createdAt: toIso(r.createdAt),
