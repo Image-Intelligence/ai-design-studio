@@ -19,6 +19,8 @@ import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-g
 import { stillModelSpec, stillBuildOptions, GPT_SIZE_FOR_ASPECT } from '@/lib/storyboard'
 import { requireIdVerified } from '@/lib/id-verification'
 import { mediaKeeper } from '@/lib/media-ownership'
+import { HIGGSFIELD_IMAGE_MODELS } from '@/lib/higgsfield-models'
+import { submitHiggsfieldImage, waitHiggsfieldImage } from '@/lib/storyboard-stills'
 import {
   type StudioGenOp, FILL_MAX_PIXELS, EXPAND_MAX_PIXELS, UPSCALE_MAX_SIDE, ERASE_TICKETS, EXPAND_TICKETS,
   fillTickets, isUpscaler, upscaleFactor, upscaleTickets, UPSCALERS, STUDIO_IMAGE_MODELS, genTickets, canEdit, isAdminOnlyModel, validAspect,
@@ -57,8 +59,13 @@ import {
  * A studio canvas (numeric id) is ADMIN ONLY, like the Studios section. The id
  * "edit" is the Edit Image popup - any signed-in account, results filed under
  * Image Studio > Edits. Admins are not charged (lib/ticket-gate).
+ *
+ * Higgsfield's Soul 2 / Soul / Marketing Studio generate too (not edit - see
+ * lib/image-studio-ai NOT_EDITORS): not fal calls - generateHiggsfield below.
  */
 export const maxDuration = 300
+/** How long a Higgsfield generate is waited for (inside maxDuration, with room for the steps around it). */
+const HF_WAIT_MS = 240_000
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -142,6 +149,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   let input: Record<string, unknown> = {}
   let model = ''
   let quality: string | undefined
+  // A Higgsfield generate (Soul 2 / Soul / Marketing Studio): its frame and references
+  let hf: { aspect: string; refs: string[] } | null = null
   // The source's long side (an SVG result is rasterised to it)
   let srcLong = 0
   try {
@@ -277,18 +286,25 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       // Sized for the model where it limits uploads (Ideogram)
       // The model's own settings from the panel (Thinking, Web search...), kept to
       // the values it offers; an admin-only one (Safety) only from an admin
-      const asAdmin = await checkIsAdmin(user.email)
-      const sent = body.options && typeof body.options === 'object' ? body.options as Record<string, unknown> : {}
-      const allowed = Object.fromEntries(Object.entries(sent).filter(([k]) => asAdmin || !knobs.settings.find(s => s.key === k)?.admin))
-      const call = buildFalCall(spec.id, prompt, await fitRefsForModel(spec.id, refs), { aspect: spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[aspect] ?? '1024x1024') : aspect, quality }, stillBuildOptions(spec.id, allowed))
-      if ('error' in call) return bad(call.error)
-      // Priced with the same settings the run uses (High thinking / web search cost more)
-      const priced = Object.fromEntries(Object.entries(stillBuildOptions(spec.id, allowed)).map(([k, v]) => [k, String(v)]))
-      cost = genTickets(spec.id, quality, aspect, refs.length, priced); model = spec.id
-      endpoint = call.endpoint; input = call.input
-      // The popup is open to everyone: a public model runs at the moderation
-      // /api/generate gives non-admins (lib/public-moderation)
-      enforcePublicModeration(spec.id, input, await checkIsAdmin(user.email))
+      if (HIGGSFIELD_IMAGE_MODELS.has(spec.id)) {
+        // Higgsfield's: no fal call - their own route charges and runs it (below),
+        // at this price (higgsfieldImageTicketCost, as the portal charges)
+        cost = genTickets(spec.id, quality, aspect, refs.length); model = spec.id
+        hf = { aspect, refs }
+      } else {
+        const asAdmin = await checkIsAdmin(user.email)
+        const sent = body.options && typeof body.options === 'object' ? body.options as Record<string, unknown> : {}
+        const allowed = Object.fromEntries(Object.entries(sent).filter(([k]) => asAdmin || !knobs.settings.find(s => s.key === k)?.admin))
+        const call = buildFalCall(spec.id, prompt, await fitRefsForModel(spec.id, refs), { aspect: spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[aspect] ?? '1024x1024') : aspect, quality }, stillBuildOptions(spec.id, allowed))
+        if ('error' in call) return bad(call.error)
+        // Priced with the same settings the run uses (High thinking / web search cost more)
+        const priced = Object.fromEntries(Object.entries(stillBuildOptions(spec.id, allowed)).map(([k, v]) => [k, String(v)]))
+        cost = genTickets(spec.id, quality, aspect, refs.length, priced); model = spec.id
+        endpoint = call.endpoint; input = call.input
+        // The popup is open to everyone: a public model runs at the moderation
+        // /api/generate gives non-admins (lib/public-moderation)
+        enforcePublicModeration(spec.id, input, await checkIsAdmin(user.email))
+      }
     }
   } catch (e) {
     return jsonPrivate({ error: failText(e).slice(0, 240) }, { status: 400 })
@@ -302,6 +318,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const cf = await enforceContentFilter(prompt, user.email)
     if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
   }
+  if (hf) return generateHiggsfield({ userId: user.id, title: canvas.title, what, model, prompt, quality: quality ?? '1k', cost, ...hf })
   const paid = await deductGenerationTickets(user.id, user.email, cost)
   if (!paid.ok) return jsonPrivate({ error: `This needs ${paid.need} ticket${paid.need === 1 ? '' : 's'} - you have ${paid.have}`, needTickets: true }, { status: 402 })
 
@@ -368,5 +385,35 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     await refundGenerationTickets(user.id, user.email, cost)
     await failStudioJob(track, failText(e))
     return jsonPrivate({ error: `${what} failed: ${failText(e).slice(0, 240)}`, balance: paid.newBalance >= 0 ? paid.newBalance + cost : paid.newBalance }, { status: 502 })
+  }
+}
+
+/**
+ * Generate a layer with Higgsfield (Soul 2 / Soul / Marketing Studio,
+ * 2026-10-22). Charged by Higgsfield's own route at the portal's price -
+ * `cost`, the number on the button - admins free; queued on Higgsfield's
+ * queue and WAITED FOR here, as fal.subscribe is for the rest (an image is
+ * back in well under a minute unless their 20 slots are full; HF_WAIT_MS keeps
+ * the wait inside maxDuration). A failure is refunded by lib/higgsfield. Its
+ * queue row is the feed's tile and its GeneratedImage the layer's row - filed
+ * under Image Studio > <canvas>, no second row. Still running at the deadline:
+ * the job goes on and lands in My Generations, the layer is not placed (504).
+ */
+async function generateHiggsfield(o: {
+  userId: number; title: string; what: string; model: string; prompt: string; quality: string; cost: number; aspect: string; refs: string[]
+}): Promise<Response> {
+  const balance = async () => (await prisma.ticket.findUnique({ where: { userId: o.userId }, select: { balance: true } }).catch(() => null))?.balance
+  const sub = await submitHiggsfieldImage({ model: o.model, prompt: o.prompt, aspect: o.aspect, quality: o.quality, refs: o.refs })
+  if (!sub.ok) return jsonPrivate({ error: sub.error, ...(sub.status === 402 ? { needTickets: true } : {}) }, { status: sub.status >= 400 ? sub.status : 502 })
+  const done = await waitHiggsfieldImage(sub.queueId, Date.now() + HF_WAIT_MS)
+  if (done.status === 'waiting') return jsonPrivate({ error: `${o.what} is taking longer than usual - Higgsfield will still finish it, and it lands in My Generations`, pending: true, balance: await balance() }, { status: 504 })
+  if (done.status === 'failed') return jsonPrivate({ error: `${o.what} failed: ${done.error.slice(0, 240)}`, balance: await balance() }, { status: 502 })
+  try {
+    const { w, h } = await readImage(done.url)
+    await prisma.generatedImage.update({ where: { id: done.imageId }, data: { folderId: await studioFolder(o.userId, o.title) } })
+    return jsonPrivate({ url: done.url, width: w, height: h, tickets: o.cost, balance: await balance(), imageId: done.imageId })
+  } catch (e) {
+    // Made and paid for, only not readable here: it is in My Generations
+    return jsonPrivate({ error: `${o.what} finished but could not be placed (${failText(e).slice(0, 160)}) - it is in My Generations` }, { status: 502 })
   }
 }

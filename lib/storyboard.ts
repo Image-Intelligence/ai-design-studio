@@ -19,6 +19,7 @@
 import { getCreateModel, computeCreateCost } from '@/lib/chat-hub-models'
 import { getTicketCost } from '@/config/ai-models.config'
 import { flux3ImageTicketCost, flux1DevTicketCost, gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, kleinTicketCost, krea3TicketCost } from '@/lib/ticket-pricing'
+import { higgsfieldImageTicketCost } from '@/lib/higgsfield-models'
 import { ELEVEN_VOICES, getAudioStudioModel } from '@/lib/audio-studio'
 
 export type StoryboardShot = {
@@ -383,6 +384,14 @@ export type StillFalJob = {
   name: string
   /** Also set on the shot when it lands (an expand's new frame, a first prompt). */
   patch?: Record<string, unknown>
+  /**
+   * A Higgsfield still (Soul 2 / Soul / Marketing Studio, 2026-10-22): not a
+   * fal job but the GenerationQueue row lib/higgsfield runs and settles. Then
+   * requestId is "hf-<row id>" (the row may wait for a Higgsfield slot before
+   * it has a request id) and endpoint "higgsfield:<endpoint>"; cost is 0 -
+   * Higgsfield's route charged, and lib/higgsfield refunds a failure.
+   */
+  hfQueueId?: number
 }
 export type StillJob = { status: 'queued' | 'making' | 'failed'; at: number; model?: string; error?: string; fal?: StillFalJob; savingAt?: number }
 /**
@@ -1101,6 +1110,14 @@ const REGISTRY_STILL_SETTINGS: Record<string, StillSetting[]> = {
   'krea-2-large': [{ key: 'kreaCreativity', label: 'Creativity', options: o(['raw', 'Raw'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']), def: 'medium', hint: 'Raw follows the prompt closely; High takes more liberties' }],
   'luma-photon': [{ key: 'lumaStrength', label: 'Reference pull', options: o(['0.3', 'Light'], ['0.6', 'Medium'], ['0.9', 'Strong']), def: '0.6', as: 'number', hint: 'How closely it keeps the first reference (only with refs on)' }],
   'luma-uni-1': [{ key: 'lumaUniStyle', label: 'Style', options: o(['auto', 'Auto'], ['manga', 'Manga']), def: 'auto' }],
+  /*
+   * Higgsfield's exclusives (2026-10-22) - the portal's pickers: Soul's 720p /
+   * 1080p ride its 1K / 2K, Marketing Studio renders 1K / 2K / 4K. Defaults as
+   * the chat catalog's (lib/chat-image-catalog), so Nova and the Studio agree.
+   */
+  'higgsfield-soul-2': [{ key: 'quality', label: 'Resolution', options: o(['1k', '1K (720p)'], ['2k', '2K (1080p)']), def: '2k' }],
+  'higgsfield-soul': [{ key: 'quality', label: 'Resolution', options: o(['1k', '1K (720p)'], ['2k', '2K (1080p)']), def: '1k' }],
+  'higgsfield-marketing-image': [RES(['1k', '2k', '4k'], '2k')],
 }
 REGISTRY_STILL_SETTINGS['krea-2-medium'] = REGISTRY_STILL_SETTINGS['krea-2-large']
 REGISTRY_STILL_SETTINGS['krea-2-medium-turbo'] = REGISTRY_STILL_SETTINGS['krea-2-large']
@@ -1184,6 +1201,8 @@ export function stillTickets(id: string, quality: string | undefined, aspect: st
           return ideogramTicketCost({ tier: id, quality: q, aspectRatio: aspect, ref: refs > 0, speed: opt('ideogramRenderingSpeed'), expansion: opt('ideogramExpansionModel') })
         case 'grok-imagine-2': return getTicketCost(refs > 0 ? 'grok-imagine-2-edit' : id, q)
         case 'mai-image-2.5-pro': return getTicketCost(refs > 0 ? 'mai-image-2.5-pro-edit' : id, q)
+        // What /api/admin/higgsfield/image-submit charges (references cost nothing extra)
+        case 'higgsfield-soul-2': case 'higgsfield-soul': case 'higgsfield-marketing-image': return higgsfieldImageTicketCost(id, q)
         default: return getTicketCost(id, q)
       }
     }
@@ -1249,7 +1268,8 @@ export function fitDurations(shots: StoryboardShot[], target: number): Storyboar
 /**
  * The image models a still can be made with: the ones whose fal call
  * lib/chat-hub-create's buildFalCall builds in full (references included), so
- * every option in the picker actually runs.
+ * every option in the picker actually runs - and Higgsfield's three, which
+ * run through their own route (HIGGSFIELD_IMAGE_MODELS, see the end).
  */
 export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean }[] = [
   // First: the house default (2026-10-07) - the menus and the planners read this order
@@ -1308,6 +1328,14 @@ export const STORYBOARD_IMAGE_MODELS: { id: string; label: string; refs: boolean
   { id: 'ideogram-v4-fast', label: 'Ideogram v4 Fast', refs: true },
   { id: 'ideogram-v4-instant', label: 'Ideogram v4 Instant', refs: true },
   { id: 'ideogram-v4-tiling', label: 'Ideogram v4 Tiling', refs: true },
+  // Higgsfield's exclusives (public, added 2026-10-22): NOT fal calls - the
+  // still and Image Studio routes send them through Higgsfield's own route and
+  // queue (lib/storyboard-stills submitHiggsfieldImage). Soul 2 is text only;
+  // Soul takes one picture (it guides its prompt enhancement); Marketing
+  // Studio takes product / brand / people pictures
+  { id: 'higgsfield-soul-2', label: 'Soul 2', refs: false },
+  { id: 'higgsfield-soul', label: 'Soul', refs: true },
+  { id: 'higgsfield-marketing-image', label: 'Marketing Studio Image', refs: true },
 ]
 // NanoBanana 2.1 since the Studio went public (2026-10-07): Pro 2 is admin-only
 export const DEFAULT_IMAGE_MODEL = 'nano-banana-2.1'
@@ -1398,6 +1426,9 @@ export const STORYBOARD_MODEL_NOTES: Record<string, string> = {
   'ideogram-v4-fast': 'Ideogram v4 lettering, quicker and cheaper; signage and labels in scene',
   'ideogram-v4-instant': 'fastest, cheapest Ideogram - draft title cards and signage',
   'ideogram-v4-tiling': 'SEAMLESS REPEATING TEXTURES only (wallpaper, fabric, ground cover) - never a shot; for a pattern asset',
+  'higgsfield-soul-2': 'fashion-editorial portraits and lifestyle photos with a real-camera look; text only (no refs), so it cannot hold a cast member - mood and b-roll people shots; very cheap',
+  'higgsfield-soul': 'the original Soul fashion / portrait look; one ref only guides the style, it does not keep a face',
+  'higgsfield-marketing-image': 'polished ad and campaign images - products and people in marketing scenes; product / brand pictures as refs; packshots and commercial beats',
   // videos (by plan label)
   'SeeDance 2.5': 'best general motion and acting, native audio; refuses close-ups of realistic faces',
   'SeeDance 2.0': 'multi-reference motion with audio', 'SeeDance 2.0 Fast': 'cheaper SeeDance 2.0',
@@ -1551,6 +1582,7 @@ function sanitizeStillJob(j: any): StillJob | undefined {
     refs: Array.isArray(f.refs) ? f.refs.filter((u: unknown): u is string => typeof u === 'string').slice(0, 20) : [],
     conform: typeof f.conform === 'string' ? str(f.conform, 20) : null, name: str(f.name, 200),
     ...(f.patch && typeof f.patch === 'object' ? { patch: f.patch as Record<string, unknown> } : {}),
+    ...(Number.isInteger(f.hfQueueId) && f.hfQueueId > 0 ? { hfQueueId: f.hfQueueId } : {}),
   } : undefined
   const savingAt = Number(j.savingAt)
   return {

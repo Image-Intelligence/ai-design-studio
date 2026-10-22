@@ -6,7 +6,8 @@ import { requireStoryboardUser } from '@/lib/storyboard-gate'
 import { publicStillSafety, ownRefs } from '@/lib/storyboard-gate'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
-import { isAdminOnlyModel } from '@/lib/image-studio-ai'
+import { isAdminOnlyModel, modelAspects, nearestAspect } from '@/lib/image-studio-ai'
+import { HIGGSFIELD_IMAGE_MODELS } from '@/lib/higgsfield-models'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fal } from '@/lib/fal-client'
@@ -18,7 +19,7 @@ import { claimStill, patchShot, queueStills } from '@/lib/storyboard-store'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
 import { conformToFrame } from '@/lib/storyboard-image'
 import { startStudioJob, finishStudioJob, failStudioJob } from '@/lib/studio-activity'
-import { storyboardFolder as boardFolder, submitStillJob } from '@/lib/storyboard-stills'
+import { storyboardFolder as boardFolder, submitStillJob, submitHiggsfieldStill, submitHiggsfieldImage, waitHiggsfieldImage, adoptHiggsfieldStill } from '@/lib/storyboard-stills'
 
 /**
  * POST /api/employees/storyboards/[id]/still - make one slot's still.
@@ -57,8 +58,16 @@ import { storyboardFolder as boardFolder, submitStillJob } from '@/lib/storyboar
  * charged before the model runs and refunded if it fails; admins are not
  * charged. Non-admins: admin-only models refused, the CCBill prompt filter,
  * and the public moderation (lib/storyboard-gate publicStillSafety).
+ *
+ * Higgsfield's Soul 2 / Soul / Marketing Studio (2026-10-22) are not fal
+ * models: makeHiggsfieldStill sends them through Higgsfield's own route
+ * (lib/storyboard-stills submitHiggsfieldImage), which charges them as the
+ * portal does and whose failures lib/higgsfield refunds; a slot's still is
+ * settled onto it by lib/storyboard-stills like a fal one.
  */
 export const maxDuration = 300
+/** A still without a slot waits this long for Higgsfield (the route stops at maxDuration). */
+const HF_WAIT_MS = 240_000
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -165,6 +174,8 @@ async function makeStill(user: StoryboardUser, board: BoardRow, body: Record<str
   const shot = shotId ? sanitizeShots(board.shots).find(s => s.id === shotId) : undefined
   // The shot's own frame (a panorama, a poster) or the board's
   const frame = shot ? shotAspect(shot, board.aspect) : board.aspect
+  // Higgsfield's: their own route and queue, not fal
+  if (HIGGSFIELD_IMAGE_MODELS.has(spec.id)) return makeHiggsfieldStill(user, board, spec, { prompt, fullPrompt, refs, quality, frame, shot })
   // GPT Image takes a pixel size rather than a ratio
   const aspect = spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[frame] ?? '1024x1024') : frame
   // The model's other settings, kept to the values it offers (stillSettings)
@@ -244,4 +255,52 @@ async function makeStill(user: StoryboardUser, board: BoardRow, body: Record<str
   await finishStudioJob(track, [row.id], url)
   // (no slot: nothing to put it on - a slot's still is saved by lib/storyboard-stills)
   return out({ url, imageId: row.id })
+}
+
+/**
+ * A Higgsfield still (Soul 2 / Soul / Marketing Studio). Charged by
+ * Higgsfield's route at the portal's price (higgsfieldImageTicketCost - the
+ * same number stillTickets shows), admins free; a failure is refunded by
+ * lib/higgsfield, never here. The route's queue row is the feed's tile and its
+ * GeneratedImage the still's row, so no studio tile or second row is made.
+ * Sent at the model's nearest frame (Soul has no 21:9) and fitted to the
+ * shot's when it lands, as a fal still is.
+ */
+async function makeHiggsfieldStill(
+  user: StoryboardUser, board: BoardRow, spec: { id: string; label: string },
+  o: { prompt: string; fullPrompt: string; refs: string[]; quality: string; frame: string; shot?: ReturnType<typeof sanitizeShots>[number] },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const out = (b: Record<string, unknown>, status = 200) => ({ status, body: b })
+  const frames = modelAspects(spec.id).filter(a => a !== 'auto')
+  const [fw, fh] = o.frame.split(':').map(Number)
+  const aspect = frames.includes(o.frame) ? o.frame : nearestAspect(fw || 16, fh || 9, frames)
+  const req = { model: spec.id, prompt: o.fullPrompt, aspect, quality: o.quality, refs: o.refs }
+  const name = `storyboard-${user.id}-${board.id}`
+  // The route's own refusals are user-facing; 402 = not enough tickets
+  const refused = (r: { status: number; error: string }) => out({ error: r.error, ...(r.status === 402 ? { needTickets: true } : {}) }, r.status >= 400 ? r.status : 502)
+
+  // A slot's still: claimed, queued, and settled onto the slot by lib/storyboard-stills
+  if (o.shot) {
+    const shot = o.shot
+    if (!(await claimStill(board.id, shot.id, spec.id))) return out({ error: 'This still is already being made', busy: true }, 409)
+    const r = await submitHiggsfieldStill(board.id, shot.id, req, {
+      prompt: o.fullPrompt, takePrompt: o.prompt, model: spec.id, quality: o.quality, aspect: o.frame, refs: o.refs,
+      conform: o.frame, name, ...(shot.imagePrompt ? {} : { patch: { imagePrompt: o.prompt } }),
+    })
+    if (r.ok) return out({ queued: true, requestId: r.requestId })
+    // Nothing was charged, or lib/higgsfield refunded it: only the slot to free (or mark)
+    await patchShot(board.id, shot.id, {
+      stillJob: r.status === 402 ? null : { status: 'failed', at: Date.now(), model: spec.id, error: r.error.slice(0, 400) },
+    }).catch(() => {})
+    return refused(r)
+  }
+
+  // No slot: made while you wait, as the fal path does
+  const sub = await submitHiggsfieldImage(req)
+  if (!sub.ok) return refused(sub)
+  const done = await waitHiggsfieldImage(sub.queueId, Date.now() + HF_WAIT_MS)
+  if (done.status === 'failed') return out({ error: `${spec.label} failed: ${done.error.slice(0, 240)}` }, 502)
+  if (done.status === 'waiting') return out({ error: `${spec.label} is still making it - it will land in My Generations when it finishes`, pending: true }, 504)
+  const url = await adoptHiggsfieldStill(done, { userId: user.id, title: board.title, conform: o.frame, name })
+  return out({ url, imageId: done.imageId })
 }

@@ -223,8 +223,12 @@ export const STUDIO_IMAGE_MODELS = STORYBOARD_IMAGE_MODELS
  * reference image). Not Z-Image Turbo: its reference is an image-to-image
  * start at strength 0.6 - it repaints the picture lightly but does not follow
  * an instruction ("make the boat green" left it red, 2026-10-06).
+ * Not Higgsfield's (2026-10-22): Soul's one picture only steers its prompt
+ * enhancement, Marketing Studio stages a new ad scene around its pictures
+ * rather than changing one - and neither is a fal call, which the Storyboard's
+ * still edits build. They generate (a layer, a still) only.
  */
-const NOT_EDITORS = new Set(['z-image-turbo'])
+const NOT_EDITORS = new Set(['z-image-turbo', 'higgsfield-soul-2', 'higgsfield-soul', 'higgsfield-marketing-image'])
 export const STUDIO_EDIT_MODELS = STORYBOARD_IMAGE_MODELS.filter(m => m.refs && !NOT_EDITORS.has(m.id))
 export const canEdit = (id: string) => STUDIO_EDIT_MODELS.some(m => m.id === id)
 export const STUDIO_ASPECTS = STORYBOARD_ASPECTS
