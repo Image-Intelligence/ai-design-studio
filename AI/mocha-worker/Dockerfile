@@ -26,6 +26,13 @@ RUN git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git && git -C Com
     git clone https://github.com/kijai/ComfyUI-KJNodes.git && git -C ComfyUI-KJNodes checkout ${KJNODES_COMMIT} && \
     git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git && git -C ComfyUI-VideoHelperSuite checkout ${VHS_COMMIT}
 
+# MoCha's own RoPE (mocha/nodes.py rope_apply_mocha) calls view_as_complex on
+# the activations as they come - bf16 here - which torch refuses ("only half,
+# float and double"); the wrapper's regular Wan RoPE casts first. Same cast
+# here, to float32 (2026-10-22, first real run). Still unfixed upstream.
+RUN sed -i 's/torch.view_as_complex(x\[i, :seq_len\].reshape(seq_len, n, -1, 2))/torch.view_as_complex(x[i, :seq_len].float().reshape(seq_len, n, -1, 2))/' ComfyUI-WanVideoWrapper/mocha/nodes.py && \
+    grep -q 'x\[i, :seq_len\].float().reshape' ComfyUI-WanVideoWrapper/mocha/nodes.py
+
 # The base image's CUDA build of torch stays: every requirements file installs
 # under these pins, so nothing can swap it for a CPU or older wheel
 WORKDIR /workspace

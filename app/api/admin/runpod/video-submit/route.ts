@@ -76,10 +76,21 @@ export async function POST(req: Request) {
     let repaint: { frameUrl: string; repaintUrl: string } | null = null
     if (model === 'runpod-mocha') {
       resolution = b.resolution === '720p' ? '720p' : '480p'
+      /*
+       * Who gets replaced, found here by SAM 3.1 (2026-10-22): the worker's
+       * own YOLO "person" pass misses figures that aren't people - a wooden
+       * mannequin failed the first test run - so "figure" is the fallback.
+       * Cropped the way the worker crops the clip (832x480 / 1280x720 cover).
+       * About $0.01; when SAM finds neither, the worker's YOLO still tries.
+       */
+      const mask = await (await import('@/lib/vace-mask')).subjectMask(clip, ['person', 'figure'], {
+        coverAspect: resolution === '720p' ? 1280 / 720 : 832 / 480,
+      }).catch((e: any) => { console.warn('MoCha mask (SAM 3.1) failed - the worker finds the person itself:', e?.message || e); return null })
       input = {
         action: 'mocha',
         video: runpodMedia(clip),
         refs: images.map(runpodMedia),
+        ...(mask ? { mask: { url: mask } } : {}),
         resolution, mode: b.videoChoice === 'full' ? 'full' : 'fast',
         ...(prompt ? { prompt } : {}),
         max_frames: Number(settings.max_frames ?? 81),

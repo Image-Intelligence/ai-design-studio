@@ -44,30 +44,53 @@ export async function firstFrame(videoUrl: string): Promise<Buffer> {
  * (white = replace). Null when nothing of that kind is in the frame.
  */
 export async function vaceSubjectMask(videoUrl: string, subject: string): Promise<string | null> {
+  return subjectMask(videoUrl, [VACE_SUBJECTS[subject] ?? 'person'])
+}
+
+/**
+ * The same mask for the first of `prompts` SAM 3.1 finds anything for - so a
+ * caller can fall back from "person" to "figure" (MoCha, 2026-10-22: YOLO's
+ * person class, and SAM's "person", both miss a wooden mannequin; "figure"
+ * finds it). `coverAspect` is the landscape w/h a worker cover-crops the clip
+ * to (portrait clips get its inverse): the mask is centre-cropped the same
+ * way, since such a worker just resizes the mask it is given onto its frame.
+ */
+export async function subjectMask(videoUrl: string, prompts: string[], opts: { coverAspect?: number } = {}): Promise<string | null> {
   const frame = await firstFrame(videoUrl)
   const frameUrl = await fal.storage.upload(new Blob([new Uint8Array(frame)], { type: 'image/png' }))
-  const out: any = await fal.subscribe('fal-ai/sam-3-1/image', {
-    input: {
-      image_url: frameUrl, prompt: VACE_SUBJECTS[subject] ?? 'person',
-      return_multiple_masks: true, max_masks: 8, apply_mask: false, output_format: 'png', sync_mode: false,
-    } as any,
-  })
-  const urls: string[] = [...(out?.data?.masks ?? []), ...(out?.data?.masks?.length ? [] : [out?.data?.image])].map((m: any) => m?.url).filter(Boolean)
-  // The largest one - the main subject, not someone in the background
   let best: { buf: Buffer; area: number } | null = null
-  for (const u of urls) {
-    const r = await fetch(u)
-    if (!r.ok) continue
-    const buf = Buffer.from(await r.arrayBuffer())
-    const px = await sharp(buf).greyscale().raw().toBuffer()
-    let area = 0
-    for (let i = 0; i < px.length; i += 4) if (px[i] > 127) area++
-    if (area > 0 && (!best || area > best.area)) best = { buf, area }
+  for (const prompt of prompts) {
+    const out: any = await fal.subscribe('fal-ai/sam-3-1/image', {
+      input: {
+        image_url: frameUrl, prompt,
+        return_multiple_masks: true, max_masks: 8, apply_mask: false, output_format: 'png', sync_mode: false,
+      } as any,
+    })
+    const urls: string[] = [...(out?.data?.masks ?? []), ...(out?.data?.masks?.length ? [] : [out?.data?.image])].map((m: any) => m?.url).filter(Boolean)
+    // The largest one - the main subject, not someone in the background
+    for (const u of urls) {
+      const r = await fetch(u)
+      if (!r.ok) continue
+      const buf = Buffer.from(await r.arrayBuffer())
+      const px = await sharp(buf).greyscale().raw().toBuffer()
+      let area = 0
+      for (let i = 0; i < px.length; i += 4) if (px[i] > 127) area++
+      if (area > 0 && (!best || area > best.area)) best = { buf, area }
+    }
+    if (best) break
   }
   if (!best) return null
   // Grown ~1.5% of the frame's width so edges, hair and loose clothing are inside it
   const meta = await sharp(best.buf).metadata()
   const grow = Math.max(3, Math.round((meta.width ?? 800) * 0.015)) | 1
-  const mask = await sharp(best.buf).greyscale().blur(grow / 2).threshold(16).png().toBuffer()
+  let img = sharp(best.buf).greyscale().blur(grow / 2).threshold(16)
+  const w = meta.width ?? 0, h = meta.height ?? 0
+  if (opts.coverAspect && w > 0 && h > 0) {
+    const a = w >= h ? opts.coverAspect : 1 / opts.coverAspect
+    // ffmpeg's scale=...:force_original_aspect_ratio=increase,crop=W:H keeps the centre
+    const cw = Math.min(w, Math.round(h * a)), ch = Math.min(h, Math.round(w / a))
+    img = img.extract({ left: Math.floor((w - cw) / 2), top: Math.floor((h - ch) / 2), width: cw, height: ch })
+  }
+  const mask = await img.png().toBuffer()
   return fal.storage.upload(new Blob([new Uint8Array(mask)], { type: 'image/png' }))
 }

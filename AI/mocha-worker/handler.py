@@ -54,7 +54,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v2'
+HANDLER_VERSION = '2026-10-22-v3'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_URL = 'http://127.0.0.1:8188'
