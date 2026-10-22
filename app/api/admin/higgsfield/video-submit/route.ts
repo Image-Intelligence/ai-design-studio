@@ -143,6 +143,8 @@ export async function POST(req: Request) {
         resolution: (input.resolution as string) || resolution, duration, aspectRatio,
         generateAudio: model === 'higgsfield-cinema-4' ? b.generateAudio !== false : true,
         referenceImageUrls: images, listTickets,
+        // The tile that asked - a page whose reply was lost finds its job by it
+        ...(typeof b.clientSlotId === 'string' ? { clientSlotId: b.clientSlotId.slice(0, 80) } : {}),
         // What it was given, for its generating tile (lib/gen-inputs) - the account's own links only
         inputs: await (async () => { const i = videoInputsFromBody(b); return keepVideoInputs(i, await mediaKeeper(user.id, videoInputLinks(i))) })(),
       },

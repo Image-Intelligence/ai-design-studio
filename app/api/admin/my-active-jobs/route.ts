@@ -53,7 +53,7 @@ export async function GET(req: Request) {
           { status: STUDIO_RUNNING, updatedAt: { gte: studioSince } },
         ],
       },
-      select: { id: true, modelId: true, prompt: true, createdAt: true, parameters: true, falRequestId: true },
+      select: { id: true, modelId: true, prompt: true, createdAt: true, parameters: true, falRequestId: true, ticketCost: true },
       orderBy: { createdAt: 'asc' },
       take: MAX_JOBS,
     })
@@ -68,6 +68,8 @@ export async function GET(req: Request) {
             // Higgsfield jobs: the poller's marker (lib/higgsfield-models)
             : p.provider === 'higgsfield' && typeof p.hfEndpoint === 'string' ? `higgsfield:${p.hfEndpoint}` : undefined,
           clientSlotId: typeof p.clientSlotId === 'string' ? p.clientSlotId : null,
+          // What the job costs - a tile whose submit reply was lost settles its charge from this
+          ticketCost: j.ticketCost ?? 0,
           modelId: j.modelId,
           prompt: j.prompt,
           createdAt: j.createdAt.toISOString(),

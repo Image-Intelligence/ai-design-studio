@@ -48,6 +48,7 @@ export async function GET() {
           aspectRatio: string | null
           quality: string | null
           refs: unknown
+          inputs: unknown
           createdAt: Date
         }[]
       >`
@@ -58,7 +59,8 @@ export async function GET() {
             WHEN jsonb_typeof(parameters->'referenceImageUrls') = 'array' THEN parameters->'referenceImageUrls'
             WHEN jsonb_typeof(parameters->'permanentReferenceUrls') = 'array' THEN parameters->'permanentReferenceUrls'
             ELSE '[]'::jsonb
-          END AS refs
+          END AS refs,
+          parameters->'inputs' AS inputs
         FROM "GenerationQueue"
         WHERE "userId" = ${user.id} AND status = 'failed' AND "dismissedAt" IS NULL
         ORDER BY "createdAt" DESC
@@ -86,6 +88,8 @@ export async function GET() {
         aspectRatio: r.aspectRatio || null,
         quality: r.quality || null,
         referenceImageUrls: Array.isArray(r.refs) ? r.refs : [],
+        // A video job's inputs + composer snapshot (lib/gen-inputs) - Try Again restores the run from it
+        ...(r.inputs && typeof r.inputs === 'object' ? { inputs: r.inputs } : {}),
         createdAt: r.createdAt,
       })),
     })

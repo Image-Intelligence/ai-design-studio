@@ -16,6 +16,7 @@ import { Wand2, ImagePlus, PenLine, ArrowUpRight, Crop, Plus, X, Images, Library
 import { createPortal } from "react-dom"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { AiButton } from "./ai-button"
+import { deviceMaxSide } from "./engine"
 import { type StudioDoc, type StudioLayer, MAX_CANVAS_SIDE } from "@/lib/image-studio"
 import {
   type UpscalerId, UPSCALERS, UPSCALE_MAX_SIDE, STUDIO_IMAGE_MODELS, STUDIO_EDIT_MODELS,
@@ -130,8 +131,9 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
   // ── upscale ──
   const [upscaler, setUpscaler] = useState<UpscalerId>("seedvr2-upscale")
   const [factor, setFactor] = useState(2)
-  const canvasF = upscaleFactor(upscaler, factor, doc.width, doc.height, MAX_CANVAS_SIDE)
-  const layerF = layerPx ? upscaleFactor(upscaler, factor, layerPx.w, layerPx.h, UPSCALE_MAX_SIDE) : 0
+  // Held to what this device can draw (an iPad's canvases stop at 16.7 MP - engine deviceMaxSide)
+  const canvasF = upscaleFactor(upscaler, factor, doc.width, doc.height, deviceMaxSide(doc.width, doc.height, MAX_CANVAS_SIDE))
+  const layerF = layerPx ? upscaleFactor(upscaler, factor, layerPx.w, layerPx.h, deviceMaxSide(layerPx.w, layerPx.h, UPSCALE_MAX_SIDE)) : 0
 
   // Each model priced at the frame it would really use
   const priced = (models: readonly { id: string; label: string }[], aspect: (id: string) => string, refs: number) =>
@@ -281,7 +283,7 @@ export function AiPanel({ admin = true, doc, layer, layerPx, hasSel, selBox = nu
 
       {/* ── expand ── */}
       <Card title="Generative expand" icon={<Crop size={12} />}>
-        <Hint>Crop tool (C): drag the frame past the edge of the canvas, then <b className="text-slate-300">Generative expand</b> fills the new space - {EXPAND_TICKETS} ticket, Bria Expand.</Hint>
+        <Hint>Crop tool (C): drag the frame past the edge of the canvas, then <b className="text-slate-300">Generative expand</b> fills the new space - {EXPAND_TICKETS} ticket, Bria Expand. One layer on its own: <b className="text-slate-300">Expand this layer</b> in the Layers tab.</Hint>
         <button onClick={onCrop} className="silver-edge self-start flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10.5px] font-semibold text-slate-100 hover:opacity-90"><Crop size={11} /> Open the crop tool</button>
       </Card>
     </div>

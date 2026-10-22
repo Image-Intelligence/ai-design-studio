@@ -13,7 +13,7 @@
  * becomes a new canvas at once, the same as "Open one of my Refs".
  */
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Plus, Upload, Images, Trash2, Loader2, Layers, Library } from "lucide-react"
+import { Plus, Upload, Images, Trash2, Loader2, Layers, Library, ArrowLeft } from "lucide-react"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { CANVAS_PRESETS, MAX_CANVAS_SIDE, type StudioDoc } from "@/lib/image-studio"
 import { fileToCanvas, loadToCanvas } from "./engine"
@@ -29,8 +29,10 @@ const ago = (iso: string) => {
   return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`
 }
 
-export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, onBalanceChange, openRequest, onOpenHandled, isAdmin = false, canUseLayers = false }: {
+export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, onBalanceChange, openRequest, onOpenHandled, onBack, isAdmin = false, canUseLayers = false }: {
   signedIn: boolean
+  /** Back to the Studios page (the canvas list's own button, beside its title) */
+  onBack?: () => void
   /** The site's admin-only image models in the AI tools. */
   isAdmin?: boolean
   /** Dev Tier (or admin): layer management - as in the Edit Image popup. */
@@ -155,7 +157,16 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
   return (
     <div className="h-full overflow-y-auto overscroll-contain">
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-8 pb-[calc(6rem+env(safe-area-inset-bottom))] space-y-8">
-        <BrandTitle title="Image Studio" eyebrow="Layers · groups · masks · AI tools" logo={34} size="lg" />
+        {/* Back to the Studios page, where the eye looks first (2026-10-22, owner: "there's no
+            back button to go to the studios page") - the bar above has one too, but small */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <BrandTitle title="Image Studio" eyebrow="Layers · groups · masks · AI tools" logo={34} size="lg" />
+          {onBack && (
+            <button onClick={onBack} className="flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-[12px] font-semibold text-slate-200 hover:text-white hover:border-white/30 hover:bg-white/10 transition-colors">
+              <ArrowLeft size={14} /> All studios
+            </button>
+          )}
+        </div>
 
         {/* ── start something ── */}
         <div className="grid gap-4 lg:grid-cols-3">

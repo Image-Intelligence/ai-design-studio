@@ -127,6 +127,9 @@ export async function POST(req: Request) {
         console.error('[admin/video-status] Failed to upload video to blob (using FAL URL as fallback):', uploadErr)
       }
 
+      // Its Frames ZIP, when the run asked for one (Wan Animate - lib/frames-zip)
+      const framesZip = await (await import('@/lib/frames-zip')).keepFramesZip(result.data)
+
       // Save to DB under the session user
       let savedVideoId: number | null = null
       try {
@@ -165,6 +168,7 @@ export async function POST(req: Request) {
                 motionVideoUrl:       motionVideoUrl || null,
                 keepOriginalSound:    keepOriginalSound ?? true,
                 characterOrientation: characterOrientation || null,
+                ...(framesZip ? { framesZip } : {}),
                 // What it was given (lib/gen-inputs), as the route kept it on the queue row
                 ...(() => { const i = (queueRow?.parameters as { inputs?: unknown } | null)?.inputs; return i && typeof i === 'object' ? { inputs: i } : {} })(),
               } as any,
@@ -195,7 +199,7 @@ export async function POST(req: Request) {
 
       await releaseQueueSlot(requestId, false)
       // draft: the session tile marks itself a draft so its viewer offers "Complete in 1080p"
-      return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId })
+      return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId, ...(framesZip ? { framesZipUrl: framesZip.url } : {}) })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
       await releaseQueueSlot(requestId, true, 'Video generation failed on FAL servers')

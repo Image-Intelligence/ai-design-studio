@@ -14,6 +14,7 @@ import { videoTicketCost, VIDEO_TOOL_MODELS, INPUT_ROUTED_MODELS, ltxFastSeconds
 import { batch0928Mode, batch0928Resolution, batch0928Input } from '@/lib/batch-0928-video'
 import { PIXELCUT_BG_MAX_SECONDS, PIXELCUT_LOOPING, PIXELCUT_VIDEO_ENDPOINTS, pixelcutVideoInput } from '@/lib/pixelcut-video'
 import { BATCH_1003_GENERATORS, BATCH_1003_TOOLS, BATCH_1003_PROMPT_REQUIRED, BATCH_1003_AUDIO_DRIVEN, BATCH_1003_NEEDS_IMAGE, LTX_AUDIO_MAX_SEC, OMNIHUMAN_AUDIO_SEC, batch1003EndpointKey, batch1003Input } from '@/lib/batch-1003-video'
+import { cleanVideoAdvanced } from '@/lib/video-advanced'
 import { BATCH_1007_GENERATORS, BATCH_1007_TOOLS, BATCH_1007_NEEDS_CHARACTER, BATCH_1007_MAX_SEC, RELIGHT_MAX_SEC, batch1007EndpointKey, batch1007Input, cleanKlingElements } from '@/lib/batch-1007-video'
 import { BATCH_0929_GENERATORS, BATCH_0929_TOOLS, BATCH_0929_TEXT_CAPABLE, BATCH_0929_PROMPT_OPTIONAL, batch0929Mode, batch0929EndpointKey, batch0929Input } from '@/lib/batch-0929-video'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
@@ -182,6 +183,8 @@ export async function POST(request: NextRequest) {
       // Luma modify / Ray 3.2 edit: how far the result may move from the source
       lumaMode = 'flex_1',
       videoChoice,
+      // A model's Advanced settings (lib/video-advanced - Wan 2.2 Animate), cleaned before use
+      videoAdvanced,
       videoUpscaleFactor = '2',
       videoToolCreativity = '0.35',
       videoTargetFps = '60',
@@ -444,7 +447,9 @@ export async function POST(request: NextRequest) {
       }
       // VOID's widest window is 197 frames of the source: ~8s at 24 fps, ~6.5s at 30
       if (model === 'void-video-removal' && editVideoDurationSec * (probed?.fps || 24) > 197.5) {
-        return NextResponse.json({ success: false, error: `VOID removes objects from up to 197 frames - about ${Math.floor(197 / (probed?.fps || 24) * 10) / 10}s of this clip. Trim it first.` }, { status: 400 });
+        // trimToSec: the portal opens its trimmer on the clip at this length (it cannot read a clip's frame rate itself)
+        const trimToSec = Math.floor(197 / (probed?.fps || 24) * 10) / 10
+        return NextResponse.json({ success: false, trimToSec, error: `VOID works on up to 197 frames - at this clip's ${Math.round(probed?.fps || 24)} fps that is ${trimToSec}s. Pick the ${trimToSec}s to keep.` }, { status: 400 });
       }
       if (model === 'minimax-h3-max-insert') {
         // fal's limits (seen 2026-10-04): the shot starts >= 1.625s in, and
@@ -895,6 +900,7 @@ export async function POST(request: NextRequest) {
         duration, resolution, aspectRatio: klingAspectRatio, effectiveMode: effectiveSd20Mode, generateAudio,
         sourceWidth: probed?.width, sourceHeight: probed?.height,
         referenceVideoUrls: refVideoList, klingElements,
+        advanced: cleanVideoAdvanced(model, videoAdvanced),
       });
     } else if (BATCH_1003_TOOLS.has(model) || BATCH_1003_GENERATORS.has(model)) {
       // lib/batch-1003-video builds the exact input (inputs checked above)

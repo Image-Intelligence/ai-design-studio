@@ -200,6 +200,14 @@ export async function POST(request: NextRequest) {
             ...(result.data?.draft_id ? { seedanceDraftId: String(result.data.draft_id) } : {}),
             thumbnailUrl: thumbnailUrl || permanentVideoUrl,
             ...(realAspect ? { aspectRatio: realAspect } : {}),
+            // Its Frames ZIP, when the run asked for one (Wan Animate - lib/frames-zip)
+            ...(await (async () => { const z = await (await import('@/lib/frames-zip')).keepFramesZip(result.data); return z ? { framesZip: z } : {} })()),
+            // What it was given (lib/gen-inputs), as the generate route kept it on the queue row - Rescan reads it
+            ...(await (async () => {
+              const q = await prisma.generationQueue.findFirst({ where: { falRequestId: requestId }, select: { parameters: true }, orderBy: { id: 'desc' } }).catch(() => null)
+              const i = (q?.parameters as { inputs?: unknown } | null)?.inputs
+              return i && typeof i === 'object' ? { inputs: i } : {}
+            })()),
           } as any,
         },
       });

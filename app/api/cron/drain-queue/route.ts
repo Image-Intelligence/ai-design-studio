@@ -155,10 +155,12 @@ export async function GET(request: Request) {
         },
         select: {
           id: true, falRequestId: true, parameters: true, modelId: true,
-          prompt: true, ticketCost: true, createdAt: true,
+          prompt: true, ticketCost: true, createdAt: true, userId: true,
         },
+        // A batch of a dozen long clips is normal (Wan Animate) - 8 left the
+        // oldest, likeliest-finished ones waiting for the hourly harvest
         orderBy: { startedAt: 'desc' },
-        take: 8,
+        take: 16,
       })
       for (const j of liveVideo) {
         const vp = (j.parameters ?? {}) as { falEndpoint?: string; usePolling?: boolean }
@@ -175,7 +177,16 @@ export async function GET(request: Request) {
           const { POST: videoStatus } = await import('@/app/api/video/status/route')
           const res = await videoStatus(new NextRequest('http://internal/api/video/status', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            // No session here - settle as the job's owner. Without these the
+            // handler answered 401 every time, so this pass never settled
+            // anything and finished clips waited for the 60-minute harvest
+            // below (Wan 2.2 Animate Replace, 2026-10-22: all landed at 60.8m)
+            headers: {
+              'content-type': 'application/json',
+              ...(process.env.CRON_SECRET
+                ? { 'x-internal-key': process.env.CRON_SECRET, 'x-internal-user': String(j.userId) }
+                : {}),
+            },
             body: JSON.stringify({
               requestId: j.falRequestId,
               falEndpoint: vp.falEndpoint,

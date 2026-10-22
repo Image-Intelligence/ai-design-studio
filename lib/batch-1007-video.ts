@@ -19,6 +19,9 @@
  *   swap         becomes the character in a picture, keeping the footage's
  *                camera, set, timing and lip movement (the "swap the rapper"
  *                music-video edits); Lucy Edit Pro - edits a clip from words
+ *   animate      Wan 2.2 Animate Move (added 2026-10-22, ADMIN ONLY while under
+ *                test) - the picture's character performs the clip's motion,
+ *                in the picture's own setting (Replace keeps the clip's set)
  *
  * One place that decides which fal endpoint runs and builds its exact input,
  * called by app/api/video/generate. Every field was checked against the live
@@ -27,12 +30,12 @@
  */
 
 export const BATCH_1007_GENERATORS = new Set(['vidu-q4', 'kling-v4'])
-export const BATCH_1007_TOOLS = new Set(['minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro', 'minimax-h3-max-reframe', 'kling-v4-edit'])
+export const BATCH_1007_TOOLS = new Set(['minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro', 'minimax-h3-max-reframe', 'kling-v4-edit', 'wan-2.2-animate-move'])
 /** The clip tools that put the character from a picture (the first reference image) into the clip. */
-export const BATCH_1007_NEEDS_CHARACTER = new Set(['wan-2.2-animate-replace', 'dreamactor-v2'])
+export const BATCH_1007_NEEDS_CHARACTER = new Set(['wan-2.2-animate-replace', 'wan-2.2-animate-move', 'dreamactor-v2'])
 /** Longest source clip each takes, seconds (DreamActor: fal's 30s; the others held to the panel's 15s). */
 export const BATCH_1007_MAX_SEC: Record<string, number> = {
-  'minimax-h3-max-relight': 15, 'wan-2.2-animate-replace': 15, 'dreamactor-v2': 30, 'lucy-edit-pro': 15,
+  'minimax-h3-max-relight': 15, 'wan-2.2-animate-replace': 15, 'wan-2.2-animate-move': 15, 'dreamactor-v2': 30, 'lucy-edit-pro': 15,
   // fal takes up to 300s, but past one window it renders overlapping windows
   // and bills the overlap too - held to 15s, the length its price was measured on
   'minimax-h3-max-reframe': 15,
@@ -56,6 +59,7 @@ export const BATCH_1007_ENDPOINTS: Record<string, string> = {
   'vidu-q4-r2v': 'fal-ai/vidu/q4/reference-to-video',
   'minimax-h3-max-relight': 'minimax/h3-max/relight',
   'wan-2.2-animate-replace': 'fal-ai/wan/v2.2-14b/animate/replace',
+  'wan-2.2-animate-move': 'fal-ai/wan/v2.2-14b/animate/move',
   'dreamactor-v2': 'fal-ai/bytedance/dreamactor/v2',
   'lucy-edit-pro': 'decart/lucy-edit/pro',
   'minimax-h3-max-reframe': 'minimax/h3-max/reframe-video',
@@ -135,6 +139,8 @@ export interface Batch1007Params {
   /** Kling 4.0: reference clips and elements. */
   referenceVideoUrls?: string[]
   klingElements?: unknown
+  /** The model's Advanced settings, already cleaned (lib/video-advanced cleanVideoAdvanced). */
+  advanced?: Record<string, string | number | boolean>
 }
 
 /**
@@ -176,12 +182,18 @@ export function batch1007Input(model: string, p: Batch1007Params): Record<string
       return { ...base, image_url: p.imageUrl || refs[0], ...(prompt ? { prompt } : {}) }
     }
     case 'wan-2.2-animate-replace':
-      // The person in the clip becomes the character in the picture; the
-      // clip's camera, set and timing stay. Turbo off: quality over speed
+    case 'wan-2.2-animate-move':
+      // Replace: the person in the clip becomes the character in the picture;
+      // the clip's camera, set and timing stay. Move: the picture's character
+      // performs the clip's motion in the picture's own setting. The panel's
+      // Advanced settings (lib/video-advanced - steps, guidance, shift,
+      // quality, write mode, turbo, seed, safety checkers, frames ZIP) go on
+      // top; without them fal's defaults, quality high and turbo off
       return {
         video_url: p.editVideoUrl, image_url: refs[0] || p.imageUrl,
         resolution: pick(['480p', '580p', '720p'], res, '720p'),
         video_quality: 'high', video_write_mode: 'balanced',
+        ...p.advanced,
       }
     case 'dreamactor-v2':
       // The picture's character performs the clip (motion, face, lips). The
@@ -287,8 +299,9 @@ export function batch1007TicketCost(model: string, o: { duration?: string | numb
       usd = Math.max(1, Math.ceil(Math.min(BATCH_1007_MAX_SEC['minimax-h3-max-reframe'], src) - 0.1)) * (REFRAME_USD[res] ?? REFRAME_USD['768p'])
       break
     }
-    case 'wan-2.2-animate-replace': {
-      // Billed frames / 16; an unknown clip is priced as 10s at 30 fps
+    case 'wan-2.2-animate-replace':
+    case 'wan-2.2-animate-move': {
+      // Billed frames / 16 (Move: the same card, checked 2026-10-22); an unknown clip is priced as 10s at 30 fps
       const src = o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10
       const fps = o.sourceFps && o.sourceFps > 0 ? o.sourceFps : 30
       usd = Math.ceil((src * fps) / 16) * (WAN_ANIMATE_USD[res] ?? WAN_ANIMATE_USD['720p'])

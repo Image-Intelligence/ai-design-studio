@@ -33,6 +33,20 @@ export function newCanvas(w: number, h: number): HTMLCanvasElement {
   c.height = Math.max(1, Math.round(h))
   return c
 }
+/** iPhone / iPad (an iPad's Safari says "Macintosh" but has touch). */
+export const isIOSDevice = () => typeof navigator !== 'undefined' &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
+/** iOS Safari draws nothing on a canvas over 16.7 MP (4096 x 4096) - it just stays blank. */
+export const IOS_MAX_CANVAS_PX = 16_777_216
+/**
+ * The longest side a w x h picture may grow to on this device: `maxSide`, or
+ * on iPhone / iPad what keeps it under the canvas cap (2026-10-22 - a layer
+ * upscaled to 8192px came back as an empty canvas there).
+ */
+export function deviceMaxSide(w: number, h: number, maxSide: number): number {
+  if (!isIOSDevice()) return maxSide
+  return Math.min(maxSide, Math.floor(Math.max(w, h) * Math.sqrt(IOS_MAX_CANVAS_PX / Math.max(1, w * h))))
+}
 export const ctx2d = (c: HTMLCanvasElement) => c.getContext('2d', { willReadFrequently: false })!
 export function copyCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   const c = newCanvas(src.width, src.height)
@@ -368,7 +382,23 @@ export function layerContent(L: StudioLayer, rt: Runtime): HTMLCanvasElement | n
   }
   let out = !rt.live && hasAdjust(L.adjust) ? applyAdjust(base, L.adjust!) : base
   if (L.mask?.enabled && rt.mask) {
-    if (out === rt.pix) out = copyCanvas(out)
+    if (out === rt.pix) {
+      /*
+       * While a stroke is live this runs every frame: the last frame's buffer
+       * is drawn over, not a fresh full-size canvas made (2026-10-21 - on a
+       * masked layer, e.g. after Remove background, every eraser move made a
+       * new one and an iPad ran out of canvas memory: the canvas went black,
+       * the page's animations flickered).
+       */
+      const prev = rt.content
+      if (rt.live && prev && prev !== rt.pix && prev !== rt.mask && prev.width === out.width && prev.height === out.height) {
+        const px = ctx2d(prev)
+        px.globalCompositeOperation = 'copy'
+        px.drawImage(out, 0, 0)
+        px.globalCompositeOperation = 'source-over'
+        out = prev
+      } else out = copyCanvas(out)
+    }
     const x = ctx2d(out)
     x.globalCompositeOperation = 'destination-in'
     x.drawImage(rt.mask, 0, 0, out.width, out.height)

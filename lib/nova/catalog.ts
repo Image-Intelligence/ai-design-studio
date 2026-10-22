@@ -85,7 +85,7 @@ export const needsPicture = (id: string) => !!getFalImageModelSpec(id)?.needsIma
  * would fail - and listing ~40 of them only costs context. Left out until Nova
  * has a video-in tool of its own.
  */
-const VIDEO_IN_TOOL = /upscale|vsr|seedvr|topaz|modify|reframe|-edit|extend|relight|subtitles|translate|sfx|removal|depth|insert|recast|lipsync|animate-replace|dreamactor|lucy|camera|music-video|omnihuman|interpolate|deblur|sdr-to-hdr/
+const VIDEO_IN_TOOL = /upscale|vsr|seedvr|topaz|modify|reframe|-edit|extend|relight|subtitles|translate|sfx|removal|depth|insert|recast|lipsync|animate-replace|animate-move|dreamactor|lucy|camera|music-video|omnihuman|interpolate|deblur|sdr-to-hdr/
 
 export function novaVideoModels(isAdmin: boolean): ChatCreateModel[] {
   return usableCreateModels(isAdmin).filter(m => m.kind === 'video' && !m.disabled && !VIDEO_IN_TOOL.test(m.id) && !novaVideoTool(m.id) && (isAdmin || !ADMIN_ONLY_VIDEO_MODELS.has(m.id)))

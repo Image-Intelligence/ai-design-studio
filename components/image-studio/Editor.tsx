@@ -26,7 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   MousePointer2, SquareDashed, Lasso, Wand2, Crop, Brush, Eraser, Droplet, PaintBucket, Blend, Type, Shapes, Pipette, Hand,
   Undo2, Redo2, ZoomIn, ZoomOut, Maximize2, ArrowLeft, Download, Check, Loader2, X, Ticket, Circle, ArrowLeftRight, PanelRight,
-  Layers as LayersIcon, SlidersHorizontal, Frame, Sparkles, Eraser as EraserIcon, ScissorsLineDashed, Save,
+  Layers as LayersIcon, SlidersHorizontal, Frame, Sparkles, Eraser as EraserIcon, ScissorsLineDashed, Save, ArrowUpRight as ArrowUpRightIcon,
 } from "lucide-react"
 import {
   type StudioDoc, type StudioLayer, type TextProps, type ShapeProps, type ShapeKind,
@@ -36,7 +36,7 @@ import {
   type Runtime, newCanvas, ctx2d, copyCanvas, canvasId, loadToCanvas, fileToCanvas, toBlob, fitWithin, layerMatrix, toLocal, corners,
   contentSize, hitLayer, measureText, drawText, drawShape, layerContent, compose, flatten, layerInCanvasSpace, canvasMaskToLayer,
   selectionFromPath, selectionFromMaskImage, combineSelection, invertSelection, featherSelection, selectionEmpty, selectionBounds,
-  selectionEdges, brushTip, blurCanvas, applyAdjust, floodMask, parseColor, toHex, growMask,
+  selectionEdges, brushTip, blurCanvas, applyAdjust, floodMask, parseColor, toHex, growMask, isIOSDevice, deviceMaxSide,
 } from "./engine"
 import { LayersPanel, AdjustPanel, TextPanel, ShapePanel, CanvasPanel, Slider, ColorField } from "./panels"
 import { AiPanel, type GenRequest } from "./ai-panel"
@@ -44,6 +44,7 @@ import { AiButton } from "./ai-button"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import {
   fillRegion, fillTickets, editAspect, EXPAND_MAX_SIDE, EXPAND_MAX_PIXELS, EXPAND_TICKETS, UPSCALE_MAX_SIDE,
+  UPSCALERS, upscaleFactor, upscaleTickets, type UpscalerId,
 } from "@/lib/image-studio-ai"
 import { gateFileInput, gateUpload } from "@/components/id-verification/IdVerificationGate"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
@@ -139,6 +140,12 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   // Guided background removal's steer ("keep the leash") and the expand model (Bria Expand or Bria Fibo)
   const [guidePrompt, setGuidePrompt] = useState("")
   const [expandModel, setExpandModel] = useState<"bria-expand" | "bria-fibo-expand">("bria-expand")
+  // Expanding one layer (expandLayer): how much, as a share of its size, and on which sides
+  const [layerGrow, setLayerGrow] = useState(0.25)
+  const [layerGrowSides, setLayerGrowSides] = useState({ l: true, t: true, r: true, b: true })
+  // Upscaling one layer from its own box (the AI tab's Upscale card does the same)
+  const [layerUpscaler, setLayerUpscaler] = useState<UpscalerId>("seedvr2-upscale")
+  const [layerUpFactor, setLayerUpFactor] = useState(2)
   const [aiPoints, setAiPoints] = useState<{ x: number; y: number; label: 0 | 1 }[]>([])
   const [aiBox, setAiBox] = useState<Rect | null>(null)
   const [aiBusy, setAiBusy] = useState<string | null>(null)
@@ -184,9 +191,12 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
 
   // ── rendering ──
   const raf = useRef(0)
+  // A brush stroke's pending redraw of its layer, done once per frame (movePaint)
+  const paintFlush = useRef<(() => void) | null>(null)
   const render = useCallback(() => {
     cancelAnimationFrame(raf.current)
     raf.current = requestAnimationFrame(() => {
+      if (paintFlush.current) { paintFlush.current(); paintFlush.current = null }
       const d = docRef.current, c = stageRef.current
       if (d && c) {
         if (c.width !== d.width || c.height !== d.height) { c.width = d.width; c.height = d.height }
@@ -209,7 +219,14 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     for (const l of d.layers) { const r = rts.current.get(l.id); if (r) pix.set(l.id, { pix: r.pix, mask: r.mask }) }
     return { label, doc: clone(d), pix }
   }
-  const budget = typeof navigator !== "undefined" && (navigator as any).deviceMemory && (navigator as any).deviceMemory <= 4 ? 220e6 : 900e6
+  /*
+   * Safari never says how much memory a device has (no deviceMemory), so an
+   * iPad got the desktop's 900 MB of undo pixels - on top of the layers
+   * themselves, past what iOS lets a page keep in canvases (2026-10-21: the
+   * canvas went black mid-erase). iPhone / iPad (an iPad says "Macintosh"
+   * but has touch) get the small budget.
+   */
+  const budget = isIOSDevice() ? 200e6 : typeof navigator !== "undefined" && (navigator as any).deviceMemory && (navigator as any).deviceMemory <= 4 ? 220e6 : 900e6
   const pushHistory = useCallback((label: string) => {
     if (!docRef.current) return
     history.current = history.current.slice(0, histIdx.current + 1)
@@ -897,8 +914,15 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     const cur = { x: (lp.x * D.base.width) / D.layer.w, y: (lp.y * D.base.height) / D.layer.h }
     stampLine(D, D.last, cur)
     D.last = cur
-    rebuildPaint(D)
-    rtOf(D.layer.id).content = undefined
+    /*
+     * The layer is redrawn once per FRAME, not per pointer event (2026-10-21,
+     * owner on iPad: erasing on a 3-layer canvas went "very very choppy", then
+     * the canvas went black). A Pencil sends up to 240 moves a second and each
+     * redrew the whole layer twice; the dabs are stamped as they come (cheap),
+     * the layer catches up in the frame. The cached content keeps its buffer
+     * (layerContent reuses it while live) - only its key is dropped.
+     */
+    paintFlush.current = () => { rebuildPaint(D); rtOf(D.layer.id).contentKey = undefined }
     render()
   }
   /*
@@ -910,9 +934,16 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
    */
   const endPaint = (D: any = drag.current) => {
     if (!D?.layer) return
+    // The last dabs, if their frame has not come yet - the undo step must hold them
+    if (paintFlush.current) { paintFlush.current(); paintFlush.current = null }
     const rt = rtOf(D.layer.id)
     rt.live = false
+    // The stroke's scratch canvases are let go at once (width 0): Safari frees a
+    // canvas's memory only when it is collected, and an iPad runs out long before
+    const old = rt.content
     rt.content = undefined
+    if (old && old !== rt.pix && old !== rt.mask) old.width = old.height = 0
+    for (const k of ["stroke", "clip", "effect", "effectClip"]) if (D[k] && D[k] !== rt.pix && D[k] !== rt.mask) D[k].width = D[k].height = 0
     pushHistory(D.tool === "brush" ? (D.target === "mask" ? "Hide (mask)" : "Brush") : D.tool === "eraser" ? (D.target === "mask" ? "Reveal (mask)" : "Erase") : blurModeRef.current === "blur" ? "Blur" : "Sharpen")
     render()
   }
@@ -1827,8 +1858,10 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         if (!src) throw new Error("Pick an image layer to upscale")
         const alpha = hasAlpha(src)
         const image = await putBlob("ai", alpha ? await toBlob(src, "image/png") : await toBlob(src, "image/jpeg", 0.95))
-        const j = await postGen({ op: "upscale", image, upscaler: req.upscaler, factor: req.factor, maxSide: req.target === "canvas" ? MAX_CANVAS_SIDE : UPSCALE_MAX_SIDE })
-        const up = await loadToCanvas(j.url, UPSCALE_MAX_SIDE)
+        // No bigger than this device can draw (an iPad's canvases stop at 16.7 MP)
+        const maxSide = deviceMaxSide(src.width, src.height, req.target === "canvas" ? MAX_CANVAS_SIDE : UPSCALE_MAX_SIDE)
+        const j = await postGen({ op: "upscale", image, upscaler: req.upscaler, factor: req.factor, maxSide })
+        const up = await loadToCanvas(j.url, maxSide)
         // The upscalers return an opaque picture: the source's transparency goes back on
         if (alpha) { const x = ctx2d(up); x.globalCompositeOperation = "destination-in"; x.drawImage(src, 0, 0, up.width, up.height); x.globalCompositeOperation = "source-over" }
         else uploaded.current.set(up, j.url)
@@ -1941,6 +1974,91 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
       setCrop({ x: 0, y: 0, w: CW, h: CH })
       requestAnimationFrame(() => fitView())
       flash(`Expanded to ${CW}×${CH} - the new area is a layer under the others${paidNote(j.tickets)}`)
+    } catch (e: any) {
+      flash(String(e?.message || e), true)
+    } finally {
+      setAiBusy(null)
+    }
+  }
+
+  /*
+   * Generative expand on ONE layer (2026-10-21, owner: "I should be able to
+   * use the generative expand on each layer"). The crop tool's expand grows
+   * the whole canvas; this grows the selected picture layer - by a share of
+   * its size on the sides picked, or out to the canvas edges - in place: its
+   * pixels are replaced (one undo step), its box grows to match, and a mask
+   * grows with it (the new area shown). Sides are as seen on the canvas; a
+   * flipped layer's are swapped into its own pixels.
+   */
+  const expandLayer = async (toCanvas: boolean) => {
+    const d = docRef.current
+    if (!d || aiBusy) return
+    const cur = d.layers.find(l => l.id === selectedIdRef.current)
+    const rt = cur ? rtOf(cur.id) : null
+    if (!cur || cur.kind !== "raster" || !rt?.pix) { flash("Pick an image layer to expand", true); return }
+    const pix = rt.pix, pw = pix.width, ph = pix.height
+    const ux = pw / cur.w, uy = ph / cur.h // layer pixels per canvas unit
+    let left: number, top: number, right: number, bottom: number // canvas units, as seen
+    if (toCanvas) {
+      if ((((cur.rotation % 360) + 360) % 360) > 0.5) { flash("Straighten the layer first - growing to the canvas edges needs it unrotated", true); return }
+      left = Math.max(0, cur.x); top = Math.max(0, cur.y)
+      right = Math.max(0, d.width - (cur.x + cur.w)); bottom = Math.max(0, d.height - (cur.y + cur.h))
+      if (left + top + right + bottom < 2) { flash("The layer already covers the canvas", true); return }
+    } else {
+      const s = layerGrowSides
+      if (!s.l && !s.t && !s.r && !s.b) { flash("Pick a side to grow", true); return }
+      left = s.l ? cur.w * layerGrow : 0; right = s.r ? cur.w * layerGrow : 0
+      top = s.t ? cur.h * layerGrow : 0; bottom = s.b ? cur.h * layerGrow : 0
+    }
+    if (cur.flipX) [left, right] = [right, left]
+    if (cur.flipY) [top, bottom] = [bottom, top]
+    // In the layer's own pixels
+    const L = left * ux, T = top * uy, R = right * ux, B = bottom * uy
+    const PW = pw + L + R, PH = ph + T + B
+    // Bria takes less than 5000 x 5000: a bigger result is asked for smaller (the box keeps its size)
+    const k = Math.min(1, EXPAND_MAX_SIDE / Math.max(PW, PH), Math.sqrt(EXPAND_MAX_PIXELS / (PW * PH)))
+    const kw = Math.round(PW * k), kh = Math.round(PH * k)
+    const iw = Math.max(8, Math.min(kw, Math.round(pw * k))), ih = Math.max(8, Math.min(kh, Math.round(ph * k)))
+    const ax = Math.max(0, Math.min(kw - iw, Math.round(L * k))), ay = Math.max(0, Math.min(kh - ih, Math.round(T * k)))
+    if (kw < 16 || kh < 16 || (iw >= kw - 1 && ih >= kh - 1)) { flash("That adds too little to expand - grow it more", true); return }
+    setAiBusy(toCanvas ? "expand-layer-canvas" : "expand-layer")
+    try {
+      const alpha = hasAlpha(pix)
+      const img = newCanvas(iw, ih), x = ctx2d(img)
+      x.fillStyle = "#fff"; x.fillRect(0, 0, iw, ih)
+      x.drawImage(pix, 0, 0, iw, ih)
+      const image = await putBlob("ai", await toBlob(img, "image/jpeg", 0.95))
+      const j = await postGen({ op: "expand", image, prompt: expandPrompt.trim() || undefined, expand: { canvas: [kw, kh], at: [ax, ay] }, ...(expandModel === "bria-fibo-expand" ? { expandModel } : {}) })
+      const out = await loadToCanvas(j.url, MAX_CANVAS_SIDE)
+      // Where the layer was see-through it still is (the model fills it in white); the new area is solid
+      const ox = (L / PW) * out.width, oy = (T / PH) * out.height, ow = (pw / PW) * out.width, oh = (ph / PH) * out.height
+      if (alpha) {
+        const a = newCanvas(out.width, out.height), axx = ctx2d(a)
+        axx.fillStyle = "#fff"; axx.fillRect(0, 0, a.width, a.height)
+        axx.clearRect(ox, oy, ow, oh); axx.drawImage(pix, ox, oy, ow, oh)
+        const ox2 = ctx2d(out); ox2.globalCompositeOperation = "destination-in"; ox2.drawImage(a, 0, 0); ox2.globalCompositeOperation = "source-over"
+        a.width = a.height = 0
+      } else uploaded.current.set(out, j.url)
+      // A mask grows with the layer: the old one where the picture was, the new area shown
+      let mask: HTMLCanvasElement | undefined
+      if (cur.mask && rt.mask) {
+        const MW = Math.max(1, Math.round(rt.mask.width * PW / pw)), MH = Math.max(1, Math.round(rt.mask.height * PH / ph))
+        mask = newCanvas(MW, MH)
+        const mx = ctx2d(mask)
+        mx.fillStyle = "#fff"; mx.fillRect(0, 0, MW, MH)
+        const rx = (L / PW) * MW, ry = (T / PH) * MH, rw = (pw / PW) * MW, rh = (ph / PH) * MH
+        mx.clearRect(rx, ry, rw, rh); mx.drawImage(rt.mask, rx, ry, rw, rh)
+      }
+      // The new box: grown on the sides asked, its centre moved through the layer's own rotation / flips
+      const newW = cur.w * PW / pw, newH = cur.h * PH / ph
+      const c = layerMatrix(cur).transformPoint(new DOMPoint((cur.w + (R - L) / ux) / 2, (cur.h + (B - T) / uy) / 2))
+      rt.pix = out; rt.content = undefined
+      if (mask) rt.mask = mask
+      layerPatch("Expand layer", l => ({
+        src: null, pw: out.width, ph: out.height, x: c.x - newW / 2, y: c.y - newH / 2, w: newW, h: newH,
+        ...(mask && l.mask ? { mask: { ...l.mask, src: null, mw: mask.width, mh: mask.height } } : {}),
+      }))
+      flash(`Layer expanded to ${out.width}×${out.height}${paidNote(j.tickets)}`)
     } catch (e: any) {
       flash(String(e?.message || e), true)
     } finally {
@@ -2177,7 +2295,6 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
     }, 300)
     return () => clearTimeout(t)
   }, [panel, panelOpen, doc, pixVersion, selVersion, selectedId])  // eslint-disable-line react-hooks/exhaustive-deps
-  const painting = ["brush", "eraser", "blur", "fill", "gradient"].includes(tool)
 
   if (loadError) return <div className="flex-1 flex flex-col items-center justify-center gap-3 text-sm text-slate-300"><p>{loadError}</p><button onClick={onExit} className="px-3 py-1.5 rounded-lg border border-white/15 hover:bg-white/5">Back</button></div>
   if (!doc) return <div className="flex-1 flex items-center justify-center"><Loader2 className="animate-spin text-slate-500" size={22} /></div>
@@ -2414,7 +2531,11 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
                   {selLayer?.kind === "text" && <TextPanel layer={selLayer} onText={setText} onCommit={pushHistory} focusKey={textFocus} />}
                   {selLayer?.kind === "shape" && <ShapePanel layer={selLayer} onShape={setShape} onCommit={pushHistory} />}
                   {selLayer?.kind === "adjust" && <AdjustPanel layer={selLayer} onPatch={patchLayer} onCommit={pushHistory} />}
-                  {selLayer?.kind === "raster" && !painting && (
+                  {/* Whatever tool is in hand (2026-10-21, owner: background removal "doesn't let me
+                      use it again"): it hid under the paint tools - and a removal suggests painting
+                      the mask, so after the first run the brush was out and the button gone, on
+                      every layer. A run with the mask being painted re-cuts the same layer. */}
+                  {selLayer?.kind === "raster" && (
                     <div className="silver-edge rounded-xl p-2.5 flex flex-wrap items-start gap-2">
                       <AiButton busy={aiBusy === "remove-bg"} disabled={!!aiBusy} onClick={() => runAi("remove-bg")} cost={STUDIO_AI_TICKETS.subject} model="BiRefNet v2"><ScissorsLineDashed size={12} /> Remove background</AiButton>
                       {/* Guided removal (public 2026-10-16): say what to keep or drop */}
@@ -2424,6 +2545,59 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
                           <AiButton busy={aiBusy === "guided-bg"} disabled={!!aiBusy} onClick={() => runAi("guided-bg")} cost={STUDIO_AI_TICKETS.guided} model="Bria Guided"><ScissorsLineDashed size={12} /> Guided remove</AiButton>
                         </div>
                       )}
+                      {/* Generative expand on this layer alone (expandLayer) */}
+                      <div className="w-full border-t border-white/[0.06] pt-2 space-y-1.5">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Expand this layer</div>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {([["l", "Left"], ["t", "Top"], ["r", "Right"], ["b", "Bottom"]] as const).map(([k, label]) => (
+                            <button key={k} onClick={() => setLayerGrowSides(s => ({ ...s, [k]: !s[k] }))}
+                              className={`rounded-md border px-1.5 py-0.5 text-[10.5px] ${layerGrowSides[k] ? "border-white/40 bg-white/15 text-white" : "border-white/10 text-slate-500 hover:text-slate-300"}`}>{label}</button>
+                          ))}
+                          <select value={layerGrow} onChange={e => setLayerGrow(Number(e.target.value))} title="How far each side grows, as a share of the layer's size" className="ml-auto rounded-md bg-black/40 border border-white/15 px-1 py-0.5 text-[10.5px] text-white focus:outline-none focus:border-white/40">
+                            {[0.1, 0.25, 0.5, 1].map(v => <option key={v} value={v}>+{Math.round(v * 100)}%</option>)}
+                          </select>
+                        </div>
+                        <input value={expandPrompt} onChange={e => setExpandPrompt(e.target.value)} placeholder="The new space (optional)…" maxLength={500} className="w-full rounded-md bg-black/40 border border-white/15 px-2 py-1.5 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-white/40" />
+                        <div className="flex flex-wrap items-start gap-2">
+                          <AiButton busy={aiBusy === "expand-layer"} disabled={!!aiBusy} onClick={() => void expandLayer(false)} cost={EXPAND_TICKETS} model={expandModel === "bria-fibo-expand" ? "Bria Fibo Expand" : "Bria Expand"}><Maximize2 size={12} /> Expand</AiButton>
+                          {doc && Math.abs(selLayer.rotation % 360) < 0.5 && (selLayer.x > 0.5 || selLayer.y > 0.5 || selLayer.x + selLayer.w < doc.width - 0.5 || selLayer.y + selLayer.h < doc.height - 0.5) && (
+                            <AiButton busy={aiBusy === "expand-layer-canvas"} disabled={!!aiBusy} onClick={() => void expandLayer(true)} cost={EXPAND_TICKETS} title="Grow the layer out to the edges of the canvas">To canvas edges</AiButton>
+                          )}
+                          <select value={expandModel} onChange={e => setExpandModel(e.target.value as typeof expandModel)} title="Which model paints the new space" className="rounded-md bg-black/40 border border-white/15 px-1 py-1 text-[10.5px] text-white focus:outline-none focus:border-white/40">
+                            <option value="bria-expand">Bria Expand</option>
+                            <option value="bria-fibo-expand">Bria Fibo Expand</option>
+                          </select>
+                        </div>
+                      </div>
+                      {/* Upscale this layer alone (2026-10-22, owner: "I should be able to upscale each
+                          individual layer") - it was only in the AI tab's Upscale card. Sharper pixels,
+                          same place and size on the canvas. */}
+                      {(() => {
+                        const px = rts.current.get(selLayer.id)?.pix
+                        if (!px) return null
+                        const f = upscaleFactor(layerUpscaler, layerUpFactor, px.width, px.height, deviceMaxSide(px.width, px.height, UPSCALE_MAX_SIDE))
+                        const label = UPSCALERS.find(u => u.id === layerUpscaler)?.label ?? layerUpscaler
+                        return (
+                          <div className="w-full border-t border-white/[0.06] pt-2 space-y-1.5">
+                            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Upscale this layer</div>
+                            <div className="flex flex-wrap items-center gap-1">
+                              <select value={layerUpscaler} onChange={e => setLayerUpscaler(e.target.value as UpscalerId)} title={UPSCALERS.find(u => u.id === layerUpscaler)?.hint} className="rounded-md bg-black/40 border border-white/15 px-1 py-0.5 text-[10.5px] text-white focus:outline-none focus:border-white/40">
+                                {UPSCALERS.map(u => <option key={u.id} value={u.id}>{u.label}</option>)}
+                              </select>
+                              {[2, 4].map(v => (
+                                <button key={v} onClick={() => setLayerUpFactor(v)}
+                                  className={`rounded-md border px-1.5 py-0.5 text-[10.5px] ${layerUpFactor === v ? "border-white/40 bg-white/15 text-white" : "border-white/10 text-slate-500 hover:text-slate-300"}`}>{v}×</button>
+                              ))}
+                              <span className="ml-auto font-mono text-[10px] text-slate-500">{px.width}×{px.height}</span>
+                            </div>
+                            <AiButton busy={aiBusy === "upscale-layer"} disabled={!!aiBusy || !f} cost={f ? upscaleTickets(layerUpscaler, f, px.width, px.height) : 0}
+                              model={`${label}${f ? ` · ${f}×` : ""}`}
+                              onClick={() => void runGen({ op: "upscale", target: "layer", upscaler: layerUpscaler, factor: f })}>
+                              <ArrowUpRightIcon size={12} /> {f ? `Upscale to ${Math.round(px.width * f)}×${Math.round(px.height * f)}` : "Already as large as it can go"}
+                            </AiButton>
+                          </div>
+                        )
+                      })()}
                       <button onClick={openAiPanel} className="text-[10px] text-slate-400 hover:text-white mt-1.5">More AI tools →</button>
                     </div>
                   )}

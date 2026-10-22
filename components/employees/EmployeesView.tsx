@@ -266,7 +266,10 @@ export function EmployeesView({
               if (isLabStudio(active)) { onSelect(null); window.location.href = "/admin/lab?tab=studios"; return }
               onSelect(null)
             }}
-            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
+            // A real button, not a faint link (2026-10-22, owner: "there's no back
+            // button to go to the studios page" - it was grey 11px text)
+            title={isLabStudio(active) ? "Back to the Lab" : "Back to all studios"}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/15 bg-white/[0.04] text-[12px] font-semibold text-slate-200 hover:text-white hover:border-white/30 hover:bg-white/10 transition-colors"
           >
             <ArrowLeft size={13} /> {isLabStudio(active) ? "Lab" : "Studios"}
           </button>

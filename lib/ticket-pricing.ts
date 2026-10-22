@@ -39,6 +39,8 @@ export const VIDEO_TOOL_MODELS = new Set([
   'mirelo-sfx2-video',
   // 2026-10-07: re-light a clip from a lit-sphere picture; swap its person for a character; edit it from words
   'minimax-h3-max-relight', 'wan-2.2-animate-replace', 'dreamactor-v2', 'lucy-edit-pro',
+  // 2026-10-22: the picture's character performs the clip's motion
+  'wan-2.2-animate-move',
   // 2026-10-21: fit a clip onto a new aspect ratio, outpainting the rest; Kling 4.0's clip edit
   'minimax-h3-max-reframe', 'kling-v4-edit',
   // Pixelcut: cut the subject out of a clip
@@ -1169,6 +1171,7 @@ export const VIDEO_MODEL_SPECS: VideoModelPricingSpec[] = [
   { id: 'kling-v4-edit', label: 'Kling 4.0 Edit', kind: 'tool', durations: [], resolutions: ['720p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'priced as clip references: $0.094 / $0.141 per s of source + output (2x the clip). Admin only.' },
   { id: 'minimax-h3-max-reframe', label: 'H3 Max Reframe', kind: 'tool', durations: [], resolutions: ['480p', '768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 / $0.08 / $0.16 per s of the source (1080p measured 2026-10-21; billed by the second, 15s max).' },
   { id: 'wan-2.2-animate-replace', label: 'Wan 2.2 Animate Replace', kind: 'tool', durations: [], resolutions: ['480p', '580p', '720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.04 / $0.06 / $0.08 per "video second" (16 frames of the clip).' },
+  { id: 'wan-2.2-animate-move', label: 'Wan 2.2 Animate Move', kind: 'tool', durations: [], resolutions: ['480p', '580p', '720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.04 / $0.06 / $0.08 per "video second" (16 frames of the clip) - the same card as Replace.' },
   { id: 'dreamactor-v2', label: 'DreamActor v2', kind: 'tool', durations: [], resolutions: [], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.05 per s of the clip (30s max).' },
   { id: 'lucy-edit-pro', label: 'Lucy Edit Pro', kind: 'tool', durations: [], resolutions: ['720p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.15 per s of the clip (720p only).' },
   { id: 'minimax-h3-max-recast', label: 'MiniMax H3 Max Recast', kind: 'tool', durations: [], resolutions: ['768p', '1080p'], supportsAudio: false, durationSource: 'source-clip', note: 'fal $0.30 / $0.45 per s of clip (5-30s).' },

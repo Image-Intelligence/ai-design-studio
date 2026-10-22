@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Boxes, Check, ChevronLeft, Folder, Images, Loader2, Play, Search, X } from "lucide-react"
+import { Boxes, Check, ChevronLeft, Folder, ImagePlus, Images, Loader2, Play, Search, X } from "lucide-react"
 
 /*
  * "Choose from My Generations" (2026-10-08) - pick pictures for a video
@@ -20,27 +20,35 @@ import { Boxes, Check, ChevronLeft, Folder, Images, Loader2, Play, Search, X } f
  * CLIPS (2026-10-21, owner: "users should be able to choose from their
  * generated videos to use in each model as an input"): `media: "video"` lists
  * the account's videos instead - My Generations' clips and the clips saved in
- * Assets - for the video models' clip slots (reference videos, a tool's source
+ * Assets) - for the video models' clip slots (reference videos, a tool's source
  * clip, motion / lip-sync / edit sources) and Nova's attachments.
+ *
+ * REFS (2026-10-21, owner: "there's no option to select from my library (the
+ * refs dropdown section library)"): a third tab lists the account's reference
+ * library (/api/user/references) - its pictures, or its clips for a clip
+ * slot. The Refs panel's own "From My Generations" leaves it out (`refs:
+ * false`): adding the library to itself is nothing.
  */
 type Folder = { id: number; name: string; parentId: number | null }
 type Pic = { id: string; url: string; thumb: string; kind?: "video" | "audio" }
 type Asset = { id: number; name: string; kind: string; refs: { id: string; url: string; kind?: "video"; thumb?: string | null }[] }
 /**
  * What the picker lists: pictures (the default), clips ("video", 2026-10-21),
+ * pictures and clips ("visual" - what the Refs library holds, 2026-10-21),
  * or everything incl. audio ("all" - Nova Studio's references, 2026-10-19).
  */
-export type LibraryMedia = "image" | "video" | "all"
-type Request = { max: number; title?: string; media?: LibraryMedia; resolve: (urls: string[]) => void; resolveItems?: (items: PickedItem[]) => void }
+export type LibraryMedia = "image" | "video" | "visual" | "all"
+type PickerOpts = { max?: number; title?: string; media?: LibraryMedia; refs?: boolean }
+type Request = { max: number; title?: string; media?: LibraryMedia; refs?: boolean; resolve: (urls: string[]) => void; resolveItems?: (items: PickedItem[]) => void }
 /** A picked item with its My Generations row id (null for an asset's own uploaded picture or clip). */
 export type PickedItem = { url: string; thumb: string; generationId: number | null; kind: "image" | "video" | "audio" }
 
 let setRequestGlobal: ((r: Request | null) => void) | null = null
 /** Open the picker; resolves with up to `max` picture (or, with media "video", clip) links ([] if closed). */
-export function openLibraryPicker(o: { max?: number; title?: string; media?: LibraryMedia } = {}): Promise<string[]> {
+export function openLibraryPicker(o: PickerOpts = {}): Promise<string[]> {
   return new Promise(resolve => {
     if (!setRequestGlobal) { resolve([]); return }
-    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, resolve })
+    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, refs: o.refs, resolve })
   })
 }
 
@@ -50,14 +58,27 @@ export function openLibraryPicker(o: { max?: number; title?: string; media?: Lib
  * pictures are generations when they were added from My Generations; one
  * uploaded straight into an asset has no row, so its id is null.
  */
-export function openLibraryPickerItems(o: { max?: number; title?: string; media?: LibraryMedia } = {}): Promise<PickedItem[]> {
+export function openLibraryPickerItems(o: PickerOpts = {}): Promise<PickedItem[]> {
   return new Promise(resolve => {
     if (!setRequestGlobal) { resolve([]); return }
-    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, resolve: () => {}, resolveItems: resolve })
+    setRequestGlobal({ max: Math.max(1, o.max ?? 1), title: o.title, media: o.media, refs: o.refs, resolve: () => {}, resolveItems: resolve })
   })
 }
 
 const PAGE = 48
+const CLIP_RE = /\.(mp4|webm|mov|m4v)(\?|#|$)/i
+const MESH_RE = /\.(glb|gltf|obj|stl|fbx|ply|usdz|3mf)(\?|#|$)/i
+type RefRow = { id: number; url: string; thumbUrl?: string }
+
+/*
+ * Kept between opens for the tab's session (2026-10-21, owner on iPad: "every
+ * time I press it takes a few seconds"): the folder list, the folder last
+ * looked at, and each folder's first page - shown at once on the next open
+ * while a fresh copy loads behind it.
+ */
+let foldersCache: Folder[] | null = null
+let lastFolder: number | "root" | "all" = "all"
+const firstPages = new Map<string, { pics: Pic[]; cursor: { before: string; beforeId: number } | null; more: boolean }>()
 const thumbOf = (img: any): string => img.thumbnailUrl || img.videoMetadata?.thumbnailUrl || `/api/images/${img.id}?thumb=1`
 
 export function LibraryPickerHost() {
@@ -77,12 +98,29 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
   }))
   const media: LibraryMedia = req.media ?? "image"
   // What the picker holds, in words
-  const noun = (n: number) => (media === "video" ? (n === 1 ? "clip" : "clips") : media === "all" ? (n === 1 ? "item" : "items") : (n === 1 ? "picture" : "pictures"))
+  const noun = (n: number) => (media === "video" ? (n === 1 ? "clip" : "clips") : media === "all" || media === "visual" ? (n === 1 ? "item" : "items") : (n === 1 ? "picture" : "pictures"))
   // An asset's refs this picker can offer (an asset holds pictures and, since 2026-10-21, clips)
   const assetRefs = (a: Asset) => a.refs.filter(r => (media === "video" ? r.kind === "video" : media === "image" ? r.kind !== "video" : true))
-  const [tab, setTab] = useState<"gens" | "assets">("gens")
-  const [folders, setFolders] = useState<Folder[]>([])
-  const [folderId, setFolderId] = useState<number | "root" | "all">("all")
+  const [tab, setTab] = useState<"gens" | "assets" | "refs">("gens")
+  // The reference library (the Refs panel's), loaded when its tab opens; 3D files never offered
+  const showRefs = req.refs !== false
+  const [refRows, setRefRows] = useState<RefRow[] | null>(null)
+  useEffect(() => {
+    if (tab !== "refs" || refRows) return
+    fetch("/api/user/references").then(r => (r.ok ? r.json() : null)).then(d => setRefRows(d?.references ?? [])).catch(() => setRefRows([]))
+  }, [tab, refRows])
+  const refPics: Pic[] = (refRows ?? [])
+    .filter(r => !MESH_RE.test(r.url) && (media === "video" ? CLIP_RE.test(r.url) : media === "image" ? !CLIP_RE.test(r.url) : true))
+    .map(r => (CLIP_RE.test(r.url) ? { id: `ref-${r.id}`, url: r.url, thumb: r.url, kind: "video" as const } : { id: `ref-${r.id}`, url: r.url, thumb: r.thumbUrl || r.url }))
+    .reverse()
+  const [folders, setFolders] = useState<Folder[]>(() => foldersCache ?? [])
+  const [folderId, setFolderIdState] = useState<number | "root" | "all">(() => lastFolder)
+  const setFolderId = (id: number | "root" | "all") => { lastFolder = id; setFolderIdState(id) }
+  // The scrolling grid, and the marker under it that loads the next page as it comes into view
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  // The clip under the pointer plays (one at a time - see tile())
+  const [hoverClip, setHoverClip] = useState<string | null>(null)
   const [q, setQ] = useState("")
   const [pics, setPics] = useState<Pic[]>([])
   // Where the next page starts (keyset: older than this row) - see load()
@@ -103,7 +141,7 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
   const [preview, setPreview] = useState<Pic | null>(null)
 
   useEffect(() => {
-    fetch("/api/user/generation-folders").then(r => (r.ok ? r.json() : null)).then(d => setFolders(d?.folders ?? [])).catch(() => {})
+    fetch("/api/user/generation-folders").then(r => (r.ok ? r.json() : null)).then(d => { if (d?.folders) { foldersCache = d.folders; setFolders(d.folders) } }).catch(() => {})
   }, [])
   useEffect(() => {
     if (tab !== "assets" || assets) return
@@ -120,12 +158,16 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
    */
   const load = useCallback(async (reset: boolean) => {
     const seq = ++loadSeq.current
+    const pageKey = `${media}:${folderId}`
+    // A folder seen before shows its first page at once; the fresh one replaces it
+    const cached = reset ? firstPages.get(pageKey) : undefined
+    if (cached) { setPics(cached.pics); cursorRef.current = cached.cursor; setMore(cached.more) }
     setLoading(true)
     try {
       const fq = folderId === "all" ? "" : `&folderId=${folderId}`
       const cur = reset ? null : cursorRef.current
       const cq = cur ? `&before=${encodeURIComponent(cur.before)}&beforeId=${cur.beforeId}` : ""
-      const r = await fetch(`/api/my-images?${media === "all" ? "" : `type=${media}&`}cursor=1&limit=${PAGE}${fq}${cq}`)
+      const r = await fetch(`/api/my-images?${media === "all" || media === "visual" ? "" : `type=${media}&`}cursor=1&limit=${PAGE}${fq}${cq}`)
       const d = r.ok ? await r.json() : null
       if (seq !== loadSeq.current) return
       const kindOf = (img: any): Pic["kind"] => {
@@ -135,6 +177,7 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
         return undefined
       }
       const rows: Pic[] = (d?.images ?? []).map((img: any) => ({ id: String(img.id), url: img.imageUrl, thumb: thumbOf(img), kind: kindOf(img) }))
+        .filter((p: Pic) => media !== "visual" || p.kind !== "audio")
       setPics(prev => {
         const base = reset ? [] : prev
         const have = new Set(base.map(x => x.id))
@@ -142,10 +185,24 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
       })
       cursorRef.current = d?.nextCursor ?? null
       setMore(!!d?.hasMore && !!d?.nextCursor)
+      if (reset && d) firstPages.set(pageKey, { pics: rows, cursor: d.nextCursor ?? null, more: !!d.hasMore && !!d.nextCursor })
     } finally { if (seq === loadSeq.current) setLoading(false) }
   }, [folderId, media])
   // A new folder / tab starts from the newest
   useEffect(() => { if (tab === "gens") void load(true) }, [tab, load])
+  /*
+   * The next page loads as the bottom comes into view (2026-10-21, owner on
+   * iPad: a big folder "is barely letting me scroll" - it stopped after the
+   * first 48 until "Load more" was found and tapped). The button stays as a
+   * fallback.
+   */
+  useEffect(() => {
+    const el = sentinelRef.current, root = scrollRef.current
+    if (!el || !root || tab !== "gens" || !more || loading) return
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) void load(false) }, { root, rootMargin: "0px 0px 600px 0px" })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [tab, more, loading, load, pics.length])
 
   const toggle = (url: string) => setPicked(prev => {
     if (prev.includes(url)) return prev.filter(u => u !== url)
@@ -176,12 +233,20 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
         {p.kind === "audio"
           ? <span className="w-full h-full flex items-center justify-center bg-gradient-to-br from-amber-500/20 to-slate-900 text-[10px] font-bold uppercase tracking-wider text-amber-200">Audio</span>
           // A clip: its poster, the footage playing while hovered (no poster: its first frame)
+          // A clip WITH a poster is that picture until the pointer is on it (then the footage
+          // plays); a page of <video> players was what made the picker slow and stiff on iPad
           : p.kind === "video"
-            ? <video src={p.thumb === p.url ? `${p.url}#t=0.1` : p.url} poster={p.thumb === p.url ? undefined : p.thumb} muted loop playsInline preload={p.thumb === p.url ? "metadata" : "none"}
-                onMouseEnter={e => { void e.currentTarget.play().catch(() => {}) }}
-                onMouseLeave={e => { e.currentTarget.pause() }}
-                className="w-full h-full object-cover pointer-events-auto" />
-            : <img src={p.thumb} alt="" loading="lazy" className="w-full h-full object-cover" />}
+            ? (p.thumb !== p.url && hoverClip !== p.url
+                ? <img src={p.thumb} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover"
+                    // A mouse only: on iPad a tap is "hovered" first, and swapping the tile then ate the tap
+                    onPointerEnter={e => { if (e.pointerType === "mouse") setHoverClip(p.url) }} />
+                : <video src={p.thumb === p.url ? `${p.url}#t=0.1` : p.url} poster={p.thumb === p.url ? undefined : p.thumb} muted loop playsInline
+                    preload={p.thumb === p.url ? "metadata" : "auto"} autoPlay={hoverClip === p.url}
+                    onPointerEnter={e => { if (e.pointerType !== "mouse") return; setHoverClip(p.url); void e.currentTarget.play().catch(() => {}) }}
+                    onPointerLeave={e => { if (e.pointerType !== "mouse") return; e.currentTarget.pause(); setHoverClip(h => (h === p.url ? null : h)) }}
+                    className="w-full h-full object-cover pointer-events-auto" />)
+            : <img src={p.thumb} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover"
+                onError={e => { if (p.thumb !== p.url && e.currentTarget.src !== p.url) e.currentTarget.src = p.url }} />}
         {p.kind === "video" && <span className="absolute bottom-1.5 left-1.5 px-1 py-px rounded bg-black/70 text-[9px] font-bold uppercase tracking-wider text-white">Video</span>}
         {p.kind === "video" && (
           <span role="button" tabIndex={0} title="Watch this clip" aria-label="Watch this clip"
@@ -207,13 +272,13 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
   )
 
   return (
-    <div data-keep-refs-open className="fixed inset-0 z-[10050] flex items-start justify-center p-3 pt-[6dvh] bg-black/75 backdrop-blur-sm" onClick={() => close([])}>
+    <div data-keep-refs-open className="fixed inset-0 z-[10050] flex items-start justify-center p-3 pt-[6dvh] bg-black/85 overscroll-none" onClick={() => close([])}>
       <div className="relative w-full max-w-5xl h-[84dvh] rounded-2xl silver-edge bg-[#070b14] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Header: tabs, close */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.06]">
           <p className="text-sm font-bold text-white mr-2">{req.title ?? (req.max > 1 ? `Choose up to ${req.max} ${noun(2)}` : `Choose a ${noun(1)}`)}</p>
           <div className="flex items-center gap-0.5 p-1 rounded-lg border border-white/10 bg-black/40">
-            {([["gens", "My Generations", Images], ["assets", "Assets", Boxes]] as const).map(([k, label, Icon]) => (
+            {([["gens", "My Generations", Images], ["assets", "Assets", Boxes], ...(showRefs ? [["refs", "Refs library", ImagePlus]] as const : [])] as const).map(([k, label, Icon]) => (
               <button key={k} onClick={() => { setTab(k); setOpenAsset(null) }}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold ${tab === k ? "bg-white/[0.14] text-white" : "text-slate-500 hover:text-slate-200"}`}>
                 <Icon size={12} /> {label}
@@ -233,14 +298,14 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
                   <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search folders…"
                     className="w-full pl-7 pr-2 py-1.5 rounded-md bg-black/40 border border-white/10 text-[12px] text-white placeholder:text-slate-600 focus:outline-none focus:border-white/30" />
                 </div>
-                <div className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] space-y-0.5">
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain [scrollbar-width:thin] space-y-0.5">
                   {!q.trim() && folderBtn("all", `All ${noun(2)}`, 0, <Images size={12} className="shrink-0 text-slate-500" />)}
                   {!q.trim() && folderBtn("root", "Unfiled")}
                   {shown.map(({ f, depth }) => folderBtn(f.id, f.name, depth))}
                 </div>
               </div>
               {/* Pictures */}
-              <div className="flex-1 min-w-0 overflow-y-auto p-3">
+              <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto overscroll-contain touch-pan-y p-3">
                 {/* Phones: the folder list as a dropdown */}
                 <select value={String(folderId)} onChange={e => setFolderId(e.target.value === "all" || e.target.value === "root" ? e.target.value : Number(e.target.value))}
                   className="sm:hidden w-full mb-3 rounded-lg bg-black/40 border border-white/10 px-2 py-2 text-[12px] text-white">
@@ -251,6 +316,7 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
                 <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">{pics.map(tile)}</div>
                 {!loading && pics.length === 0 && <p className="py-16 text-center text-sm text-slate-500">No {noun(2)} in this folder</p>}
                 {loading && <div className="flex justify-center py-6"><Loader2 size={18} className="animate-spin text-slate-400" /></div>}
+                <div ref={sentinelRef} className="h-px" />
                 {more && !loading && (
                   <div className="flex justify-center py-4">
                     <button onClick={() => void load(false)} className="px-4 py-2 rounded-lg border border-white/15 bg-white/[0.05] text-xs text-slate-200 hover:bg-white/10">Load more</button>
@@ -258,8 +324,20 @@ function Picker({ req, close: closeUrls }: { req: Request; close: (urls: string[
                 )}
               </div>
             </>
+          ) : tab === "refs" ? (
+            <div className="flex-1 min-w-0 overflow-y-auto overscroll-contain touch-pan-y p-3">
+              {refRows === null ? (
+                <div className="flex justify-center py-16"><Loader2 size={18} className="animate-spin text-slate-400" /></div>
+              ) : refPics.length === 0 ? (
+                <p className="py-16 text-center text-sm text-slate-500">
+                  {media === "video" ? "No clips in your Refs library yet - upload videos in the Refs panel" : `No ${noun(2)} in your Refs library yet - upload them in the Refs panel`}
+                </p>
+              ) : (
+                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">{refPics.map(tile)}</div>
+              )}
+            </div>
           ) : (
-            <div className="flex-1 min-w-0 overflow-y-auto p-3">
+            <div className="flex-1 min-w-0 overflow-y-auto overscroll-contain touch-pan-y p-3">
               {assets === null ? (
                 <div className="flex justify-center py-16"><Loader2 size={18} className="animate-spin text-slate-400" /></div>
               ) : openAsset ? (

@@ -34,6 +34,9 @@ function setElements(next: KlingElementPick[]) {
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l) } }
 /** What the submit sends: { frontal, views }[] (the route cleans it again). */
 export const getKlingElements = () => elements.map(e => ({ frontal: e.frontal, views: e.views }))
+/** Put a past run's elements back (the feed popup's Rescan) - named in order, as the prompt's @Element1... */
+export const restoreKlingElements = (list: { frontal: string; views: string[] }[]) =>
+  setElements(list.filter(e => e?.frontal).map((e, i) => ({ frontal: e.frontal, views: (e.views ?? []).filter(Boolean), name: `Element ${i + 1}`, thumbs: [e.frontal, ...(e.views ?? []).filter(Boolean)].slice(0, 4) })))
 
 type LibAsset = { id: number; name: string; kind: string; refs: { url: string; thumb?: string | null }[] }
 

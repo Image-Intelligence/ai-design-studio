@@ -21,6 +21,8 @@ const setPicked = (id: number | null) => { picked = id; listeners.forEach(l => l
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l) } }
 /** The song the lyrics video is made from (a GeneratedImage id), or null. */
 export const getMurekaSong = () => picked
+/** Pick a song by id (the feed popup's Rescan); an id no longer listed falls back to the newest when the picker loads. */
+export const pickMurekaSong = (id: number) => setPicked(id)
 // The songs last listed - so the generating tile can show which song it is
 let listed: Song[] = []
 /** The picked song's link and name (the generating tile's popup), or null. */
