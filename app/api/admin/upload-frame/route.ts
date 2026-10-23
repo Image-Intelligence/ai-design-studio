@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server'
 import { uploadToR2 } from '@/lib/r2'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 // POST /api/admin/upload-frame
 // Accepts multipart FormData with a single 'file' field, uploads to R2, returns the public URL.
 // Used by the portal-v2 video scanner for start/end frame, audio, and lipsync source video uploads.
 export async function POST(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const form = await req.formData()
     const file = form.get('file') as File | null

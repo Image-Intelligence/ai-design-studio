@@ -32,12 +32,13 @@ const API = 'https://api.runpod.ai/v2'
 // enough for a cold start and a queue
 const RP_LINK_TTL = 24 * 3600
 // RunPod's per-job ceiling (the endpoint's default is 10 minutes - too short
-// for a cold start plus a render). 160 min: the workers' own render cap is 150
-// (MoCha 720p Full at 161 frames is ~70 min, H3 Character Swap 30 s at 768p
-// ~80); the stuck-job rule below (3 h) still sits above it
-const EXECUTION_TIMEOUT_MS = 160 * 60 * 1000
+// for a cold start plus a render). 320 min: MoCha's worker stops a render at
+// 300 (720p Full at 161 frames is ~3.6 h; the submit route refuses anything
+// estimated past RUNPOD_RENDER_CAP_S), plus a cold start and its download;
+// the stuck-job rule below (6 h) still sits above it
+const EXECUTION_TIMEOUT_MS = 320 * 60 * 1000
 // A job still running this long after it was sent has hung - give up on it
-const STALE_MS = 3 * 3600 * 1000
+const STALE_MS = 6 * 3600 * 1000
 // A job RunPod no longer knows and whose output never appeared
 const GONE_GRACE_MS = 30 * 60 * 1000
 
@@ -114,23 +115,43 @@ export async function submitRunpodVideoJob(o: {
   userId: number; modelId: string; prompt: string; input: Record<string, unknown>
   parameters: Record<string, unknown>; ticketCost?: number
 }): Promise<{ queueId: number; requestId: string }> {
+  /*
+   * The submit route charges before calling this. Until the row exists
+   * nothing can refund it later, so a throw before then gives the charge back
+   * here (2026-10-23 billing sweep - a DB error used to answer 500 with the
+   * user charged and no job).
+   */
+  const refundUnmade = async () => {
+    if ((o.ticketCost ?? 0) <= 0) return
+    const u = await prisma.user.findUnique({ where: { id: o.userId }, select: { email: true } }).catch(() => null)
+    if (u?.email) await refundGenerationTickets(o.userId, u.email, o.ticketCost!).catch(() => {})
+  }
   const endpointId = endpointFor(o.modelId)
-  if (!process.env.RUNPOD_API_KEY || !endpointId) throw new Error(`RunPod is not set up for this model yet - add RUNPOD_API_KEY and ${runpodEndpointEnvName(o.modelId)}`)
-  const row = await prisma.generationQueue.create({
-    data: {
-      userId: o.userId, modelId: o.modelId, modelType: 'video', prompt: o.prompt,
-      parameters: { ...o.parameters, provider: 'runpod' } as object,
-      status: 'processing', startedAt: new Date(), ticketCost: o.ticketCost ?? 0,
-    },
-    select: { id: true, userId: true, modelId: true, modelType: true, prompt: true, ticketCost: true, createdAt: true, falRequestId: true, parameters: true },
-  })
+  if (!process.env.RUNPOD_API_KEY || !endpointId) {
+    await refundUnmade()
+    throw new Error(`RunPod is not set up for this model yet - add RUNPOD_API_KEY and ${runpodEndpointEnvName(o.modelId)}`)
+  }
+  let row: Row
+  try {
+    row = await prisma.generationQueue.create({
+      data: {
+        userId: o.userId, modelId: o.modelId, modelType: 'video', prompt: o.prompt,
+        parameters: { ...o.parameters, provider: 'runpod', chargeMode: 'deduct' } as object,
+        status: 'processing', startedAt: new Date(), ticketCost: o.ticketCost ?? 0,
+      },
+      select: { id: true, userId: true, modelId: true, modelType: true, prompt: true, ticketCost: true, createdAt: true, falRequestId: true, parameters: true },
+    })
+  } catch (e) {
+    await refundUnmade()
+    throw e
+  }
   const outputKey = userKey(o.userId, `runpod/${o.modelId}-${row.id}.mp4`)
   const input = { ...o.input, output_r2_key: outputKey }
   try {
     const requestId = await rpSubmit(endpointId, input)
     await prisma.generationQueue.update({
       where: { id: row.id },
-      data: { falRequestId: requestId, parameters: { ...o.parameters, provider: 'runpod', rpOutputKey: outputKey, rpInput: input } as object },
+      data: { falRequestId: requestId, parameters: { ...o.parameters, provider: 'runpod', chargeMode: 'deduct', rpOutputKey: outputKey, rpInput: input } as object },
     })
     return { queueId: row.id, requestId }
   } catch (e: any) {
@@ -237,7 +258,7 @@ export async function settleRunpodRow(row: Row): Promise<SettleResult> {
   const st = await rpStatus(endpointId, rid)
   if (st.status === 'unknown') return { status: 'in_progress' }
   if (st.status === 'IN_QUEUE' || st.status === 'IN_PROGRESS') {
-    return Date.now() - sentAt > STALE_MS ? failRow(row, 'The render ran for over 3 hours and was given up on') : { status: 'in_progress' }
+    return Date.now() - sentAt > STALE_MS ? failRow(row, 'The render ran for over 6 hours and was given up on') : { status: 'in_progress' }
   }
   if (st.status === 'CANCELLED') return failRow(row, 'The job was canceled on RunPod')
   if (st.status === 'TIMED_OUT') return failRow(row, 'The render ran past its time limit on RunPod')

@@ -11,7 +11,7 @@ import { SHOT_EDIT_TICKETS, geminiUsage } from '@/lib/ai-text-pricing'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import {
   STORYBOARD_IMAGE_MODELS, STORYBOARD_VIDEO_MODELS, STORYBOARD_VIDEO_IDS, DURATIONS,
-  sanitizeShots, boardMode, imageModelLabel, stillModelSpec,
+  sanitizeShots, isAssetShot, assetShots, storyShots, boardMode, imageModelLabel, stillModelSpec,
   AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, cueKindOf, voicePicker, voiceMenu, VOICE_HINTS, STORYBOARD_MUSIC_MODELS, musicSpanSeconds,
 } from '@/lib/storyboard'
 
@@ -68,7 +68,10 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const instruction = typeof body.instruction === 'string' ? body.instruction.trim().slice(0, 1500) : ''
   if (!instruction) return jsonPrivate({ error: 'Say what to change' }, { status: 400 })
   const scope: Scope = body.scope === 'image' || body.scope === 'video' ? body.scope : 'both'
-  const shots = sanitizeShots(board.shots)
+  // Its neighbours are in its own list: the film's, or Scene 0's (the asset scratch paper)
+  const all = sanitizeShots(board.shots)
+  const hit = all.find(s => s.id === body.shotId)
+  const shots = hit && isAssetShot(hit) ? assetShots(all) : storyShots(all)
   const i = shots.findIndex(s => s.id === body.shotId)
   if (i < 0) return jsonPrivate({ error: 'That shot is not on the board (save first?)' }, { status: 404 })
   const shot = shots[i]

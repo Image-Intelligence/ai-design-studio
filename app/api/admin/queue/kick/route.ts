@@ -3,12 +3,16 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
 import { syncActiveCounters } from '../stats/route'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 // POST /api/admin/queue/kick
 // Fixes a stuck queue: syncs the drifted currentActive counter to the real count
 // (usually 0 when all processing jobs are gone), then fires promoteNextQueuedJob()
 // to fill every free global slot from the waiting queue.
-export async function POST() {
+export async function POST(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     // 1. Sync counters from ground truth so currentActive reflects reality
     await syncActiveCounters()

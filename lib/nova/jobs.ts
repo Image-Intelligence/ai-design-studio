@@ -120,6 +120,8 @@ export async function settleQueueJob(user: { id: number; email: string }, queueI
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(headers ?? {}) },
         body: JSON.stringify({
+          // A short-lived caller never claims a video's save it could be killed in the middle of (lib/video-save-guard); page polls and the cron save it
+          mayClaimSave: false,
           requestId: job.falRequestId, falEndpoint: p.falEndpoint, prompt: job.prompt, model: job.modelId,
           duration: p.duration, resolution: p.resolution, ticketCost: job.ticketCost, queuedAt: job.createdAt.getTime(),
         }),

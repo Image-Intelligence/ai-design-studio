@@ -116,7 +116,9 @@ export async function POST(req: Request) {
       })
       return jsonPrivate({ success: true, queueId: job.queueId, requestId: job.requestId, queued: job.queued, ticketCost: charge, permanentReferenceUrls: refs })
     } catch (e) {
-      // A refused send has already failed its row - and refunded it (failRow)
+      // A refused send has already failed its row - and refunded it (failRow);
+      // a row that couldn't be made is refunded by queueHiggsfieldJob itself
+      // (2026-10-23 billing sweep)
       throw e
     }
   } catch (e: any) {

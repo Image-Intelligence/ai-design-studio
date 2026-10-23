@@ -37,6 +37,8 @@ import {
  */
 export const runtime = 'nodejs'
 export const maxDuration = 300
+/** How long the model may take - leaves time to fetch, store, and refund a timeout, inside maxDuration. */
+const AUDIO_WAIT_MS = 220_000
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -128,18 +130,33 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!cf.ok) return jsonPrivate({ error: cf.reason }, { status: 400 })
   }
 
-  // Marked "making" on the shot (every session sees it), then paid for
+  /*
+   * Marked "making" on the shot (every session sees it), then paid for.
+   * 2026-10-23 billing sweep: the "already making" check above reads the
+   * board as this request found it, so two tabs pressing Record together
+   * both passed it and both paid. It is made again HERE, under the row lock,
+   * on the board as it stands - the second press finds the first's "making"
+   * and is refused before anything is charged.
+   */
   const startAt = Date.now()
+  let busy = false
   const making = kind === 'line'
     ? (s: ReturnType<typeof sanitizeShots>[number]) => {
         const list = [...(s.lines ?? [])]
         const k = list.findIndex(x => x.id === line!.id)
+        if (k >= 0 && liveAudio(list[k]) === 'making') { busy = true; return null }
+        if (k < 0 && list.length >= MAX_LINES_PER_SHOT) return null
         const v = { ...line!, status: 'making' as const, at: startAt, error: null }
         if (k >= 0) list[k] = { ...list[k], ...v, url: list[k].url, seconds: list[k].seconds }; else list.push(v)
         return { lines: list.slice(0, MAX_LINES_PER_SHOT) }
       }
-    : () => ({ music: { ...cue!, status: 'making' as const, at: startAt, error: null } })
-  if (!(await writeShot(board.id, shot.id, making))) return jsonPrivate({ error: 'That shot is gone' }, { status: 404 })
+    : (s: ReturnType<typeof sanitizeShots>[number]) => {
+        if (s.music && liveAudio(s.music) === 'making') { busy = true; return null }
+        return { music: { ...cue!, status: 'making' as const, at: startAt, error: null } }
+      }
+  const marked = await writeShot(board.id, shot.id, making)
+  if (busy) return jsonPrivate({ error: kind === 'line' ? 'This line is being recorded already' : 'This cue is being composed already', busy: true }, { status: 409 })
+  if (!marked) return jsonPrivate({ error: kind === 'line' ? `That shot is gone, or already has ${MAX_LINES_PER_SHOT} lines` : 'That shot is gone' }, { status: 404 })
   const paid = await deductGenerationTickets(user.id, user.email, cost)
   const settle = (fields: Partial<VoiceLine & MusicCue>) => writeShot(board.id, shot.id, s => {
     if (kind === 'line') {
@@ -158,10 +175,12 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   }
 
   try {
-    const out: any = await fal.subscribe(spec.endpoint, { input })
+    // Bounded (2026-10-23 billing sweep): a function killed at maxDuration
+    // never reaches the refund below - give up in time to refund instead
+    const out: any = await fal.subscribe(spec.endpoint, { input, abortSignal: AbortSignal.timeout(AUDIO_WAIT_MS) })
     const file = spec.outputs(out?.data)[0]
     if (!file?.url) throw new Error('The model returned no audio')
-    const res = await fetch(file.url)
+    const res = await fetch(file.url, { signal: AbortSignal.timeout(30_000) })
     if (!res.ok) throw new Error(`Could not fetch the audio (${res.status})`)
     const buf = Buffer.from(await res.arrayBuffer())
     const ct = res.headers.get('content-type') ?? 'audio/mpeg'

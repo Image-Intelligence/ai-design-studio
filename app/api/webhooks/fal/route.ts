@@ -3,11 +3,41 @@ import { NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { uploadToR2 } from '@/lib/r2'
 import prisma from '@/lib/prisma'
-import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
-import { releaseReservedTickets } from '@/lib/ticket-gate'
+import { promoteNextQueuedJob, releaseHeldSlots } from '@/lib/fal-queue'
+import { chargeModeOf, returnJobTickets } from '@/lib/queue-settle'
 import { getTrainerFamily } from '@/lib/trainer-families'
 import { falDetailMessage } from '@/lib/fal-error'
 import { ensureThumbnail, prepareImageVariants, attachImageVariants } from '@/lib/thumbnail'
+
+/**
+ * Give back the slots a settled job held - only those, floored at 0
+ * (lib/fal-queue heldSlots) - then let the next queued job in. The old code
+ * decremented BOTH counters unfloored for every job, though SeeDream 5 /
+ * Recraft bump only the global one and legacy canvas rows bumped none
+ * (2026-10-23 billing sweep). Winner of the row's status flip only.
+ */
+async function releaseHeldSlotsAndPromote(row: { modelId: string; parameters: unknown; status: string }): Promise<void> {
+  await releaseHeldSlots(row)
+  await promoteNextQueuedJob()
+}
+
+/** The statuses a fal job can still be settled from. Anything else (completed, failed, cancelled) is final. */
+const OPEN_STATUSES = ['queued', 'processing']
+
+/** The parts of a fal webhook body this handler reads. */
+export type FalWebhookBody = {
+  request_id?: string
+  status?: string
+  payload?: any
+  error?: any
+}
+
+/**
+ * What handleFalWebhook did - for the cron's lost-webhook settler, which calls
+ * it in-process (app/api/cron/drain-queue) with a body built from fal's queue
+ * API, so the claim, the save and the charge are the same code either way.
+ */
+export type FalWebhookOutcome = 'completed' | 'failed' | 'skipped' | 'lora' | 'not-found' | 'bad-request' | 'unknown-status'
 
 // FAL.ai calls this endpoint when an async job completes or fails.
 // We must return 200 quickly — FAL.ai will retry on non-200 responses.
@@ -17,12 +47,28 @@ export async function POST(request: Request) {
     console.log('=== FAL.AI WEBHOOK RECEIVED ===')
     console.log('request_id:', body.request_id)
     console.log('status:', body.status)
+    const outcome = await handleFalWebhook(body)
+    if (outcome === 'bad-request') return NextResponse.json({ error: 'Missing request_id' }, { status: 400 })
+    return NextResponse.json({ received: true })
+  } catch (err: any) {
+    console.error('FAL.ai webhook error:', err)
+    // Return 200 to prevent FAL.ai from retrying endlessly on our internal errors
+    return NextResponse.json({ received: true })
+  }
+}
 
+/**
+ * The webhook's whole job, minus the HTTP. Exported (2026-10-23 billing
+ * sweep) so the cron can settle a job whose webhook never arrived through the
+ * very same claim / save / charge path instead of a second copy of it.
+ */
+export async function handleFalWebhook(body: FalWebhookBody): Promise<FalWebhookOutcome> {
+  {
     const { request_id, status, payload, error } = body
 
     if (!request_id) {
       console.error('Webhook missing request_id')
-      return NextResponse.json({ error: 'Missing request_id' }, { status: 400 })
+      return 'bad-request'
     }
 
     // Look up the queue entry by falRequestId
@@ -46,7 +92,7 @@ export async function POST(request: Request) {
          */
         if (loraJob.status === 'cancelled') {
           console.log(`LoRA job #${loraJob.id} was cancelled — ignoring this callback`)
-          return NextResponse.json({ received: true, ignored: 'cancelled' })
+          return 'lora'
         }
 
         if (status === 'ERROR' || status === 'FAILED' || error) {
@@ -99,7 +145,7 @@ export async function POST(request: Request) {
               data: { status: 'failed', errorMsg: why },
             })
             console.log(`LoRA job #${loraJob.id} finished with no weights: ${why}`)
-            return NextResponse.json({ received: true })
+            return 'lora'
           }
           await prisma.loraTrainingJob.update({
             where: { id: loraJob.id },
@@ -123,30 +169,78 @@ export async function POST(request: Request) {
           }
         }
 
-        return NextResponse.json({ received: true })
+        return 'lora'
       }
 
       console.error(`No queue item or LoRA job found for request_id: ${request_id}`)
       // Return 200 anyway — if we return non-200 FAL.ai retries indefinitely
-      return NextResponse.json({ received: true })
+      return 'not-found'
     }
 
-    // Idempotency: if already settled, acknowledge and skip.
-    // Use an atomic status update (updateMany with status filter) so concurrent webhook
-    // calls can't both pass this check and double-release the reserved tickets.
-    const claimed = await prisma.generationQueue.updateMany({
-      where: { id: queueItem.id, status: { notIn: ['completed', 'failed'] } },
-      data: { status: 'processing' }, // no-op state change just to acquire the lock
-    })
-    if (claimed.count === 0) {
-      console.log(`Queue item #${queueItem.id} already settled or claimed by concurrent call — skipping`)
-      return NextResponse.json({ received: true })
+    // Idempotency: ONE delivery handles a job.
+    //
+    // fal re-sends a webhook it thinks went unanswered - and saving a big
+    // picture (download, R2 upload, thumbnails) can outlast its wait. The old
+    // guard only skipped a SETTLED row ('processing' -> 'processing' matched
+    // every delivery still in flight), so a re-send that arrived mid-save
+    // saved the picture again: 2026-10-23, three NanoBanana 2.1 Edit jobs on
+    // dirtysecretai@ became six tiles, byte-identical copies 10-70 s apart.
+    // Now the first delivery stamps the row (webhookClaimAt) in one atomic
+    // UPDATE and every other one skips; a claim older than five minutes is
+    // taken as dead (the function timed out mid-save) and may be retaken.
+    // 'cancelled' is final too (2026-10-23 billing sweep): an admin cancel has
+    // already given the tickets back, so a late result must not be saved or
+    // charged.
+    const claimNow = Date.now()
+    const claimed = await prisma.$executeRaw`
+      UPDATE "GenerationQueue"
+      SET parameters = jsonb_set(COALESCE(parameters::jsonb, '{}'::jsonb), '{webhookClaimAt}', to_jsonb(${claimNow}::bigint))
+      WHERE id = ${queueItem.id}
+        AND status NOT IN ('completed', 'failed', 'cancelled')
+        AND (parameters->>'webhookClaimAt' IS NULL OR (parameters->>'webhookClaimAt')::bigint < ${claimNow - 5 * 60_000}::bigint)`
+    if (claimed === 0) {
+      console.log(`Queue item #${queueItem.id} already settled or being handled by another delivery — skipping`)
+      return 'skipped'
     }
+    // A retaken claim whose first delivery saved before dying: settle the job
+    // with those rows instead of saving the pictures again (success path below)
+    const alreadySaved = await prisma.generatedImage.findMany({
+      where: { falRequestId: request_id }, select: { id: true, imageUrl: true }, orderBy: { id: 'asc' },
+    })
 
     console.log(`Found queue item #${queueItem.id} for user ${queueItem.userId}`)
 
     const params = queueItem.parameters as any
     console.log(`[webhook] loraUrl=${params?.loraUrl ?? 'none'} loraName=${params?.loraName ?? 'none'} endpoint stored=${params?.falEndpoint ?? 'immediate-path'}`)
+
+    /**
+     * Every way this job can fail, settled once (2026-10-23 billing sweep).
+     * The status flip comes FIRST and is guarded, so of any racing settlers
+     * (a re-sent webhook past its claim, the cron, the jobs poll's sweep)
+     * exactly one gets it - and only that one returns the tickets (released
+     * for a reservation, refunded for a charge: lib/queue-settle) and gives
+     * back the slots the job actually held. The old code released first and
+     * flipped after, unguarded, and decremented both counters regardless.
+     */
+    const failJob = async (errorMessage: string, extraParams?: Record<string, unknown>): Promise<FalWebhookOutcome> => {
+      const flipped = await prisma.generationQueue.updateMany({
+        where: { id: queueItem.id, status: { in: OPEN_STATUSES } },
+        data: {
+          status: 'failed',
+          completedAt: new Date(),
+          errorMessage,
+          ...(extraParams ? { parameters: { ...(params ?? {}), ...extraParams } } : {}),
+        },
+      })
+      if (flipped.count === 0) {
+        console.log(`Queue item #${queueItem.id} was settled elsewhere — not failing it again`)
+        return 'skipped'
+      }
+      try { await returnJobTickets(queueItem) }
+      catch (e) { console.error(`[webhook] tickets for failed job #${queueItem.id} could not be returned:`, e) }
+      await releaseHeldSlotsAndPromote(queueItem)
+      return 'failed'
+    }
 
     // ─── FAILURE PATH ───────────────────────────────────────────────
     if (status === 'ERROR' || status === 'FAILED' || error) {
@@ -162,39 +256,11 @@ export async function POST(request: Request) {
       console.error(`FAL.ai full error object:`, JSON.stringify(error))
       console.error(`FAL.ai full body:`, JSON.stringify(body))
 
-      await Promise.all([
-        // Release the reservation — balance was never decremented so no refund needed.
-        // GREATEST(0,...) ensures reserved never goes negative (which would inflate balance checks).
-        releaseReservedTickets(queueItem.userId, queueItem.ticketCost),
-        // Mark queue item failed
-        prisma.generationQueue.update({
-          where: { id: queueItem.id },
-          data: {
-            status: 'failed',
-            completedAt: new Date(),
-            errorMessage: errorMsg,
-            // Dev-server logs scroll away; the provider's own words belong on
-            // the row so a failure can be diagnosed after the fact.
-            parameters: { ...(params ?? {}), falError: String(rawDetail).slice(0, 600) },
-          }
-        })
-      ])
-
-      // Decrement active counts (per-model + global) then open a slot for the next queued job
-      await Promise.all([
-        prisma.modelConcurrencyLimit.updateMany({
-          where: { modelId: queueItem.modelId },
-          data: { currentActive: { decrement: 1 } },
-        }),
-        prisma.modelConcurrencyLimit.updateMany({
-          where: { modelId: FAL_GLOBAL_ID },
-          data: { currentActive: { decrement: 1 } },
-        }),
-      ])
-      await promoteNextQueuedJob()
-
-      console.log(`Queue item #${queueItem.id} marked as failed, tickets refunded`)
-      return NextResponse.json({ received: true })
+      // Dev-server logs scroll away; the provider's own words belong on
+      // the row so a failure can be diagnosed after the fact.
+      const outcome = await failJob(errorMsg, { falError: String(rawDetail).slice(0, 600) })
+      if (outcome === 'failed') console.log(`Queue item #${queueItem.id} marked as failed, tickets returned`)
+      return outcome
     }
 
     // ─── SUCCESS PATH ────────────────────────────────────────────────
@@ -210,29 +276,7 @@ export async function POST(request: Request) {
 
       if (images.length === 0) {
         console.error('Webhook payload has no images:', JSON.stringify(payload).substring(0, 300))
-        await Promise.all([
-          releaseReservedTickets(queueItem.userId, queueItem.ticketCost),
-          prisma.generationQueue.update({
-            where: { id: queueItem.id },
-            data: {
-              status: 'failed',
-              completedAt: new Date(),
-              errorMessage: 'No images in FAL.ai response'
-            }
-          })
-        ])
-        await Promise.all([
-          prisma.modelConcurrencyLimit.updateMany({
-            where: { modelId: queueItem.modelId },
-            data: { currentActive: { decrement: 1 } },
-          }),
-          prisma.modelConcurrencyLimit.updateMany({
-            where: { modelId: FAL_GLOBAL_ID },
-            data: { currentActive: { decrement: 1 } },
-          }),
-        ])
-        await promoteNextQueuedJob()
-        return NextResponse.json({ received: true })
+        return failJob('No images in FAL.ai response')
       }
 
       // Upload each image to Vercel Blob and create DB records
@@ -242,7 +286,8 @@ export async function POST(request: Request) {
       const expiresAt = new Date()
       expiresAt.setFullYear(expiresAt.getFullYear() + 100)
 
-      if (isLayerize) {
+      for (const r of alreadySaved) uploadedImages.push({ url: r.imageUrl, id: r.id })
+      if (isLayerize && !alreadySaved.length) {
         const saved = await saveLayerizeResult({
           userId: queueItem.userId, prompt: params?.savePrompt || queueItem.prompt, modelId: queueItem.modelId,
           falRequestId: queueItem.falRequestId, createdAt: queueItem.createdAt,
@@ -255,7 +300,7 @@ export async function POST(request: Request) {
           after(() => { void ensureThumbnail(saved.id) })
         }
       }
-      for (let i = 0; i < (isLayerize ? 0 : images.length); i++) {
+      for (let i = 0; i < (isLayerize || alreadySaved.length ? 0 : images.length); i++) {
         const falImageUrl = images[i].url
         console.log(`Downloading image ${i + 1}/${images.length} from FAL.ai: ${falImageUrl}`)
 
@@ -385,91 +430,79 @@ export async function POST(request: Request) {
 
       if (uploadedImages.length === 0) {
         // All image downloads/uploads failed
-        await Promise.all([
-          releaseReservedTickets(queueItem.userId, queueItem.ticketCost),
-          prisma.generationQueue.update({
-            where: { id: queueItem.id },
-            data: {
-              status: 'failed',
-              completedAt: new Date(),
-              errorMessage: 'Failed to process all images from FAL.ai'
-            }
-          })
-        ])
-        await Promise.all([
-          prisma.modelConcurrencyLimit.updateMany({
-            where: { modelId: queueItem.modelId },
-            data: { currentActive: { decrement: 1 } },
-          }),
-          prisma.modelConcurrencyLimit.updateMany({
-            where: { modelId: FAL_GLOBAL_ID },
-            data: { currentActive: { decrement: 1 } },
-          }),
-        ])
-        await promoteNextQueuedJob()
-        return NextResponse.json({ received: true })
+        return failJob('Failed to process all images from FAL.ai')
       }
 
-      // Finalize tickets — this is the FIRST and ONLY balance deduction.
-      // The generate route only reserved tickets; the actual spend happens here
-      // once FAL.ai confirms the image was successfully delivered.
-      // GREATEST(0, reserved - cost) ensures reserved never goes negative.
-      if (!isAdminMode) {
-        await prisma.$executeRaw`
-          UPDATE "Ticket"
-          SET
-            -- never below 0 (2026-10-19: a reservation skipped for an admin email was charged here unreserved)
-            balance     = GREATEST(0, balance - ${queueItem.ticketCost}),
-            reserved    = GREATEST(0, reserved - ${queueItem.ticketCost}),
-            "totalUsed" = "totalUsed" + ${queueItem.ticketCost}
-          WHERE "userId" = ${queueItem.userId}
-        `
-      } else {
-        // Admin mode — just clear the reservation without charging
-        await releaseReservedTickets(queueItem.userId, queueItem.ticketCost)
-      }
-
-      // Mark queue item completed with the primary result URL and image ID
-      await prisma.generationQueue.update({
-        where: { id: queueItem.id },
-        data: {
-          status: 'completed',
-          completedAt: new Date(),
-          resultUrl: uploadedImages[0].url,
-          resultImageId: uploadedImages[0].id,
-          // Store all image URLs in parameters for multi-image models (NanoBanana)
-          parameters: {
-            ...(params || {}),
-            completedImageUrls: uploadedImages.map(img => img.url),
-            completedImageIds: uploadedImages.map(img => img.id),
+      /*
+       * Flip to completed AND settle the tickets in ONE transaction, the flip
+       * first and guarded (2026-10-23 billing sweep). It used to charge, THEN
+       * mark the row completed: a function that died between the two left a
+       * row that was charged but still open, the five-minute claim retake
+       * above took it again - and charged again. Now the charge exists only if
+       * the flip committed with it, and of any racing settlers only the one
+       * whose flip matched a row (count 1) charges at all.
+       *
+       * What "settle" means depends on how the tickets were taken
+       * (lib/queue-settle chargeModeOf):
+       *   reserve (every webhook job today): the reservation becomes spend -
+       *     the FIRST and ONLY balance deduction, never below 0 (2026-10-19:
+       *     a reservation skipped for an admin email was charged here
+       *     unreserved). Admin mode: just clear the reservation.
+       *   deduct: already paid at submit - nothing more to take.
+       */
+      const cost = Math.max(0, Math.round(queueItem.ticketCost || 0))
+      const reserveMode = chargeModeOf(queueItem) === 'reserve'
+      const won = await prisma.$transaction(async tx => {
+        const flipped = await tx.generationQueue.updateMany({
+          where: { id: queueItem.id, status: { in: OPEN_STATUSES } },
+          data: {
+            status: 'completed',
+            completedAt: new Date(),
+            resultUrl: uploadedImages[0].url,
+            resultImageId: uploadedImages[0].id,
+            // Store all image URLs in parameters for multi-image models (NanoBanana)
+            parameters: {
+              ...(params || {}),
+              completedImageUrls: uploadedImages.map(img => img.url),
+              completedImageIds: uploadedImages.map(img => img.id),
+            },
+          },
+        })
+        if (flipped.count === 0) return false
+        if (cost > 0 && reserveMode) {
+          if (!isAdminMode) {
+            await tx.$executeRaw`
+              UPDATE "Ticket"
+              SET
+                balance     = GREATEST(0, balance - ${cost}),
+                reserved    = GREATEST(0, reserved - ${cost}),
+                "totalUsed" = "totalUsed" + ${cost}
+              WHERE "userId" = ${queueItem.userId}
+            `
+          } else {
+            await tx.$executeRaw`UPDATE "Ticket" SET reserved = GREATEST(0, reserved - ${cost}) WHERE "userId" = ${queueItem.userId}`
           }
         }
+        return true
       })
+      if (!won) {
+        // Someone else settled the row while we saved (a stale sweep that
+        // failed it and gave the tickets back, an admin cancel). Charging now
+        // would take tickets the user was already handed back; the pictures
+        // stay in their feed uncharged - the cheaper mistake.
+        console.warn(`Queue item #${queueItem.id} was settled elsewhere during the save — not charging; ${uploadedImages.length} image(s) kept`)
+        return 'skipped'
+      }
 
-      // Decrement active counts (per-model + global) then promote next queued job
-      await Promise.all([
-        prisma.modelConcurrencyLimit.updateMany({
-          where: { modelId: queueItem.modelId },
-          data: { currentActive: { decrement: 1 } },
-        }),
-        prisma.modelConcurrencyLimit.updateMany({
-          where: { modelId: FAL_GLOBAL_ID },
-          data: { currentActive: { decrement: 1 } },
-        }),
-      ])
-      await promoteNextQueuedJob()
+      // Give back the slots this job held (only those), then promote the next queued job
+      await releaseHeldSlotsAndPromote(queueItem)
 
       console.log(`=== WEBHOOK COMPLETE: Queue #${queueItem.id} done, ${uploadedImages.length} image(s) saved ===`)
-      return NextResponse.json({ received: true })
+      return 'completed'
     }
 
     // Unknown status — just acknowledge
     console.warn(`Unknown FAL.ai webhook status: ${status}`)
-    return NextResponse.json({ received: true })
-
-  } catch (err: any) {
-    console.error('FAL.ai webhook error:', err)
-    // Return 200 to prevent FAL.ai from retrying endlessly on our internal errors
-    return NextResponse.json({ received: true })
+    return 'unknown-status'
   }
 }

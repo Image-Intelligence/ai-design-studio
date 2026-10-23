@@ -43,6 +43,8 @@ export async function GET(
       }
 
       case 'processing':
+      // A finished video being stored (lib/video-save-guard): still in flight to the page
+      case 'saving':
         return jsonPrivate({
           status: 'processing',
         });

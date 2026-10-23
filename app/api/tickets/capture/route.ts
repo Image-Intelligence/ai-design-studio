@@ -2,8 +2,30 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
-import { notePackTickets } from '@/lib/plan-tickets'
+import { packPriceFor } from '@/lib/plan-tickets'
+import { devTierWhere } from '@/lib/dev-tier'
 
+/*
+ * POST /api/tickets/capture { orderId, discountCode? } - PayPal ticket packs.
+ *
+ * Billing sweep 2026-10-23 - this used to credit whatever the order SAID:
+ * the ticket count from its reference_id (or a guess from its description /
+ * amount, or "1 to avoid total failure"), at whatever amount was captured.
+ * Since the PayPal client id is public, anyone can create an order in the
+ * browser for any amount with any reference_id, so "TICKETS_825" for $1 was
+ * credited as 825 tickets. Now, before ANY money is captured:
+ *   1. the order is read back from PayPal (GET) - it must be for this
+ *      account (custom_id set by /api/tickets/purchase), in USD, for a real
+ *      pack (lib/ticket-pricing TICKET_PACKAGES), at exactly the price the
+ *      server computes for it (lib/plan-tickets packPriceFor: pack, plan
+ *      discount, re-validated discount code);
+ *   2. a discount code's single use is claimed (so it can't ride on two
+ *      orders at once), and released again if the capture fails;
+ * then it is captured, the CAPTURED amount/currency/status are checked again,
+ * and the purchase rows + the ticket credit are written in ONE transaction,
+ * keyed by the order id (TicketPurchase.paypalOrderId is unique) - a repeat
+ * call credits nothing twice. Prices are unchanged.
+ */
 
 const PAYPAL_API_BASE = process.env.NODE_ENV === 'production'
   ? 'https://api-m.paypal.com'
@@ -32,296 +54,253 @@ async function getPayPalAccessToken() {
   return data.access_token
 }
 
+const cents = (v: unknown) => Math.round(Number(v) * 100)
+
 export async function POST(request: Request) {
   try {
-    console.log('=== TICKET PURCHASE CAPTURE STARTED ===')
-
     // Check authentication
     const cookieStore = await cookies()
     const token = cookieStore.get('session')?.value
-
     if (!token) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      )
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
-
     const user = await getUserFromSession(token)
     if (!user) {
-      return NextResponse.json(
-        { error: 'Invalid session' },
-        { status: 401 }
-      )
+      return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
     }
 
-    const body = await request.json()
-    const { orderId, discountCode } = body
-
-    if (!orderId) {
-      return NextResponse.json(
-        { error: 'Missing orderId' },
-        { status: 400 }
-      )
+    const body = await request.json().catch(() => ({})) as { orderId?: unknown; discountCode?: unknown }
+    const orderId = typeof body.orderId === 'string' ? body.orderId.trim() : ''
+    if (!orderId || !/^[A-Za-z0-9-]{5,64}$/.test(orderId)) {
+      return NextResponse.json({ error: 'Missing orderId' }, { status: 400 })
     }
 
-    console.log('Capturing payment for order:', orderId)
-    if (discountCode) {
-      console.log('Discount code used:', discountCode)
+    // Already credited (a repeat call / double click): answer with what was done, credit nothing
+    const done = await prisma.ticketPurchase.findUnique({ where: { paypalOrderId: orderId }, select: { id: true, userId: true, ticketsCount: true } })
+    if (done) {
+      if (done.userId !== user.id) return NextResponse.json({ error: 'That order belongs to another account' }, { status: 403 })
+      const t = await prisma.ticket.findUnique({ where: { userId: user.id }, select: { balance: true } })
+      return NextResponse.json({ success: true, purchaseId: done.id, ticketsAdded: 0, newBalance: t?.balance ?? 0, message: 'This purchase was already added to your account.' })
     }
 
-    // Get PayPal access token
     const accessToken = await getPayPalAccessToken()
 
-    // Capture the payment
-    const captureResponse = await fetch(
-      `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`,
-        },
+    // ── 1. read the order back and check it BEFORE capturing anything ──
+    const orderRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${encodeURIComponent(orderId)}`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    })
+    const order = await orderRes.json().catch(() => ({})) as Record<string, any>
+    if (!orderRes.ok) {
+      return NextResponse.json({ error: 'Could not read that PayPal order' }, { status: 400 })
+    }
+    const unit = order.purchase_units?.[0] ?? {}
+    const referenceId = String(unit.reference_id ?? '')
+    const ticketsClaimed = referenceId.startsWith('TICKETS_') ? parseInt(referenceId.slice('TICKETS_'.length)) : NaN
+    /*
+     * COMPLETED = captured on an earlier call whose credit then failed (the
+     * transaction below rolled back): it is credited now from the capture
+     * PayPal already holds, without capturing again. Nothing else is.
+     */
+    const alreadyCaptured = order.status === 'COMPLETED'
+    if (order.intent !== 'CAPTURE' || !(order.status === 'APPROVED' || alreadyCaptured)) {
+      return NextResponse.json({ error: `That order can't be captured (${String(order.status ?? 'unknown')})` }, { status: 409 })
+    }
+    if (unit.custom_id !== `user:${user.id}`) {
+      console.error(`Ticket capture REFUSED: order ${orderId} is not this account's (custom_id ${String(unit.custom_id)}, user ${user.id})`)
+      return NextResponse.json({ error: 'That order was not made for this account' }, { status: 403 })
+    }
+    const price = await packPriceFor(user.id, ticketsClaimed, body.discountCode, { codeClaimed: alreadyCaptured })
+    if (!price.ok) {
+      return NextResponse.json({ error: price.error }, { status: 400 })
+    }
+    if (unit.amount?.currency_code !== 'USD' || cents(unit.amount?.value) !== cents(price.usd)) {
+      console.error(`Ticket capture REFUSED: order ${orderId} is for ${unit.amount?.value} ${unit.amount?.currency_code}, ${price.tickets} tickets cost ${price.usd.toFixed(2)} USD (user ${user.id})`)
+      return NextResponse.json({ error: "That order's price doesn't match the pack - nothing was charged. Please start the purchase again." }, { status: 409 })
+    }
+
+    // ── 2. a discount code's one use is claimed before the money moves ──
+    let codeClaimed = false
+    if (price.code && !alreadyCaptured) {
+      try {
+        await prisma.discountUsage.create({ data: { userId: user.id, discountCodeId: price.code.id } })
+        codeClaimed = true
+        const counted = await prisma.$executeRaw`
+          UPDATE "DiscountCode" SET "timesUsed" = "timesUsed" + 1
+          WHERE id = ${price.code.id} AND ("usageLimit" IS NULL OR "timesUsed" < "usageLimit")`
+        if (!counted) throw new Error('limit reached')
+      } catch {
+        if (codeClaimed) await prisma.discountUsage.deleteMany({ where: { userId: user.id, discountCodeId: price.code.id } }).catch(() => {})
+        return NextResponse.json({ error: 'That discount code can no longer be used - nothing was charged.' }, { status: 409 })
       }
-    )
+    }
+    const releaseCode = async () => {
+      if (!price.code) return
+      await prisma.discountUsage.deleteMany({ where: { userId: user.id, discountCodeId: price.code.id } }).catch(() => {})
+      await prisma.$executeRaw`UPDATE "DiscountCode" SET "timesUsed" = GREATEST(0, "timesUsed" - 1) WHERE id = ${price.code.id}`.catch(() => {})
+    }
 
-    const captureData = await captureResponse.json()
-    console.log('PayPal capture response:', JSON.stringify(captureData, null, 2))
-
-    if (!captureResponse.ok) {
-      console.error('PayPal capture failed:', captureData)
+    // ── 3. capture (or, for an order captured before, the capture PayPal already holds) ──
+    const captureResponse = alreadyCaptured ? null : await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+        // PayPal's idempotency key: a retried capture call is the same capture
+        'PayPal-Request-Id': `tickets-capture-${orderId}`,
+      },
+    })
+    const captureData = captureResponse ? await captureResponse.json().catch(() => ({})) as Record<string, any> : order
+    if (captureResponse && !captureResponse.ok) {
+      await releaseCode()
+      console.error('PayPal capture failed:', orderId, captureData?.name, captureData?.message)
       return NextResponse.json(
-        {
-          error: 'Payment capture failed',
-          details: captureData.message || captureData.error || 'Unknown error'
-        },
+        { error: 'Payment capture failed', details: captureData.message || captureData.error || 'Unknown error' },
         { status: 500 }
       )
     }
 
-    // Extract payment details
     const capture = captureData.purchase_units?.[0]?.payments?.captures?.[0]
     if (!capture) {
-      console.error('No capture data in response:', captureData)
-      return NextResponse.json(
-        { error: 'Invalid payment response from PayPal' },
-        { status: 500 }
-      )
+      console.error('No capture data in response for order', orderId)
+      return NextResponse.json({ error: 'Invalid payment response from PayPal' }, { status: 500 })
     }
 
-    const amount = parseFloat(capture.amount.value)
-    const captureId = capture.id // PayPal capture/transaction ID
-    const payerId = captureData.payer.payer_id
-    const description = captureData.purchase_units[0].description || ''
-    const referenceId = captureData.purchase_units[0].reference_id || ''
+    // ── 4. what was really captured must be what the pack costs ──
+    if (capture.amount?.currency_code !== 'USD' || cents(capture.amount?.value) !== cents(price.usd)) {
+      console.error(`Ticket capture NOT CREDITED: order ${orderId} captured ${capture.amount?.value} ${capture.amount?.currency_code}, expected ${price.usd.toFixed(2)} USD (user ${user.id}) - refund or credit it by hand`)
+      return NextResponse.json({ error: 'The captured amount does not match the pack - contact support with your PayPal receipt.' }, { status: 409 })
+    }
+    if (capture.status !== 'COMPLETED') {
+      // A PENDING capture (eCheck, PayPal review) has not paid us yet
+      console.error(`Ticket capture NOT CREDITED: order ${orderId} capture ${capture.id} is ${capture.status} (user ${user.id}) - credit it by hand once PayPal completes it`)
+      return NextResponse.json({ error: `PayPal has the payment as ${String(capture.status).toLowerCase()} - your tickets are added once it completes. Contact support if they don't arrive.` }, { status: 202 })
+    }
 
-    // Extract detailed payer information
-    const payerEmail = captureData.payer.email_address || null
-    const payerName = captureData.payer.name
+    const amount = price.usd
+    const ticketsCount = price.tickets
+    const captureId = capture.id
+    const payerId = captureData.payer?.payer_id ?? null
+    const description = unit.description || `${ticketsCount} AI Generation Tickets`
+    const payerEmail = captureData.payer?.email_address || null
+    const payerName = captureData.payer?.name
       ? `${captureData.payer.name.given_name || ''} ${captureData.payer.name.surname || ''}`.trim()
       : null
-
-    // Extract PayPal fees and net amount
     const paypalFee = capture.seller_receivable_breakdown?.paypal_fee?.value
       ? parseFloat(capture.seller_receivable_breakdown.paypal_fee.value)
       : null
     const netAmount = capture.seller_receivable_breakdown?.net_amount?.value
       ? parseFloat(capture.seller_receivable_breakdown.net_amount.value)
       : null
+    const billingAddress = captureData.payer?.address || captureData.purchase_units?.[0]?.shipping?.address || null
 
-    // Extract billing address
-    const billingAddress = captureData.payer.address || captureData.purchase_units[0].shipping?.address || null
-
-    console.log('=== PAYMENT DETAILS ===')
-    console.log('Description:', description)
-    console.log('Reference ID:', referenceId)
-    console.log('Capture ID:', captureId)
-    console.log('Amount:', amount)
-    console.log('PayPal Fee:', paypalFee)
-    console.log('Net Amount:', netAmount)
-    console.log('Payer Email:', payerEmail)
-    console.log('Payer Name:', payerName)
-    console.log('Billing Address:', billingAddress)
-
-    // BEST: Extract ticket count from reference_id (TICKETS_50)
-    let ticketsCount = 0
-
-    if (referenceId && referenceId.startsWith('TICKETS_')) {
-      const count = parseInt(referenceId.replace('TICKETS_', ''))
-      if (!isNaN(count) && count > 0) {
-        ticketsCount = count
-        console.log(`✓ Got ticket count from reference_id: ${ticketsCount}`)
-      }
-    }
-
-    // FALLBACK 1: Try to extract from description
-    if (ticketsCount === 0) {
-      const patterns = [
-        /^(\d+)\s+AI Generation Ticket/i,
-        /^(\d+)\s+ticket/i,
-        /(\d+).*ticket/i,
-      ]
-
-      for (const pattern of patterns) {
-        const match = description.match(pattern)
-        if (match) {
-          ticketsCount = parseInt(match[1])
-          console.log(`✓ Got ticket count from description: ${ticketsCount}`)
-          break
+    // ── 5. the records and the credit, all or nothing, once per order ──
+    let credited: { purchaseId: number; balance: number }
+    try {
+      credited = await prisma.$transaction(async (tx) => {
+        /*
+         * A discount code's one use, made certain here (review fix 2026-10-23):
+         * under a per-user-and-code lock, no OTHER credited purchase may carry
+         * the code - two orders racing on one claim can't both be credited.
+         */
+        if (price.code) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`discount-${user.id}-${price.code.id}`}))`
+          const other = await tx.ticketPurchase.count({ where: { userId: user.id, discountCodeUsed: price.code.code, NOT: { paypalOrderId: orderId } } })
+          if (other) throw Object.assign(new Error('discount code already used'), { code: 'DISCOUNT_REUSED' })
         }
-      }
-    }
-
-    // FALLBACK 2: Determine from amount (accounting for discounts)
-    if (ticketsCount === 0 && amount) {
-      // Check against base prices (before discount)
-      // With discounts, we need to be more flexible
-      if (amount >= 55) {
-        ticketsCount = 50  // Could be $79.99 with discount
-      } else if (amount >= 27) {
-        ticketsCount = 25  // Could be $40 with discount
-      } else if (amount >= 13) {
-        ticketsCount = 10  // Could be $20 with discount
-      } else if (amount >= 6) {
-        ticketsCount = 5   // Could be $10 with discount
-      } else if (amount >= 2.50) {
-        ticketsCount = 2   // Could be $3.99 with discount
-      } else {
-        ticketsCount = 1   // Could be $2.99 with discount
-      }
-      console.log(`⚠ Using fallback: ${ticketsCount} tickets based on amount $${amount}`)
-    }
-
-    // Safety check
-    if (ticketsCount === 0) {
-      console.error('Could not determine ticket count!')
-      ticketsCount = 1 // Default to 1 to avoid total failure
-    }
-
-    console.log('FINAL ticket count:', ticketsCount)
-
-    // Create ticket purchase record with complete details
-    console.log('Creating ticket purchase record...')
-    const purchase = await prisma.ticketPurchase.create({
-      data: {
-        userId: user.id,
-        ticketsCount,
-        amount,
-        paypalOrderId: orderId,
-        paypalCaptureId: captureId,
-        paypalPayerId: payerId,
-        payerEmail,
-        payerName,
-        paymentStatus: 'completed',
-        paypalFee,
-        netAmount,
-        currency: 'USD',
-        billingAddress,
-        description,
-        discountCodeUsed: discountCode || null,
-        // Note: originalAmount and discountAmount would need to be passed from frontend
-      }
-    })
-    console.log('Ticket purchase record created:', purchase.id)
-
-    // IMPORTANT: Also create general purchase record for history display
-    await prisma.purchase.create({
-      data: {
-        userId: user.id,
-        itemType: 'tickets',
-        itemId: purchase.id,
-        amount,
-        currency: 'USD',
-        paypalOrderId: orderId,
-        paypalCaptureId: captureId,
-        paypalPayerId: payerId,
-        payerEmail,
-        payerName,
-        paymentStatus: 'completed',
-        paypalFee,
-        netAmount,
-        billingAddress,
-        description,
-        discountCodeUsed: discountCode || null,
-      }
-    })
-    console.log('Purchase history record created')
-
-    // Update user's ticket balance
-    console.log('Updating ticket balance...')
-    const ticketRecord = await prisma.ticket.upsert({
-      where: { userId: user.id },
-      create: {
-        userId: user.id,
-        balance: ticketsCount,
-        totalBought: ticketsCount,
-        totalUsed: 0,
-      },
-      update: {
-        balance: { increment: ticketsCount },
-        totalBought: { increment: ticketsCount },
-      },
-    })
-    // Bonus / pack tickets never expire - keep them out of a running plan's refill bar
-    await notePackTickets(user.id, ticketsCount).catch(e => console.error('notePackTickets failed', e))
-
-    console.log('Ticket balance updated:', ticketRecord.balance)
-
-    // NEW: Record discount code usage if applicable
-    if (discountCode) {
-      try {
-        console.log('Recording discount code usage for:', discountCode)
-        
-        const discount = await prisma.discountCode.findUnique({
-          where: { code: discountCode }
+        const purchase = await tx.ticketPurchase.create({
+          data: {
+            userId: user.id,
+            ticketsCount,
+            amount,
+            paypalOrderId: orderId,
+            paypalCaptureId: captureId,
+            paypalPayerId: payerId,
+            payerEmail,
+            payerName,
+            paymentStatus: 'completed',
+            paypalFee,
+            netAmount,
+            currency: 'USD',
+            billingAddress,
+            description,
+            discountCodeUsed: price.code?.code ?? null,
+            originalAmount: price.listUsd,
+            discountAmount: Math.max(0, Math.round((price.listUsd - amount) * 100) / 100),
+          },
         })
-        
-        if (discount) {
-          await prisma.discountUsage.create({
-            data: {
-              userId: user.id,
-              discountCodeId: discount.id
-            }
-          })
-          
-          await prisma.discountCode.update({
-            where: { id: discount.id },
-            data: { timesUsed: { increment: 1 } }
-          })
-          
-          console.log('Discount code usage recorded successfully')
-        } else {
-          console.warn('Discount code not found in database:', discountCode)
+        // Purchase history display
+        await tx.purchase.create({
+          data: {
+            userId: user.id,
+            itemType: 'tickets',
+            itemId: purchase.id,
+            amount,
+            currency: 'USD',
+            paypalOrderId: orderId,
+            paypalCaptureId: captureId,
+            paypalPayerId: payerId,
+            payerEmail,
+            payerName,
+            paymentStatus: 'completed',
+            paypalFee,
+            netAmount,
+            billingAddress,
+            description,
+            discountCodeUsed: price.code?.code ?? null,
+          },
+        })
+        const ticketRecord = await tx.ticket.upsert({
+          where: { userId: user.id },
+          create: { userId: user.id, balance: ticketsCount, totalBought: ticketsCount, totalUsed: 0 },
+          update: { balance: { increment: ticketsCount }, totalBought: { increment: ticketsCount } },
+          select: { balance: true },
+        })
+        /*
+         * Pack tickets never expire - while a plan runs they are recorded as
+         * pack tickets so its refill / end never touches them. This used to be
+         * notePackTickets AFTER the credit (a separate read-then-write whose
+         * errors were only logged); it is now an atomic jsonb update in the
+         * same transaction (review fix 2026-10-23), with lib/plan-tickets'
+         * rule: pack = min(recorded pack, balance before) + added.
+         */
+        const balanceBefore = ticketRecord.balance - ticketsCount
+        const plan = await tx.subscription.findFirst({ where: { userId: user.id, ...devTierWhere() }, orderBy: { createdAt: 'desc' }, select: { id: true } })
+        if (plan) {
+          await tx.$executeRaw`
+            UPDATE "Subscription"
+            SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || jsonb_build_object('packTickets',
+                  LEAST(GREATEST(0, FLOOR(COALESCE((metadata::jsonb ->> 'packTickets')::numeric, ${balanceBefore}))), GREATEST(0, ${balanceBefore})) + ${ticketsCount})
+            WHERE id = ${plan.id} AND metadata::jsonb ->> 'planTicketsOpen' = 'true'`
         }
-      } catch (discountError: any) {
-        console.error('Failed to record discount usage:', discountError)
+        return { purchaseId: purchase.id, balance: ticketRecord.balance }
+      })
+    } catch (e: any) {
+      // The unique order id: a concurrent call already credited this order
+      if (e?.code === 'DISCOUNT_REUSED') {
+        console.error(`Ticket capture NOT CREDITED: order ${orderId} reuses discount code ${price.code?.code} already spent by user ${user.id} - refund it in PayPal`)
+        return NextResponse.json({ error: 'That discount code was already used on another purchase - contact support about this payment.' }, { status: 409 })
       }
+      if (e?.code === 'P2002') {
+        const t = await prisma.ticket.findUnique({ where: { userId: user.id }, select: { balance: true } })
+        return NextResponse.json({ success: true, ticketsAdded: 0, newBalance: t?.balance ?? 0, message: 'This purchase was already added to your account.' })
+      }
+      throw e
     }
-
-    console.log('=== TICKET PURCHASE COMPLETED SUCCESSFULLY ===')
 
     return NextResponse.json({
       success: true,
-      purchaseId: purchase.id,
+      purchaseId: credited.purchaseId,
       ticketsAdded: ticketsCount,
-      newBalance: ticketRecord.balance,
+      newBalance: credited.balance,
       message: `Successfully added ${ticketsCount} ticket${ticketsCount > 1 ? 's' : ''} to your account!`,
     })
 
   } catch (error: any) {
     console.error('=== TICKET PURCHASE CAPTURE ERROR ===')
     console.error('Error:', error)
-    console.error('Stack:', error.stack)
-
     return NextResponse.json(
-      {
-        error: 'Internal server error',
-        details: error.message
-      },
+      { error: 'Internal server error', details: error.message },
       { status: 500 }
     )
   }
 }
-
-
-

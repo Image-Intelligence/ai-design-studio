@@ -169,6 +169,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          // maxDuration 60: never claims a video's save it would be killed in the middle of (lib/video-save-guard)
+          mayClaimSave: false,
           requestId: job.falRequestId,
           falEndpoint: p.falEndpoint,
           prompt: job.prompt,

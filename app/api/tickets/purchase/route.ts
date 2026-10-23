@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
+import { packPriceFor } from '@/lib/plan-tickets'
 
 const PAYPAL_API_BASE = process.env.NODE_ENV === 'production'
   ? 'https://api-m.paypal.com'
@@ -52,18 +53,22 @@ export async function POST(request: Request) {
       )
     }
 
-    const body = await request.json()
-    const { ticketsCount, amount } = body
-
-    if (!ticketsCount || !amount) {
-      return NextResponse.json(
-        { error: 'Missing required fields' },
-        { status: 400 }
-      )
+    /*
+     * Billing sweep 2026-10-23: the browser names the PACK (and an optional
+     * discount code) - never the price. The amount used to come straight from
+     * the request body, so {ticketsCount: 825, amount: 1} made a $1 order for
+     * 825 tickets. lib/plan-tickets packPriceFor prices it from the shop's own
+     * pack list, the account's plan discount and a re-validated code.
+     */
+    const body = await request.json().catch(() => ({})) as { ticketsCount?: unknown; discountCode?: unknown }
+    const price = await packPriceFor(user.id, body.ticketsCount, body.discountCode)
+    if (!price.ok) {
+      return NextResponse.json({ error: price.error }, { status: 400 })
     }
+    const ticketsCount = price.tickets
 
     console.log('Creating order for user:', user.id)
-    console.log('Tickets:', ticketsCount, 'Amount:', amount)
+    console.log('Tickets:', ticketsCount, 'Amount:', price.usd)
 
     // Get PayPal access token
     const accessToken = await getPayPalAccessToken()
@@ -75,9 +80,11 @@ export async function POST(request: Request) {
         {
           reference_id: `TICKETS_${ticketsCount}`, // IMPORTANT: Include ticket count here
           description: `${ticketsCount} AI Generation Tickets`, // IMPORTANT: Clear format
+          // Whose order this is: the capture refuses an order made for another account
+          custom_id: `user:${user.id}`,
           amount: {
             currency_code: 'USD',
-            value: amount.toFixed(2),
+            value: price.usd.toFixed(2),
           },
         },
       ],
@@ -111,6 +118,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       orderId: order.id,
+      amount: price.usd,
+      ticketsCount,
     })
 
   } catch (error: any) {

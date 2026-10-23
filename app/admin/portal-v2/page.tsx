@@ -59,7 +59,7 @@ import { IdVerificationHost, IdLockedPanel, gateFileInput, gateUpload, isIdGateE
 import { AddToAssetModal, useUserAssets, type UserAsset } from "@/components/my-generations/Assets"
 import { ENHANCE_TICKETS } from "@/lib/ai-text-pricing"
 import { HIGGSFIELD_IMAGE_MODELS, isHiggsfieldModel, higgsfieldImageTicketCost } from "@/lib/higgsfield-models"
-import { isRunpodModel, runpodRenderSec } from "@/lib/runpod-video-models"
+import { isRunpodModel, runpodRenderSec, RUNPOD_RENDER_CAP_S, formatRenderTime } from "@/lib/runpod-video-models"
 
 // Signed-out state for the session feeds (image + video) — same brand treatment
 // as the login/signup pages: silver-rimmed synced logo hero + sheen sign-in button.
@@ -2324,6 +2324,11 @@ const SLOW_VIDEO_POLL_MIN: Record<string, number> = {
 }
 // How long a tile waits on a job fal still says it is working on
 const VIDEO_LIVE_POLL_MAX_MS = 120 * 60 * 1000
+// ...and on our own RunPod workers, as long as RunPod lets the job run (lib/runpod-video
+// EXECUTION_TIMEOUT_MS): MoCha 720p Full runs past 3 hours, and at two the
+// tile said "Generation timed out" while the job was still rendering (2026-10-23)
+const RUNPOD_LIVE_POLL_MAX_MS = 330 * 60 * 1000
+const videoLivePollMaxMs = (model: string) => isRunpodModel(model) ? RUNPOD_LIVE_POLL_MAX_MS : VIDEO_LIVE_POLL_MAX_MS
 /** What a run is called where the picker's name is the model's, not the mode it ran (Wan 2.2 Animate's two modes) */
 const VIDEO_RUN_NAMES: Record<string, string> = {
   "wan-2.2-animate-replace": "Wan 2.2 Animate Replace",
@@ -7638,13 +7643,18 @@ function ClipPortionGuide({ modelId, url, clipSec, values, resolution, choice }:
   if (!r) return null
   // Its GPU time, as priced (2026-10-22: a 720p Full 161-frame MoCha ran past
   // the worker's old 50-minute cap - the owner had no way to know it was long)
-  const renderMin = Math.max(1, Math.round(runpodRenderSec(modelId, { resolution, choice, sourceSec: clipSec, advanced: values }) / 60))
+  const renderSec = runpodRenderSec(modelId, { resolution, choice, sourceSec: clipSec, advanced: values })
+  const renderMin = Math.max(1, Math.round(renderSec / 60))
+  // Past the limit the submit refuses it (video-submit) - say so here first
+  const tooLong = renderSec > RUNPOD_RENDER_CAP_S
   return (
     <div className="space-y-1.5 rounded-lg border border-white/8 bg-black/30 p-2">
       <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Portion rendered <span className="text-slate-600 normal-case font-normal">({r.sec > 0 ? `${r.sec.toFixed(1)}s of the ${clipSec.toFixed(1)}s clip - ${r.detail}` : r.detail})</span></p>
       {r.sec > 0 && (
-        <p className={cn("text-[10px]", renderMin >= 30 ? "text-amber-300/90" : "text-slate-500")}>
-          About {renderMin} min of rendering once a GPU picks it up{renderMin >= 30 ? " - a long run: lower the resolution, quality or length to speed it up" : ""}
+        <p className={cn("text-[10px]", tooLong ? "text-red-400" : renderMin >= 30 ? "text-amber-300/90" : "text-slate-500")}>
+          {tooLong
+            ? `About ${formatRenderTime(renderSec)} of rendering - past the ${formatRenderTime(RUNPOD_RENDER_CAP_S)} limit, so it won't start: use Fast, a lower resolution or fewer frames`
+            : `About ${formatRenderTime(renderSec)} of rendering once a GPU picks it up${renderMin >= 30 ? " - a long run: lower the resolution, quality or length to speed it up" : ""}`}
         </p>
       )}
       {r.sec > 0 && (
@@ -28751,7 +28761,7 @@ export default function PortalV2Page() {
     // "timed out" and refunded tickets while fal kept rendering (and billing)
     // - the clip then landed in the feed anyway. The cron never fails a job
     // fal is still running either (drain-queue verifyWithFal).
-    const LIVE_TIMEOUT_MS = Math.max(POLL_TIMEOUT_MS, VIDEO_LIVE_POLL_MAX_MS)
+    const LIVE_TIMEOUT_MS = Math.max(POLL_TIMEOUT_MS, videoLivePollMaxMs(slot.model))
     const pollStart = slot.startedAt ?? Date.now()
     if (slot.startedAt && Date.now() - slot.startedAt > LIVE_TIMEOUT_MS) {
       setVideoPendingSlots(prev => prev.filter(s => s.slotId !== slot.slotId))
@@ -32091,11 +32101,11 @@ export default function PortalV2Page() {
         const stored = localStorage.getItem("pv2-video-pending-slots")
         if (stored) {
           const slots = JSON.parse(stored) as VideoPendingSlot[]
-          const cutoff = Date.now() - VIDEO_LIVE_POLL_MAX_MS
+          const now = Date.now()
           // A tile whose submit was still answering when the page went is kept
           // for 3 minutes: the request outlives the page (submitInit) and the
           // adoption pass puts the job into it by its clientSlotId
-          setVideoPendingSlots(slots.filter(s => (!s.startedAt || s.startedAt > cutoff)
+          setVideoPendingSlots(slots.filter(s => (!s.startedAt || s.startedAt > now - videoLivePollMaxMs(s.model))
             && !(s.submitting && (!s.startedAt || Date.now() - s.startedAt > 3 * 60_000))))
         }
       } catch {}

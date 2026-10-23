@@ -79,9 +79,10 @@ export async function POST(req: Request) {
 
     console.log(`Recraft v4.1 async submit, webhook: ${webhookUrl}`)
 
+    const endpoint = 'fal-ai/recraft/v4.1/text-to-image'
     let request_id: string
     try {
-      const result = await fal.queue.submit('fal-ai/recraft/v4.1/text-to-image', { input, webhookUrl })
+      const result = await fal.queue.submit(endpoint, { input, webhookUrl })
       request_id = result.request_id
     } catch (falErr: any) {
       await releaseReservedTickets(user.id, ticketCost)
@@ -90,24 +91,42 @@ export async function POST(req: Request) {
 
     console.log(`FAL accepted Recraft v4.1 job: ${request_id}`)
 
-    const queueEntry = await prisma.generationQueue.create({
-      data: {
-        userId:      user.id,
-        modelId:     'recraft-v4.1',
-        modelType:   'image',
-        prompt:      prompt.trim(),
-        parameters:  {
-          source: 'main-scanner',
-          adminMode: false,
-          aspectRatio,
-          referenceImageUrls: [],
+    // If this insert fails the job still runs at fal, but with no row the
+    // webhook has nothing to settle - so nothing would ever release the
+    // reservation taken above (2026-10-23 billing sweep). Release it here.
+    let queueEntry: { id: number }
+    try {
+      queueEntry = await prisma.generationQueue.create({
+        data: {
+          userId:      user.id,
+          modelId:     'recraft-v4.1',
+          modelType:   'image',
+          prompt:      prompt.trim(),
+          parameters:  {
+            source: 'main-scanner',
+            adminMode: false,
+            aspectRatio,
+            referenceImageUrls: [],
+            // How the tickets were taken (lib/queue-settle chargeModeOf), which
+            // counters this job holds (only the global one - see below; the
+            // webhook gives back exactly those), and the endpoint, so the
+            // cron can ask fal about this job if its webhook is lost
+            // (2026-10-23 billing sweep)
+            chargeMode: 'reserve',
+            slots: 'global',
+            falEndpoint: endpoint,
+          },
+          status:      'processing',
+          ticketCost,
+          falRequestId: request_id,
+          startedAt:   new Date(),
         },
-        status:      'processing',
-        ticketCost,
-        falRequestId: request_id,
-        startedAt:   new Date(),
-      },
-    })
+        select: { id: true },
+      })
+    } catch (dbErr) {
+      await releaseReservedTickets(user.id, ticketCost)
+      throw dbErr
+    }
 
     const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
     await prisma.modelConcurrencyLimit.updateMany({

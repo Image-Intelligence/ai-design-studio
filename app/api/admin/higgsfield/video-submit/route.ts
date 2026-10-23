@@ -128,7 +128,13 @@ export async function POST(req: Request) {
     }
 
     const endpoint = HIGGSFIELD_ENDPOINTS[model]
-    // Charged up front (admins free); a failed job refunds it (lib/higgsfield)
+    // What it was given, for its generating tile (lib/gen-inputs) - the
+    // account's own links only. Worked out BEFORE the charge (2026-10-23
+    // billing sweep): it reads the DB, and a throw between the charge and the
+    // row left the user charged with no job
+    const keptInputs = await (async () => { const i = videoInputsFromBody(b); return keepVideoInputs(i, await mediaKeeper(user.id, videoInputLinks(i))) })()
+    // Charged up front (admins free); a failed job refunds it (lib/higgsfield),
+    // and so does a row that can't be made (queueHiggsfieldJob)
     const charge = isAdmin ? 0 : listTickets
     if (charge > 0) {
       const paid = await deductGenerationTickets(user.id, user.email, charge)
@@ -145,8 +151,8 @@ export async function POST(req: Request) {
         referenceImageUrls: images, listTickets,
         // The tile that asked - a page whose reply was lost finds its job by it
         ...(typeof b.clientSlotId === 'string' ? { clientSlotId: b.clientSlotId.slice(0, 80) } : {}),
-        // What it was given, for its generating tile (lib/gen-inputs) - the account's own links only
-        inputs: await (async () => { const i = videoInputsFromBody(b); return keepVideoInputs(i, await mediaKeeper(user.id, videoInputLinks(i))) })(),
+        // What it was given, for its generating tile (lib/gen-inputs) - worked out above
+        inputs: keptInputs,
       },
       ticketCost: charge,
     })

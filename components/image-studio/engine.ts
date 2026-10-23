@@ -47,6 +47,32 @@ export function deviceMaxSide(w: number, h: number, maxSide: number): number {
   if (!isIOSDevice()) return maxSide
   return Math.min(maxSide, Math.floor(Math.max(w, h) * Math.sqrt(IOS_MAX_CANVAS_PX / Math.max(1, w * h))))
 }
+/**
+ * A w x h picture's size held to `maxSide` a side and to what this device can
+ * draw (rounded DOWN, so it never lands a pixel over the iPad's cap). A
+ * 4608 x 6144 reference (28 MP) opened on an iPad as a blank canvas
+ * (2026-10-23): every picture is sized through here before a canvas is made.
+ */
+export function deviceFit(w: number, h: number, maxSide: number): { w: number; h: number } {
+  const side = deviceMaxSide(w, h, maxSide)
+  const k = Math.min(1, side / Math.max(1, w, h))
+  return { w: Math.max(1, Math.floor(w * k)), h: Math.max(1, Math.floor(h * k)) }
+}
+/**
+ * A canvas made on a bigger screen, opened on an iPad: the whole document
+ * scaled to fit the device (its size, every layer's place and its text) - the
+ * same maths as Image size. The layers' pixels stay as they are and are drawn
+ * into their smaller boxes. The doc itself when it already fits.
+ */
+export function fitDocToDevice(d: StudioDoc): StudioDoc {
+  const s = deviceFit(d.width, d.height, Math.max(d.width, d.height))
+  if (s.w === d.width && s.h === d.height) return d
+  const sx = s.w / d.width, sy = s.h / d.height
+  return {
+    ...d, width: s.w, height: s.h,
+    layers: d.layers.map(l => ({ ...l, x: l.x * sx, y: l.y * sy, w: l.w * sx, h: l.h * sy, ...(l.text ? { text: { ...l.text, size: l.text.size * Math.sqrt(sx * sy) } } : {}) })),
+  }
+}
 export const ctx2d = (c: HTMLCanvasElement) => c.getContext('2d', { willReadFrequently: false })!
 export function copyCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   const c = newCanvas(src.width, src.height)
@@ -71,8 +97,8 @@ export function loadToCanvas(url: string, maxSide = 8192): Promise<HTMLCanvasEle
     img.crossOrigin = 'anonymous'
     img.decoding = 'async'
     img.onload = () => {
-      const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight))
-      const c = newCanvas(img.naturalWidth * k, img.naturalHeight * k)
+      const s = deviceFit(img.naturalWidth, img.naturalHeight, maxSide)
+      const c = newCanvas(s.w, s.h)
       const x = ctx2d(c)
       x.imageSmoothingQuality = 'high'
       x.drawImage(img, 0, 0, c.width, c.height)
@@ -87,8 +113,8 @@ export function loadToCanvas(url: string, maxSide = 8192): Promise<HTMLCanvasEle
 export async function fileToCanvas(file: File, maxSide = 6144): Promise<HTMLCanvasElement> {
   let bmp: ImageBitmap
   try { bmp = await createImageBitmap(file) } catch { throw new Error(`${file.name} could not be read - use a JPG, PNG or WebP`) }
-  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height))
-  const c = newCanvas(bmp.width * k, bmp.height * k)
+  const s = deviceFit(bmp.width, bmp.height, maxSide)
+  const c = newCanvas(s.w, s.h)
   const x = ctx2d(c)
   x.imageSmoothingQuality = 'high'
   x.drawImage(bmp, 0, 0, c.width, c.height)

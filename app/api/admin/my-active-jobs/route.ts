@@ -49,7 +49,8 @@ export async function GET(req: Request) {
         userId: user.id,
         modelType: 'video',
         OR: [
-          { status: { in: ['queued', 'processing'] }, createdAt: { gte: new Date(Date.now() - 3 * 3600 * 1000) } },
+          // 'saving': a finished video being stored (lib/video-save-guard) - its tile stays until it lands
+          { status: { in: ['queued', 'processing', 'saving'] }, createdAt: { gte: new Date(Date.now() - 3 * 3600 * 1000) } },
           { status: STUDIO_RUNNING, updatedAt: { gte: studioSince } },
         ],
       },

@@ -3,7 +3,7 @@ import prisma from '@/lib/prisma'
 import { requireStoryboardUser, scrubBoardMedia } from '@/lib/storyboard-gate'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
-import { STORYBOARD_ASPECTS, sanitizeShots, isBoardMode, DEFAULT_BOARD_MODE } from '@/lib/storyboard'
+import { STORYBOARD_ASPECTS, ASSET_SCENE_ID, sanitizeShots, isBoardMode, DEFAULT_BOARD_MODE } from '@/lib/storyboard'
 
 /**
  * Storyboard Studio - the account's storyboards (the workspace's tab strip).
@@ -22,19 +22,24 @@ export async function GET() {
    * Summarised in the database. Reading every board's whole shots array (each
    * with its prompts and still versions) to count them grew with every board,
    * and an account with hundreds would pass Accelerate's ~5MB response cap -
-   * this returns a few numbers and one cover URL per board instead.
+   * this returns a few numbers and one cover URL per board instead. Scene 0
+   * (the asset scratch paper) is not part of the film: not counted, never the cover.
    */
   const rows = await prisma.$queryRaw<{ id: number; title: string; aspect: string; mode: string; updatedAt: Date; shotCount: number; seconds: number; cover: string | null }[]>`
     SELECT b.id, b.title, b.aspect, b.mode, b."updatedAt",
-      COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots END), 0)::int AS "shotCount",
+      (
+        SELECT COUNT(*) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots ELSE '[]'::jsonb END) AS s
+        WHERE s->>'sceneId' IS DISTINCT FROM ${ASSET_SCENE_ID}
+      )::int AS "shotCount",
       COALESCE((
         SELECT SUM(CASE WHEN jsonb_typeof(s->'duration') = 'number' THEN (s->>'duration')::float8 ELSE 0 END)
         FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots ELSE '[]'::jsonb END) AS s
+        WHERE s->>'sceneId' IS DISTINCT FROM ${ASSET_SCENE_ID}
       ), 0)::float8 AS seconds,
       (
         SELECT t.s->>'stillUrl'
         FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.shots) = 'array' THEN b.shots ELSE '[]'::jsonb END) WITH ORDINALITY AS t(s, i)
-        WHERE COALESCE(t.s->>'stillUrl', '') <> ''
+        WHERE COALESCE(t.s->>'stillUrl', '') <> '' AND t.s->>'sceneId' IS DISTINCT FROM ${ASSET_SCENE_ID}
         ORDER BY t.i LIMIT 1
       ) AS cover
     FROM "Storyboard" b

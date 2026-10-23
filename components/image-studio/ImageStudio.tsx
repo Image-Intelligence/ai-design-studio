@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Plus, Upload, Images, Trash2, Loader2, Layers, Library, ArrowLeft } from "lucide-react"
 import { openLibraryPicker } from "@/components/feed/LibraryPicker"
 import { CANVAS_PRESETS, MAX_CANVAS_SIDE, type StudioDoc } from "@/lib/image-studio"
-import { fileToCanvas, loadToCanvas } from "./engine"
+import { fileToCanvas, loadToCanvas, deviceFit } from "./engine"
 import { Editor, RefPicker } from "./Editor"
 import { BrandButton, BrandTitle } from "@/components/employees/StudioBrand"
 import type { StudioOpenRequest } from "./bridge"
@@ -76,8 +76,10 @@ export function ImageStudio({ signedIn, refLibrary, onSaveToRefs, onReplaceRef, 
     setBusy(what); setErr(null)
     try { await fn() } catch (e: any) { setErr(String(e?.message || e)) } finally { setBusy(null) }
   }
+  // A blank canvas too is held to what this device can draw (engine deviceFit)
+  const blank = deviceFit(Math.max(16, w), Math.max(16, h), MAX_CANVAS_SIDE)
   const newBlank = () => run("blank", () => create({
-    v: 1, width: Math.min(MAX_CANVAS_SIDE, Math.max(16, w)), height: Math.min(MAX_CANVAS_SIDE, Math.max(16, h)),
+    v: 1, width: blank.w, height: blank.h,
     background: bgMode === "transparent" ? null : bgMode === "white" ? "#ffffff" : bgColour, layers: [],
   }, "Untitled canvas"))
   /** An image (file or reference) as the base layer of a canvas its own size. */

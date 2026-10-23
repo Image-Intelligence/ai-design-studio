@@ -12,7 +12,7 @@ import { mediaKeeper } from '@/lib/media-ownership'
 import { cleanVideoAdvanced } from '@/lib/video-advanced'
 import { viggleRepaintTickets } from '@/lib/ticket-pricing'
 import { submitRunpodVideoJob, runpodVideoConfigured, runpodEndpointEnvName, runpodMedia } from '@/lib/runpod-video'
-import { RUNPOD_VIDEO_MODELS, RUNPOD_MAX_SOURCE_SEC, RP_ENDPOINT_PREFIX, runpodVideoTicketCost, type RunpodVideoModelId } from '@/lib/runpod-video-models'
+import { RUNPOD_VIDEO_MODELS, RUNPOD_MAX_SOURCE_SEC, RP_ENDPOINT_PREFIX, RUNPOD_RENDER_CAP_S, formatRenderTime, runpodRenderSec, runpodRenderedSeconds, runpodVideoTicketCost, type RunpodVideoModelId } from '@/lib/runpod-video-models'
 import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
 
 /**
@@ -104,9 +104,13 @@ export async function POST(req: Request) {
       duration = String(Math.max(1, Math.round((Math.floor((outFrames - 1) / 4) * 4 + 1) / Number(input.fps))))
     } else {
       // The MiniMax H3 pair (AI/h3-worker): Viggle renders up to 15s of the
-      // clip, H3 Character Swap up to 30s, in 124-frame windows
-      const maxSeconds = Math.min(model === 'runpod-viggle' ? 15 : 30, Number(settings.max_seconds ?? (model === 'runpod-viggle' ? 10 : 15)))
-      duration = String(Math.max(1, Math.round(Math.min(probed.seconds, maxSeconds))))
+      // clip, H3 Character Swap up to 30s, in 124-frame windows. The seconds
+      // rendered come from the one function the page prices with
+      // (runpodRenderedSeconds - 2026-10-23 billing sweep); the worker is
+      // sent the same cap (max_seconds), so it renders what was charged
+      const renderedSec = runpodRenderedSeconds(model, { sourceSec: probed.seconds, advanced: settings })
+      const maxSeconds = runpodRenderedSeconds(model, { advanced: settings })
+      duration = String(renderedSec)
       if (model === 'runpod-viggle') {
         resolution = '480p'
         if (b.videoChoice === 'mine') {
@@ -142,11 +146,24 @@ export async function POST(req: Request) {
     }
 
     // By GPU time (lib/runpod-video-models): MoCha's quality, the seconds the H3 pair renders
-    const listTickets = runpodVideoTicketCost(model, { resolution, choice: typeof b.videoChoice === 'string' ? b.videoChoice : undefined, advanced: settings,
-      // MoCha: the clip's own length (its frames are worked out from it); the H3 pair: the seconds rendered
-      sourceSec: model === 'runpod-mocha' ? probed.seconds : Number(duration) })
+    const runOpts = { resolution, choice: typeof b.videoChoice === 'string' ? b.videoChoice : undefined, advanced: settings,
+      // The clip's own length, as the page passes it: MoCha works out its
+      // frames from it, the H3 pair its rendered seconds (runpodRenderedSeconds,
+      // inside runpodRenderSec) - so page and charge agree (2026-10-23 billing sweep)
+      sourceSec: probed.seconds }
+    // A render the worker would stop part way (it was charged, then failed hours later)
+    const renderSec = runpodRenderSec(model, runOpts)
+    if (renderSec > RUNPOD_RENDER_CAP_S) {
+      return jsonPrivate({ success: false, error: `These settings would render for about ${formatRenderTime(renderSec)} - past the ${formatRenderTime(RUNPOD_RENDER_CAP_S)} limit. Use Fast, a lower resolution or fewer frames.` }, { status: 400 })
+    }
+    const listTickets = runpodVideoTicketCost(model, runOpts)
       // Viggle's automatic repaint, at NanoBanana 2.1 Edit's own price
       + (model === 'runpod-viggle' ? viggleRepaintTickets(typeof b.videoChoice === 'string' ? b.videoChoice : undefined) : 0)
+    // What it was given, for its generating tile (lib/gen-inputs) - the
+    // account's own links only. Worked out BEFORE the charge (2026-10-23
+    // billing sweep): a throw between the charge and the row left the user
+    // charged with no job. (submitRunpodVideoJob refunds a row it can't make.)
+    const keptInputs = await (async () => { const i = videoInputsFromBody(b); return keepVideoInputs(i, await mediaKeeper(user.id, videoInputLinks(i))) })()
     const charge = isAdmin ? 0 : listTickets
     if (charge > 0) {
       const paid = await deductGenerationTickets(user.id, user.email, charge)
@@ -161,8 +178,8 @@ export async function POST(req: Request) {
         // Viggle: the frame it animates, for the run's record
         ...(repaint ? { viggleRepaint: repaint.repaintUrl } : {}),
         ...(typeof b.clientSlotId === 'string' ? { clientSlotId: b.clientSlotId.slice(0, 80) } : {}),
-        // What it was given, for its generating tile (lib/gen-inputs) - the account's own links only
-        inputs: await (async () => { const i = videoInputsFromBody(b); return keepVideoInputs(i, await mediaKeeper(user.id, videoInputLinks(i))) })(),
+        // What it was given, for its generating tile (lib/gen-inputs) - worked out above
+        inputs: keptInputs,
       },
       ticketCost: charge,
     })

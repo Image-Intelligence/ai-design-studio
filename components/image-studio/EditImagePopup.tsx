@@ -30,7 +30,7 @@ import { createPortal } from "react-dom"
 import { Loader2 } from "lucide-react"
 import { type StudioDoc, type StudioLayer, MAX_CANVAS_SIDE, MAX_LAYERS, normalizeLayers } from "@/lib/image-studio"
 import { Editor } from "./Editor"
-import { loadToCanvas, newCanvas, ctx2d, toBlob } from "./engine"
+import { loadToCanvas, newCanvas, ctx2d, toBlob, deviceFit } from "./engine"
 import { holdCardVideos } from "@/components/home/card-video-scheduler"
 import { openInImageStudio, useImageStudioAvailable, useImageStudioAdmin } from "./bridge"
 import { SiteLogoBox } from "@/components/SitePageHeader"
@@ -88,8 +88,9 @@ function rememberHash(url: string, hash: string) {
 /** A downloaded picture into a canvas (the long side at most maxSide). */
 async function blobToCanvas(blob: Blob, maxSide: number): Promise<HTMLCanvasElement> {
   const bmp = await createImageBitmap(blob)
-  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height))
-  const c = newCanvas(bmp.width * k, bmp.height * k), x = ctx2d(c)
+  // Held to what this device can draw too (an iPad's canvases stop at 16.7 MP - engine deviceFit)
+  const s = deviceFit(bmp.width, bmp.height, maxSide)
+  const c = newCanvas(s.w, s.h), x = ctx2d(c)
   x.imageSmoothingQuality = "high"
   x.drawImage(bmp, 0, 0, c.width, c.height)
   bmp.close()

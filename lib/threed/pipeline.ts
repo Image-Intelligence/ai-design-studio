@@ -267,8 +267,32 @@ export async function settleThreeD(o: { userId?: number; budgetMs?: number; limi
     const p = (job.parameters ?? {}) as Record<string, any>
     const endpoint = String(p.endpoint ?? '')
     const charged = Number(p.charged ?? 0)
+    /*
+     * Failed and refunded only on the claim's own terms (2026-10-23 billing
+     * sweep): it used to match any 'saving' row too, so a settler that found
+     * the job failing could fail - and refund - a job another settler was in
+     * the middle of saving (delivered AND refunded). Now a live 'saving' claim
+     * is left alone; only one cut off (older than SAVE_CLAIM_MS) is taken.
+     */
+    const claimable = { id: job.id, OR: [{ status: { in: ['processing', 'queued'] } }, { status: 'saving', completedAt: { lt: new Date(Date.now() - SAVE_CLAIM_MS) } }] }
     const fail = async (why: string) => {
-      const done = await prisma.generationQueue.updateMany({ where: { id: job.id, status: { in: ['processing', 'queued', 'saving'] } }, data: { status: 'failed', errorMessage: why.slice(0, 400), completedAt: new Date() } })
+      /*
+       * A stale 'saving' claim may have saved the model's row before it died
+       * (not yet marking the job completed): a fal hiccup now (GONE, a
+       * result that no longer answers) must not refund a delivered model.
+       * Its row is found by the request id and the job is completed instead.
+       */
+      const prior = job.falRequestId
+        ? await prisma.generatedImage.findFirst({ where: { userId: job.userId, falRequestId: job.falRequestId, model: `3d:${job.modelId}` }, select: { id: true } }).catch(() => null)
+        : null
+      if (prior) {
+        await prisma.generationQueue.updateMany({ where: claimable, data: { status: 'completed', completedAt: new Date() } }).catch(() => {})
+        return
+      }
+      const done = await prisma.generationQueue.updateMany({
+        where: claimable,
+        data: { status: 'failed', errorMessage: why.slice(0, 400), completedAt: new Date() },
+      })
       if (done.count) await refund(job.userId, charged)
     }
     if (!job.falRequestId || !endpoint) { await fail('Submitted without a request id'); continue }
@@ -287,9 +311,12 @@ export async function settleThreeD(o: { userId?: number; budgetMs?: number; limi
 
       // Claim it ('saving'), so a second settler (page + cron) stops here; a
       // claim cut off mid-copy is retried after SAVE_CLAIM_MS
+      // (its stamp - completedAt - is this claim's: the hand-over below and the
+      // handback only touch the row while it is still THIS claim)
+      const claimAt = new Date()
       const claim = await prisma.generationQueue.updateMany({
         where: { id: job.id, OR: [{ status: { in: ['processing', 'queued'] } }, { status: 'saving', completedAt: { lt: new Date(Date.now() - SAVE_CLAIM_MS) } }] },
-        data: { status: 'saving', completedAt: new Date() },
+        data: { status: 'saving', completedAt: claimAt },
       })
       if (!claim.count) continue
       try {
@@ -316,7 +343,10 @@ export async function settleThreeD(o: { userId?: number; budgetMs?: number; limi
           parentId: Number.isInteger(p.parentId) ? p.parentId : null, options: p.options ?? {}, ...(partNames ? { partNames } : {}), archive, layers,
         }
         const main = primaryMesh(kept)
-        await prisma.generatedImage.create({
+        // Saved already by a claim that was cut off before it marked the job
+        // completed (2026-10-23 billing sweep): never a second row
+        const prior = await prisma.generatedImage.findFirst({ where: { userId: job.userId, falRequestId: job.falRequestId, model: `3d:${job.modelId}` }, select: { id: true } })
+        if (!prior) await prisma.generatedImage.create({
           data: {
             userId: job.userId, prompt: job.prompt, model: `3d:${job.modelId}`, ticketCost: charged,
             imageUrl: poster ?? viewer?.url ?? main?.url ?? kept[0].url,
@@ -325,11 +355,13 @@ export async function settleThreeD(o: { userId?: number; budgetMs?: number; limi
             videoMetadata: { [TAG]: meta } as object,
           },
         })
-        await prisma.generationQueue.update({ where: { id: job.id }, data: { status: 'completed', completedAt: new Date() } })
-        saved++
+        // Only while it is still this claim: a 'failed' (or a newer claim) is never overwritten
+        const fin = await prisma.generationQueue.updateMany({ where: { id: job.id, status: 'saving', completedAt: claimAt }, data: { status: 'completed', completedAt: new Date() } })
+        if (fin.count) saved++
       } catch (e) {
         // Hand the claim back: the next pass tries again
-        await prisma.generationQueue.update({ where: { id: job.id }, data: { status: 'processing', completedAt: null } }).catch(() => {})
+        // (only this claim's - a failed job must not be handed back as processing and refunded again)
+        await prisma.generationQueue.updateMany({ where: { id: job.id, status: 'saving', completedAt: claimAt }, data: { status: 'processing', completedAt: null } }).catch(() => {})
         console.error('[3d settle] save', job.id, String((e as Error)?.message || e).slice(0, 200))
       }
     } catch (e) {

@@ -1,11 +1,13 @@
-import { NextResponse } from 'next/server'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
-import prisma from '@/lib/prisma'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { jsonPrivate } from '@/lib/api-json'
+import {
+  authorizePolledJob, existingPolledImages, savePolledImagesOnce, failPolledJob,
+  pollErrorIsGone, polledJobIsStale, type PolledJobRow,
+} from '@/lib/harvest-polling-jobs'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -13,18 +15,47 @@ fal.config({ credentials: process.env.FAL_KEY! })
 // Polls a Wan 2.2 A14B text-to-image LoRA job. Output shape differs from most
 // image endpoints: a SINGLE `image` object (not an images array) — normalized
 // here. On completion re-hosts to R2 and saves the GeneratedImage record.
+//
+// 2026-10-23 billing sweep: the same shape as nb2-status now (lib/harvest-polling-jobs) -
+// the job must be the caller's (admins: any) and fal is asked at the endpoint stored on the
+// queue row; saved rows are looked for BEFORE any download; the save takes the shared lock
+// and refuses a job already failed and refunded; a download hiccup keeps polling instead of
+// refunding; and "not found" is final only when fal itself 404s an older job (it used to be
+// any error whose message mentioned "not found" or "expired").
 export async function POST(req: Request) {
   let requestId: string | undefined
+  let job: PolledJobRow | null = null
   try {
     const cookieStore = await cookies()
     const token = cookieStore.get('session')?.value
     const sessionUser = token ? await getUserFromSession(token) : null
 
     const body = await req.json()
-    requestId = body.requestId
-    const { falEndpoint, prompt, aspectRatio, loraName, queuedAt } = body
-    if (!requestId || !falEndpoint) {
-      return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
+    requestId = typeof body.requestId === 'string' ? body.requestId : undefined
+    const { aspectRatio, loraName, queuedAt } = body
+    const prompt = typeof body.prompt === 'string' ? body.prompt : ''
+    if (!requestId) {
+      return jsonPrivate({ error: 'Missing requestId' }, { status: 400 })
+    }
+
+    // Owner and fal endpoint from the queue row, not the body
+    const access = await authorizePolledJob(requestId, sessionUser, body.falEndpoint)
+    if (!access.ok) return jsonPrivate({ error: access.error }, { status: access.status })
+    job = access.row
+    const falEndpoint = access.falEndpoint
+
+    // Idempotency FIRST: a repeat poll of a saved job gets its rows back without touching fal or R2
+    const existing = await existingPolledImages(requestId).catch(() => [])
+    if (existing.length > 0) {
+      await releaseQueueSlot(requestId, false)
+      return jsonPrivate({
+        status: 'completed',
+        images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
+      })
+    }
+    // Failed (and refunded) already - never deliver it for free
+    if (job && (job.status === 'failed' || job.status === 'cancelled')) {
+      return jsonPrivate({ status: 'failed', error: job.errorMessage || 'Generation failed' })
     }
 
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
@@ -35,8 +66,7 @@ export async function POST(req: Request) {
         result.data?.images || (result.data?.image?.url ? [result.data.image] : [])
 
       if (falImages.length === 0) {
-        await releaseQueueSlot(requestId, true, 'No images returned from model')
-        return jsonPrivate({ status: 'failed', error: 'No images returned from model' })
+        return jsonPrivate(await failPolledJob(requestId, 'No images returned from model'))
       }
 
       const hostedImages: { url: string; width?: number; height?: number }[] = []
@@ -53,64 +83,49 @@ export async function POST(req: Request) {
       }
 
       if (hostedImages.length === 0) {
-        await releaseQueueSlot(requestId, true, 'Failed to download generated images')
-        return jsonPrivate({ status: 'failed', error: 'Failed to download generated images' })
+        // A download / R2 hiccup is not the job failing - keep polling until fal has purged it
+        if (polledJobIsStale(job)) return jsonPrivate(await failPolledJob(requestId, 'Failed to download generated images'))
+        return jsonPrivate({ status: 'in_progress', error: 'Could not fetch the result yet - retrying' })
       }
 
-      // Idempotency: if already saved for this requestId, return existing records
-      try {
-        const existing = await prisma.generatedImage.findMany({
-          where: { falRequestId: requestId },
-          select: { id: true, imageUrl: true },
-          orderBy: { id: 'asc' },
-        })
-        if (existing.length > 0) {
-          return jsonPrivate({
-            status: 'completed',
-            images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
-          })
-        }
-      } catch { /* idempotency check best-effort */ }
+      const queuedMs = typeof queuedAt === 'number' ? queuedAt : (job?.createdAt.getTime() ?? 0)
 
-      const savedIds: number[] = []
+      let saved: Awaited<ReturnType<typeof savePolledImagesOnce>>
       try {
-        const targetUserId: number | null = sessionUser?.id ?? null
-        if (targetUserId) {
-          const created = await Promise.all(hostedImages.map(img =>
-            prisma.generatedImage.create({
-              data: {
-                userId:      targetUserId,
-                prompt:      prompt || '',
-                imageUrl:    img.url,
-                model:       'wan-2.2-t2i-lora',
-                ticketCost:  0,
-                quality:     'auto',
-                aspectRatio: aspectRatio || '1:1',
-                expiresAt:   new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-                falRequestId: requestId,
-                ...(typeof queuedAt === 'number' && queuedAt > Date.now() - 24 * 3600 * 1000 && queuedAt <= Date.now() + 60_000
-                  ? { createdAt: new Date(queuedAt) } : {}),
-                ...(loraName ? { videoMetadata: { loraName: String(loraName).slice(0, 120) } } : {}),
-              },
-              select: { id: true },
-            })
-          ))
-          created.forEach(r => savedIds.push(r.id))
-        }
+        saved = await savePolledImagesOnce(requestId, hostedImages.map(img => ({
+          userId:      job?.userId ?? sessionUser!.id, // the job's owner, even when an admin polls it
+          prompt,
+          imageUrl:    img.url,
+          model:       'wan-2.2-t2i-lora',
+          ticketCost:  0,
+          quality:     'auto',
+          aspectRatio: aspectRatio || '1:1',
+          expiresAt:   new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
+          ...(queuedMs > Date.now() - 24 * 3600 * 1000 && queuedMs <= Date.now() + 60_000
+            ? { createdAt: new Date(queuedMs) } : {}),
+          ...(loraName ? { videoMetadata: { loraName: String(loraName).slice(0, 120) } } : {}),
+        })))
       } catch (dbErr) {
-        console.error('wan-22-t2i-lora-status: DB save failed (non-fatal):', dbErr)
+        // Rolled back, job still processing: the next poll or the harvester saves it
+        console.error('wan-22-t2i-lora-status: DB save failed, will retry:', dbErr)
+        return jsonPrivate({ status: 'in_progress', error: 'Saving the result - retrying' })
+      }
+      if (!saved.saved) return jsonPrivate({ status: 'failed', error: saved.error })
+      if (!saved.fresh) {
+        return jsonPrivate({
+          status: 'completed',
+          images: saved.images.map(img => ({ url: img.imageUrl, dbId: img.id })),
+        })
       }
 
-      await releaseQueueSlot(requestId, false)
       console.log(`✓ Wan 2.2 T2I LoRA completed [${requestId}] ${hostedImages.length} image(s)`)
       return jsonPrivate({
         status: 'completed',
-        images: hostedImages.map((img, i) => ({ ...img, dbId: savedIds[i] ?? null })),
+        images: hostedImages.map((img, i) => ({ ...img, dbId: saved.images[i]?.id ?? null })),
       })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
-      await releaseQueueSlot(requestId, true, 'Generation failed on FAL servers')
-      return jsonPrivate({ status: 'failed', error: 'Generation failed on FAL servers' })
+      return jsonPrivate(await failPolledJob(requestId, 'Generation failed on FAL servers'))
     } else {
       return jsonPrivate({ status: 'in_progress', falStatus: status.status })
     }
@@ -121,12 +136,12 @@ export async function POST(req: Request) {
       const detail = Array.isArray(error.body?.detail)
         ? error.body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ')
         : error.body?.message || error.message || 'Unprocessable content'
-      if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
+      if (requestId) return jsonPrivate(await failPolledJob(requestId, `Generation failed: ${detail}`))
       return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
     }
-    if (error.status === 404 || /not.found|no.longer.available|expired/i.test(error.message ?? '')) {
-      if (requestId) await releaseQueueSlot(requestId, true, 'Generation request expired or not found')
-      return jsonPrivate({ status: 'failed', error: 'Generation request expired or not found' })
+    // fal's own 404 / 410 for an older job: the result is gone for good
+    if (requestId && pollErrorIsGone(error, job)) {
+      return jsonPrivate(await failPolledJob(requestId, 'Generation request expired or not found'))
     }
     return jsonPrivate({ status: 'in_progress', error: error.message })
   }

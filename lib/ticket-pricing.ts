@@ -423,7 +423,10 @@ export function videoTicketCost(input: VideoTicketCostInput): number {
     // Higgsfield exclusives (admin only, lib/higgsfield-models)
     ticketCost = higgsfieldVideoTicketCost(model, { resolution, duration, sourceSec: editVideoDurationSec, refVideoSec: referenceVideoDurationSec })
   } else if (RUNPOD_VIDEO_MODELS.has(model)) {
-    // Our own RunPod workers (admin only, lib/runpod-video-models): by GPU time
+    // Our own RunPod workers (admin only, lib/runpod-video-models): by GPU time.
+    // The RAW clip length goes in, as the submit route passes it: the H3 pair's
+    // rendered seconds (max_seconds applied) are worked out inside by
+    // runpodRenderedSeconds, so the price shown is the price charged (2026-10-23 billing sweep)
     ticketCost = runpodVideoTicketCost(model, { resolution, choice: input.videoChoice, sourceSec: editVideoDurationSec, advanced: input.advanced })
       + (model === 'runpod-viggle' ? viggleRepaintTickets(input.videoChoice) : 0)
   } else if (BATCH_1007_GENERATORS.has(model) || BATCH_1007_TOOLS.has(model)) {

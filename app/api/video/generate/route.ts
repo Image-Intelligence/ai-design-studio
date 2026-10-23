@@ -99,6 +99,13 @@ async function normalizeVideoRefs(body: any): Promise<any> {
 }
 
 export async function POST(request: NextRequest) {
+  /*
+   * Tickets taken but not yet handed to a queue row (2026-10-23 billing
+   * sweep). Set when the charge lands, cleared when a row carries it (which
+   * refunds itself on failure) or when a path gives it back; anything thrown
+   * in between used to return a 500 with the user charged and no job.
+   */
+  let unsettledCharge: { userId: number; tickets: number } | null = null
   try {
     // Bearer API key (desktop app) first, session cookie fallback
     const apiAuth0 = await authenticateApiKey(request)
@@ -739,6 +746,7 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      unsettledCharge = { userId: userId!, tickets: ticketCost }
     }
 
     // Build FAL input based on model
@@ -931,6 +939,7 @@ export async function POST(request: NextRequest) {
               where: { userId },
               data: { balance: { increment: ticketCost }, totalUsed: { decrement: ticketCost } },
             }).catch(() => {})
+            unsettledCharge = null
           }
           return NextResponse.json({ success: false, error: `Couldn't find a ${subject} in the clip's first frame - start the clip on a clear shot of it.` }, { status: 400 })
         }
@@ -1317,7 +1326,8 @@ export async function POST(request: NextRequest) {
             modelId:    model,
             modelType:  'video',
             prompt:     (prompt || '').trim(),
-            parameters: { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+            // slotClaimed: a queued row only runs once the promoter takes a slot for it (lib/admin-queue-helpers holdsFalSlot)
+            parameters: { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, chargeMode: 'deduct', slotClaimed: true, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
             status:     'queued',
             ticketCost: ticketCost, // real cost — admin video is debited client-side; refunded server-side on failure
           },
@@ -1343,6 +1353,7 @@ export async function POST(request: NextRequest) {
             totalUsed: { decrement: ticketCost },
           },
         }).catch(() => {}); // best-effort refund
+        unsettledCharge = null
       }
 
       // Release the admin slot we claimed (if any)
@@ -1376,37 +1387,51 @@ export async function POST(request: NextRequest) {
     // the job and — on failure — refund the debited tickets server-side (works even
     // if the user's tab is closed). ticketCost is the amount actually debited:
     // admin video is debited client-side, non-admin server-side above.
+    //
+    // slotClaimed (2026-10-23 billing sweep): an admin row took one of fal's
+    // global slots above; a non-admin row never does, so its release must not
+    // give one back (lib/admin-queue-helpers holdsFalSlot) - it used to, and
+    // the counter drifted below the work really running.
+    //
+    // A row that can't be made is no longer swallowed: the job would run at
+    // fal with nobody to settle it and the user charged for nothing. Its
+    // tickets go back, fal is asked to drop it, and the caller gets an error.
     let queueId: number | null = null
-    if (adminMode && adminSlotClaimed && adminTargetUserId) {
-      queueId = (await prisma.generationQueue.create({
-        data: {
-          userId:      adminTargetUserId,
-          modelId:     model,
-          modelType:   'video',
-          prompt:      (prompt || '').trim(),
-          parameters:  { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
-          status:      'processing',
-          ticketCost:  ticketCost,
-          falRequestId: requestId,
-          startedAt:   new Date(),
-        },
-        select: { id: true },
-      })).id
-    } else if (!adminMode && userId) {
-      queueId = (await prisma.generationQueue.create({
-        data: {
-          userId:       userId,
-          modelId:      model,
-          modelType:    'video',
-          prompt:       (prompt || '').trim(),
-          parameters:   { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
-          status:       'processing',
-          ticketCost:   ticketCost,
-          falRequestId: requestId,
-          startedAt:    new Date(),
-        },
-        select: { id: true },
-      }).catch(() => null))?.id ?? null
+    if ((adminMode && adminSlotClaimed && adminTargetUserId) || (!adminMode && userId)) {
+      const ownerId = adminMode ? adminTargetUserId! : userId!
+      try {
+        queueId = (await prisma.generationQueue.create({
+          data: {
+            userId:       ownerId,
+            modelId:      model,
+            modelType:    'video',
+            prompt:       (prompt || '').trim(),
+            parameters:   { falEndpoint, falInput, usePolling: true, clientSlotId, inputs: queueInputs, chargeMode: 'deduct', slotClaimed: adminMode, ...(model === 'void-video-removal' && probed?.fps ? { sourceFps: probed.fps } : {}) },
+            status:       'processing',
+            ticketCost:   ticketCost,
+            falRequestId: requestId,
+            startedAt:    new Date(),
+          },
+          select: { id: true },
+        })).id
+        unsettledCharge = null
+      } catch (rowErr) {
+        console.error(`[video/generate] queue row for ${requestId} could not be made - refunding:`, rowErr)
+        await fal.queue.cancel(falEndpoint, { requestId }).catch(() => {})
+        if (unsettledCharge) {
+          await prisma.ticket.update({
+            where: { userId: unsettledCharge.userId },
+            data: { balance: { increment: unsettledCharge.tickets }, totalUsed: { decrement: unsettledCharge.tickets } },
+          }).catch(e => console.error('[video/generate] refund after a lost row failed:', e))
+          unsettledCharge = null
+        }
+        // The slot the admin path took above
+        if (adminMode && adminSlotClaimed) {
+          const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
+          await prisma.$executeRaw`UPDATE "ModelConcurrencyLimit" SET "currentActive" = GREATEST(0, "currentActive" - 1) WHERE "modelId" = ${FAL_GLOBAL_ID}`.catch(() => {})
+        }
+        return NextResponse.json({ success: false, error: 'Could not start the video - please try again. Your tickets were not used.' }, { status: 500 })
+      }
     }
 
     return NextResponse.json({
@@ -1424,6 +1449,14 @@ export async function POST(request: NextRequest) {
 
   } catch (error: any) {
     console.error('Video generation error:', error);
+    // Charged, then something threw before a row carried the charge: give it back
+    if (unsettledCharge) {
+      const c: { userId: number; tickets: number } = unsettledCharge
+      await prisma.ticket.update({
+        where: { userId: c.userId },
+        data: { balance: { increment: c.tickets }, totalUsed: { decrement: c.tickets } },
+      }).catch(e => console.error('[video/generate] refund after an error failed:', e))
+    }
     return NextResponse.json({ success: false, error: error.message || 'Failed to submit video generation' }, { status: 500 });
   }
 }

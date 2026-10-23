@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { FAL_GLOBAL_ID } from '@/lib/fal-queue'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 /**
  * GET /api/admin/queue/diagnostic
@@ -12,7 +15,8 @@ import { FAL_GLOBAL_ID } from '@/lib/fal-queue'
  *  - Most recent completed/failed job timestamps (proxy for "are webhooks working?")
  *  - Global limit state
  */
-export async function GET() {
+export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const now = Date.now()
   const fiveMinAgo  = new Date(now - 5  * 60 * 1000)
   const thirtyMinAgo = new Date(now - 30 * 60 * 1000)

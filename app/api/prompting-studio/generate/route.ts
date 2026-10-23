@@ -15,6 +15,9 @@ import { enforceContentFilter } from '@/lib/content-filter'
 import { jsonPrivate } from '@/lib/api-json'
 import { canonicalisePayload } from '@/lib/media-url'
 import { requireOwnMediaUnlessVerified } from '@/lib/id-verification'
+import { reserveTicketsAtomic, releaseReservedTickets, settleReservedTickets, chargeTicketsAtomic } from '@/lib/ticket-gate'
+import { failQueueRow } from '@/lib/queue-settle'
+import { withDbRetry, bumpActiveCounters } from '@/lib/db-retry'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -28,6 +31,15 @@ export async function POST(req: NextRequest) {
   let userId = 0
   let ticketCost = 0
   let jobId: number | null = null
+  /*
+   * Tickets this request has reserved and not yet handed on (2026-10-23
+   * billing sweep). They leave exactly one way: a fal submit hands them to
+   * the queue row (the webhook settles them), a synchronous result settles
+   * them, and the catch releases whatever is still here. Every early return
+   * after the reservation used to leak it, and the catch released even after
+   * the synchronous path had already settled - minting tickets.
+   */
+  let heldTickets = 0
 
   try {
     // Auth via session cookie — never trust userId from the request body
@@ -143,10 +155,38 @@ export async function POST(req: NextRequest) {
       const _cf = await enforceContentFilter(prompt, sessionUser.email)
       if (!_cf.ok) return jsonPrivate({ error: _cf.reason }, { status: 400 })
     }
+    // Everything that can refuse the request is decided BEFORE tickets are
+    // reserved or a job row exists (2026-10-23 billing sweep: the admin gate,
+    // the empty-prompt check and the unknown-model answer used to return after
+    // the reservation, stranding it).
+    // Gemini scanner models are ADMIN ONLY (retired from public 2026-07-29)
+    {
+      const geminiScanners = new Set(['pro-scanner-v3', 'flash-scanner-v2.5', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image', 'gemini-3-pro-image'])
+      if (geminiScanners.has(model) && !canvasIsAdmin) {
+        return jsonPrivate({ success: false, error: 'This model is not available' }, { status: 403 })
+      }
+    }
+    // Only require prompt
+    if (!prompt || !prompt.trim()) {
+      return jsonPrivate(
+        { success: false, error: 'Prompt is required' },
+        { status: 400 }
+      );
+    }
+    {
+      const CANVAS_MODELS = new Set(['nano-banana-pro', 'nano-banana-cluster', 'nano-banana', 'seedream-4.5', 'flux-2', 'pro-scanner-v3', 'gemini-3-pro-image-preview', 'flash-scanner-v2.5', 'gemini-2.5-flash-image'])
+      if (!CANVAS_MODELS.has(model)) {
+        return jsonPrivate({ success: false, error: 'Invalid model' }, { status: 400 })
+      }
+    }
+
+    // reserveTicketsAtomic has no owner-email bypass: the fal webhook charges
+    // every canvas row it finalises, so every canvas row must really hold a
+    // reservation (reserveGenerationTickets skipped owner emails, and the
+    // later charge then ate other jobs' reservations).
     console.log('🔒 Attempting to reserve tickets...');
     {
-      const { reserveGenerationTickets } = await import('@/lib/ticket-gate')
-      const reserveResult = await reserveGenerationTickets(userId, sessionUser.email!, ticketCost)
+      const reserveResult = await reserveTicketsAtomic(userId, ticketCost)
       if (!reserveResult.ok) {
         console.log(`❌ Insufficient tickets. Need ${reserveResult.need}, have ${reserveResult.have}`);
         return jsonPrivate(
@@ -154,7 +194,23 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         )
       }
+      heldTickets = ticketCost
       console.log(`✅ Reserved ${ticketCost} tickets`);
+    }
+
+    const savePrompt = `${celebrityName ? celebrityName + ' - ' : ''}${enhancement ? enhancement + ' - ' : ''}${prompt}`;
+    const canvasParams = {
+      source: 'canvas',
+      slotId: slotId || 'studio-scanner',
+      position: position || { x: 0, y: 0 },
+      celebrityName: celebrityName || null,
+      enhancement: enhancement || null,
+      model,
+      quality: quality || '2k',
+      aspectRatio: aspectRatio || '1:1',
+      referenceImageUrls: permanentReferenceUrls,
+      // Reserved here; settled by the webhook or below (lib/queue-settle)
+      chargeMode: 'reserve',
     }
 
     // Track this generation in the DB so loading placeholders survive page refreshes
@@ -166,21 +222,11 @@ export async function POST(req: NextRequest) {
           modelId: model,
           modelType: 'image',
           prompt: prompt,
-          parameters: {
-            source: 'canvas',
-            slotId: slotId || 'studio-scanner',
-            position: position || { x: 0, y: 0 },
-            celebrityName: celebrityName || null,
-            enhancement: enhancement || null,
-            model,
-            quality: quality || '2k',
-            aspectRatio: aspectRatio || '1:1',
-            referenceImageUrls: permanentReferenceUrls,
-          },
-          // FAL async models (NanoBanana Pro, SeeDream, FLUX-2) are submitted to
-          // FAL's queue and stay "queued" until the webhook fires.
-          // Sync models (Gemini, NanoBanana Cluster) update status themselves.
-          // Using "queued" prevents a Vercel timeout from leaving a phantom "processing" row.
+          parameters: canvasParams,
+          // "queued" until this route hands the job to fal (submitCanvasJob
+          // flips it to "processing" with the request id), so a Vercel timeout
+          // mid-submit cannot leave a phantom "processing" row. Sync models
+          // (Gemini, NanoBanana Cluster) update status themselves.
           status: 'queued',
           ticketCost,
           startedAt: new Date(),
@@ -193,17 +239,53 @@ export async function POST(req: NextRequest) {
       console.error('⚠️ Failed to create job record (non-fatal):', jobErr);
     }
 
+    /*
+     * Hand a fal job over to the webhook (2026-10-23 billing sweep).
+     *
+     * The row used to stay 'queued' with no falEndpoint/falInput after fal
+     * accepted it, so promoteNextQueuedJob claimed it and failed it while fal
+     * was still rendering. Now, once fal accepts, the row becomes 'processing'
+     * with its request id - guarded on 'queued', so a row a sweeper already
+     * failed (and gave the tickets back for) is not revived - and the slot
+     * counters get the +1 that the webhook's -1 on completion expects (the
+     * canvas never bumped them, so every canvas job drifted them down).
+     * Without a row there is nothing for the webhook to finalise, so the job
+     * is not sent at all.
+     */
+    const submitCanvasJob = async (endpoint: string, input: any) => {
+      if (!jobId) throw new Error('Could not record this generation - please try again.')
+      const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
+      const { request_id } = await fal.queue.submit(endpoint, {
+        input,
+        webhookUrl: `${appUrl}/api/webhooks/fal`,
+      });
+      console.log(`✅ ${endpoint} submitted to FAL queue: ${request_id}`);
+      const id = jobId
+      const flipped = await withDbRetry(() => prisma.generationQueue.updateMany({
+        where: { id, status: 'queued' },
+        data: {
+          status: 'processing',
+          startedAt: new Date(),
+          falRequestId: request_id,
+          // falEndpoint: the cron's lost-webhook pass checks the job at fal with it;
+          // slots: this row holds a model and a global slot (lib/fal-queue heldSlots)
+          parameters: { ...canvasParams, savePrompt, falEndpoint: endpoint, slots: 'both' },
+        },
+      }), 3, 'canvas')
+      if (flipped.count === 0) {
+        // Someone failed the row first and returned its tickets already
+        heldTickets = 0
+        throw new Error('This generation was cancelled before it started.')
+      }
+      // The row owns the reservation now: the webhook settles or releases it
+      heldTickets = 0
+      const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
+      await bumpActiveCounters(String(model), FAL_GLOBAL_ID)
+      return jsonPrivate({ success: true, jobId, queued: true });
+    }
+
     // Map UI model IDs to actual API model IDs
     let actualModel = model;
-    // Gemini scanner models are ADMIN ONLY (retired from public 2026-07-29)
-    {
-      const geminiScanners = new Set(['pro-scanner-v3', 'flash-scanner-v2.5', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image', 'gemini-3-pro-image'])
-      if (geminiScanners.has(model)) {
-        if (!(await checkIsAdmin(sessionUser.email))) {
-          return jsonPrivate({ success: false, error: 'This model is not available' }, { status: 403 })
-        }
-      }
-    }
     if (model === 'pro-scanner-v3') {
       actualModel = 'gemini-3-pro-image-preview';
       console.log('🔄 Mapped pro-scanner-v3 → gemini-3-pro-image-preview');
@@ -213,14 +295,6 @@ export async function POST(req: NextRequest) {
     } else if (actualModel === 'nano-banana-cluster') {
       actualModel = 'nano-banana';
       console.log('🔄 Mapped nano-banana-cluster → nano-banana');
-    }
-
-    // Only require prompt
-    if (!prompt || !prompt.trim()) {
-      return jsonPrivate(
-        { success: false, error: 'Prompt is required' },
-        { status: 400 }
-      );
     }
 
     let imageUrl = '';
@@ -276,26 +350,8 @@ export async function POST(req: NextRequest) {
       console.log(`🎯 Calling endpoint: ${modelEndpoint}`);
 
       // Submit to FAL.ai async queue — webhook handles completion
-      const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
       enforcePublicModeration(String(actualModel), inputParams, canvasIsAdmin)
-      const { request_id } = await fal.queue.submit(modelEndpoint, {
-        input: inputParams,
-        webhookUrl: `${appUrl}/api/webhooks/fal`,
-      });
-      console.log(`✅ NanoBanana Pro submitted to FAL queue: ${request_id}`);
-      const savePrompt = `${celebrityName ? celebrityName + ' - ' : ''}${enhancement ? enhancement + ' - ' : ''}${prompt}`;
-      if (jobId) {
-        try {
-          await prisma.generationQueue.update({
-            where: { id: jobId },
-            data: {
-              falRequestId: request_id,
-              parameters: { source: 'canvas', slotId: slotId || 'studio-scanner', position: position || { x: 0, y: 0 }, celebrityName: celebrityName || null, enhancement: enhancement || null, model, quality: quality || '2k', aspectRatio: aspectRatio || '1:1', referenceImageUrls: permanentReferenceUrls, savePrompt },
-            },
-          });
-        } catch (e) { console.error('⚠️ Failed to update job with falRequestId (non-fatal):', e); }
-      }
-      return jsonPrivate({ success: true, jobId, queued: true });
+      return await submitCanvasJob(modelEndpoint, inputParams);
 
     } else if (actualModel === 'nano-banana') {
       console.log('🍌🍌 Calling NanoBanana Cluster...');
@@ -377,26 +433,8 @@ export async function POST(req: NextRequest) {
       console.log(`📐 Image size: ${image_size.width}x${image_size.height}`);
 
       // Submit to FAL.ai async queue — webhook handles completion
-      const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
       enforcePublicModeration(String(actualModel), inputParams, canvasIsAdmin)
-      const { request_id } = await fal.queue.submit(modelEndpoint, {
-        input: inputParams,
-        webhookUrl: `${appUrl}/api/webhooks/fal`,
-      });
-      console.log(`✅ SeeDream 4.5 submitted to FAL queue: ${request_id}`);
-      const savePrompt = `${celebrityName ? celebrityName + ' - ' : ''}${enhancement ? enhancement + ' - ' : ''}${prompt}`;
-      if (jobId) {
-        try {
-          await prisma.generationQueue.update({
-            where: { id: jobId },
-            data: {
-              falRequestId: request_id,
-              parameters: { source: 'canvas', slotId: slotId || 'studio-scanner', position: position || { x: 0, y: 0 }, celebrityName: celebrityName || null, enhancement: enhancement || null, model, quality: quality || '2k', aspectRatio: aspectRatio || '1:1', referenceImageUrls: permanentReferenceUrls, savePrompt },
-            },
-          });
-        } catch (e) { console.error('⚠️ Failed to update job with falRequestId (non-fatal):', e); }
-      }
-      return jsonPrivate({ success: true, jobId, queued: true });
+      return await submitCanvasJob(modelEndpoint, inputParams);
 
     } else if (actualModel === 'flux-2') {
       console.log('🌊 Calling FLUX 2...');
@@ -478,26 +516,8 @@ export async function POST(req: NextRequest) {
       console.log(`📐 Image size: ${JSON.stringify(image_size)}`);
 
       // Submit to FAL.ai async queue — webhook handles completion
-      const appUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
       enforcePublicModeration(String(actualModel), inputParams, canvasIsAdmin)
-      const { request_id } = await fal.queue.submit(modelEndpoint, {
-        input: inputParams,
-        webhookUrl: `${appUrl}/api/webhooks/fal`,
-      });
-      console.log(`✅ FLUX 2 submitted to FAL queue: ${request_id}`);
-      const savePrompt = `${celebrityName ? celebrityName + ' - ' : ''}${enhancement ? enhancement + ' - ' : ''}${prompt}`;
-      if (jobId) {
-        try {
-          await prisma.generationQueue.update({
-            where: { id: jobId },
-            data: {
-              falRequestId: request_id,
-              parameters: { source: 'canvas', slotId: slotId || 'studio-scanner', position: position || { x: 0, y: 0 }, celebrityName: celebrityName || null, enhancement: enhancement || null, model, quality: quality || '2k', aspectRatio: aspectRatio || '1:1', referenceImageUrls: permanentReferenceUrls, savePrompt },
-            },
-          });
-        } catch (e) { console.error('⚠️ Failed to update job with falRequestId (non-fatal):', e); }
-      }
-      return jsonPrivate({ success: true, jobId, queued: true });
+      return await submitCanvasJob(modelEndpoint, inputParams);
 
     } else if (actualModel === 'gemini-3-pro-image-preview') {
       console.log('💎 Calling Gemini 3 Pro Image...');
@@ -740,17 +760,13 @@ export async function POST(req: NextRequest) {
       console.log('✅ Gemini Flash 2.5 generation complete');
 
     } else {
-      return jsonPrivate(
-        { success: false, error: 'Invalid model' },
-        { status: 400 }
-      );
+      // Unreachable (models are checked before the reservation); thrown so the
+      // catch returns the reservation and fails the row
+      throw new Error('Invalid model')
     }
 
     if (!imageUrl) {
-      return jsonPrivate(
-        { success: false, error: 'No image generated' },
-        { status: 500 }
-      );
+      throw new Error('No image generated')
     }
 
     // Download and upload all generated image(s) to permanent Vercel Blob storage
@@ -784,26 +800,10 @@ export async function POST(req: NextRequest) {
 
     const primaryBlobUrl = allBlobUrls[0];
 
-    // Deduct tickets from user balance AND release reservation (once, regardless of image count).
-    // Use GREATEST(0, ...) on reserved so it can never go negative, which would inflate
-    // the effective balance check and allow subsequent free generations.
-    console.log(`💸 Deducting ${ticketCost} tickets and releasing reservation...`);
-    await prisma.$executeRaw`
-      UPDATE "Ticket"
-      SET
-        -- never below 0 (lib/ticket-gate, 2026-10-19)
-        balance    = GREATEST(0, balance - ${ticketCost}),
-        reserved   = GREATEST(0, reserved - ${ticketCost}),
-        "totalUsed" = "totalUsed" + ${ticketCost}
-      WHERE "userId" = ${userId}
-    `;
-    console.log('✅ Tickets deducted and reservation released');
-
     // Save all images to GeneratedImage table
     console.log('💾 Saving to GeneratedImage table...');
     const expiresAt = new Date();
     expiresAt.setFullYear(expiresAt.getFullYear() + 100);
-    const savePrompt = `${celebrityName ? celebrityName + ' - ' : ''}${enhancement ? enhancement + ' - ' : ''}${prompt}`;
 
     for (let i = 0; i < allBlobUrls.length; i++) {
       const saved = await prisma.generatedImage.create({
@@ -821,9 +821,42 @@ export async function POST(req: NextRequest) {
       console.log(`✅ Saved to GeneratedImage, ID: ${saved.id}`);
     }
 
+    /*
+     * Delivered: the reservation becomes spend, once (2026-10-23 billing
+     * sweep). Settled only AFTER the pictures are saved - it used to come
+     * first, and a failed save then ran the catch's release on top of the
+     * settle. The row is flipped to 'completed' first, guarded, so a sweeper
+     * that failed it meanwhile (and released the reservation) is not settled
+     * a second time: then the picture is charged from the free balance.
+     */
+    console.log(`💸 Settling ${ticketCost} reserved tickets...`);
+    {
+      const toSettle = heldTickets
+      heldTickets = 0
+      let rowWon = true
+      if (jobId) {
+        const id = jobId
+        const flipped = await withDbRetry(() => prisma.generationQueue.updateMany({
+          where: { id, status: { in: ['queued', 'processing'] } },
+          data: { status: 'completed', resultUrl: primaryBlobUrl, completedAt: new Date() },
+        }), 3, 'canvas').catch((e) => {
+          // The pictures are saved: settle as if the flip had won rather than
+          // hand the reservation back for a delivered result
+          console.error('⚠️ Failed to mark job as completed (non-fatal):', e)
+          return { count: 1 }
+        })
+        rowWon = flipped.count === 1
+        console.log(`📋 Job #${jobId} ${rowWon ? 'marked as completed' : 'was already settled elsewhere'}`);
+      }
+      if (rowWon) await settleReservedTickets(userId, toSettle)
+      else await chargeTicketsAtomic(userId, toSettle)
+    }
+    console.log('✅ Tickets settled');
+
     // Save to GenerationTrainingData for gem/diluted marking (primary image only)
+    // Non-fatal: the picture is delivered and paid for by now
     console.log('💾 Saving to GenerationTrainingData table...');
-    const trainingData = await prisma.generationTrainingData.create({
+    await prisma.generationTrainingData.create({
       data: {
         userId: userId,
         celebrityName: celebrityName || null,
@@ -840,27 +873,11 @@ export async function POST(req: NextRequest) {
         isGem: false,
         isDeleted: false,
       },
-    });
-
-    console.log('✅ Saved to GenerationTrainingData, ID:', trainingData.id);
+    }).then(
+      (trainingData) => console.log('✅ Saved to GenerationTrainingData, ID:', trainingData.id),
+      (e) => console.error('⚠️ Failed to save GenerationTrainingData (non-fatal):', e),
+    );
     console.log('=== PROMPTING STUDIO GENERATION COMPLETE ===');
-
-    // Mark generation job as completed so the polling client can resolve the placeholder
-    if (jobId) {
-      try {
-        await prisma.generationQueue.update({
-          where: { id: jobId },
-          data: {
-            status: 'completed',
-            resultUrl: primaryBlobUrl,
-            completedAt: new Date(),
-          },
-        });
-        console.log(`📋 Job #${jobId} marked as completed`);
-      } catch (jobErr) {
-        console.error('⚠️ Failed to mark job as completed (non-fatal):', jobErr);
-      }
-    }
 
     // Return format based on single or multi-image
     if (allBlobUrls.length > 1) {
@@ -892,33 +909,27 @@ export async function POST(req: NextRequest) {
                                error.message?.toLowerCase().includes('blocked') ||
                                error.message?.toLowerCase().includes('policy');
 
-    // ALWAYS release the ticket reservation on error (tickets weren't actually used).
-    // Use releaseReservedTickets (GREATEST floor) so reserved never goes negative.
-    if (userId && ticketCost) {
+    /*
+     * Give back only what this request still holds (2026-10-23 billing
+     * sweep) - never after a settle, never after a fal hand-off (the webhook
+     * owns those). With a job row, failQueueRow fails it AND releases its
+     * reservation in one guarded step, so a sweeper racing us cannot release
+     * it twice; without one, the reservation is released directly.
+     */
+    if (heldTickets > 0) {
+      const toRelease = heldTickets
+      heldTickets = 0
       try {
-        console.log(`🔓 Releasing ${ticketCost} reserved tickets due to generation failure...`);
-        const { releaseReservedTickets } = await import('@/lib/ticket-gate')
-        await releaseReservedTickets(userId, ticketCost)
+        console.log(`🔓 Releasing ${toRelease} reserved tickets due to generation failure...`);
+        if (jobId) {
+          await failQueueRow(jobId, error.message || 'Generation failed', ['queued', 'processing'])
+          console.log(`📋 Job #${jobId} marked as failed`);
+        } else {
+          await releaseReservedTickets(userId, toRelease)
+        }
         console.log('✅ Reserved tickets released - balance unchanged');
       } catch (releaseError) {
         console.error('❌ Failed to release reserved tickets:', releaseError);
-      }
-    }
-
-    // Mark the generation job as failed so the client can turn the placeholder red
-    if (jobId) {
-      try {
-        await prisma.generationQueue.update({
-          where: { id: jobId },
-          data: {
-            status: 'failed',
-            errorMessage: (error.message || 'Generation failed').substring(0, 500),
-            completedAt: new Date(),
-          },
-        });
-        console.log(`📋 Job #${jobId} marked as failed`);
-      } catch (jobErr) {
-        console.error('⚠️ Failed to mark job as failed (non-fatal):', jobErr);
       }
     }
 

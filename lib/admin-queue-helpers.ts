@@ -10,6 +10,59 @@
 import { OWN_QUEUE_MODEL_IDS } from '@/lib/runpod-video-models'
 import prisma from '@/lib/prisma'
 import { FAL_GLOBAL_ID, promoteNextQueuedJob } from '@/lib/fal-queue'
+import { returnJobTickets } from '@/lib/queue-settle'
+
+/*
+ * Who holds one of fal's global slots (2026-10-23 billing sweep).
+ *
+ * Non-admin video is sent straight to fal without claiming a slot, but its
+ * release still decremented the counter - every finished clip pulled it one
+ * lower than the work really running, and the promoter then sent more than
+ * maxConcurrent at once. A row now says so: parameters.slotClaimed = true
+ * where a slot was taken (or will be, by the promoter, for a 'queued' row),
+ * false where none was. Only an explicit `false` skips the decrement - rows
+ * made before this (and by the routes that don't write the flag yet) keep the
+ * old behaviour, so nothing that DID claim a slot stops giving it back.
+ */
+type SlotRow = { modelId?: string | null; modelType?: string | null; parameters?: unknown }
+
+/** Whether a 'processing' row holds one of fal's global slots. */
+export function holdsFalSlot(row: SlotRow): boolean {
+  // Higgsfield's and RunPod's jobs run on their own queues (lib/higgsfield, lib/runpod-video)
+  if (row.modelId && OWN_QUEUE_MODEL_IDS.includes(row.modelId)) return false
+  // 3D jobs aren't counted against fal's slots either (as syncActiveCounters)
+  if (row.modelType === 'threed') return false
+  return ((row.parameters ?? {}) as { slotClaimed?: unknown }).slotClaimed !== false
+}
+
+/**
+ * The ground truth for fal's global counter: 'processing' rows that hold a
+ * slot. syncActiveCounters (/api/admin/queue/stats) should count the same way.
+ */
+export async function countFalSlotHolders(): Promise<number> {
+  const [all, slotless] = await Promise.all([
+    // 3D excluded, as syncActiveCounters does (/api/admin/queue/stats)
+    prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' }, modelId: { notIn: OWN_QUEUE_MODEL_IDS } } }),
+    prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' }, modelId: { notIn: OWN_QUEUE_MODEL_IDS }, parameters: { path: ['slotClaimed'], equals: false } } }),
+  ])
+  return Math.max(0, all - slotless)
+}
+
+/**
+ * Give back the slot a row held (floored at 0) and promote the next waiting
+ * job. The caller must have just moved the row out of 'processing' with a
+ * guarded flip, so this runs once per job.
+ */
+export async function freeFalSlot(row: SlotRow): Promise<void> {
+  if (holdsFalSlot(row)) {
+    await prisma.$executeRaw`
+      UPDATE "ModelConcurrencyLimit"
+      SET "currentActive" = GREATEST(0, "currentActive" - 1)
+      WHERE "modelId" = ${FAL_GLOBAL_ID}
+    `
+  }
+  await promoteNextQueuedJob()
+}
 
 /**
  * Syncs the global FAL concurrency counter from ground truth (actual DB count of
@@ -31,8 +84,9 @@ export async function syncAndClaimFalSlot(): Promise<{ claimed: boolean; maxConc
 
   // Sync counter to ground truth AND check for waiting jobs in one pass.
   const [actualProcessing, queuedCount] = await Promise.all([
-    // fal's own jobs only: Higgsfield's and RunPod's run on their own queues (lib/higgsfield, lib/runpod-video)
-    prisma.generationQueue.count({ where: { status: 'processing', modelId: { notIn: OWN_QUEUE_MODEL_IDS } } }),
+    // fal's own jobs only: Higgsfield's and RunPod's run on their own queues (lib/higgsfield, lib/runpod-video);
+    // and only the ones holding a slot (slotClaimed: false = non-admin video, which never takes one)
+    countFalSlotHolders(),
     prisma.generationQueue.count({ where: { status: 'queued', modelId: { notIn: OWN_QUEUE_MODEL_IDS } } }),
   ])
 
@@ -79,17 +133,27 @@ export async function syncAndClaimFalSlot(): Promise<{ claimed: boolean; maxConc
  * Resolves true for the one call that settled the job, false when it was
  * already settled - the video status routes call it just before they save,
  * so only that one call saves (2026-10-22: five polls waiting on one slow fal
- * download each saved the same Wan Animate video).
+ * download each saved the same Wan Animate video). (Since the 2026-10-23
+ * billing sweep the video routes claim through lib/video-save-guard instead,
+ * into 'saving' - see there.)
  */
 export async function releaseQueueSlot(falRequestId: string, failed: boolean, errorMessage?: string): Promise<boolean> {
   let claimed = false
   try {
-    const updated = await prisma.generationQueue.updateMany({
+    // The row first: its charge mode decides how tickets go back, and its
+    // slotClaimed flag whether the counter comes down (2026-10-23 billing sweep)
+    const row = await prisma.generationQueue.findFirst({
       where: { falRequestId, status: 'processing' },
+      select: { id: true, userId: true, ticketCost: true, modelId: true, modelType: true, parameters: true },
+      orderBy: { id: 'desc' },
+    })
+    if (!row) return false // Already settled (e.g., duplicate poll call) — nothing to do
+    const updated = await prisma.generationQueue.updateMany({
+      where: { id: row.id, status: 'processing' },
       data: {
         status: failed ? 'failed' : 'completed',
         completedAt: new Date(),
-        ...(failed && errorMessage ? { errorMessage } : {}),
+        ...(failed && errorMessage ? { errorMessage: errorMessage.slice(0, 500) } : {}),
       },
     })
 
@@ -99,42 +163,26 @@ export async function releaseQueueSlot(falRequestId: string, failed: boolean, er
     }
     claimed = true
 
-    // Server-authoritative ticket refund on failure. Because the status flip
+    // Server-authoritative ticket return on failure. Because the status flip
     // above is guarded by `status: 'processing'`, exactly one poll call reaches
-    // this branch per job, so the refund can never double-fire. The refund runs
-    // regardless of whether the user's tab is open — fixing tickets silently
-    // lost on tab-close/crash. `ticketCost` on the row is the amount actually
-    // debited from the DB (0 for models the user was never charged for, e.g.
-    // admin image gens), so this never credits an uncharged user.
+    // this branch per job, so it can never double-fire. It runs regardless of
+    // whether the user's tab is open — fixing tickets silently lost on
+    // tab-close/crash. `ticketCost` on the row is the amount actually taken (0
+    // for models the user was never charged for, e.g. admin image gens), so
+    // this never credits an uncharged user. A row charged at submit is
+    // refunded; one that only RESERVED is released (lib/queue-settle
+    // chargeModeOf) - this used to add to the balance for both.
     if (failed) {
       try {
-        const row = await prisma.generationQueue.findFirst({
-          where: { falRequestId },
-          select: { userId: true, ticketCost: true },
-          orderBy: { id: 'desc' },
-        })
-        if (row && row.ticketCost > 0) {
-          await prisma.ticket.update({
-            where: { userId: row.userId },
-            data: { balance: { increment: row.ticketCost } },
-          }).catch(() => {})
-        }
+        await returnJobTickets(row)
       } catch (refundErr) {
         console.error('[admin-queue-helpers] refund on failure error:', refundErr)
       }
     }
 
-    // Decrement global FAL concurrency counter, floored at 0. The floor guards
-    // against jobs that were released without a matching claim (e.g. non-admin
-    // video, which doesn't pre-claim a slot) drifting the counter negative.
-    await prisma.$executeRaw`
-      UPDATE "ModelConcurrencyLimit"
-      SET "currentActive" = GREATEST(0, "currentActive" - 1)
-      WHERE "modelId" = ${FAL_GLOBAL_ID}
-    `
-
-    // Promote the next waiting job
-    await promoteNextQueuedJob()
+    // The slot back (only if the row held one - holdsFalSlot) and the next
+    // waiting job promoted
+    await freeFalSlot(row)
   } catch (err) {
     console.error('[admin-queue-helpers] releaseQueueSlot error:', err)
   }

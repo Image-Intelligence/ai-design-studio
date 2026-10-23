@@ -6,7 +6,7 @@ import { syncAndClaimFalSlot } from '@/lib/admin-queue-helpers'
 import { generationCaller } from '@/lib/api-key-auth'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { isGenerationBlocked } from '@/lib/generation-guard'
-import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { deductGenerationTickets, refundGenerationTickets, isAdminEmail } from '@/lib/ticket-gate'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { canonicalisePayload } from '@/lib/media-url'
 
@@ -53,6 +53,12 @@ function parseSize(size: string): { width: number; height: number } {
 // Text-to-image  → fal-ai/gpt-image-2   (no reference images)
 // Image editing  → openai/gpt-image-2/edit  (reference images provided)
 export async function POST(req: Request) {
+  // Tickets charged by this request that no queue row owns yet - refunded by
+  // the catch if anything throws before a row takes them over (2026-10-23
+  // billing sweep: a throw between the charge and the row kept them).
+  let refundOwed = 0
+  let refundUserId = 0
+  let refundEmail = ''
   try {
     // The page's session, or a personal API key (Nova, Prism, the ChatGPT / Claude connector) - lib/api-key-auth
     const sessionUser = await generationCaller(req)
@@ -104,6 +110,17 @@ export async function POST(req: Request) {
         { status: 402 },
       )
     }
+    /*
+     * What was really taken (2026-10-23 billing sweep). deductGenerationTickets
+     * charges nothing for owner emails, but the rows stored the full price - and
+     * a failed job refunds the row's ticketCost (releaseQueueSlot), so every
+     * failed owner job minted tickets. Rows store the charged amount, like the
+     * sibling routes' chargedCost, and say they were charged up front.
+     */
+    const chargedCost = isAdminEmail(sessionUser!.email) ? 0 : ticketCost
+    refundOwed = chargedCost
+    refundUserId = targetUserId
+    refundEmail = sessionUser!.email
 
     const { width, height } = parseSize(size)
     const hasRefImages = Array.isArray(referenceImages) && referenceImages.length > 0
@@ -173,11 +190,13 @@ export async function POST(req: Request) {
           modelId:   'gpt-image-2',
           modelType: 'image',
           prompt:    prompt.trim(),
-          parameters: { falEndpoint: endpoint, falInput: input, usePolling: true, permanentReferenceUrls, size, quality, ticketCost } as any,
+          parameters: { falEndpoint: endpoint, falInput: input, usePolling: true, chargeMode: 'deduct', permanentReferenceUrls, size, quality, ticketCost: chargedCost } as any,
           status:    'queued',
-          ticketCost,
+          ticketCost: chargedCost,
         },
       })
+      // The queued row owns the charge now (its failure path refunds it)
+      refundOwed = 0
       return NextResponse.json({ success: true, queued: true, queueId: queueEntry.id, permanentReferenceUrls })
     }
 
@@ -190,13 +209,14 @@ export async function POST(req: Request) {
           modelId:     'gpt-image-2',
           modelType:   'image',
           prompt:      prompt.trim(),
-          parameters:  { falEndpoint: endpoint, falInput: input, usePolling: true, permanentReferenceUrls, size, quality, ticketCost } as any,
+          parameters:  { falEndpoint: endpoint, falInput: input, usePolling: true, chargeMode: 'deduct', permanentReferenceUrls, size, quality, ticketCost: chargedCost } as any,
           status:      'processing',
-          ticketCost,
+          ticketCost:  chargedCost,
           falRequestId: submitted.request_id,
           startedAt:   new Date(),
         },
       })
+      refundOwed = 0
 
       console.log(`GPT Image 2 submitted requestId=${submitted.request_id} queueId=#${queueEntry.id}`)
 
@@ -213,11 +233,16 @@ export async function POST(req: Request) {
         where: { modelId: FAL_GLOBAL_ID },
         data: { currentActive: { decrement: 1 } },
       }).catch(() => {})
-      await refundGenerationTickets(targetUserId, sessionUser!.email, ticketCost)
+      // Refunded once, by the outer catch (refundOwed)
       throw submitError
     }
   } catch (error: any) {
     console.error('GPT Image 2 submit error:', error)
+    if (refundOwed > 0) {
+      const owed = refundOwed
+      refundOwed = 0
+      await refundGenerationTickets(refundUserId, refundEmail, owed)
+    }
     return NextResponse.json({ error: error.message || 'Submission failed' }, { status: 500 })
   }
 }

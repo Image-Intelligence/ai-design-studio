@@ -67,8 +67,20 @@ export type StoryboardShot = {
    * moment worth watching in full (the edit plan otherwise picks the window).
    */
   keepWhole?: boolean
-  /** The scene this shot belongs to (StoryScene.id); absent on a board without scenes. */
+  /**
+   * The scene this shot belongs to (StoryScene.id); absent on a board without
+   * scenes. ASSET_SCENE_ID = Scene 0, the board's asset scratch paper.
+   */
   sceneId?: string
+  /**
+   * A Scene 0 shot that makes a picture of an asset (2026-10-23): its still
+   * joins that asset's pictures when it lands (syncAssetShots). `view` is the
+   * assetViewPlan view it makes; `url` the picture of it already in the asset
+   * (a redo swaps that one); `auto` = its prompt is still the one built from
+   * the asset's description, so it is rebuilt from the current description
+   * when the still is made (writing the prompt by hand switches it off).
+   */
+  assetFor?: AssetShotLink
   /**
    * This still's own references, each switched on or off - set by the AI
    * draft (from the assets it says the shot shows) or by hand in Details.
@@ -455,6 +467,12 @@ export type ShotVideo = {
    * the voice line lip-synced into it (the Final Cut does not lay it again).
    */
   edit?: { tool: string; label: string; of: string; prompt?: string; lineId?: string } | null
+  /**
+   * A settler's claim on a finished render (lib/storyboard-shoot claimSettle,
+   * 2026-10-23 billing sweep): kept through every write so a second settler
+   * does not conform (and store) the same clip again. Server-owned.
+   */
+  settlingAt?: number
 }
 
 /** "1080x1920" -> "9:16" (the nearest common frame), else the pixel size. */
@@ -480,6 +498,13 @@ export type StoryboardDoc = {
   mode: BoardModeId
   /** The board's scenes, in order (empty = one run of shots, no scenes). */
   scenes: StoryScene[]
+  /**
+   * THE PAGE'S copy of Scene 0's shots (the asset scratch paper), kept apart
+   * from `shots` so nothing that works on the film sees them. Stored in the
+   * same `shots` column (sceneId ASSET_SCENE_ID) - the page splits them out
+   * when a board loads and puts them back in front when it saves.
+   */
+  scratch?: StoryboardShot[]
   updatedAt?: string
 }
 
@@ -790,6 +815,29 @@ export const sceneRefName = (k: number) => `Scene ${k + 1}`
 /** The id a scene's pseudo-asset carries ("scene:<scene id>") - never a board asset's. */
 export const SCENE_REF_PREFIX = 'scene:'
 
+// ── Scene 0: the asset scratch paper (2026-10-23) ───────────────────────────
+//
+// Owner: "scene 0 should be for these suggested assets and any manual assets
+// that a user wants to generate, it's kind of like scratch paper ... The
+// shooting should not include this new section". Its shots live in the board's
+// `shots` column like any other (so a still there is made, tracked and settled
+// by the same background pipeline, and shows its Queued / making tile at once),
+// but they carry sceneId ASSET_SCENE_ID, which is never a StoryScene: they are
+// not in any scene, are always stored first, and everything that makes the
+// film - numbering, runtime, the AI draft, shooting, the animatic, the audio
+// lane, the Stills cut and the Final Cut - works on storyShots() only.
+
+/** The sceneId of Scene 0's shots. Never a StoryScene id (those are UUIDs or "c..."). */
+export const ASSET_SCENE_ID = 'assets'
+/** How many shots Scene 0 holds (on top of the board's MAX_SHOTS). */
+export const MAX_ASSET_SHOTS = 60
+export type AssetShotLink = { assetId: string; view: string; url?: string; auto?: boolean }
+export const isAssetShot = (s: Pick<StoryboardShot, 'sceneId'>) => s.sceneId === ASSET_SCENE_ID
+/** The film's shots - everything but Scene 0. */
+export const storyShots = <T extends Pick<StoryboardShot, 'sceneId'>>(shots: T[]) => shots.filter(s => !isAssetShot(s))
+/** Scene 0's shots. */
+export const assetShots = <T extends Pick<StoryboardShot, 'sceneId'>>(shots: T[]) => shots.filter(isAssetShot)
+
 /** The shots of a scene that go into its reference set: those with a still, minus the ones left out. */
 export const sceneRefShots = (shots: StoryboardShot[], scene: StoryScene) =>
   scene.asRef ? shots.filter(s => s.sceneId === scene.id && s.stillUrl && !scene.refOff?.includes(s.id)) : []
@@ -819,6 +867,9 @@ export function sceneRefAssets(board: { scenes: StoryScene[]; shots: StoryboardS
  * keep their order. A board without scenes comes back with no scene ids.
  */
 export function orderByScenes(shots: StoryboardShot[], scenes: StoryScene[]): StoryboardShot[] {
+  // Scene 0's shots are in no scene: kept as they are, ahead of the film's
+  const scratch = assetShots(shots)
+  if (scratch.length) return [...scratch, ...orderByScenes(storyShots(shots), scenes)]
   if (!scenes.length) return shots.some(s => s.sceneId) ? shots.map(({ sceneId: _drop, ...s }) => s) : shots
   const rank = new Map(scenes.map((c, i) => [c.id, i]))
   return shots
@@ -837,9 +888,10 @@ export function orderByScenes(shots: StoryboardShot[], scenes: StoryScene[]): St
  */
 export function ensureScenes<T extends { shots: StoryboardShot[]; scenes: StoryScene[] }>(b: T): T {
   if (b.scenes.length) return { ...b, shots: orderByScenes(b.shots, b.scenes) }
-  if (!b.shots.length) return b
+  // Scene 0's shots alone do not make a Scene 1
+  if (!b.shots.some(s => !isAssetShot(s))) return b
   const first = newScene()
-  return { ...b, scenes: [first], shots: b.shots.map(s => ({ ...s, sceneId: first.id })) }
+  return { ...b, scenes: [first], shots: orderByScenes(b.shots.map(s => (isAssetShot(s) ? s : { ...s, sceneId: first.id })), [first]) }
 }
 
 /** The shots of one scene, in order. */
@@ -885,7 +937,7 @@ export function migrateActiveRefs<T extends Pick<StoryboardDoc, 'assets' | 'scen
   if (!on.length) return null
   const shots = b.shots.map(s => {
     const scene = s.sceneId ? b.scenes.find(c => c.id === s.sceneId) : undefined
-    if (Array.isArray(s.refs) || scene?.assetIds.length) return s
+    if (Array.isArray(s.refs) || scene?.assetIds.length || isAssetShot(s)) return s
     return { ...s, refs: on.map(r => ({ id: newId('r'), url: r.url, on: true, assetId: r.assetId })).slice(0, MAX_SHOT_REFS) }
   })
   return { ...b, shots, assets: b.assets.map(a => ({ ...a, refs: a.refs.map(r => ({ ...r, active: false })) })) }
@@ -1609,6 +1661,8 @@ function sanitizeVideo(v: any): ShotVideo | null {
     edit: v.edit && typeof v.edit === 'object' && str(v.edit.tool, 60)
       ? { tool: str(v.edit.tool, 60), label: str(v.edit.label, 80), of: str(v.edit.of, 2000), ...(str(v.edit.prompt, 1000) ? { prompt: str(v.edit.prompt, 1000) } : {}), ...(str(v.edit.lineId, 64) ? { lineId: str(v.edit.lineId, 64) } : {}) }
       : null,
+    // A settler's claim (lib/storyboard-shoot claimSettle) - dropped here, every write under the row lock wiped it
+    ...(Number.isFinite(Number(v.settlingAt)) && Number(v.settlingAt) > 0 ? { settlingAt: Number(v.settlingAt) } : {}),
   }
 }
 
@@ -1691,7 +1745,8 @@ export function shootAspect(aspectOptions: string[] | undefined, boardAspect: st
 /** Clean whatever arrived into a valid shot list - the server never stores raw client JSON. */
 export function sanitizeShots(raw: unknown): StoryboardShot[] {
   if (!Array.isArray(raw)) return []
-  return raw.slice(0, MAX_SHOTS).map((r: any) => {
+  // The film's MAX_SHOTS plus Scene 0's (stored first - see orderByScenes)
+  return raw.slice(0, MAX_SHOTS + MAX_ASSET_SHOTS).map((r: any) => {
     const d = Number(r?.duration)
     const still = str(r?.stillUrl, 2000)
     // An id, or a label from a planner that wrote the name
@@ -1712,6 +1767,13 @@ export function sanitizeShots(raw: unknown): StoryboardShot[] {
       transition: str(r?.transition, 300) || 'Cut',
       keepWhole: r?.keepWhole === true ? true : undefined,
       sceneId: str(r?.sceneId, 64) || undefined,
+      ...(r?.sceneId === ASSET_SCENE_ID && typeof r?.assetFor?.assetId === 'string' ? {
+        assetFor: {
+          assetId: str(r.assetFor.assetId, 64), view: str(r.assetFor.view, 24) || 'hero',
+          ...(/^https:\/\//.test(str(r.assetFor.url, 2000)) ? { url: str(r.assetFor.url, 2000) } : {}),
+          ...(r.assetFor.auto === true ? { auto: true } : {}),
+        },
+      } : {}),
       refs: sanitizeShotRefs(r?.refs),
       editOf: str(r?.editOf, 64) || undefined,
       aspect: (SHOT_ASPECTS as readonly string[]).includes(r?.aspect) ? r.aspect : undefined,
@@ -1917,6 +1979,89 @@ export function assetViewPlan(kind: string, o: { outfitViews?: number; another?:
 export function assetPicturesTickets(kind: string, o: { outfitViews?: number; another?: boolean; boardAspect?: string } = {}): number {
   return assetViewPlan(kind, o).reduce((n, v, i) =>
     n + stillTickets(ASSET_PICTURE_MODEL, ASSET_PICTURE_QUALITY, v.aspect, undefined, o.another || i > 0 ? 1 : 0), 0)
+}
+
+/**
+ * The prompt for one view of an asset - from its description, or (`edit`) as
+ * an edit of the asset's first picture, so the set keeps the same face,
+ * outfit or place. `look` is the board's style (the still route adds it to a
+ * Scene 0 still itself, so Scene 0 passes none).
+ */
+export function assetViewPrompt(a: Pick<StoryAsset, 'kind' | 'name' | 'notes'>, v: Pick<AssetView, 'id'>, look: string, edit: boolean): string {
+  const desc = (a.notes || a.name).trim()
+  const style = look ? ` Rendered in this style: ${look}.` : ''
+  const noun = a.kind === 'creature' ? 'creature' : a.kind === 'character' ? 'character' : ASSET_KINDS.find(k => k.id === a.kind)?.label.toLowerCase() ?? 'subject'
+  if (isPersonKind(a.kind)) {
+    if (!edit) return `Character reference photo of ${a.name}: ${desc}. Full body from head to feet, standing upright and facing the camera, arms relaxed at the sides, neutral expression. Plain light-grey studio backdrop, soft even studio lighting, sharp focus. No text, no other people or creatures.${style}`
+    const turn = v.id === 'back' ? 'seen from directly behind (a back view)' : v.id === 'three-quarter' ? 'turned about 45 degrees to their left (a three-quarter view)' : 'from another angle'
+    return `Edit this photo: show the SAME ${noun} - identical face, hair, body, skin and every piece of the outfit - ${turn}, full body from head to feet, standing. Keep the plain light-grey backdrop and the lighting exactly the same. No text.`
+  }
+  if (a.kind === 'wardrobe') {
+    if (!edit) return `Product photo of the outfit "${a.name}": ${desc}. The garments alone on an invisible mannequin - no person, no face, no skin - the whole outfit from the front, plain light-grey backdrop, soft even studio light, sharp fabric detail. No text.${style}`
+    if (v.id === 'detail') return 'Edit this photo: a close-up detail of the SAME outfit - its fabric, stitching, fastenings and trims, identical colours and materials. No person, no text.'
+    return 'Edit this photo: the SAME outfit, every garment identical, now seen from the back. Keep the invisible mannequin, the backdrop and the lighting the same. No person, no text.'
+  }
+  if (isPlaceKind(a.kind)) {
+    if (!edit) return `Establishing wide shot of ${a.name}: ${desc}. No people. The light and weather the description gives. No text.${style}`
+    return 'Edit this photo: the SAME place - every building, landmark, material and colour, the weather and the time of day identical - seen from a different camera position (a medium shot from another side). No people, no text.'
+  }
+  if (!edit) return `Product-style photo of ${a.name}: ${desc}. A three-quarter view of the whole ${noun}, plain light-grey backdrop, soft studio lighting, sharp detail. No people, no text.${style}`
+  return `Edit this photo: the SAME ${noun} - identical shape, materials, colours and marks - seen from another side. Keep the backdrop and the lighting the same. No people, no text.`
+}
+
+/** A Scene 0 shot's prompt from its asset as it is now: an edit when it works from another picture. */
+export const assetShotPrompt = (a: StoryAsset, s: Pick<StoryboardShot, 'editOf' | 'beforeUrl'> & { assetFor?: Pick<AssetShotLink, 'view'> }) =>
+  assetViewPrompt(a, { id: s.assetFor?.view ?? 'hero' }, '', !!(s.editOf || s.beforeUrl))
+
+/**
+ * Scene 0 shots that make an asset's pictures - the views assetViewPlan
+ * gives (front / three-quarter / back for a character...). The first is made
+ * from the description and the rest are edits of it (editOf, so they wait for
+ * it); `another` is one more angle of an asset that has pictures - an edit
+ * of its first. NanoBanana 2.1 at 2K, each in its view's frame.
+ */
+export function assetShotsFor(a: StoryAsset, o: { outfitViews?: number; another?: boolean; boardAspect?: string } = {}): StoryboardShot[] {
+  const plan = assetViewPlan(a.kind, o)
+  const out: StoryboardShot[] = []
+  for (const v of plan) {
+    const base = o.another ? { beforeUrl: a.refs[0]?.url } : out[0] ? { editOf: out[0].id } : {}
+    out.push(newShot({
+      sceneId: ASSET_SCENE_ID, title: `${a.name} - ${v.label}`, description: (a.notes.split(/(?<=[.!?])\s/)[0] || a.name).slice(0, 300),
+      imageModel: ASSET_PICTURE_MODEL, imageQuality: ASSET_PICTURE_QUALITY, aspect: v.aspect, refs: [],
+      ...base,
+      imagePrompt: assetViewPrompt(a, v, '', !!(o.another || out[0])),
+      assetFor: { assetId: a.id, view: v.id, auto: true },
+    }))
+  }
+  return out
+}
+
+/**
+ * Scene 0 stills into their assets: a linked shot whose still is not the
+ * picture it last put in its asset adds it (a redo or another take REPLACES
+ * that picture, so a front view stays one picture), captioned for the AI
+ * draft, and a suggested asset becomes a real one. Null when nothing changes.
+ */
+export function syncAssetShots(scratch: StoryboardShot[], assets: StoryAsset[]): { scratch: StoryboardShot[]; assets: StoryAsset[] } | null {
+  let changed = false
+  let list = assets
+  const next = scratch.map(s => {
+    const link = s.assetFor
+    if (!link || !s.stillUrl || (link.url && stillKey(link.url) === stillKey(s.stillUrl))) return s
+    const a = list.find(x => x.id === link.assetId)
+    if (!a) return s
+    changed = true
+    const url = s.stillUrl
+    const label = assetViewPlan(a.kind, { outfitViews: 3, another: link.view === 'angle' }).find(v => v.id === link.view)?.label ?? link.view
+    const short = (a.notes.split(/(?<=[.!?])\s/)[0] || '').slice(0, 160)
+    const fresh: AssetRef = { ...newAssetRef(url, false), caption: cleanCaption(`${a.name} - ${label} view${short ? `: ${short}` : ''}`), tags: [link.view, a.kind] }
+    const old = link.url ? a.refs.findIndex(r => stillKey(r.url) === stillKey(link.url!)) : -1
+    const has = a.refs.some(r => stillKey(r.url) === stillKey(url))
+    const refs = has ? a.refs : old >= 0 ? a.refs.map((r, k) => (k === old ? { ...fresh, id: r.id } : r)) : [...a.refs, fresh].slice(0, MAX_ASSET_REFS)
+    list = list.map(x => (x.id === a.id ? { ...x, refs, suggested: undefined } : x))
+    return { ...s, assetFor: { ...link, url } }
+  })
+  return changed ? { scratch: next, assets: list } : null
 }
 
 /** The draft's suggested assets added to a board's (names it already has are skipped). */

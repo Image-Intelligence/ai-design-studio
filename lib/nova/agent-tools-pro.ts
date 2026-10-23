@@ -22,7 +22,6 @@ import { tool, jsonSchema, type ToolSet } from 'ai'
 import prisma from '@/lib/prisma'
 import { submitChatImage } from '@/lib/chat-image-submit'
 import { uploadToR2 } from '@/lib/r2'
-import { deductGenerationTickets } from '@/lib/ticket-gate'
 import { getCreateModel } from '@/lib/chat-hub-models'
 import { assetCaptionTickets } from '@/lib/ai-text-pricing'
 import { findAsset, updateAsset, storedRefs, assetNotes } from '@/lib/user-assets'
@@ -37,7 +36,7 @@ import { addNovaNote, removeNovaNote } from '@/lib/nova/memory'
 import { rowForRequest, fileGeneration } from '@/lib/nova/jobs'
 import { NOVA_CRITIC_MODEL, novaCutTickets } from '@/lib/nova/config'
 import {
-  guard, settleSpend, newStep, update, ownedRows, kindOf, withPictures, assemble, clip, brief, posterOf, secondsOf, imagePart,
+  guard, settleSpend, prepayTool, refundPrepaid, commitPrepaid, prepaidAbandoned, newStep, update, ownedRows, kindOf, withPictures, assemble, clip, brief, posterOf, secondsOf, imagePart,
   type NovaTurnCtx, type Row,
   agentModel, agentName,
 } from '@/lib/nova/agent-tools'
@@ -279,9 +278,18 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
         const res = await POST(new NextRequest('http://internal/api/user/assets/caption', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ assetId: a.id }) }))
         const data = await res.json() as Record<string, any>
         if (!res.ok) throw new Error(String(data?.error || `Captioning failed (${res.status})`))
-        await settleSpend(ctx, est, est)
+        /*
+         * Billing sweep 2026-10-23: book what the route REALLY charged. It takes
+         * today's free AI-text allowance first (lib/prompt-enhance chargeAiText)
+         * and answers `tickets: 0` then - booking the estimate anyway counted
+         * free captions against the user's plan and limits as if paid. Admins
+         * still book the would-be price, like every other tool.
+         */
+        const charged = Math.max(0, Math.round(Number(data.tickets) || 0))
+        const booked = ctx.isAdmin ? est : charged
+        await settleSpend(ctx, est, booked)
         const refs = (data.asset?.refs ?? []) as { caption?: string }[]
-        update(ctx, step, { status: 'done', note: `${refs.length} pictures captioned`, tickets: est })
+        update(ctx, step, { status: 'done', note: `${refs.length} pictures captioned${!ctx.isAdmin && !charged ? ' (free allowance)' : ''}`, tickets: booked })
         return { captions: refs.map(r => r.caption).filter(Boolean).slice(0, 24) }
       } catch (e: any) {
         await settleSpend(ctx, est, 0)
@@ -384,22 +392,31 @@ export function makeProTools(ctx: NovaTurnCtx): ToolSet {
           const est = novaCutTickets(secondsOf(src))
           const refused = guard(ctx, est)
           if (refused) { made.push({ aspect, error: refused }); continue }
-          const step = newStep(ctx, { tool: 'export_formats', kind: 'cut', label: `#${src.id} as ${aspect}`, status: 'running', tickets: est })
+          // Billing sweep 2026-10-23: each format is paid BEFORE it renders (lib/nova/agent-tools prepayTool);
+          // it used to render, fail to charge, and be saved anyway
+          const unpaid = await prepayTool(ctx, est)
+          if (unpaid) { await settleSpend(ctx, est, 0); made.push({ aspect, error: unpaid }); continue }
+          const charged = ctx.isAdmin ? 0 : est
+          let delivered = false
+          // `prepaid` is saved with the step: a turn killed mid-render is refunded by sweepStaleTurns
+          const step = newStep(ctx, { tool: 'export_formats', kind: 'cut', label: `#${src.id} as ${aspect}`, status: 'running', tickets: est, prepaid: charged })
           try {
             const out = await assemble({ op: 'conform', videoUrl: src.imageUrl, aspect })
-            let charged = 0
-            if (!ctx.isAdmin) { const paid = await deductGenerationTickets(uid, ctx.user.email, est); charged = paid.ok ? est : 0 }
-            await settleSpend(ctx, est, ctx.isAdmin ? est : charged)
+            // The turn may have ended (Stop / time limit) and refunded this step already: then nothing is delivered
+            if (!commitPrepaid(step)) throw new Error('Cut off before it finished - its tickets were refunded')
             const row = await prisma.generatedImage.create({
               data: { userId: uid, prompt: `#${src.id} as ${aspect}`, imageUrl: out.url, model: agentModel(ctx, 'final-cut'), ticketCost: charged, referenceImageUrls: [], expiresAt: FOREVER(), aspectRatio: aspect, folderId: ctx.state.folderId, videoMetadata: { isVideo: true, duration: String(Math.round(secondsOf(src))), width: out.width, height: out.height, aspectW: out.width, aspectH: out.height, novaExportOf: src.id } },
               select: { id: true },
             })
+            delivered = true
+            await settleSpend(ctx, est, est)
             ctx.seenIds.add(row.id)
-            update(ctx, step, { status: 'done', mediaUrl: out.url, generationId: row.id, tickets: ctx.isAdmin ? est : charged, note: out.mode })
+            update(ctx, step, { status: 'done', mediaUrl: out.url, generationId: row.id, tickets: ctx.isAdmin ? est : charged, prepaid: 0, note: out.mode })
             made.push({ aspect, id: row.id })
           } catch (e: any) {
-            await settleSpend(ctx, est, 0)
-            update(ctx, step, { status: 'error', error: String(e?.message || e).slice(0, 200) })
+            // Never delivered: the prepaid estimate goes back, once (a failure after saving keeps its charge)
+            if (!delivered) { if (!prepaidAbandoned(step)) await refundPrepaid(ctx, charged); await settleSpend(ctx, est, 0) }
+            update(ctx, step, { status: 'error', error: String(e?.message || e).slice(0, 200), ...(delivered ? {} : { prepaid: 0 }) })
             made.push({ aspect, error: String(e?.message || e).slice(0, 200) })
           }
         } else made.push({ aspect, error: `${k} files cannot be reformatted` })

@@ -27,7 +27,7 @@ import { getAudioStudioModel, audioTicketCost, spokenCharCount } from '@/lib/aud
 import { toolTickets } from '@/lib/threed/catalog'
 import { listAssets, findAsset, insertAsset, updateAsset, countAssets, withRefs, storedRefs, assetKind, assetName, assetNotes, assetClips, MAX_USER_ASSETS } from '@/lib/user-assets'
 import { addLinks } from '@/lib/generation-folder-links'
-import { deductGenerationTickets } from '@/lib/ticket-gate'
+import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
 import { describeModels, novaImageModels, novaVideoModels, novaAudioModels, novaThreeDTools, estimateCreate, type NovaKind } from '@/lib/nova/catalog'
 import { rowForRequest, fileGeneration } from '@/lib/nova/jobs'
 import { addNovaSpend, roomLeft } from '@/lib/nova/ledger'
@@ -250,6 +250,76 @@ export async function settleSpend(ctx: NovaTurnCtx, estimate: number, actual: nu
   else ctx.unplanned += t
   ctx.state.spent += t
   await addNovaSpend(ctx.user.id, t).catch(() => {})
+}
+
+/*
+ * ── Pay first, then work (billing sweep 2026-10-23) ──────────────────────────
+ * The tools that run on OUR machines (assemble_cut / recut, make_loop,
+ * export_formats) used to do the whole job, then try to charge, and on a
+ * failed charge (`charged = paid.ok ? actual : 0`) save and deliver the work
+ * anyway - free renders for anyone who spent their balance down in parallel.
+ * Now the estimate is taken (atomically, never below 0) BEFORE any work; a
+ * tool that cannot be paid is refused. When the work is done the difference
+ * is squared up once (settlePrepaid), and a failure gives back exactly what
+ * is still held (refundPrepaid). Admins pay nothing, as before.
+ */
+
+/** Take the estimate now. null = paid (or nothing to pay); a string = refused, for the model. */
+export async function prepayTool(ctx: NovaTurnCtx, estimate: number): Promise<string | null> {
+  const est = Math.max(0, Math.ceil(estimate))
+  if (ctx.isAdmin || !est) return null
+  const paid = await deductGenerationTickets(ctx.user.id, ctx.user.email, est)
+  return paid.ok ? null : `Refused: this costs about ${est} tickets and the user has ${paid.have}. Tell the user they need more tickets.`
+}
+
+/**
+ * The work is done: square the prepaid estimate with the real price. Returns
+ * what the user has now paid in total. A real price above the estimate takes
+ * the extra only if the balance covers it (else the estimate stands - the
+ * user was quoted it); below it, the rest goes back.
+ */
+export async function settlePrepaid(ctx: NovaTurnCtx, estimate: number, actual: number): Promise<number> {
+  const est = Math.max(0, Math.ceil(estimate))
+  const real = Math.max(0, Math.round(actual))
+  if (ctx.isAdmin) return 0
+  if (real > est) {
+    const extra = await deductGenerationTickets(ctx.user.id, ctx.user.email, real - est)
+    return extra.ok ? real : est
+  }
+  if (real < est) await refundGenerationTickets(ctx.user.id, ctx.user.email, est - real)
+  return real
+}
+
+/*
+ * Who settles a prepaid step (review fix 2026-10-23). A turn that is
+ * stopped or hits its time limit ends while a pay-first tool is still
+ * rendering in this process; the turn's end refunds the prepaid at once
+ * (abandonPrepaid) and the tool must then neither deliver nor refund again.
+ * The tool commits (commitPrepaid) right before it squares up and saves -
+ * whichever of the two comes first wins, synchronously (one JS thread), so
+ * the tickets go back or the work is delivered, never both and never
+ * neither. A function killed outright is handled by sweepStaleTurns from the
+ * step's saved `prepaid`.
+ */
+const prepaidState = new WeakMap<NovaStep, 'committed' | 'abandoned'>()
+/** The tool is about to square up and deliver: false = the turn already refunded this step (discard the work). */
+export function commitPrepaid(step: NovaStep): boolean {
+  if (prepaidState.get(step) === 'abandoned') return false
+  prepaidState.set(step, 'committed')
+  return true
+}
+/** The turn ended with this step still rendering: true = the turn refunds it (the tool will not). */
+export function abandonPrepaid(step: NovaStep): boolean {
+  if (prepaidState.get(step) === 'committed') return false
+  prepaidState.set(step, 'abandoned')
+  return true
+}
+export const prepaidAbandoned = (step: NovaStep) => prepaidState.get(step) === 'abandoned'
+
+/** The work failed: give back what is still held for it (the caller zeroes its own counter after, so it happens once). */
+export async function refundPrepaid(ctx: NovaTurnCtx, held: number): Promise<void> {
+  if (ctx.isAdmin || held <= 0) return
+  await refundGenerationTickets(ctx.user.id, ctx.user.email, held)
 }
 
 // ── The user's media ─────────────────────────────────────────────────────────
@@ -589,10 +659,24 @@ export function makeNovaTools(ctx: NovaTurnCtx): ToolSet {
        * model in this turn is switching suggested.
        */
       const send = () => submitChatImage(spec, clip(input.prompt, 4000), refsRows.map(r => r.imageUrl), settings, uid, { ...(ctx.authHeaders ? { headers: ctx.authHeaders } : {}), waitUntil: ctx.deadline })
+      /*
+       * Billing sweep 2026-10-23: a "transient" error is only retried when the
+       * failed attempt left NO live job behind. A submit route can charge and
+       * queue the job and still answer with an error (or throw on the way
+       * back - lib/chat-image-submit / lib/dedicated-image-submit don't say
+       * whether anything was charged), and retrying that charged the user
+       * twice. Any queued / running / finished job of this user created since
+       * the attempt began stops the retry (a parallel call's job can stop it
+       * too - fewer retries, never a double charge).
+       */
+      // (2s early: the row's createdAt is the database's clock, not this server's)
+      let attemptAt = new Date(Date.now() - 2000)
+      const leftAJob = async () => (await prisma.generationQueue.count({ where: { userId: uid, createdAt: { gte: attemptAt }, status: { notIn: ['failed', 'cancelled'] } } }).catch(() => 1)) > 0
       let res = await send()
-      for (let retry = 0; !res.ok && retry < 2 && TRANSIENT_ERROR.test(res.error) && Date.now() < (ctx.deadline ?? Infinity) - 30_000; retry++) {
+      for (let retry = 0; !res.ok && retry < 2 && TRANSIENT_ERROR.test(res.error) && Date.now() < (ctx.deadline ?? Infinity) - 30_000 && !(await leftAJob()); retry++) {
         update(ctx, step, { note: `retrying ${spec.label} (${retry + 1}/2) - ${clip(res.error, 80)}` })
         await new Promise(r => setTimeout(r, 2500 * (retry + 1)))
+        attemptAt = new Date(Date.now() - 2000)
         res = await send()
       }
       if (!res.ok) {

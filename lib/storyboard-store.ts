@@ -64,9 +64,31 @@ export async function patchShot(boardId: number, shotId: string, patch: Record<s
  * already. False = another request (this tab, another tab, another device)
  * is making it right now, so this one must not (it would be paid twice).
  */
-export async function claimStill(boardId: number, shotId: string, model: string): Promise<boolean> {
+export async function claimStill(boardId: number, shotId: string, model: string, o: { ifQueued?: boolean } = {}): Promise<boolean> {
   const now = Date.now()
   const job: StillJob = { status: 'making', at: now, model }
+  /*
+   * 2026-10-23 billing sweep: a still a page HELD (it edits a still still
+   * being made) or picked up as an orphan is sent with `ifQueued` - it may
+   * only be made while the slot is still "queued" on the server. Without
+   * this, a second tab that held the same slot, or a tab waking from sleep
+   * after the still had already landed (stillJob null), sent it again: the
+   * plain claim only refuses a live "making", so it was charged twice and
+   * the landed still replaced. queued -> making is one statement, so of two
+   * pages releasing the same slot exactly one wins. (Any age of "queued"
+   * counts: the still it waited on may have sat in fal's queue a long time.)
+   */
+  if (o.ifQueued) {
+    const n = await prisma.$executeRaw`
+      UPDATE "Storyboard" SET "updatedAt" = NOW(), shots = (
+        SELECT jsonb_agg(CASE WHEN t.s->>'id' = ${shotId} THEN t.s || ${JSON.stringify({ stillJob: job })}::jsonb ELSE t.s END ORDER BY t.i)
+        FROM jsonb_array_elements(shots) WITH ORDINALITY AS t(s, i))
+      WHERE id = ${boardId} AND jsonb_typeof(shots) = 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(shots) x
+          WHERE x->>'id' = ${shotId} AND x->'stillJob'->>'status' = 'queued')`
+    return n > 0
+  }
   const n = await prisma.$executeRaw`
     UPDATE "Storyboard" SET "updatedAt" = NOW(), shots = (
       SELECT jsonb_agg(CASE WHEN t.s->>'id' = ${shotId} THEN t.s || ${JSON.stringify({ stillJob: job })}::jsonb ELSE t.s END ORDER BY t.i)

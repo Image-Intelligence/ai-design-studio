@@ -7,6 +7,8 @@ import { processChunk, getBaseUrl } from '@/app/api/admin/auto-caption/jobs/_pro
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { settleAbandonedAudioRuns } from '@/lib/audio-settle'
 import { harvestPollingJobs } from '@/lib/harvest-polling-jobs'
+import { failQueueRow, chargeModeOf } from '@/lib/queue-settle'
+import { handleFalWebhook } from '@/app/api/webhooks/fal/route'
 
 // Jobs stuck in 'processing' longer than this are CANDIDATES for being reset.
 // Was 10 minutes, which force-failed jobs fal was still happily running —
@@ -45,6 +47,8 @@ const STALE_MINUTES_3D = 60
 export const maxDuration = 300
 
 export async function GET(request: Request) {
+  // When this run is cut off (maxDuration 300s): a video save is only claimed with time to finish it (lib/video-save-guard)
+  const cronStartMs = Date.now()
   const authHeader = request.headers.get('authorization')
   if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -121,17 +125,24 @@ export async function GET(request: Request) {
 
     let staleReset = 0
     if (toFail.length > 0) {
-      await prisma.generationQueue.updateMany({
-        where: { id: { in: toFail } },
-        data: {
-          status: 'failed',
-          completedAt: new Date(),
-          errorMessage: 'Auto-reset by cron: provider reports the job is no longer running',
-        },
-      })
-      // Safe to sync here — no pending webhook decrements for these dead jobs
+      // One guarded flip per row through lib/queue-settle (2026-10-23 billing
+      // sweep). This was a bare updateMany - no status guard, so a job that
+      // settled between the fal check and here was overwritten to 'failed',
+      // and NO tickets moved: every reservation stayed stuck on the account
+      // and every charged job kept its charge. failQueueRow gives each row's
+      // tickets back the way they were taken, only for the caller whose
+      // 'processing' -> 'failed' flip won (a racing poller or webhook can't
+      // double it).
+      for (const id of toFail) {
+        const won = await failQueueRow(id, 'Auto-reset by cron: provider reports the job is no longer running', ['processing'])
+          .catch(e => { console.error(`[cron-drain] could not fail stale job #${id}:`, e); return false })
+        if (won) staleReset++
+      }
+      // Safe to sync here — no pending webhook decrements for these dead jobs.
+      // The sync SETS every counter (global + per-model) to the count of rows
+      // still 'processing', so the slots the winners above held are given
+      // back by it - a per-row decrement on top would be redundant.
       await syncActiveCounters()
-      staleReset = toFail.length
       console.log(`[cron-drain] Reset ${staleReset} confirmed-dead job(s); spared ${sparedAlive} still live at fal`)
     } else if (sparedAlive > 0) {
       console.log(`[cron-drain] ${sparedAlive} long-running job(s) still alive at fal — left running`)
@@ -188,6 +199,7 @@ export async function GET(request: Request) {
                 : {}),
             },
             body: JSON.stringify({
+              saveDeadlineAt: cronStartMs + 300_000,
               requestId: j.falRequestId,
               falEndpoint: vp.falEndpoint,
               prompt: j.prompt,
@@ -205,6 +217,18 @@ export async function GET(request: Request) {
       if (videoSettled > 0) console.log(`[cron-drain] settled ${videoSettled} video job(s)`)
     } catch (e) {
       console.error('[cron-drain] video settle pass failed:', e)
+    }
+
+    // ── 1a-saving. Videos claimed for saving whose saver died (2026-10-23 billing sweep) ──
+    // A video is claimed ('saving') before its download and stored as
+    // 'completed' only once its row exists; a function killed in between left
+    // it charged and never saved. Re-claimed once stale, finished or refunded
+    // (lib/video-save-guard settleStrandedVideoSaves).
+    try {
+      const n = await (await import('@/lib/video-save-guard')).settleStrandedVideoSaves({ limit: 4, budgetMs: 30_000, deadlineAt: cronStartMs + 300_000 })
+      if (n) console.log(`[cron-drain] settled ${n} stranded video save(s)`)
+    } catch (e) {
+      console.error('[cron-drain] stranded video saves failed:', e)
     }
 
     // ── 1a-harvest. Save completed-at-fal jobs nobody is polling ─────────────
@@ -256,6 +280,7 @@ export async function GET(request: Request) {
                 : {}),
             },
             body: JSON.stringify({
+              saveDeadlineAt: cronStartMs + 300_000,
               requestId: j.falRequestId,
               falEndpoint: params.falEndpoint,
               prompt: j.prompt,
@@ -287,6 +312,90 @@ export async function GET(request: Request) {
       if (h.harvested || h.failed || h.marked) console.log(`[cron-drain] polled images: saved ${h.harvested}, settled-failed ${h.failed}, marked ${h.marked}`)
     } catch (e) {
       console.error('[cron-drain] image harvest pass failed:', e)
+    }
+
+    // ── 1a-webhook. Webhook images whose webhook never arrived ─────────────
+    // (2026-10-23 billing sweep.) Webhook-model images (/api/generate's fal
+    // jobs, SeeDream 5, Recraft...) are finished ONLY by fal calling
+    // /api/webhooks/fal. When that call is lost (a deploy mid-flight, a cold
+    // start that timed out, fal giving up its retries) nothing else ever
+    // looked: the stale pass above spares a job fal calls COMPLETED, the
+    // harvest only takes polled jobs, so the row sat 'processing' with its
+    // tickets reserved until fal purged the result - and then it failed.
+    // Here a job 10+ minutes old that fal reports COMPLETED is settled by
+    // calling the webhook's own handler in-process with the body fal would
+    // have sent: same webhookClaimAt claim (a real delivery arriving at the
+    // same moment is turned away, or turns this away), same save, same
+    // guarded flip + charge. A job fal finished with an error is settled the
+    // same way as status ERROR (failed, tickets returned). Rows without a
+    // stored falEndpoint can't be asked about and are left alone.
+    try {
+      const WEBHOOK_SETTLE_AGE_MS = 10 * 60 * 1000
+      const WEBHOOK_SETTLE_BUDGET_MS = 30_000
+      const t0 = Date.now()
+      let webhookSettled = 0
+      const lost = process.env.FAL_KEY ? await prisma.generationQueue.findMany({
+        where: {
+          status: 'processing',
+          modelType: 'image',
+          falRequestId: { not: null },
+          startedAt: { lt: new Date(Date.now() - WEBHOOK_SETTLE_AGE_MS) },
+          modelId: { notIn: OWN_QUEUE_MODEL_IDS },
+        },
+        select: { id: true, falRequestId: true, parameters: true, startedAt: true, createdAt: true },
+        // Newest first: fresh results are the ones fal still has
+        orderBy: { startedAt: 'desc' },
+        take: 20,
+      }) : []
+      for (const j of lost) {
+        if (webhookSettled >= 6 || Date.now() - t0 > WEBHOOK_SETTLE_BUDGET_MS) break
+        const p = (j.parameters ?? {}) as { usePolling?: unknown; falEndpoint?: unknown; provider?: unknown; webhookClaimAt?: unknown }
+        // Polled jobs are the harvest's; other providers keep their own rows
+        if (p.usePolling === true || p.provider || typeof p.falEndpoint !== 'string' || !p.falEndpoint) continue
+        // Only RESERVED jobs settle through the webhook: a row charged at submit (the GPT
+        // Image 2 stream) would be charged again by its finalize (2026-10-23 review)
+        if (chargeModeOf({ modelType: 'image', parameters: j.parameters }) !== 'reserve') continue
+        // A delivery is mid-save right now - its claim would turn us away anyway
+        if (typeof p.webhookClaimAt === 'number' && Date.now() - p.webhookClaimAt < 5 * 60_000) continue
+        const rid = j.falRequestId!
+        try {
+          // fal's queue lives under owner/app - sub-paths like /edit 405
+          const baseApp = p.falEndpoint.split('/').slice(0, 2).join('/')
+          const st = await fetch(`https://queue.fal.run/${baseApp}/requests/${rid}/status`, {
+            headers: { Authorization: `Key ${process.env.FAL_KEY}` }, signal: AbortSignal.timeout(8000),
+          })
+          if (!st.ok) continue // gone / unknown: the stale pass above decides about dead jobs
+          const status = ((await st.json()) as { status?: string }).status
+          if (status !== 'COMPLETED') continue // still running
+
+          const res = await fetch(`https://queue.fal.run/${baseApp}/requests/${rid}`, {
+            headers: { Authorization: `Key ${process.env.FAL_KEY}` }, signal: AbortSignal.timeout(15000),
+          })
+          let outcome: Awaited<ReturnType<typeof handleFalWebhook>>
+          if (res.ok) {
+            outcome = await handleFalWebhook({ request_id: rid, status: 'OK', payload: await res.json() })
+          } else if (res.status === 400 || res.status === 422) {
+            // The run itself errored (validation, content filter): fal's body holds the reason
+            const errBody = await res.json().catch(() => null) as { detail?: unknown } | null
+            outcome = await handleFalWebhook({ request_id: rid, status: 'ERROR', error: errBody?.detail ? errBody : `fal returned ${res.status}` })
+          } else if (res.status === 404 || res.status === 410) {
+            outcome = await handleFalWebhook({ request_id: rid, status: 'ERROR', error: 'Generation result expired before it could be saved' })
+          } else if (Date.now() - (j.startedAt?.getTime() ?? j.createdAt.getTime()) > 2 * 3600_000) {
+            // 5xx is usually transient - but fal purges results after about an
+            // hour, after which this fails for good. Settle a row that old.
+            outcome = await handleFalWebhook({ request_id: rid, status: 'ERROR', error: 'Generation result expired before it could be saved' })
+          } else {
+            continue // transient - next tick
+          }
+          if (outcome === 'completed' || outcome === 'failed') webhookSettled++
+          console.log(`[cron-drain] lost-webhook settle #${j.id} → ${outcome}`)
+        } catch (e) {
+          console.error(`[cron-drain] lost-webhook settle failed for #${j.id}:`, e)
+        }
+      }
+      harvested += webhookSettled
+    } catch (e) {
+      console.error('[cron-drain] lost-webhook pass failed:', e)
     }
 
     // ── 1a-storyboard. Storyboard stills made in the background ─────────────

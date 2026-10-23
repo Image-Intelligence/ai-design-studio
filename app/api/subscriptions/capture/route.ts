@@ -87,7 +87,34 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    const { interval = 'monthly', tickets = 0, plan = 'legacy' } = planInfo;
+    const { interval = 'monthly', plan = 'legacy' } = planInfo;
+
+    /*
+     * Billing sweep 2026-10-23: the ticket count came from the order's
+     * custom_id and was credited as-is. The PayPal client id is public, so an
+     * order can be made in the browser with any custom_id and any amount -
+     * {"tickets":100000} for $0.01 was credited. The credit is now decided
+     * here: the order must be this account's (custom_id.userId), and the
+     * CAPTURED amount + currency must be exactly the plan's price from the
+     * same table /api/subscriptions/purchase validates against (prices
+     * unchanged). Anything else is logged and not credited.
+     */
+    const VALID_PLANS: Record<string, { amount: number; tickets: number }> = {
+      biweekly: { amount: 20, tickets: 250 },
+      monthly: { amount: 40, tickets: 500 },
+      yearly: { amount: 480, tickets: 500 },
+    };
+    const planRow = VALID_PLANS[String(interval)];
+    if (
+      !planRow ||
+      Number(planInfo?.userId) !== user.id ||
+      captureDetails.amount?.currency_code !== 'USD' ||
+      Math.round(amount * 100) !== Math.round(planRow.amount * 100)
+    ) {
+      console.error(`Subscription capture NOT CREDITED: order ${orderId} captured ${captureDetails.amount?.value} ${captureDetails.amount?.currency_code} for interval ${String(interval)} / user ${String(planInfo?.userId)} (session user ${user.id}) - check it by hand`);
+      return NextResponse.json({ error: 'That payment does not match a plan - contact support with your PayPal receipt.' }, { status: 409 });
+    }
+    const tickets = planRow.tickets;
 
     // Calculate next billing date based on interval
     const now = new Date();
@@ -101,75 +128,68 @@ export async function POST(req: NextRequest) {
       nextBillingDate.setFullYear(nextBillingDate.getFullYear() + 1);
     }
 
-    // Create subscription in database
-    const subscription = await prisma.subscription.create({
-      data: {
-        userId: user.id,
-        tier: 'prompt-studio-dev',
-        status: 'active',
-        billingAmount: amount,
-        billingCycle: interval,
-        nextBillingDate: nextBillingDate,
-        autoRenew: true,
-        paypalOrderId: orderId,
-        paypalCaptureId: captureDetails.id,
-        metadata: {
-          plan,
-          ticketsPerCycle: tickets,
-        },
-      },
-    });
+    /*
+     * The subscription, the ticket credit and the purchase log in ONE
+     * transaction, once per order (advisory lock on the order id + a check
+     * for an existing row). The balance is an atomic increment - it used to
+     * be read, then overwritten with read+tickets, so a generation charged in
+     * between was silently undone (or the credit lost).
+     */
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'paypal-sub-order-' + String(orderId)}))`;
+      const existing = await tx.subscription.findFirst({ where: { paypalOrderId: String(orderId), userId: user.id }, select: { id: true } });
+      if (existing) return { subscriptionId: existing.id, ticketsAdded: 0 };
 
-    // Add tickets to user's account if included in plan
-    if (tickets > 0) {
-      const userTicket = await prisma.ticket.findUnique({
-        where: { userId: user.id },
+      const subscription = await tx.subscription.create({
+        data: {
+          userId: user.id,
+          tier: 'prompt-studio-dev',
+          status: 'active',
+          billingAmount: amount,
+          billingCycle: interval,
+          nextBillingDate: nextBillingDate,
+          autoRenew: true,
+          paypalOrderId: orderId,
+          paypalCaptureId: captureDetails.id,
+          metadata: {
+            plan,
+            ticketsPerCycle: tickets,
+          },
+        },
       });
 
-      if (userTicket) {
-        await prisma.ticket.update({
+      if (tickets > 0) {
+        await tx.ticket.upsert({
           where: { userId: user.id },
-          data: {
-            balance: userTicket.balance + tickets,
-            totalBought: userTicket.totalBought + tickets,
-          },
+          create: { userId: user.id, balance: tickets, totalBought: tickets, totalUsed: 0 },
+          update: { balance: { increment: tickets }, totalBought: { increment: tickets } },
         });
-      } else {
-        // Create ticket record if it doesn't exist
-        await prisma.ticket.create({
-          data: {
-            userId: user.id,
-            balance: tickets,
-            totalBought: tickets,
-            totalUsed: 0,
-          },
-        });
+        console.log(`✅ Added ${tickets} tickets to user ${user.id}`);
       }
 
-      console.log(`✅ Added ${tickets} tickets to user ${user.id}`);
-    }
-
-    // Log the purchase
-    await prisma.purchase.create({
-      data: {
-        userId: user.id,
-        itemType: 'subscription',
-        amount: amount,
-        currency: 'USD',
-        paypalOrderId: orderId,
-        paypalPayerId: captureDetails.payer?.payer_id || '',
-        paymentStatus: 'completed',
-        description: `${interval} subscription with ${tickets} tickets`,
-        billingAddress: captureDetails.payer?.address || null,
-      },
+      // Log the purchase
+      await tx.purchase.create({
+        data: {
+          userId: user.id,
+          itemType: 'subscription',
+          amount: amount,
+          currency: 'USD',
+          paypalOrderId: orderId,
+          paypalPayerId: captureDetails.payer?.payer_id || '',
+          paymentStatus: 'completed',
+          description: `${interval} subscription with ${tickets} tickets`,
+          billingAddress: captureDetails.payer?.address || null,
+        },
+      });
+      return { subscriptionId: subscription.id, ticketsAdded: tickets };
     });
 
-    console.log(`✅ Subscription created for user ${user.id}: ${subscription.id} (${interval}, ${tickets} tickets)`);
+    console.log(`✅ Subscription created for user ${user.id}: ${result.subscriptionId} (${interval}, ${result.ticketsAdded} tickets)`);
 
     return NextResponse.json({
       success: true,
-      subscriptionId: subscription.id,
-      ticketsAdded: tickets,
+      subscriptionId: result.subscriptionId,
+      ticketsAdded: result.ticketsAdded,
     });
   } catch (error) {
     console.error('Subscription capture error:', error);

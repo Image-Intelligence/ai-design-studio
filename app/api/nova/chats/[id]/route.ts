@@ -107,6 +107,21 @@ export async function DELETE(_req: Request, ctx: Ctx) {
   if (!chat) return jsonPrivate({ error: 'Chat not found' }, { status: 404 })
   // Prism's one chat is not deleted - Clear context (POST /api/prism) is its fresh start
   if (chat.source === 'prism') return jsonPrivate({ error: "Prism's chat cannot be deleted - use Clear context instead" }, { status: 400 })
+  /*
+   * Billing sweep 2026-10-23: a reply still marked `running` carries the turn's
+   * ticket hold in its metadata, and the only thing that ever refunds a hold
+   * left by a crashed/killed turn is sweepStaleTurns - which needs the chat to
+   * exist (the cron's novaSweep skips running rows). Deleting first lost the
+   * hold for good. So: a stale running reply is closed and refunded here first
+   * (sweepStaleTurns claims each row atomically - `running` is removed in the
+   * same UPDATE that wins the claim - so a concurrent GET/turn sweep can never
+   * refund it a second time), and a turn that is genuinely still running
+   * blocks the delete: it settles its own hold when it ends, so the user
+   * presses Stop (or waits) and deletes after.
+   */
+  if (await sweepStaleTurns(chat.id, a.user, a.isAdmin)) {
+    return jsonPrivate({ error: 'Nova is still working in this chat - press Stop (or wait for it to finish), then delete it.' }, { status: 409 })
+  }
   await prisma.chat.delete({ where: { id: chat.id } })
   return jsonPrivate({ ok: true })
 }

@@ -34,6 +34,10 @@ import { storyboardFolder as boardFolder, submitStillJob, submitHiggsfieldStill,
  *          still of a batch submitted HERE, by the server - the page no longer
  *          runs a batch three at a time (a locked phone stopped it) ->
  *          { results: { [shotId]: { queued } | { error } } }
+ *          An item with `ifQueued: true` (a still the page held for the one it
+ *          edits, or picked up as an orphan - 2026-10-23 billing sweep) is
+ *          made only while its slot is still "queued" on the server, else
+ *          { busy: true }: a second tab or a late release never pays twice.
  *    or:   { queue: string[] } marks those slots "queued" (kept for old pages) -> { ok: true }
  *    or:   { adopt: dataUrl, shotId } - a picture edited in the Image Studio
  *          popup becomes the slot's still (a new take; the old one stays)
@@ -175,7 +179,7 @@ async function makeStill(user: StoryboardUser, board: BoardRow, body: Record<str
   // The shot's own frame (a panorama, a poster) or the board's
   const frame = shot ? shotAspect(shot, board.aspect) : board.aspect
   // Higgsfield's: their own route and queue, not fal
-  if (HIGGSFIELD_IMAGE_MODELS.has(spec.id)) return makeHiggsfieldStill(user, board, spec, { prompt, fullPrompt, refs, quality, frame, shot })
+  if (HIGGSFIELD_IMAGE_MODELS.has(spec.id)) return makeHiggsfieldStill(user, board, spec, { prompt, fullPrompt, refs, quality, frame, shot, ifQueued: body.ifQueued === true })
   // GPT Image takes a pixel size rather than a ratio
   const aspect = spec.id === 'gpt-image-2' ? (GPT_SIZE_FOR_ASPECT[frame] ?? '1024x1024') : frame
   // The model's other settings, kept to the values it offers (stillSettings)
@@ -186,8 +190,10 @@ async function makeStill(user: StoryboardUser, board: BoardRow, body: Record<str
   // A non-admin's still runs at the site's public moderation
   publicStillSafety(spec.id, call.input as Record<string, unknown>, user.isAdmin)
 
-  // Claimed for this request, or refused
-  if (shot && !(await claimStill(board.id, shot.id, spec.id))) {
+  // Claimed for this request, or refused. `ifQueued` (a held or orphaned
+  // batch item - 2026-10-23 billing sweep): only while the slot is still
+  // "queued" on the server, so a second page or a late release never pays again
+  if (shot && !(await claimStill(board.id, shot.id, spec.id, { ifQueued: body.ifQueued === true }))) {
     return out({ error: 'This still is already being made', busy: true }, { status: 409 })
   }
   // Paid for before the model runs (admins are skipped by the gate)
@@ -268,7 +274,7 @@ async function makeStill(user: StoryboardUser, board: BoardRow, body: Record<str
  */
 async function makeHiggsfieldStill(
   user: StoryboardUser, board: BoardRow, spec: { id: string; label: string },
-  o: { prompt: string; fullPrompt: string; refs: string[]; quality: string; frame: string; shot?: ReturnType<typeof sanitizeShots>[number] },
+  o: { prompt: string; fullPrompt: string; refs: string[]; quality: string; frame: string; shot?: ReturnType<typeof sanitizeShots>[number]; ifQueued?: boolean },
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const out = (b: Record<string, unknown>, status = 200) => ({ status, body: b })
   const frames = modelAspects(spec.id).filter(a => a !== 'auto')
@@ -282,7 +288,7 @@ async function makeHiggsfieldStill(
   // A slot's still: claimed, queued, and settled onto the slot by lib/storyboard-stills
   if (o.shot) {
     const shot = o.shot
-    if (!(await claimStill(board.id, shot.id, spec.id))) return out({ error: 'This still is already being made', busy: true }, 409)
+    if (!(await claimStill(board.id, shot.id, spec.id, { ifQueued: o.ifQueued }))) return out({ error: 'This still is already being made', busy: true }, 409)
     const r = await submitHiggsfieldStill(board.id, shot.id, req, {
       prompt: o.fullPrompt, takePrompt: o.prompt, model: spec.id, quality: o.quality, aspect: o.frame, refs: o.refs,
       conform: o.frame, name, ...(shot.imagePrompt ? {} : { patch: { imagePrompt: o.prompt } }),

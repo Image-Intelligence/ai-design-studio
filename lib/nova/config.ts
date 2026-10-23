@@ -252,6 +252,13 @@ export type NovaStep = {
   requestId?: string
   threeDJobId?: number
   tickets?: number
+  /**
+   * Tickets a pay-first tool (lib/nova/agent-tools prepayTool) has taken and
+   * not yet squared up (billing sweep 2026-10-23). Cleared to 0 when the tool
+   * delivers or refunds; a turn killed mid-render leaves it set, and
+   * sweepStaleTurns refunds it - once, under the reply's `running` claim.
+   */
+  prepaid?: number
   error?: string
   /** A short result for library tools ("12 matches"). */
   note?: string

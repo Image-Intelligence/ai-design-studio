@@ -2,11 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import sharp from 'sharp'
 import { fetchMedia } from '@/lib/media-fetch'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 
 // Admin thumbnail endpoint — accepts ?id=<imageId> and returns a resized WebP.
 // Protected only by the admin page gate (same pattern as other admin API routes).
 export async function GET(request: NextRequest) {
+  if (!await checkAdminRequest(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const id = parseInt(request.nextUrl.searchParams.get('id') || '')
     if (isNaN(id)) return new NextResponse('Invalid ID', { status: 400 })

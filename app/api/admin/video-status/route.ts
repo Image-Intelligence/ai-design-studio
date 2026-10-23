@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fal } from '@/lib/fal-client'
 import prisma from '@/lib/prisma'
-import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { uploadToR2 } from '@/lib/r2'
@@ -9,6 +8,7 @@ import { jsonPrivate } from '@/lib/api-json'
 import { fetchMedia } from '@/lib/media-fetch'
 import { isHiggsfieldEndpoint } from '@/lib/higgsfield-models'
 import { isRunpodEndpoint } from '@/lib/runpod-video-models'
+import { claimVideoSave, failVideoJob, falVideoUrlOf, finishVideoSave } from '@/lib/video-save-guard'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
@@ -83,20 +83,26 @@ export async function POST(req: Request) {
           : e.message || `HTTP ${e.status}`
         const { friendlyFalVideoError } = await import('@/lib/fal-friendly-errors')
         const detail = friendlyFalVideoError(raw)
-        await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
+        // (failVideoJob: also a stale 'saving' claim - lib/video-save-guard)
+        await failVideoJob(requestId, `Generation failed: ${detail}`)
         return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
       }
-      // Some endpoints return the video as a one-item list
-      const falVideoUrl: string | undefined = result.data?.video?.url ?? result.data?.video?.[0]?.url ?? result.data?.videos?.[0]?.url
+      // The one extractor both status routes share (lib/video-save-guard)
+      const falVideoUrl = falVideoUrlOf(result.data)
       // A SeeDance 2.5 draft: its id is what "Complete in 1080p" re-renders
       const draftId: string | null = result.data?.draft_id ? String(result.data.draft_id) : null
       if (!falVideoUrl) {
+        // Final: close the row, refund, free the slot (2026-10-23 billing
+        // sweep - this answered "failed" and left the job 'processing' for
+        // ever, charged and holding its slot)
+        await failVideoJob(requestId, 'No video URL in FAL result')
         return jsonPrivate({ status: 'failed', error: 'No video URL in FAL result' })
       }
 
       // Saved exactly once (lib/video-save-guard): fal's file has to answer,
-      // then one call claims the job and only that call downloads and saves
-      const claim = await (await import('@/lib/video-save-guard')).claimVideoSave(requestId, falVideoUrl)
+      // then one call claims the job ('saving') and only that call downloads
+      // and saves - closing the claim (finishVideoSave) once the row exists
+      const claim = await claimVideoSave(requestId, falVideoUrl)
       if (claim.kind === 'saved') {
         console.log(`⚡ Video already saved [${requestId}] — returning cached result`)
         return jsonPrivate({ status: 'completed', videoUrl: claim.imageUrl, videoId: claim.id, draft: !!draftId })
@@ -219,17 +225,21 @@ export async function POST(req: Request) {
             savedVideoId = first.id
             permanentVideoUrl = first.imageUrl
           }
+          // The row exists: close the claim ('saving' -> 'completed')
+          await finishVideoSave(requestId, savedVideoId)
         }
       } catch (dbErr) {
+        // The claim stays 'saving': the cron's sweeper (settleStrandedVideoSaves)
+        // saves it again once it is stale, or fails and refunds it
         console.error('Admin video-status: failed to save to DB (non-fatal):', dbErr)
       }
 
-      // (The job was settled by the claim above)
+      // (The job was claimed above and closed once its row was saved)
       // draft: the session tile marks itself a draft so its viewer offers "Complete in 1080p"
       return jsonPrivate({ status: 'completed', videoUrl: permanentVideoUrl, videoId: savedVideoId, draft: !!draftId, duration: savedDuration, ...(framesZip ? { framesZipUrl: framesZip.url } : {}) })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
-      await releaseQueueSlot(requestId, true, 'Video generation failed on FAL servers')
+      await failVideoJob(requestId, 'Video generation failed on FAL servers')
       return jsonPrivate({ status: 'failed', error: 'Video generation failed on FAL servers' })
     } else {
       // IN_QUEUE or IN_PROGRESS — keep polling
@@ -248,7 +258,7 @@ export async function POST(req: Request) {
         : (typeof error.body?.detail === 'string' ? error.body.detail : '') || error.body?.message || error.message || 'Unprocessable content'
       const { friendlyFalVideoError } = await import('@/lib/fal-friendly-errors')
       const detail = friendlyFalVideoError(rawDetail)
-      if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
+      if (requestId) await failVideoJob(requestId, `Generation failed: ${detail}`)
       return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
     }
     // A job another poller (the cron) has already settled as failed is over -

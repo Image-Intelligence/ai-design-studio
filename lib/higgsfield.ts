@@ -112,23 +112,35 @@ export async function queueHiggsfieldJob(o: {
   input: Record<string, unknown>; parameters: Record<string, unknown>; ticketCost?: number
 }): Promise<{ queueId: number; requestId: string | null; queued: boolean }> {
   const max = higgsfieldMaxConcurrent()
-  const row = await prisma.$transaction(async tx => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${SLOT_LOCK}))`
-    const running = await tx.generationQueue.count({ where: { status: 'processing', modelId: { in: HIGGSFIELD_MODEL_IDS } } })
-    const waiting = await tx.generationQueue.count({ where: { status: 'queued', modelId: { in: HIGGSFIELD_MODEL_IDS } } })
-    // First come, first served: nobody jumps a line that already exists
-    const now = running < max && waiting === 0
-    return tx.generationQueue.create({
-      data: {
-        userId: o.userId, modelId: o.modelId, modelType: o.modelType, prompt: o.prompt,
-        parameters: { ...o.parameters, provider: 'higgsfield', hfEndpoint: o.endpoint, hfInput: o.input } as object,
-        status: now ? 'processing' : 'queued',
-        ticketCost: o.ticketCost ?? 0,
-        ...(now ? { startedAt: new Date() } : {}),
-      },
-      select: { id: true, status: true },
+  let row: { id: number; status: string }
+  try {
+    row = await prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${SLOT_LOCK}))`
+      const running = await tx.generationQueue.count({ where: { status: 'processing', modelId: { in: HIGGSFIELD_MODEL_IDS } } })
+      const waiting = await tx.generationQueue.count({ where: { status: 'queued', modelId: { in: HIGGSFIELD_MODEL_IDS } } })
+      // First come, first served: nobody jumps a line that already exists
+      const now = running < max && waiting === 0
+      return tx.generationQueue.create({
+        data: {
+          userId: o.userId, modelId: o.modelId, modelType: o.modelType, prompt: o.prompt,
+          parameters: { ...o.parameters, provider: 'higgsfield', hfEndpoint: o.endpoint, hfInput: o.input, chargeMode: 'deduct' } as object,
+          status: now ? 'processing' : 'queued',
+          ticketCost: o.ticketCost ?? 0,
+          ...(now ? { startedAt: new Date() } : {}),
+        },
+        select: { id: true, status: true },
+      })
     })
-  })
+  } catch (e) {
+    // The submit routes charge before calling this. With no row there is
+    // nothing to refund it later, so it goes back here (2026-10-23 billing
+    // sweep - a DB error here used to answer 500 with the user charged)
+    if ((o.ticketCost ?? 0) > 0) {
+      const u = await prisma.user.findUnique({ where: { id: o.userId }, select: { email: true } }).catch(() => null)
+      if (u?.email) await refundGenerationTickets(o.userId, u.email, o.ticketCost!).catch(() => {})
+    }
+    throw e
+  }
   if (row.status === 'queued') return { queueId: row.id, requestId: null, queued: true }
   const requestId = await sendRow(row.id, o.endpoint, o.input)
   if (!requestId) {
@@ -161,11 +173,20 @@ async function sendRow(rowId: number, endpoint: string, input: Record<string, un
 export async function promoteHiggsfieldQueue(): Promise<number> {
   if (!higgsfieldConfigured()) return 0
   const max = higgsfieldMaxConcurrent()
-  // A send that crashed half way (a slot taken, never sent) frees after 3 minutes
-  await prisma.generationQueue.updateMany({
-    where: { status: 'processing', modelId: { in: HIGGSFIELD_MODEL_IDS }, falRequestId: null, startedAt: { lt: new Date(Date.now() - 3 * 60_000) } },
-    data: { status: 'failed', completedAt: new Date(), errorMessage: 'The job could not be sent to Higgsfield - try again' },
-  }).catch(() => {})
+  // A send that crashed half way (a slot taken, never sent) frees after 3
+  // minutes - failed through failRow, row by row, so the charge goes back
+  // (2026-10-23 billing sweep: a bare updateMany failed them unrefunded).
+  // Guarded on falRequestId still null: a send that lands meanwhile wins.
+  try {
+    const unsent = await prisma.generationQueue.findMany({
+      where: { status: 'processing', modelId: { in: HIGGSFIELD_MODEL_IDS }, falRequestId: null, startedAt: { lt: new Date(Date.now() - 3 * 60_000) } },
+      select: ROW_SELECT,
+      take: 50,
+    })
+    for (const r of unsent) await failRow(r, 'The job could not be sent to Higgsfield - try again', { onlyUnsent: true, promote: false })
+  } catch (e) {
+    console.error('[higgsfield] failing unsent jobs failed:', e)
+  }
   const picked = await prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${SLOT_LOCK}))`
     const running = await tx.generationQueue.count({ where: { status: 'processing', modelId: { in: HIGGSFIELD_MODEL_IDS } } })
@@ -174,7 +195,7 @@ export async function promoteHiggsfieldQueue(): Promise<number> {
     const next = await tx.generationQueue.findMany({
       where: { status: 'queued', modelId: { in: HIGGSFIELD_MODEL_IDS } },
       orderBy: { createdAt: 'asc' }, take: free,
-      select: { id: true, parameters: true },
+      select: ROW_SELECT,
     })
     if (!next.length) return []
     await tx.generationQueue.updateMany({ where: { id: { in: next.map(n => n.id) }, status: 'queued' }, data: { status: 'processing', startedAt: new Date() } })
@@ -184,7 +205,8 @@ export async function promoteHiggsfieldQueue(): Promise<number> {
   await Promise.all(picked.map(async p => {
     const params = (p.parameters ?? {}) as { hfEndpoint?: string; hfInput?: Record<string, unknown> }
     if (!params.hfEndpoint || !params.hfInput) {
-      await prisma.generationQueue.update({ where: { id: p.id }, data: { status: 'failed', completedAt: new Date(), errorMessage: 'This job lost its settings - try again' } }).catch(() => {})
+      // failRow, so its charge goes back (2026-10-23 billing sweep - a plain update failed it unrefunded)
+      await failRow(p, 'This job lost its settings - try again', { promote: false }).catch(() => {})
       return
     }
     if (await sendRow(p.id, params.hfEndpoint, params.hfInput)) sent++
@@ -193,10 +215,17 @@ export async function promoteHiggsfieldQueue(): Promise<number> {
   return sent
 }
 
-/** Settle a row as failed (once) and refund what it charged. */
-async function failRow(row: Row, error: string): Promise<SettleResult> {
+const ROW_SELECT = { id: true, userId: true, modelId: true, modelType: true, prompt: true, ticketCost: true, createdAt: true, falRequestId: true, parameters: true } as const
+
+/**
+ * Settle a row as failed (once) and refund what it charged. `onlyUnsent`
+ * also requires it never got a Higgsfield id (the 3-minute unsent sweep);
+ * `promote: false` from promoteHiggsfieldQueue itself, which fills the line
+ * right after.
+ */
+async function failRow(row: Row, error: string, opts: { onlyUnsent?: boolean; promote?: boolean } = {}): Promise<SettleResult> {
   const flipped = await prisma.generationQueue.updateMany({
-    where: { id: row.id, status: 'processing' },
+    where: { id: row.id, status: 'processing', ...(opts.onlyUnsent ? { falRequestId: null } : {}) },
     data: { status: 'failed', completedAt: new Date(), errorMessage: error },
   })
   if (flipped.count > 0 && row.ticketCost > 0) {
@@ -204,7 +233,7 @@ async function failRow(row: Row, error: string): Promise<SettleResult> {
     if (u?.email) await refundGenerationTickets(row.userId, u.email, row.ticketCost).catch(() => {})
   }
   // A slot just freed
-  if (flipped.count > 0) void promoteHiggsfieldQueue().catch(() => {})
+  if (flipped.count > 0 && opts.promote !== false) void promoteHiggsfieldQueue().catch(() => {})
   return { status: 'failed', error }
 }
 

@@ -29,7 +29,7 @@ import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-g
 import { geminiGenerate, geminiText } from '@/lib/gemini-generate'
 import { loadNovaBudget, addNovaSpend, roomLeft, novaBalance } from '@/lib/nova/ledger'
 import { ensureChatFolder } from '@/lib/nova/jobs'
-import { makeNovaTools, novaAllowance, readChatState, ownedRows, kindOf, imagePart, refsKey, type NovaTurnCtx, type NovaChatState, type NovaAllowance } from '@/lib/nova/agent-tools'
+import { makeNovaTools, novaAllowance, abandonPrepaid, readChatState, ownedRows, kindOf, imagePart, refsKey, type NovaTurnCtx, type NovaChatState, type NovaAllowance } from '@/lib/nova/agent-tools'
 import { resolveChatRefs, chatRefsText } from '@/lib/nova/chat-refs'
 import { makeProTools } from '@/lib/nova/agent-tools-pro'
 import { makeStudioTools } from '@/lib/nova/agent-tools-studio'
@@ -418,13 +418,23 @@ export async function sweepStaleTurns(chatId: number, user: { id: number; email:
      * with background runs on - like a turn that ran out of time. Only the
      * newest reply, only if the chat has not chained too many turns already.
      */
-    const steps = Array.isArray(m.steps) ? closeOpenSteps(m.steps as NovaStep[]) : []
+    /*
+     * Billing sweep 2026-10-23 (review): a pay-first tool (cut, loop, export)
+     * cut off mid-render never reached its own refund - its prepaid tickets
+     * are on the step (`prepaid`). Every step this sweep closes as an error
+     * gives them back, and `prepaid` is zeroed in the steps written below.
+     * The `running` claim above makes this exactly once (only the sweep that
+     * won it gets here, and the dead turn can no longer settle the step).
+     */
+    const before = Array.isArray(m.steps) ? (m.steps as NovaStep[]) : []
+    const steps = closeOpenSteps(before).map(s => s.status === 'error' && (s.prepaid ?? 0) > 0 ? { ...s, prepaid: 0, tickets: 0 } : s)
+    const prepaid = before.reduce((sum, s, i) => sum + (s.status === 'running' && steps[i]?.status === 'error' ? Math.max(0, Math.round(Number(s.prepaid) || 0)) : 0), 0)
     // Never resumed when the user stopped it (the Stop button's `cancel`)
     const resume = r.id === rows[0].id && !m.cancel && readChatState((await prisma.chat.findUnique({ where: { id: chatId }, select: { skills: true } }))?.skills).autoTurns! < NOVA_MAX_AUTO_TURNS
     const pending = steps.some(s => s.status === 'pending')
     const patch = { steps, ...(resume ? (pending ? { continueAfterRenders: true } : { keepGoing: 'time' }) : {}) }
     await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = metadata::jsonb || ${JSON.stringify(patch)}::jsonb WHERE id = ${r.id}`.catch(() => {})
-    if (!isAdmin && held) await refundGenerationTickets(user.id, user.email, held).catch(() => {})
+    if (!isAdmin && held + prepaid > 0) await refundGenerationTickets(user.id, user.email, held + prepaid).catch(() => {})
     if (!r.content) await prisma.chatMessage.update({ where: { id: r.id }, data: { content: 'This reply was interrupted before it finished. Anything it made is saved in My Generations and shown above.' } }).catch(() => {})
   }
   return busy
@@ -500,7 +510,16 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       plan.status = 'declined'
       userText = `[Plan declined.]${userText ? ` ${userText}` : ' Ask what they would like instead.'}`
     }
-    await prisma.chatMessage.update({ where: { id: row.id }, data: { metadata: { ...meta, plan } as object } })
+    /*
+     * Billing sweep 2026-10-23: the decision is claimed atomically. The read
+     * above is only a fast refusal - two approve clicks (a double tap, two
+     * tabs, a retry) both saw 'proposed' and both ran the whole production.
+     * Now the write only lands WHERE the stored plan is still 'proposed', so
+     * exactly one request flips it; the other changes no row and gets a 409
+     * before any hold, model call or render happens.
+     */
+    const decided = await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = ${JSON.stringify({ ...meta, plan })}::jsonb WHERE id = ${row.id} AND metadata::jsonb -> 'plan' ->> 'status' = 'proposed'`
+    if (!decided) return { status: 409, json: { error: 'That plan was already decided' } }
     system = true
   } else if (input.continueRenders) {
     const last = await prisma.chatMessage.findFirst({ where: { chatId: chat.id, role: 'assistant' }, orderBy: { id: 'desc' }, select: { id: true, metadata: true } })
@@ -513,7 +532,9 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
     const claimed = await prisma.$executeRaw`UPDATE "ChatMessage" SET metadata = metadata::jsonb || '{"continued":true}'::jsonb WHERE id = ${last.id} AND COALESCE(metadata->>'continued', 'false') <> 'true'`
     if (!claimed) return { status: 409, json: { error: 'Already continuing' } }
     state.autoTurns = (state.autoTurns ?? 0) + 1
-    const finished = steps.filter(s => s.kind).map(s => s.status === 'done' ? `#${s.generationId ?? '?'} ${s.kind} (${s.model ?? s.tool}, ${s.tickets ?? 0} tickets) ready` : `${s.kind} (${s.model ?? s.tool}) failed and was refunded: ${clip(s.error, 80)}`)
+    // Billing sweep 2026-10-23: a failed step is NOT told it "was refunded" - a cut-off step or a
+    // render whose refund did not happen would have Nova promise the user money back that never came
+    const finished = steps.filter(s => s.kind).map(s => s.status === 'done' ? `#${s.generationId ?? '?'} ${s.kind} (${s.model ?? s.tool}, ${s.tickets ?? 0} tickets) ready` : `${s.kind} (${s.model ?? s.tool}) failed: ${clip(s.error, 80)}`)
     const brief = clip(await originalBrief(chat.id), 600)
     userText = meta.continueAfterRenders
       ? `[Your renders finished: ${finished.join('; ') || 'nothing'}. Continue with what you planned.]`
@@ -785,6 +806,17 @@ export async function runNovaTurn(input: NovaTurnInput): Promise<{ status: numbe
       }
       closed = true
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+      /*
+       * Pay-first tools still rendering when the turn ended (Stop, time limit):
+       * their prepaid tickets go back now, and the tool - which may still
+       * finish in this process - is told not to deliver or refund again
+       * (lib/nova/agent-tools abandonPrepaid / commitPrepaid). A tool already
+       * committing settles itself. (Billing sweep 2026-10-23, review.)
+       */
+      const cutOff = ctx.steps.filter(s => s.status === 'running' && (s.prepaid ?? 0) > 0 && abandonPrepaid(s))
+      const cutOffTickets = cutOff.reduce((n, s) => n + Math.max(0, Math.round(Number(s.prepaid) || 0)), 0)
+      for (const s of cutOff) { s.prepaid = 0; s.tickets = 0 }
+      if (!isAdmin && cutOffTickets > 0) await refundGenerationTickets(user.id, user.email, cutOffTickets).catch(() => {})
       ctx.steps = closeOpenSteps(ctx.steps)
       // The saved reply is trimmed: the steps' places in it move with the text they followed
       const leadTrim = text.length - text.trimStart().length, kept = text.trim().length

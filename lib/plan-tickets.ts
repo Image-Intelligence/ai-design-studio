@@ -1,6 +1,5 @@
 import prisma from '@/lib/prisma'
-import { removeTicketsFloored } from '@/lib/ticket-gate'
-import { findPlan, packDiscountFor } from '@/lib/dev-tier-plans'
+import { findPlan, packDiscountFor, packPriceAt } from '@/lib/dev-tier-plans'
 import { findDevTierSubscription } from '@/lib/dev-tier'
 
 /**
@@ -47,63 +46,136 @@ async function balanceOf(userId: number): Promise<number> {
   return (await prisma.ticket.findUnique({ where: { userId }, select: { balance: true } }))?.balance ?? 0
 }
 
-async function adjust(userId: number, delta: number): Promise<{ before: number; after: number }> {
-  const before = await balanceOf(userId)
-  if (delta === 0) return { before, after: before }
-  // Taking a plan's tickets away stops at 0 - never a negative balance (lib/ticket-gate)
-  if (delta < 0) {
-    const r = await removeTicketsFloored(userId, -delta)
-    return { before, after: r.after }
-  }
-  const t = await prisma.ticket.upsert({
-    where: { userId },
-    create: { userId, balance: delta, totalBought: delta, totalUsed: 0 },
-    update: { balance: { increment: delta }, totalBought: { increment: delta } },
-    select: { balance: true },
-  })
-  return { before, after: t.balance }
+/** One metadata key set merged in place (a jsonb merge - never a stale read-modify-write over a concurrent claim). */
+async function writeMeta(subId: number, patch: Meta) {
+  await prisma.$executeRaw`UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb WHERE id = ${subId}`
 }
 
-async function writeMeta(subId: number, patch: Meta) {
-  const sub = await prisma.subscription.findUnique({ where: { id: subId }, select: { metadata: true } })
-  await prisma.subscription.update({ where: { id: subId }, data: { metadata: { ...metaOf(sub ?? { metadata: null }), ...patch } as any } })
-}
+/*
+ * ── Exactly once, retry-safe (billing sweep 2026-10-23) ─────────────────────
+ * start / refill / end used to read the balance, then write it, then write the
+ * subscription's metadata - three separate statements with no claim:
+ *  - endPlanTickets runs from settleEndedPlans on EVERY planTicketsState view;
+ *    two views at the moment a plan ends both saw planTicketsOpen=true and
+ *    both removed "the plan share" - the second one ate paid PACK tickets.
+ *  - a crash between the credit and the metadata write (or a webhook retry)
+ *    either lost the credit or could give it twice.
+ * Now each one runs in ONE transaction that first CLAIMS the subscription
+ * with a conditional UPDATE on its metadata (planTicketsOpen / planStartCredited
+ * / the renewal's transaction id): only the request whose UPDATE changed a row
+ * goes on, and if anything after the claim fails the whole thing rolls back,
+ * so a retry finds it unclaimed and does it then.
+ */
+
+type PlanFill = { credited: number; before: number; after: number; already?: boolean }
 
 /**
  * A plan starts (first payment). Everything the account already holds is pack
  * tickets - except, on a plan CHANGE, the old plan's unused plan tickets, which
  * count toward the new plan's bar (the new plan refills to its own number).
- * Returns the tickets credited and the balance before / after.
+ * Returns the tickets credited and the balance before / after; `already` when
+ * this subscription's start was credited before (a redelivered webhook).
  */
-export async function startPlanTickets(sub: { id: number; userId: number; metadata: unknown }, replaced?: { metadata: unknown } | null) {
+export async function startPlanTickets(sub: { id: number; userId: number; metadata: unknown }, replaced?: { id?: number; metadata: unknown } | null): Promise<PlanFill> {
   const cap = planCap(sub)
-  const balance = await balanceOf(sub.userId)
-  const { pack, plan } = replaced ? splitBalance(balance, metaOf(replaced).packTickets) : { pack: balance, plan: 0 }
-  const credit = Math.max(0, cap - plan)
-  const bal = await adjust(sub.userId, credit)
-  await writeMeta(sub.id, { packTickets: pack, planTicketsOpen: true, lastRefillAt: new Date().toISOString() })
-  return { credited: credit, ...bal }
+  return prisma.$transaction(async (tx) => {
+    // The claim: never credited (no flag, and never filled - lastRefillAt marks plans started before the flag existed)
+    const claimed = await tx.$executeRaw`
+      UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || '{"planStartCredited":true}'::jsonb
+      WHERE id = ${sub.id}
+        AND COALESCE(metadata::jsonb ->> 'planStartCredited', 'false') <> 'true'
+        AND (metadata::jsonb -> 'lastRefillAt') IS NULL`
+    const before = (await tx.ticket.findUnique({ where: { userId: sub.userId }, select: { balance: true } }))?.balance ?? 0
+    if (!claimed) return { credited: 0, before, after: before, already: true }
+    /*
+     * A plan change: the replaced plan's tickets are closed IN THIS
+     * transaction, before the new bar is credited (review fix 2026-10-23).
+     * Closed later, there was a window where the old plan looked ended
+     * (expired, planTicketsOpen still true) and settleEndedPlans ->
+     * endPlanTickets(old) took "balance - old.packTickets" - the NEW plan's
+     * freshly credited bar with it.
+     */
+    if (replaced?.id && replaced.id !== sub.id) {
+      const closed = JSON.stringify({ planTicketsOpen: false, replacedBy: sub.id })
+      await tx.$executeRaw`UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || ${closed}::jsonb WHERE id = ${replaced.id}`
+    }
+    const { pack, plan } = replaced ? splitBalance(before, metaOf(replaced).packTickets) : { pack: before, plan: 0 }
+    const credit = Math.max(0, cap - plan)
+    const after = credit > 0
+      ? (await tx.ticket.upsert({
+          where: { userId: sub.userId },
+          create: { userId: sub.userId, balance: credit, totalBought: credit, totalUsed: 0 },
+          update: { balance: { increment: credit }, totalBought: { increment: credit } },
+          select: { balance: true },
+        })).balance
+      : before
+    const patch = JSON.stringify({ packTickets: pack, planTicketsOpen: true, lastRefillAt: new Date().toISOString() })
+    await tx.$executeRaw`UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || ${patch}::jsonb WHERE id = ${sub.id}`
+    return { credited: credit, before, after }
+  })
 }
 
-/** A renewal: top the plan share back up to the plan's bar. */
-export async function refillPlanTickets(sub: { id: number; userId: number; metadata: unknown }) {
+/**
+ * A renewal: top the plan share back up to the plan's bar.
+ * With `claim` (a payment provider's renewal transaction id), the renewal is
+ * claimed in the same transaction: the subscription's last transaction id
+ * moves to this one only if it is not already this one - so a redelivered or
+ * concurrent renewal event refills nothing (`already`), and a refill that
+ * fails rolls the claim back for the provider's retry.
+ */
+export async function refillPlanTickets(
+  sub: { id: number; userId: number; metadata: unknown },
+  claim?: { ccbillTransactionId: string; nextBillingDate?: Date | null },
+): Promise<PlanFill> {
   const cap = planCap(sub)
-  const balance = await balanceOf(sub.userId)
-  const { pack, plan } = splitBalance(balance, metaOf(sub).packTickets)
-  const credit = Math.max(0, cap - plan)
-  const bal = await adjust(sub.userId, credit)
-  await writeMeta(sub.id, { packTickets: pack, planTicketsOpen: true, lastRefillAt: new Date().toISOString() })
-  return { credited: credit, ...bal }
+  return prisma.$transaction(async (tx) => {
+    if (claim) {
+      const won = await tx.subscription.updateMany({
+        where: { id: sub.id, OR: [{ ccbillLastTransactionId: null }, { ccbillLastTransactionId: { not: claim.ccbillTransactionId } }] },
+        data: { status: 'active', ccbillLastTransactionId: claim.ccbillTransactionId, ...(claim.nextBillingDate ? { nextBillingDate: claim.nextBillingDate } : {}) },
+      })
+      if (won.count !== 1) {
+        const b = (await tx.ticket.findUnique({ where: { userId: sub.userId }, select: { balance: true } }))?.balance ?? 0
+        return { credited: 0, before: b, after: b, already: true }
+      }
+    }
+    // The split is read fresh, inside the transaction (the caller's copy may be stale)
+    const fresh = await tx.subscription.findUnique({ where: { id: sub.id }, select: { metadata: true } })
+    const before = (await tx.ticket.findUnique({ where: { userId: sub.userId }, select: { balance: true } }))?.balance ?? 0
+    const { pack, plan } = splitBalance(before, metaOf(fresh ?? sub).packTickets)
+    const credit = Math.max(0, cap - plan)
+    const after = credit > 0
+      ? (await tx.ticket.upsert({
+          where: { userId: sub.userId },
+          create: { userId: sub.userId, balance: credit, totalBought: credit, totalUsed: 0 },
+          update: { balance: { increment: credit }, totalBought: { increment: credit } },
+          select: { balance: true },
+        })).balance
+      : before
+    const patch = JSON.stringify({ packTickets: pack, planTicketsOpen: true, lastRefillAt: new Date().toISOString() })
+    await tx.$executeRaw`UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || ${patch}::jsonb WHERE id = ${sub.id}`
+    return { credited: credit, before, after }
+  })
 }
 
-/** The plan ended (expired, refunded, charged back): its unused plan tickets go; pack tickets stay. */
-export async function endPlanTickets(sub: { id: number; userId: number; metadata: unknown }) {
+/** The plan ended (expired, refunded, charged back): its unused plan tickets go; pack tickets stay. Exactly once per plan. */
+export async function endPlanTickets(sub: { id: number; userId: number; metadata: unknown }): Promise<{ removed: number }> {
   if (metaOf(sub).planTicketsOpen !== true) return { removed: 0 }
-  const balance = await balanceOf(sub.userId)
-  const { pack, plan } = splitBalance(balance, metaOf(sub).packTickets)
-  if (plan > 0) await adjust(sub.userId, -plan)
-  await writeMeta(sub.id, { planTicketsOpen: false, planTicketsEndedAt: new Date().toISOString(), packTickets: pack, planTicketsRemoved: plan })
-  return { removed: plan }
+  return prisma.$transaction(async (tx) => {
+    // The claim: only the request that flips planTicketsOpen true -> false removes anything
+    const claimed = await tx.$executeRaw`
+      UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || '{"planTicketsOpen":false}'::jsonb
+      WHERE id = ${sub.id} AND metadata::jsonb ->> 'planTicketsOpen' = 'true'`
+    if (!claimed) return { removed: 0 }
+    const fresh = await tx.subscription.findUnique({ where: { id: sub.id }, select: { metadata: true } })
+    const balance = (await tx.ticket.findUnique({ where: { userId: sub.userId }, select: { balance: true } }))?.balance ?? 0
+    const { pack, plan } = splitBalance(balance, metaOf(fresh ?? sub).packTickets)
+    // Down to 0 at most - never a negative balance (same rule as lib/ticket-gate removeTicketsFloored)
+    if (plan > 0) await tx.$executeRaw`UPDATE "Ticket" SET balance = GREATEST(0, balance - ${plan}) WHERE "userId" = ${sub.userId}`
+    const patch = JSON.stringify({ planTicketsEndedAt: new Date().toISOString(), packTickets: pack, planTicketsRemoved: plan })
+    await tx.$executeRaw`UPDATE "Subscription" SET metadata = COALESCE(metadata::jsonb, '{}'::jsonb) || ${patch}::jsonb WHERE id = ${sub.id}`
+    return { removed: plan }
+  })
 }
 
 /**
@@ -195,4 +267,60 @@ export async function planTicketsState(userId: number, opts: { isAdmin?: boolean
     ending: sub.status === 'cancelled' || !sub.autoRenew,
     packDiscountPct: packDiscountFor(m.planId),
   }
+}
+
+/*
+ * ── A ticket pack's price, decided on the SERVER (billing sweep 2026-10-23) ──
+ * The PayPal pack routes took the amount (and the ticket count) from the
+ * browser: POST /api/tickets/purchase {ticketsCount: 825, amount: 1} made a
+ * real $1 order for 825 tickets, and the capture credited whatever the
+ * order's reference said. The price now comes only from here: the pack must
+ * be one of TICKET_PACKAGES (lib/ticket-pricing - the shop's own list), the
+ * plan discount is the account's own (packDiscountFor, the same rule the
+ * shop shows), and a discount code is re-validated against the database.
+ * Prices themselves are unchanged - this only computes them where the buyer
+ * can't edit them.
+ */
+export type PackPrice =
+  | { ok: true; tickets: number; usd: number; listUsd: number; planDiscountPct: number; code: { id: number; code: string } | null }
+  | { ok: false; error: string }
+
+export async function packPriceFor(
+  userId: number, tickets: unknown, discountCode?: unknown,
+  /** codeClaimed: the code's one use was already claimed for THIS order (a capture being credited late) - it must exist, not be unused. */
+  opts: { codeClaimed?: boolean } = {},
+): Promise<PackPrice> {
+  const { TICKET_PACKAGES } = await import('@/lib/ticket-pricing')
+  const pack = TICKET_PACKAGES.find(p => p.tickets === Number(tickets))
+  if (!pack) return { ok: false, error: 'That is not one of the ticket packs' }
+  const sub = await findDevTierSubscription(userId)
+  const planDiscountPct = sub ? packDiscountFor(metaOf(sub).planId) : 0
+  let usd = planDiscountPct ? packPriceAt(pack.freeTierPrice, planDiscountPct) : pack.freeTierPrice
+  let code: { id: number; code: string } | null = null
+  if (typeof discountCode === 'string' && discountCode.trim()) {
+    const d = await prisma.discountCode.findUnique({ where: { code: discountCode.trim().toUpperCase() }, include: { usedBy: { where: { userId } } } })
+    if (!d) return { ok: false, error: 'That discount code is not valid' }
+    if (opts.codeClaimed) {
+      if (!d.usedBy.length) return { ok: false, error: 'That discount code was not applied to this order' }
+      /*
+       * Review fix 2026-10-23: a usage row only proves the code was claimed
+       * ONCE - not for this order. An order captured outside our capture
+       * route at the discounted price could ride on the earlier claim. The
+       * one use is already spent if any pack bought with it was credited (the
+       * capture route re-checks this under a lock inside its credit transaction).
+       */
+      const spent = await prisma.ticketPurchase.count({ where: { userId, discountCodeUsed: d.code } })
+      if (spent) return { ok: false, error: 'That discount code was already used on another purchase' }
+    } else {
+      if (!d.isActive) return { ok: false, error: 'That discount code is not valid' }
+      if (d.expiresAt && d.expiresAt < new Date()) return { ok: false, error: 'That discount code has expired' }
+      if (d.usedBy.length) return { ok: false, error: 'You have already used that discount code' }
+      if (d.usageLimit !== null && d.timesUsed >= d.usageLimit) return { ok: false, error: 'That discount code has reached its limit' }
+    }
+    usd = d.type === 'percentage' ? usd * (1 - Math.min(100, Math.max(0, d.value)) / 100) : usd - Math.max(0, d.value)
+    code = { id: d.id, code: d.code }
+  }
+  usd = Math.round(usd * 100) / 100
+  if (!(usd >= 0.01)) return { ok: false, error: 'That discount leaves nothing to pay - contact support' }
+  return { ok: true, tickets: pack.tickets, usd, listUsd: pack.freeTierPrice, planDiscountPct, code }
 }

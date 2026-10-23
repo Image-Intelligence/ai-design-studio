@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { promoteNextQueuedJob, FAL_GLOBAL_ID } from '@/lib/fal-queue'
 import { syncActiveCounters } from '../stats/route'
+import { checkAdminRequest } from '@/lib/admin-check'
+import { OWN_QUEUE_MODEL_IDS } from '@/lib/runpod-video-models'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 /**
  * POST /api/admin/queue/recover
@@ -17,28 +21,49 @@ import { syncActiveCounters } from '../stats/route'
  * Only call when FAL is genuinely at 0 active for the stuck jobs; if any are
  * still running at FAL, re-queuing them causes a duplicate submission.
  */
-export async function POST() {
+export async function POST(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     // Find all jobs stuck in processing
-    const stuckJobs = await prisma.generationQueue.findMany({
-      where: { status: 'processing' },
-      select: { id: true, modelId: true, userId: true },
+    const processing = await prisma.generationQueue.findMany({
+      where: {
+        status: 'processing',
+        // fal's queue only: Higgsfield / RunPod / 3D jobs are not re-submitted
+        // by the promoter and settle on their own pipelines
+        modelId: { notIn: OWN_QUEUE_MODEL_IDS },
+        modelType: { not: 'threed' },
+      },
+      select: { id: true, modelId: true, userId: true, parameters: true },
+    })
+    // Only rows the promoter can actually re-run (2026-10-23 billing sweep).
+    // A row submitted straight to fal by its own route stores no endpoint /
+    // input; re-queued, the promoter could only fail it - giving the tickets
+    // back for a job fal may well have finished. Those are left alone (the
+    // cron's lost-webhook pass and stale pass settle them from fal's answer).
+    const stuckJobs = processing.filter(j => {
+      const p = (j.parameters ?? {}) as { falEndpoint?: unknown; falInput?: unknown }
+      return !!p.falEndpoint && !!p.falInput
     })
 
     if (stuckJobs.length === 0) {
-      return NextResponse.json({ success: true, requeued: 0, message: 'No processing jobs to recover' })
+      return NextResponse.json({ success: true, requeued: 0, message: 'No re-runnable processing jobs to recover' })
     }
 
-    // Re-queue them: clear falRequestId + startedAt so they act like fresh queue entries
-    await prisma.generationQueue.updateMany({
-      where: { id: { in: stuckJobs.map(j => j.id) } },
-      data: {
-        status: 'queued',
-        startedAt: null,
-        falRequestId: null,
-        errorMessage: null,
-      },
-    })
+    // Re-queue them: clear falRequestId + startedAt so they act like fresh queue entries.
+    // Money: none moves - the reservation / charge each row holds stays with it
+    // for the re-run, and the promoter's failQueueRow returns it if the
+    // re-submit fails. Guarded on 'processing' so a job that settled since the
+    // read above (and already moved its tickets) is not resurrected.
+    // Also cleared (2026-10-23 review): slotClaimed - the promoter takes a fresh slot for
+    // the re-run, and a leftover `false` would keep it from ever being given back - and
+    // webhookClaimAt, which would turn the re-run's own webhook away for 5 minutes
+    const ids = stuckJobs.map(j => j.id)
+    const requeuedCount = ids.length ? await prisma.$executeRaw`
+      UPDATE "GenerationQueue"
+      SET status = 'queued', "startedAt" = NULL, "falRequestId" = NULL, "errorMessage" = NULL,
+          parameters = (COALESCE(parameters::jsonb, '{}'::jsonb) - 'slotClaimed' - 'webhookClaimAt')
+      WHERE id = ANY(${ids}::int[]) AND status = 'processing'` : 0
+    const requeued = { count: requeuedCount }
 
     // Sync all counters to ground truth (all processing rows are now gone → counters → 0)
     await syncActiveCounters()
@@ -66,9 +91,9 @@ export async function POST() {
 
     return NextResponse.json({
       success: true,
-      requeued: stuckJobs.length,
+      requeued: requeued.count,
       promoted,
-      message: `Re-queued ${stuckJobs.length} stuck job(s) and kicked ${promoted} into processing`,
+      message: `Re-queued ${requeued.count} stuck job(s) and kicked ${promoted} into processing`,
     })
   } catch (error) {
     console.error('[recover] Error:', error)

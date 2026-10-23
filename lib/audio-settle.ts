@@ -22,6 +22,24 @@ import { getAudioStudioModel } from '@/lib/audio-studio'
  */
 
 export const AUDIO_STALE_MS = 30 * 60 * 1000
+/*
+ * The settle claim, bounded (2026-10-23 billing sweep). A run is claimed by
+ * flipping it to 'audio-settling' before its files are copied; the copy had no
+ * timeout and the row was only put back in a catch - a function killed mid-copy
+ * (Vercel's limit) never reached it, so the run sat in 'audio-settling' for
+ * ever, charged, and nothing ever looked at it again. Now the claim records
+ * when it was made (completedAt, as lib/threed and lib/video-save-guard do;
+ * parameters.settlingAt too), each download is bounded, and a claim older than
+ * AUDIO_SETTLE_CLAIM_MS is put back to 'audio-processing' by the cron
+ * (settleAbandonedAudioRuns) - where outputs already saved are skipped, so a
+ * half-finished settle is completed rather than duplicated.
+ */
+const AUDIO_FETCH_MS = 60_000
+const AUDIO_SETTLE_CLAIM_MS = 10 * 60 * 1000
+/** Claims before a settle that keeps dying is closed: completed with what was saved, or failed and refunded. */
+const AUDIO_MAX_SETTLE_ATTEMPTS = 4
+/** ...and this old (from its start) - fal keeps results ~24-48 h */
+const AUDIO_SETTLE_GIVE_UP_MS = 6 * 3600 * 1000
 const TYPES: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/ogg', mp4: 'video/mp4' }
 const extOf = (url: string, type: string | null) => {
   const fromUrl = url.split('?')[0].match(/\.(mp3|wav|flac|m4a|aac|ogg|opus|mp4)$/i)?.[1]?.toLowerCase()
@@ -45,6 +63,16 @@ export async function audioItemsFor(userId: number, requestId: string) {
 type QueueRow = NonNullable<Awaited<ReturnType<typeof prisma.generationQueue.findFirst>>>
 
 async function fail(row: QueueRow, email: string, reason: string): Promise<AudioSettleResult> {
+  // Outputs an interrupted settle already saved (2026-10-23 billing sweep):
+  // the user has them, so the run is completed, not refunded on top
+  const items = row.falRequestId ? await audioItemsFor(row.userId, row.falRequestId) : []
+  if (items.length) {
+    await prisma.generationQueue.updateMany({
+      where: { id: row.id, status: 'audio-processing' },
+      data: { status: 'completed', completedAt: new Date(), resultImageId: items[0].id },
+    })
+    return { status: 'completed', items }
+  }
   const flip = await prisma.generationQueue.updateMany({
     where: { id: row.id, status: 'audio-processing' },
     data: { status: 'failed', completedAt: new Date(), errorMessage: reason.slice(0, 500) },
@@ -90,16 +118,44 @@ export async function settleAudioRun(row: QueueRow, email: string): Promise<Audi
   const outputs = spec.outputs(data)
   if (!outputs.length) return fail(row, email, 'The model returned no audio')
 
-  // One settler: whoever flips the row does the copy and the writes
-  const claim = await prisma.generationQueue.updateMany({ where: { id: row.id, status: 'audio-processing' }, data: { status: 'audio-settling' } })
+  // A settle that has died AUDIO_MAX_SETTLE_ATTEMPTS times is closed: with
+  // what it saved, or failed and refunded when it saved nothing
+  // - and only once it is also hours old: a count of interrupted tries alone
+  // is no reason to refund a finished, paid run (short-lived callers)
+  if ((Number(params.settleAttempts) || 0) >= AUDIO_MAX_SETTLE_ATTEMPTS && age > AUDIO_SETTLE_GIVE_UP_MS) {
+    const items = await audioItemsFor(row.userId, requestId)
+    if (!items.length) return fail(row, email, 'The finished audio could not be saved - your tickets are back')
+    await prisma.generationQueue.updateMany({
+      where: { id: row.id, status: 'audio-processing' },
+      data: { status: 'completed', completedAt: new Date(), resultImageId: items[0].id },
+    })
+    return { status: 'completed', items }
+  }
+
+  // One settler: whoever flips the row does the copy and the writes. The flip
+  // records the claim time (completedAt) and counts the attempt
+  const attempts = (Number(params.settleAttempts) || 0) + 1
+  const claim = await prisma.generationQueue.updateMany({
+    where: { id: row.id, status: 'audio-processing' },
+    data: { status: 'audio-settling', completedAt: new Date(), parameters: { ...params, settlingAt: Date.now(), settleAttempts: attempts } },
+  })
   if (!claim.count) return { status: 'pending' }
 
   try {
+    // Outputs an earlier, interrupted settle already saved (rid, rid#1...) are not saved twice
+    const done = new Map((await prisma.generatedImage.findMany({
+      where: { OR: [{ falRequestId: requestId }, { falRequestId: { startsWith: `${requestId}#` } }] },
+      select: { id: true, falRequestId: true },
+    })).map(g => [g.falRequestId, g.id]))
     const created: number[] = []
     for (const [i, out] of outputs.entries()) {
+      const outRid = i === 0 ? requestId : `${requestId}#${i}`
+      const had = done.get(outRid)
+      if (had) { created.push(had); continue }
       let url = out.url
       try {
-        const res = await fetch(out.url)
+        // Bounded: a hung download is what left runs claimed for ever
+        const res = await fetch(out.url, { signal: AbortSignal.timeout(AUDIO_FETCH_MS) })
         if (!res.ok) throw new Error(`fetch ${res.status}`)
         const buf = Buffer.from(await res.arrayBuffer())
         const ext = extOf(out.url, res.headers.get('content-type'))
@@ -119,7 +175,7 @@ export async function settleAudioRun(row: QueueRow, email: string): Promise<Audi
           referenceImageUrls: params.audioUrl ? [String(params.audioUrl)] : [],
           createdAt: row.queuedAt,
           expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
-          falRequestId: i === 0 ? requestId : `${requestId}#${i}`,
+          falRequestId: outRid,
           videoMetadata: {
             isAudio: !spec.outputVideo,
             ...(spec.outputVideo ? { sourceSongAssetId: params.sourceSongAssetId ?? null, options: params.options ?? null } : {}),
@@ -142,7 +198,7 @@ export async function settleAudioRun(row: QueueRow, email: string): Promise<Audi
     })
   } catch (e) {
     // Put it back so the next poll (or the cron) can try again
-    await prisma.generationQueue.updateMany({ where: { id: row.id, status: 'audio-settling' }, data: { status: 'audio-processing' } })
+    await prisma.generationQueue.updateMany({ where: { id: row.id, status: 'audio-settling' }, data: { status: 'audio-processing', completedAt: null } })
     throw e
   }
   return { status: 'completed', items: await audioItemsFor(row.userId, requestId) }
@@ -154,6 +210,20 @@ export async function settleAudioRun(row: QueueRow, email: string): Promise<Audi
  * per minute so one cron tick stays short.
  */
 export async function settleAbandonedAudioRuns(limit = 8): Promise<number> {
+  // Claims whose settler died (2026-10-23 billing sweep): back to
+  // 'audio-processing', so the pass below settles them (skipping outputs
+  // already saved). A claim made before claims were timed has no completedAt:
+  // its updatedAt (the flip itself) stands in for it.
+  const cutoff = new Date(Date.now() - AUDIO_SETTLE_CLAIM_MS)
+  const revived = await prisma.generationQueue.updateMany({
+    where: {
+      modelType: 'audio', status: 'audio-settling',
+      OR: [{ completedAt: { lt: cutoff } }, { completedAt: null, updatedAt: { lt: cutoff } }],
+    },
+    data: { status: 'audio-processing', completedAt: null },
+  }).catch(e => { console.error('[audio-settle] reviving stale claims failed:', e); return { count: 0 } })
+  if (revived.count) console.log(`[audio-settle] ${revived.count} interrupted settle(s) put back to be finished`)
+
   const rows = await prisma.generationQueue.findMany({
     where: { modelType: 'audio', status: 'audio-processing', startedAt: { lt: new Date(Date.now() - 3 * 60 * 1000) } },
     orderBy: { startedAt: 'asc' },

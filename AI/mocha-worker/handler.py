@@ -54,7 +54,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v4'
+HANDLER_VERSION = '2026-10-23-v5'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_URL = 'http://127.0.0.1:8188'
@@ -76,7 +76,7 @@ MODEL_FILES = {
 
 SIZES = {'480p': (832, 480), '720p': (1280, 720)}
 MAX_INPUT_BYTES = 1024 * 1024 * 1024
-PROMPT_TIMEOUT_S = 150 * 60  # the longest settings run ~70-80 min (2026-10-22: 50 was too short)
+PROMPT_TIMEOUT_S = 300 * 60  # 720p Full at 161 frames is ~3.6 h (2026-10-23: 150 was too short; the site refuses past ~4.5 h)
 
 _comfy_proc = None
 _yolo = None

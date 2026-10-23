@@ -60,8 +60,12 @@ export async function submitStillJob(boardId: number, shotId: string, endpoint: 
   return sub.request_id
 }
 
-/** Take a finished job for saving - false if another settler has it. */
-async function claimSave(boardId: number, shotId: string, requestId: string): Promise<boolean> {
+/**
+ * Take a finished job for saving - null if another settler has it, else the
+ * claim's stamp (stillJob.savingAt), which failStill / releaseSave match so
+ * they only ever act on THIS claim (2026-10-23 billing sweep).
+ */
+async function claimSave(boardId: number, shotId: string, requestId: string): Promise<number | null> {
   const now = Date.now()
   const n = await prisma.$executeRaw`
     UPDATE "Storyboard" SET shots = (
@@ -74,7 +78,7 @@ async function claimSave(boardId: number, shotId: string, requestId: string): Pr
         WHERE x->>'id' = ${shotId} AND x->'stillJob'->>'status' = 'making'
           AND x->'stillJob'->'fal'->>'requestId' = ${requestId}
           AND COALESCE((x->'stillJob'->>'savingAt')::bigint, 0) < ${String(now - SAVE_CLAIM_MS)}::bigint)`
-  return n > 0
+  return n > 0 ? now : null
 }
 
 type Pending = { boardId: number; userId: number; title: string; shotId: string; at: number; job: StillFalJob }
@@ -89,7 +93,41 @@ function pendingOf(rows: { id: number; userId: number; title: string; shots: unk
   return out
 }
 
-async function failStill(p: Pending, error: string) {
+/*
+ * A still given up on, refunded ONCE (2026-10-23 billing sweep). Three
+ * settlers look at the same job - the board's GET, the feed's poll and the
+ * cron - and each used to refund a stale or failed one: up to three refunds
+ * of one charge. Now the slot is flipped making -> failed in one statement,
+ * only while it is still THIS job (same request id) and nobody is saving it
+ * (no live savingAt - or, from the settler holding the save claim, its own
+ * stamp), and only the settler whose statement changed the row refunds.
+ */
+async function failStill(p: Pending, error: string, claimAt?: number) {
+  const job = JSON.stringify({ stillJob: { status: 'failed', at: Date.now(), model: p.job.model, error: error.slice(0, 400) } })
+  const n = await (claimAt != null
+    ? prisma.$executeRaw`
+        UPDATE "Storyboard" SET "updatedAt" = NOW(), shots = (
+          SELECT jsonb_agg(CASE WHEN t.s->>'id' = ${p.shotId} THEN t.s || ${job}::jsonb ELSE t.s END ORDER BY t.i)
+          FROM jsonb_array_elements(shots) WITH ORDINALITY AS t(s, i))
+        WHERE id = ${p.boardId} AND jsonb_typeof(shots) = 'array'
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(shots) x
+            WHERE x->>'id' = ${p.shotId} AND x->'stillJob'->>'status' = 'making'
+              AND x->'stillJob'->'fal'->>'requestId' = ${p.job.requestId}
+              AND (x->'stillJob'->>'savingAt')::bigint = ${String(claimAt)}::bigint)`
+    : prisma.$executeRaw`
+        UPDATE "Storyboard" SET "updatedAt" = NOW(), shots = (
+          SELECT jsonb_agg(CASE WHEN t.s->>'id' = ${p.shotId} THEN t.s || ${job}::jsonb ELSE t.s END ORDER BY t.i)
+          FROM jsonb_array_elements(shots) WITH ORDINALITY AS t(s, i))
+        WHERE id = ${p.boardId} AND jsonb_typeof(shots) = 'array'
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(shots) x
+            WHERE x->>'id' = ${p.shotId} AND x->'stillJob'->>'status' = 'making'
+              AND x->'stillJob'->'fal'->>'requestId' = ${p.job.requestId}
+              AND COALESCE((x->'stillJob'->>'savingAt')::bigint, 0) < ${String(Date.now() - SAVE_CLAIM_MS)}::bigint)`
+  ).catch(e => { console.error('[storyboard-stills] fail flip failed:', e); return 0 })
+  // Another settler failed (and refunded) it, or it is being saved: nothing more to do
+  if (n === 0) return
   try {
     if (p.job.cost > 0) {
       const u = await prisma.user.findUnique({ where: { id: p.userId }, select: { email: true } })
@@ -97,14 +135,14 @@ async function failStill(p: Pending, error: string) {
     }
   } catch (e) { console.error('[storyboard-stills] refund failed:', e) }
   await failStudioJob(p.job.track, error)
-  await patchShot(p.boardId, p.shotId, { stillJob: { status: 'failed', at: Date.now(), model: p.job.model, error: error.slice(0, 400) } }).catch(() => {})
 }
 
-/** Let go of a save claim (fetching or storing failed): the next settler tries again. */
-async function releaseSave(p: Pending) {
+/** Let go of THIS save claim (fetching or storing failed): the next settler tries again. */
+async function releaseSave(p: Pending, claimAt: number) {
   await prisma.$executeRaw`
     UPDATE "Storyboard" SET shots = (
-      SELECT jsonb_agg(CASE WHEN t.s->>'id' = ${p.shotId} THEN t.s #- '{stillJob,savingAt}' ELSE t.s END ORDER BY t.i)
+      SELECT jsonb_agg(CASE WHEN t.s->>'id' = ${p.shotId} AND (t.s->'stillJob'->>'savingAt')::bigint = ${String(claimAt)}::bigint
+        THEN t.s #- '{stillJob,savingAt}' ELSE t.s END ORDER BY t.i)
       FROM jsonb_array_elements(shots) WITH ORDINALITY AS t(s, i))
     WHERE id = ${p.boardId} AND jsonb_typeof(shots) = 'array'`.catch(() => {})
 }
@@ -124,18 +162,33 @@ async function settleOne(p: Pending): Promise<'waiting' | 'saved' | 'failed' | '
     if (Date.now() - p.at > STILL_FAL_STALE_MS) { await failStill(p, 'The model took too long - nothing was charged'); return 'failed' }
     return 'waiting'
   }
-  if (!(await claimSave(p.boardId, p.shotId, p.job.requestId))) return 'busy'
+  const claimAt = await claimSave(p.boardId, p.shotId, p.job.requestId)
+  if (claimAt == null) return 'busy'
   try {
+    /*
+     * Saved already by an earlier settler whose last step (patchShot) threw
+     * (2026-10-23 billing sweep): its row carries this request id - reuse it,
+     * never a second row (a second feed picture, a second ticketCost).
+     */
+    const prior = await prisma.generatedImage.findFirst({
+      where: { falRequestId: p.job.requestId, userId: p.userId }, orderBy: { id: 'asc' }, select: { id: true, imageUrl: true },
+    })
+    if (prior) {
+      await finishStudioJob(p.job.track, [prior.id], prior.imageUrl)
+      await patchShot(p.boardId, p.shotId, { stillUrl: prior.imageUrl, stillJob: null, ...(p.job.patch ?? {}) },
+        { url: prior.imageUrl, prompt: p.job.takePrompt, model: p.job.model, at: Date.now() })
+      return 'saved'
+    }
     let out: any
     try {
       out = await fal.queue.result(p.job.endpoint, { requestId: p.job.requestId })
     } catch (e: any) {
       // A finished job that answers with an error (refused, invalid) is final
-      await failStill(p, `${p.job.model} refused: ${falError(e)}`)
+      await failStill(p, `${p.job.model} refused: ${falError(e)}`, claimAt)
       return 'failed'
     }
     const falUrl: string | undefined = out?.data?.images?.[0]?.url ?? out?.data?.image?.url
-    if (!falUrl) { await failStill(p, 'The model returned no image'); return 'failed' }
+    if (!falUrl) { await failStill(p, 'The model returned no image', claimAt); return 'failed' }
     const res = await fetch(falUrl, { signal: AbortSignal.timeout(60_000) })
     if (!res.ok) throw new Error(`Could not fetch the result (${res.status})`)
     let buf = Buffer.from(await res.arrayBuffer())
@@ -164,7 +217,7 @@ async function settleOne(p: Pending): Promise<'waiting' | 'saved' | 'failed' | '
   } catch (e) {
     // Fetching or storing it failed: let go of the claim, the next settler tries again
     console.error('[storyboard-stills] save failed (will retry):', e)
-    await releaseSave(p)
+    await releaseSave(p, claimAt)
     return 'busy'
   }
 }
@@ -307,7 +360,8 @@ async function settleHiggsfieldStill(p: Pending, queueId: number): Promise<'wait
     return 'waiting'
   }
   if (r.status === 'failed') { await failStill(p, r.error); return 'failed' }
-  if (!(await claimSave(p.boardId, p.shotId, p.job.requestId))) return 'busy'
+  const claimAt = await claimSave(p.boardId, p.shotId, p.job.requestId)
+  if (claimAt == null) return 'busy'
   try {
     const url = await adoptHiggsfieldStill(r, { userId: p.userId, title: p.title, conform: p.job.conform, name: p.job.name })
     await patchShot(p.boardId, p.shotId, { stillUrl: url, stillJob: null, ...(p.job.patch ?? {}) },
@@ -315,7 +369,7 @@ async function settleHiggsfieldStill(p: Pending, queueId: number): Promise<'wait
     return 'saved'
   } catch (e) {
     console.error('[storyboard-stills] Higgsfield save failed (will retry):', e)
-    await releaseSave(p)
+    await releaseSave(p, claimAt)
     return 'busy'
   }
 }

@@ -1,4 +1,7 @@
 import { NextResponse } from 'next/server'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 // GET /api/admin/media-proxy?url=<our-r2-url>
 // Streams media from our own storage through this origin, passing Range
@@ -22,6 +25,7 @@ const ALLOWED_HOSTS = [
 ]
 
 export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const url = new URL(req.url).searchParams.get('url') || ''
   let parsed: URL
   try { parsed = new URL(url) } catch { return NextResponse.json({ error: 'Invalid url' }, { status: 400 }) }

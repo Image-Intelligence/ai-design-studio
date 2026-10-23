@@ -26,6 +26,7 @@ import {
   newScene, orderByScenes, ensureScenes, sceneShots, shotRefs, MAX_SCENES, type StoryScene,
   FRAMINGS, isFraming, type FramingId, liveStillJob, mergeStills, pickRefs, autoShotRefs, type ShotRef,
   stillRefUrls, editSource, SHOT_ASPECTS, finalCutExtraTickets,
+  ASSET_SCENE_ID, MAX_ASSET_SHOTS, isAssetShot, storyShots, assetShots, assetShotsFor, assetShotPrompt, syncAssetShots,
 } from "@/lib/storyboard"
 import { AssetsPanel, AddToAssetMenu, ShotRefsPanel, uploadImage } from "@/components/employees/StoryboardAssets"
 import { StillsCutPanel } from "@/components/employees/StillsCutPanel"
@@ -118,6 +119,44 @@ function shotTickets(s: StoryboardShot, resolution: string): number {
   try { return videoTicketCost({ model, duration: String(s.duration), resolution, generateAudio: true, sd20Mode: "i2v", hasStartImage: true }) } catch { return 0 }
 }
 
+/*
+ * Scene 0, the asset scratch paper (2026-10-23 - lib/storyboard ASSET_SCENE_ID).
+ * The page holds its shots apart (board.scratch) so nothing that works on the
+ * film - numbering, runtime, shooting, the animatic, the cuts, the draft -
+ * ever sees them; they are saved in front of the film's shots, as stored.
+ */
+/** A board as the server sends it, with Scene 0's shots split out. */
+const withScratch = (doc: StoryboardDoc): StoryboardDoc => ({ ...doc, shots: storyShots(doc.shots ?? []), scratch: assetShots(doc.shots ?? []) })
+/** Every shot the page holds, Scene 0's first. */
+const allShots = (b: StoryboardDoc) => [...(b.scratch ?? []), ...b.shots]
+/** One change to shots wherever they live - the film or Scene 0. */
+const mapShots = (b: StoryboardDoc, fn: (s: StoryboardShot) => StoryboardShot): StoryboardDoc =>
+  ({ ...b, shots: b.shots.map(fn), ...(b.scratch ? { scratch: b.scratch.map(fn) } : {}) })
+/** The board a still's references are read from: a Scene 0 shot edits Scene 0's stills. */
+const refBoard = (b: StoryboardDoc, s: StoryboardShot): StoryboardDoc => (isAssetShot(s) ? { ...b, shots: b.scratch ?? [] } : b)
+/** What a still is made from: a Scene 0 asset picture's prompt is rebuilt from the asset's description as it is now. */
+const promptOf = (b: StoryboardDoc, s: StoryboardShot) => {
+  const a = s.assetFor?.auto ? b.assets.find(x => x.id === s.assetFor!.assetId) : undefined
+  return a ? assetShotPrompt(a, s) : (s.imagePrompt || s.description).trim()
+}
+/**
+ * The draft's suggested assets as Scene 0 shots, ready to make: each
+ * suggestion without any gets its set of views (front, three-quarter, back
+ * for a character...), as many whole sets as Scene 0 has room for.
+ */
+function withSuggestionShots(b: StoryboardDoc): StoryboardDoc {
+  const scratch = b.scratch ?? []
+  const linked = new Set(scratch.map(s => s.assetFor?.assetId))
+  const fresh: StoryboardShot[] = []
+  for (const a of b.assets) {
+    if (!a.suggested || linked.has(a.id)) continue
+    const set = assetShotsFor(a, { boardAspect: b.aspect })
+    if (scratch.length + fresh.length + set.length > MAX_ASSET_SHOTS) break
+    fresh.push(...set)
+  }
+  return fresh.length ? { ...b, scratch: [...scratch, ...fresh] } : b
+}
+
 export function StoryboardWorkspace({
   signedIn,
   activeRefs,
@@ -154,6 +193,10 @@ export function StoryboardWorkspace({
   const [queued, setQueued] = useState<Record<string, boolean>>({})
   const queuedRef = useRef<Set<string>>(new Set())
   const makingRef = useRef<Set<string>>(new Set())
+  // Stills held back until the still they edit lands (runStills) - shot id -> when it was held
+  const heldRef = useRef<Map<string, number>>(new Map())
+  // A Scene 0 card being dragged (its index there)
+  const [dragScratch, setDragScratch] = useState<number | null>(null)
   const [shotError, setShotError] = useState<Record<string, string>>({})
   const [premise, setPremise] = useState("")
   const [shotCount, setShotCount] = useState("8")
@@ -254,7 +297,7 @@ export function StoryboardWorkspace({
     const storyboard = r.data?.storyboard
     if (!r.ok || !storyboard) return
     setThumbs(prev => mergeThumbs(prev, r.data?.thumbs))
-    setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id })
+    setBoard(withScratch({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id }))
     setShotError({})
     setFinalCut({ job: null, versions: [] })
     setFcVersion(null)
@@ -273,7 +316,7 @@ export function StoryboardWorkspace({
     await loadList()
     // A new board has no cuts and no errors: clear the previous board's, or its
     // Final Cuts keep showing in the screening room of the empty board
-    setBoard({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id })
+    setBoard(withScratch({ ...storyboard, shots: storyboard.shots ?? [], assets: storyboard.assets ?? [], scenes: storyboard.scenes ?? [], mode: boardMode(storyboard.mode).id }))
     setShotError({})
     setFinalCut({ job: null, versions: [] })
     setFcVersion(null)
@@ -303,7 +346,8 @@ export function StoryboardWorkspace({
     setSaveState("saving")
     const r = await fetch(`/api/employees/storyboards/${b.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: b.title, story: b.story, look: b.look, aspect: b.aspect, shots: b.shots, assets: b.assets, mode: b.mode, scenes: b.scenes }),
+      // Scene 0's shots go back in front of the film's, as they are stored
+      body: JSON.stringify({ title: b.title, story: b.story, look: b.look, aspect: b.aspect, shots: allShots(b), assets: b.assets, mode: b.mode, scenes: b.scenes }),
     }).catch(() => null)
     setSaveState(r?.ok ? "saved" : "error")
     // The saved board moves to the front, as the list is newest-edited first
@@ -324,7 +368,11 @@ export function StoryboardWorkspace({
   // Leaving the board (tab switch, unmount) saves what is pending first
   useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); flush() } }, [flush])
 
-  const setShot = (id: string, patch: Partial<StoryboardShot>) => update(b => ({ ...b, shots: b.shots.map(s => s.id === id ? { ...s, ...patch } : s) }))
+  const setShot = (id: string, patch: Partial<StoryboardShot>) => update(b => mapShots(b, s => s.id !== id ? s : {
+    ...s, ...patch,
+    // A prompt written by hand (or by Edit with AI) is no longer rebuilt from its asset's description
+    ...("imagePrompt" in patch && s.assetFor?.auto ? { assetFor: { ...s.assetFor, auto: undefined } } : {}),
+  }))
   // A shot moved onto another's place takes that shot's scene - so dragging
   // (or stepping) across a scene's edge moves it into the next scene
   const moveShot = (from: number, to: number) => update(b => {
@@ -401,24 +449,54 @@ export function StoryboardWorkspace({
     setFlashIds([fresh.id])
     setTimeout(() => setFlashIds([]), 3000)
   }
-  const removeShot = (id: string) => update(b => ({ ...b, shots: b.shots.filter(s => s.id !== id) }))
+  const removeShot = (id: string) => update(b => ({ ...b, shots: b.shots.filter(s => s.id !== id), ...(b.scratch ? { scratch: b.scratch.filter(s => s.id !== id) } : {}) }))
+  // ── Scene 0 (the asset scratch paper): its own order, never mixed with the film's ──
+  const setScratch = (fn: (list: StoryboardShot[]) => StoryboardShot[]) => update(b => ({ ...b, scratch: fn(b.scratch ?? []) }))
+  const addScratch = () => setScratch(l => (l.length >= MAX_ASSET_SHOTS ? l : [...l, newShot({ sceneId: ASSET_SCENE_ID, imageModel: l.at(-1)?.imageModel })]))
+  const moveScratch = (from: number, to: number) => setScratch(l => {
+    if (to < 0 || to >= l.length || from === to) return l
+    const next = [...l]
+    const [x] = next.splice(from, 1)
+    next.splice(to, 0, x)
+    return next
+  })
+  // A copy is a picture of its own: it joins its asset as a new picture, not in place of the original's
+  const duplicateScratch = (i: number) => setScratch(l => {
+    if (l.length >= MAX_ASSET_SHOTS || !l[i]) return l
+    const { assetFor, ...rest } = l[i]
+    const next = [...l]
+    next.splice(i + 1, 0, newShot({ ...rest, id: undefined, ...(assetFor ? { assetFor: { ...assetFor, url: undefined } } : {}) }))
+    return next
+  })
+  const insertScratch = (i: number, side: "before" | "after") => {
+    const at = boardRef.current?.scratch?.[i]
+    const fresh = newShot({ sceneId: ASSET_SCENE_ID, imageModel: at?.imageModel })
+    setScratch(l => {
+      if (l.length >= MAX_ASSET_SHOTS) return l
+      const k = l.findIndex(s => s.id === at?.id)
+      const next = [...l]
+      next.splice(k < 0 ? next.length : side === "before" ? k : k + 1, 0, fresh)
+      return next
+    })
+    setFlashIds([fresh.id])
+    setTimeout(() => setFlashIds([]), 3000)
+  }
 
   // ── stills ──
   /** The server took the still: the slot shows it making (and the board poll starts) at once. */
   const markMaking = useCallback((shotId: string, model?: string) => {
-    if (boardRef.current) setBoard(cur => cur && ({
-      ...cur,
-      shots: cur.shots.map(s => s.id !== shotId ? s : { ...s, stillJob: { status: "making", at: Date.now(), ...(model ? { model } : {}) } }),
-    }))
+    if (boardRef.current) setBoard(cur => cur && mapShots(cur, s => s.id !== shotId ? s : { ...s, stillJob: { status: "making", at: Date.now(), ...(model ? { model } : {}) } }))
   }, [])
   const generateStill = useCallback(async (shot: StoryboardShot) => {
     const b = boardRef.current
     if (!b) return
-    const prompt = (shot.imagePrompt || shot.description).trim()
+    const prompt = promptOf(b, shot)
     if (!prompt) { setShotError(e => ({ ...e, [shot.id]: "Write what we see or an image prompt first" })); return }
     // Already being made: a second press must not make (and charge) it twice
     if (makingRef.current.has(shot.id)) return
     makingRef.current.add(shot.id)
+    // A Scene 0 asset picture shows the prompt it is made from (rebuilt from the asset's description)
+    if (shot.assetFor?.auto && prompt !== shot.imagePrompt) update(cur => mapShots(cur, s => (s.id === shot.id ? { ...s, imagePrompt: prompt } : s)))
     // The server tracks the slot, so it must have it: pending edits go first
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
     // Its turn has come: no longer waiting, now making
@@ -433,7 +511,7 @@ export function StoryboardWorkspace({
         body: JSON.stringify({
           prompt, model: shot.imageModel, quality: shot.imageQuality || undefined, shotId: shot.id,
           options: shot.imageOptions,
-          refs: stillRefUrls(b, shot, stillModelSpec(shot.imageModel).maxRefs),
+          refs: stillRefUrls(refBoard(b, shot), shot, stillModelSpec(shot.imageModel).maxRefs),
         }),
       })
       const j = await r.json().catch(() => ({}))
@@ -447,15 +525,12 @@ export function StoryboardWorkspace({
       // Only if this board is still the one open. The new take is added to the
       // slot's versions (read from the CURRENT shot, not this closure's copy),
       // so the one it replaces stays a tap away
-      if (boardRef.current?.id === b.id) update(cur => ({
-        ...cur,
-        shots: cur.shots.map(s => s.id !== shot.id ? s : {
-          ...s,
-          stillUrl: j.url,
-          stillJob: null,
-          imagePrompt: s.imagePrompt || prompt,
-          stills: [...(s.stills ?? []), { url: j.url, prompt, model: shot.imageModel, at: Date.now() }].slice(-MAX_STILL_VERSIONS),
-        }),
+      if (boardRef.current?.id === b.id) update(cur => mapShots(cur, s => s.id !== shot.id ? s : {
+        ...s,
+        stillUrl: j.url,
+        stillJob: null,
+        imagePrompt: s.imagePrompt || prompt,
+        stills: [...(s.stills ?? []), { url: j.url, prompt, model: shot.imageModel, at: Date.now() }].slice(-MAX_STILL_VERSIONS),
       }))
     } catch (e: any) {
       setShotError(x => ({ ...x, [shot.id]: String(e?.message || e) }))
@@ -493,12 +568,9 @@ export function StoryboardWorkspace({
       })
       const j = await r.json().catch(() => ({}))
       if (!r.ok || !j.url) throw new Error(j.error || "Could not keep the edit")
-      if (boardRef.current?.id === b.id) update(cur => ({
-        ...cur,
-        shots: cur.shots.map(s => s.id !== shotId ? s : {
-          ...s, stillUrl: j.url, stillJob: null,
-          stills: [...(s.stills ?? []), { url: j.url, prompt: "Edited in the Image Studio", model: "image-studio-edit", at: Date.now() }].slice(-MAX_STILL_VERSIONS),
-        }),
+      if (boardRef.current?.id === b.id) update(cur => mapShots(cur, s => s.id !== shotId ? s : {
+        ...s, stillUrl: j.url, stillJob: null,
+        stills: [...(s.stills ?? []), { url: j.url, prompt: "Edited in the Image Studio", model: "image-studio-edit", at: Date.now() }].slice(-MAX_STILL_VERSIONS),
       }))
     } catch (e: any) {
       setShotError(x => ({ ...x, [shotId]: String(e?.message || e) }))
@@ -506,12 +578,13 @@ export function StoryboardWorkspace({
       setBusy(x => { const n = { ...x }; delete n[shotId]; return n })
     }
   }, [update, flush])
-  /** Make every missing still - on the board, or in one scene. */
+  /** Make every missing still - on the board, in one scene, or in Scene 0 (ASSET_SCENE_ID). */
   const generateMissing = async (sceneId?: string) => {
     const b = boardRef.current
     if (!b) return
     // Not the ones already being made or waiting in another batch
-    const todo = b.shots.filter(s => !s.stillUrl && (s.imagePrompt || s.description).trim() && (!sceneId || s.sceneId === sceneId)
+    const pool = sceneId === ASSET_SCENE_ID ? b.scratch ?? [] : b.shots
+    const todo = pool.filter(s => !s.stillUrl && promptOf(b, s) && (!sceneId || s.sceneId === sceneId)
       && !makingRef.current.has(s.id) && !queuedRef.current.has(s.id) && !liveStillJob(s.stillJob))
     await runStills(todo, sceneId)
   }
@@ -522,10 +595,51 @@ export function StoryboardWorkspace({
    * to run them three at a time, so a locked phone or a closed tab stopped
    * the rest ("load failed").
    */
-  const runStills = async (todo: StoryboardShot[], sceneId?: string) => {
+  const runStills = async (todo: StoryboardShot[], sceneId?: string, opt: { ifQueued?: boolean } = {}) => {
     const b = boardRef.current
     if (!b || !todo.length) return
+    /*
+     * A still that EDITS another one still to be made - in this batch, or
+     * being made - waits for it (2026-10-23): sent at once it went with no
+     * picture to edit, so a back view came out a different character. It is
+     * held as queued on the server and sent when that still lands (heldReady).
+     */
+    const inBatch = new Set(todo.map(s => s.id))
+    const every = allShots(b)
+    const waits = (s: StoryboardShot) => {
+      const src = s.editOf ? every.find(x => x.id === s.editOf) : undefined
+      return !!src && !src.stillUrl && (inBatch.has(src.id) || stillBusy(src))
+    }
+    const held = todo.filter(waits)
+    if (held.length) {
+      const at = Date.now()
+      for (const s of held) heldRef.current.set(s.id, at)
+      const ids = new Set(held.map(s => s.id))
+      setBoard(cur => cur && mapShots(cur, s => (ids.has(s.id) ? { ...s, stillJob: { status: "queued", at } } : s)))
+      todo = todo.filter(s => !ids.has(s.id))
+    }
+    // A Scene 0 asset picture shows the prompt it is made from (rebuilt from the asset's description)
+    const rebuilt = new Map(todo.filter(s => s.assetFor?.auto && promptOf(b, s) !== s.imagePrompt).map(s => [s.id, promptOf(b, s)]))
+    if (rebuilt.size) update(cur => mapShots(cur, s => (rebuilt.has(s.id) ? { ...s, imagePrompt: rebuilt.get(s.id)! } : s)))
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; await flush() }
+    /*
+     * The held ones show as queued on every device (the slots are saved now).
+     * Awaited, with one retry (2026-10-23 billing sweep): the release is sent
+     * `ifQueued`, so a slot the server never marked queued would be refused
+     * as busy - silently, and the still never made. If marking fails, the
+     * shots are not held: they show an error to press again instead.
+     */
+    if (held.length) {
+      const mark = () => getJson(`/api/employees/storyboards/${b.id}/still`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queue: held.map(s => s.id) }) })
+      const marked = (await mark()).ok || (await mark()).ok
+      if (!marked) {
+        const ids = new Set(held.map(s => s.id))
+        for (const id of ids) heldRef.current.delete(id)
+        setBoard(cur => cur && mapShots(cur, s => (ids.has(s.id) && s.stillJob?.status === "queued" ? { ...s, stillJob: null } : s)))
+        setShotError(e => ({ ...e, ...Object.fromEntries(held.map(s => [s.id, "Could not queue this still behind the one it edits - make it again once that one lands"])) }))
+      }
+    }
+    if (!todo.length) return
     if (sceneId) setBatchScene(sceneId); else setBatch(true)
     for (const s of todo) queuedRef.current.add(s.id)
     setQueued(q => ({ ...q, ...Object.fromEntries(todo.map(s => [s.id, true])) }))
@@ -534,10 +648,17 @@ export function StoryboardWorkspace({
       const r = await getJson<{ results?: Record<string, { queued?: boolean; busy?: boolean; error?: string }>; error?: string }>(`/api/employees/storyboards/${b.id}/still`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          /*
+           * A held release or an orphan pickup (2026-10-23 billing sweep) is
+           * sent `ifQueued`: the server makes it only while the slot is still
+           * "queued" there. Two tabs releasing the same held slot, or a tab
+           * waking after the still already landed, used to pay for it again
+           * (and replace the still) - now the late one is answered busy.
+           */
           batch: todo.map(shot => ({
-            shotId: shot.id, prompt: (shot.imagePrompt || shot.description).trim(), model: shot.imageModel,
+            shotId: shot.id, prompt: promptOf(b, shot), model: shot.imageModel, ...(opt.ifQueued ? { ifQueued: true } : {}),
             quality: shot.imageQuality || undefined, options: shot.imageOptions,
-            refs: stillRefUrls(b, shot, stillModelSpec(shot.imageModel).maxRefs),
+            refs: stillRefUrls(refBoard(b, shot), shot, stillModelSpec(shot.imageModel).maxRefs),
           })),
         }),
       })
@@ -615,19 +736,16 @@ export function StoryboardWorkspace({
    * still state merged in: the job, the takes, and a still that landed. Not
    * an edit, so nothing is autosaved.
    */
-  const stillsPending = !!board?.shots.some(s => { const j = liveStillJob(s.stillJob); return j?.status === "making" || j?.status === "queued" })
+  const stillsPending = !!board && allShots(board).some(s => { const j = liveStillJob(s.stillJob); return j?.status === "making" || j?.status === "queued" })
   const mergeStillState = useCallback((server: StoryboardShot[]) => {
     const byId = new Map(server.map(s => [s.id, s]))
-    setBoard(b => b && ({
-      ...b,
-      shots: b.shots.map(s => {
-        const sv = byId.get(s.id)
-        if (!sv) return s
-        const known = new Set((s.stills ?? []).map(v => stillKey(v.url)))
-        // A still the server put on the slot that this page has never seen: show it
-        const landed = !!sv.stillUrl && sv.stillUrl !== s.stillUrl && !known.has(stillKey(sv.stillUrl))
-        return { ...s, stillJob: sv.stillJob ?? null, stills: mergeStills(s.stills, sv.stills), ...(landed ? { stillUrl: sv.stillUrl, imagePrompt: s.imagePrompt || sv.imagePrompt } : {}) }
-      }),
+    setBoard(b => b && mapShots(b, s => {
+      const sv = byId.get(s.id)
+      if (!sv) return s
+      const known = new Set((s.stills ?? []).map(v => stillKey(v.url)))
+      // A still the server put on the slot that this page has never seen: show it
+      const landed = !!sv.stillUrl && sv.stillUrl !== s.stillUrl && !known.has(stillKey(sv.stillUrl))
+      return { ...s, stillJob: sv.stillJob ?? null, stills: mergeStills(s.stills, sv.stills), ...(landed ? { stillUrl: sv.stillUrl, imagePrompt: s.imagePrompt || sv.imagePrompt } : {}) }
     }))
   }, [])
   useEffect(() => {
@@ -645,23 +763,67 @@ export function StoryboardWorkspace({
    * running its batch gets to them first). The still route claims each slot,
    * so two pages picking up the same queue never make a still twice.
    */
-  const orphanSig = board ? board.shots.filter(s => liveStillJob(s.stillJob)?.status === "queued").map(s => s.id).join(",") : ""
+  const orphanSig = board ? allShots(board).filter(s => liveStillJob(s.stillJob)?.status === "queued").map(s => s.id).join(",") : ""
   useEffect(() => {
     if (!orphanSig) return
     const t = setTimeout(() => {
       const b = boardRef.current
       if (!b) return
       const now = Date.now()
-      const orphans = b.shots.filter(s => {
+      const orphans = allShots(b).filter(s => {
         const j = liveStillJob(s.stillJob)
-        return j?.status === "queued" && now - j.at > 30_000 && !makingRef.current.has(s.id) && !queuedRef.current.has(s.id)
+        return j?.status === "queued" && now - j.at > 30_000 && !makingRef.current.has(s.id) && !queuedRef.current.has(s.id) && !heldRef.current.has(s.id)
       })
-      if (orphans.length) runStills(orphans)
+      // Only while still queued on the server (ifQueued) - another page may have taken them
+      if (orphans.length) runStills(orphans, undefined, { ifQueued: true })
     }, 31_000)
     return () => clearTimeout(t)
   // runStills reads the board from boardRef; only the queued set matters here
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orphanSig])
+  /*
+   * Stills held for the still they edit (runStills): sent as soon as it has
+   * landed - Scene 0's three-quarter and back views follow its front view.
+   */
+  const heldReady = board ? allShots(board).filter(s => heldRef.current.has(s.id) && allShots(board).some(x => x.id === s.editOf && x.stillUrl)).map(s => s.id).join(",") : ""
+  useEffect(() => {
+    const b = boardRef.current
+    if (!heldReady || !b) return
+    const ids = new Set(heldReady.split(","))
+    /*
+     * 2026-10-23 billing sweep: only a slot that is STILL queued and has not
+     * had a still since it was held - another tab may have released it (its
+     * still landed: stillJob null, a newer take) while this one slept. The
+     * server checks the same (ifQueued) - this just saves the round trip.
+     */
+    const go = allShots(b).filter(s => {
+      if (!ids.has(s.id)) return false
+      const heldAt = heldRef.current.get(s.id) ?? 0
+      return s.stillJob?.status === "queued" && !(s.stills ?? []).some(v => (v.at ?? 0) > heldAt)
+    })
+    for (const id of ids) heldRef.current.delete(id)
+    if (go.length) void runStills(go, go[0].sceneId === ASSET_SCENE_ID ? ASSET_SCENE_ID : undefined, { ifQueued: true })
+  // runStills reads the board from boardRef; only the ready set matters here
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heldReady])
+  /*
+   * Scene 0's stills into their assets (lib/storyboard syncAssetShots): when
+   * one lands - here, on another device, or while no page was open - or a
+   * take is redone or picked, the asset gets that picture (in place of the
+   * one the shot gave it before), and a suggested asset becomes a real one.
+   */
+  // A board opened with draft suggestions that have no Scene 0 shots yet gets them - saved, so their stills run on the server
+  useEffect(() => {
+    const b = boardRef.current
+    if (!b || withSuggestionShots(b) === b) return
+    update(cur => withSuggestionShots(cur))
+  }, [boardId, update])
+  const scratchSig = board ? (board.scratch ?? []).map(s => `${s.id}:${s.stillUrl ?? ""}`).join("|") : ""
+  useEffect(() => {
+    const b = boardRef.current
+    if (!b || !scratchSig || !syncAssetShots(b.scratch ?? [], b.assets)) return
+    update(cur => { const r = syncAssetShots(cur.scratch ?? [], cur.assets); return r ? { ...cur, scratch: r.scratch, assets: r.assets } : cur })
+  }, [scratchSig, update])
 
   /*
    * Play an earlier take on a shot. Shown at once, then made so on the server -
@@ -762,12 +924,9 @@ export function StoryboardWorkspace({
       if (r.ok && (r.data as { queued?: boolean } | undefined)?.queued) { markMaking(shot.id, String(body.model || body.op)); return null }
       if (!r.ok || !r.data?.url) return r.data?.error || (r.status === 409 ? "This still is being made already" : "The edit failed")
       const url = r.data.url
-      if (boardRef.current?.id === b.id) setBoard(cur => cur && ({
-        ...cur,
-        shots: cur.shots.map(s => s.id !== shot.id ? s : {
-          ...s, stillUrl: url, stillJob: null, stills: mergeStills(s.stills, [{ url, prompt: String(body.prompt || body.op), model: String(body.op), at: Date.now() }]),
-          ...(r.data!.aspect !== undefined ? { aspect: r.data!.aspect ?? undefined } : {}),
-        }),
+      if (boardRef.current?.id === b.id) setBoard(cur => cur && mapShots(cur, s => s.id !== shot.id ? s : {
+        ...s, stillUrl: url, stillJob: null, stills: mergeStills(s.stills, [{ url, prompt: String(body.prompt || body.op), model: String(body.op), at: Date.now() }]),
+        ...(r.data!.aspect !== undefined ? { aspect: r.data!.aspect ?? undefined } : {}),
       }))
       return null
     } finally {
@@ -924,14 +1083,16 @@ export function StoryboardWorkspace({
       const j = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(j.error || "Drafting failed")
       if (boardRef.current?.id !== b.id) return null
-      update(cur => ({
+      update(cur => withSuggestionShots({
         ...cur,
         title: cur.title === "Untitled storyboard" && j.title ? j.title : cur.title,
         story: j.story || cur.story,
         look: j.look || cur.look,
-        shots: Array.isArray(j.shots) && j.shots.length ? j.shots : cur.shots,
+        // The film's shots (Scene 0 is never drafted - it stays as it is)
+        shots: Array.isArray(j.shots) && j.shots.length ? storyShots(j.shots as StoryboardShot[]) : cur.shots,
         scenes: Array.isArray(j.scenes) ? j.scenes : cur.scenes,
-        // Cast & sets: what the plan relies on that is not an asset yet, offered in the Assets panel
+        // Cast & sets: what the plan relies on that is not an asset yet, offered in the
+        // Assets panel - and as Scene 0 shots ready to make their pictures
         assets: addSuggestedAssets(cur.assets, j.suggestedAssets),
       }))
       // Show what changed for a moment; extended shots become the selection
@@ -950,6 +1111,41 @@ export function StoryboardWorkspace({
     return failed
   }
   const toggleSelected = (id: string) => setSelected(sel => (sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]))
+  /*
+   * A NEW scene drafted with AI (2026-10-23, owner: "extend the current scene,
+   * edit it, OR generate a new one"): an empty scene goes in after the scene of
+   * the last picked shot (else at the end), then it is drafted like a scene's
+   * own "Draft shots" - the planner names it, casts it from the assets, carries
+   * the story on from the scene before and can use the board's stills as
+   * references. Taken out again if the draft fails.
+   */
+  const [newSceneBusy, setNewSceneBusy] = useState(false)
+  const draftNewScene = async () => {
+    const b = boardRef.current
+    if (!b || drafting || b.scenes.length >= MAX_SCENES) return
+    const last = [...b.shots].reverse().find(s => selected.includes(s.id))
+    const after = last?.sceneId ? b.scenes.findIndex(c => c.id === last.sceneId) : b.scenes.length - 1
+    const c = newScene()
+    const scenes = [...b.scenes]
+    scenes.splice(after + 1, 0, c)
+    const next: StoryboardDoc = { ...b, scenes, shots: orderByScenes(b.shots, scenes) }
+    // draft() saves the board first and reads it from boardRef: the new scene must be on it now
+    boardRef.current = next
+    update(() => next)
+    setDraftError(null)
+    setNewSceneBusy(true)
+    const err = await draft("scene", { sceneId: c.id, count: Number(extendCount) || 2, direction: premise.trim() })
+    setNewSceneBusy(false)
+    if (err) {
+      update(cur => (cur.shots.some(s => s.sceneId === c.id) ? cur : { ...cur, scenes: cur.scenes.filter(x => x.id !== c.id) }))
+      setDraftError(err)
+      return
+    }
+    setPremise("")
+    setPageScene(c.id)
+    setCollapsed(x => x.filter(y => y !== c.id))
+    setTimeout(() => document.getElementById(`sb-scene-${c.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 300)
+  }
 
   // ── editing one shot with AI ──
   // The server writes a patch (only the fields in scope); the card applies it
@@ -999,7 +1195,7 @@ export function StoryboardWorkspace({
   const stillInfo = useRef<Map<string, StillRecord>>(new Map())
   const [opening, setOpening] = useState<string | null>(null)
   const loadStillInfo = useCallback(async (b: StoryboardDoc) => {
-    const urls = b.shots.map(s => s.stillUrl).filter((u): u is string => !!u)
+    const urls = allShots(b).map(s => s.stillUrl).filter((u): u is string => !!u)
     if (!urls.length) return
     const r = await fetch(`/api/employees/storyboards/${b.id}/still-info`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls }),
@@ -1007,19 +1203,19 @@ export function StoryboardWorkspace({
     const items: StillRecord[] = r?.ok ? ((await r.json().catch(() => ({}))).items ?? []) : []
     for (const it of items) stillInfo.current.set(stillKey(it.imageUrl), it)
   }, [])
-  const stillSig = board ? `${board.id}:${board.shots.map(s => s.stillUrl ?? "").join("|")}` : ""
+  const stillSig = board ? `${board.id}:${allShots(board).map(s => s.stillUrl ?? "").join("|")}` : ""
   useEffect(() => {
     const b = boardRef.current
     if (!b || !stillSig) return
     // Only the stills not loaded yet; a short wait lets a burst of new stills settle
-    if (b.shots.every(s => !s.stillUrl || stillInfo.current.has(stillKey(s.stillUrl)))) return
+    if (allShots(b).every(s => !s.stillUrl || stillInfo.current.has(stillKey(s.stillUrl)))) return
     const t = setTimeout(() => { if (boardRef.current) loadStillInfo(boardRef.current) }, 400)
     return () => clearTimeout(t)
   }, [stillSig, loadStillInfo])
   const openStill = async (shot: StoryboardShot) => {
     const b = boardRef.current
     if (!b || !shot.stillUrl) return
-    const records = () => b.shots
+    const records = () => allShots(b)
       .map(s => (s.stillUrl ? stillInfo.current.get(stillKey(s.stillUrl)) : undefined))
       .filter((x): x is StillRecord => !!x)
     let item = stillInfo.current.get(stillKey(shot.stillUrl))
@@ -1091,16 +1287,19 @@ export function StoryboardWorkspace({
   // Stills: what making the missing ones costs (each at its own model + quality)
   const missingShots = board ? board.shots.filter(s => needsStill(s) && !stillBusy(s)) : []
   // What one still costs: its model, quality and frame, with the refs its scene sends
-  const stillPrice = (s: StoryboardShot) => board ? stillTickets(s.imageModel, s.imageQuality, s.aspect || board.aspect, s.imageOptions, stillRefUrls(board, s, stillModelSpec(s.imageModel).maxRefs).length) : 0
+  const stillPrice = (s: StoryboardShot) => board ? stillTickets(s.imageModel, s.imageQuality, s.aspect || board.aspect, s.imageOptions, stillRefUrls(refBoard(board, s), s, stillModelSpec(s.imageModel).maxRefs).length) : 0
   const missingTickets = missingShots.reduce((t, s) => t + stillPrice(s), 0)
   // The assets' ref limit follows the shot being worked on (else the first shot)
 
-  // Every still the board has had, for the asset picker
-  const boardStills = board ? board.shots.flatMap((s, i) => {
+  // Every still the board has had, for the asset picker - Scene 0's as "0.01"
+  const boardStills = board ? [
+    ...(board.scratch ?? []).map((s, i) => ({ s, label: `0.${pad2(i + 1)}` })),
+    ...board.shots.map((s, i) => ({ s, label: pad2(i + 1) })),
+  ].flatMap(({ s, label }) => {
     const urls = [...(s.stills ?? []).map(t => t.url), ...(s.stillUrl ? [s.stillUrl] : [])]
     const seen = new Set<string>()
     const uniq = urls.filter(u => { const k = stillKey(u); if (seen.has(k)) return false; seen.add(k); return true })
-    return uniq.map((url, k) => ({ url, label: `${pad2(i + 1)}${uniq.length > 1 ? `.${k + 1}` : ""}` }))
+    return uniq.map((url, k) => ({ url, label: `${label}${uniq.length > 1 ? `.${k + 1}` : ""}` }))
   }) : []
   const addStillToAsset = (url: string, assetId: string | null, kind?: AssetKind) => update(b => {
     if (assetId) {
@@ -1111,6 +1310,37 @@ export function StoryboardWorkspace({
     const a: StoryAsset = { ...newAsset(k, `${k === "character" ? "Character" : "Asset"} ${b.assets.filter(x => x.kind === k).length + 1}`), refs: [newAssetRef(url, false)] }
     return { ...b, assets: [...b.assets, a] }
   })
+  /*
+   * An asset's pictures, made in Scene 0 (2026-10-23, owner: the suggested
+   * assets' generations "don't show up in the storyboard studio until they
+   * are done"). Its view shots are built from the description as it is now -
+   * replacing any of its views not made yet - and sent like any still, so
+   * their tiles show Queued / making at once on every device; each picture
+   * joins the asset as it lands (syncAssetShots). A suggestion is accepted.
+   * Returns the error, if any.
+   */
+  const makeAssetPictures = async (asset: StoryAsset, o: { outfitViews?: number; another?: boolean }): Promise<string | null> => {
+    const cur = boardRef.current
+    if (!cur) return "No board open"
+    const a = { ...(cur.assets.find(x => x.id === asset.id) ?? asset), suggested: undefined }
+    if (!a.notes.trim()) return `Describe ${a.name} first - its pictures are made from the description`
+    const old = cur.scratch ?? []
+    const keep = o.another ? old : old.filter(s => s.assetFor?.assetId !== a.id || !!s.stillUrl || stillBusy(s))
+    const fresh = assetShotsFor(a, { ...o, boardAspect: cur.aspect })
+    if (keep.length + fresh.length > MAX_ASSET_SHOTS) return `Scene 0 holds ${MAX_ASSET_SHOTS} shots - delete some there first`
+    const next: StoryboardDoc = { ...cur, assets: cur.assets.map(x => (x.id === a.id ? a : x)), scratch: [...keep, ...fresh] }
+    // runStills saves the board first and reads it from boardRef: it must hold the new shots now
+    boardRef.current = next
+    update(() => next)
+    setCollapsed(c => c.filter(x => x !== ASSET_SCENE_ID))
+    await runStills(fresh, ASSET_SCENE_ID)
+    return null
+  }
+  /** Scene 0 pictures under way, per asset - the Assets panel shows them. */
+  const assetMaking = board ? (board.scratch ?? []).reduce<Record<string, number>>((m, s) => {
+    if (s.assetFor && !s.stillUrl && stillBusy(s)) m[s.assetFor.assetId] = (m[s.assetFor.assetId] ?? 0) + 1
+    return m
+  }, {}) : {}
 
   if (!signedIn) return <div className="py-24 text-center text-sm text-slate-400">Sign in to use the Storyboard Studio.</div>
   if (loading) return <div className="py-24 flex justify-center"><Loader2 className="animate-spin text-slate-500" size={20} /></div>
@@ -1349,8 +1579,23 @@ export function StoryboardWorkspace({
               />
               {board.shots.length >= MAX_SHOTS
                 ? <span className="text-[10px] text-slate-500">The board is full ({MAX_SHOTS} shots)</span>
-                : draftBtn("extend", "Extend", pickedCount ? "Add new shots right after the last picked shot" : "Add new shots that carry on from the end")}
+                : <>
+                  {draftBtn("extend", "Extend", pickedCount ? "Add new shots to the scene, right after the last picked shot" : "Add new shots that carry on from the end of the last scene")}
+                  {brandBtn({
+                    onClick: () => void draftNewScene(),
+                    disabled: !!drafting || board.scenes.length >= MAX_SCENES,
+                    busy: newSceneBusy,
+                    label: <>New scene<TicketChip n={storyboardDraftTickets("scene", Number(extendCount) || 2, { withAudio: fillAudio })} /></>,
+                    title: board.scenes.length >= MAX_SCENES
+                      ? `A board holds up to ${MAX_SCENES} scenes`
+                      : `A new scene of this many shots ${pickedCount ? "after the last picked shot's scene" : "at the end"} - the AI names it, casts it and carries the story on (your direction above steers it)`,
+                    className: "flex-1 min-w-0",
+                  })}
+                </>}
             </div>
+            <p className="-mt-1 text-[9.5px] leading-snug text-slate-500">
+              New shots can use the stills already made as references{board.scenes.some(c => c.asRef) ? " - the scenes switched on under Assets" : ""}, and edit them for continuity.
+            </p>
             <details className="group">
               <summary className="cursor-pointer text-[10px] text-slate-500 hover:text-slate-300 list-none flex items-center gap-1">
                 <ChevronRight size={10} className="transition-transform group-open:rotate-90" /> Start over with a new board
@@ -1565,7 +1810,15 @@ export function StoryboardWorkspace({
                 boardId={board.id}
                 boardAspect={board.aspect}
                 assets={board.assets}
-                onChange={fn => update(b => ({ ...b, assets: fn(b.assets) }))}
+                onChange={fn => update(b => {
+                  const assets = fn(b.assets)
+                  // A dismissed suggestion (or a deleted asset) takes its Scene 0 views not made yet with it
+                  const gone = new Set(b.assets.filter(a => !assets.some(x => x.id === a.id)).map(a => a.id))
+                  const scratch = gone.size && b.scratch ? b.scratch.filter(s => !(s.assetFor && gone.has(s.assetFor.assetId) && !s.stillUrl && !liveStillJob(s.stillJob))) : b.scratch
+                  return { ...b, assets, scratch }
+                })}
+                onMakePictures={makeAssetPictures}
+                making={assetMaking}
                 refLibrary={refLibrary}
                 boardStills={boardStills}
               />
@@ -1727,6 +1980,118 @@ export function StoryboardWorkspace({
                     <span className="text-[11px] font-semibold">Add shot {label}</span>
                   </button>
                 )
+                // ── Scene 0: the asset scratch paper, above the film (never shot, played or cut) ──
+                const scratchList = board.scratch ?? []
+                const scratchCard = (shot: StoryboardShot, j: number) => {
+                  const running = !!busy[shot.id] || jobOf(shot)?.status === "making" || jobOf(shot)?.status === "queued"
+                  return (
+                    <div key={shot.id} id={`sb-shot-${shot.id}`} className="min-w-0 space-y-2">
+                    <ShotCard
+                      scratch
+                      prefer="still"
+                      index={j}
+                      label={`0.${pad2(j + 1)}`}
+                      shot={shot}
+                      aspectCss={aspectCss}
+                      busy={running || !!queued[shot.id]}
+                      queued={!busy[shot.id] && jobOf(shot)?.status !== "making" && (!!queued[shot.id] || jobOf(shot)?.status === "queued")}
+                      error={shotError[shot.id] || (jobOf(shot)?.status === "failed" ? `Still failed: ${jobOf(shot)?.error ?? "try again"}` : undefined)}
+                      last={j === scratchList.length - 1}
+                      dragging={dragScratch === j}
+                      onChange={patch => setShot(shot.id, patch)}
+                      onGenerate={() => generateStill(shot)}
+                      onShoot={() => {}}
+                      shootTickets={0}
+                      onMove={d => moveScratch(j, j + d)}
+                      onDuplicate={() => duplicateScratch(j)}
+                      onInsert={side => insertScratch(j, side)}
+                      canInsert={scratchList.length < MAX_ASSET_SHOTS}
+                      onRemove={() => removeShot(shot.id)}
+                      onPlay={() => {}}
+                      stillCost={stillPrice(shot)}
+                      refsInfo={{ on: stillRefUrls(refBoard(board, shot), shot, 99).length, max: stillModelSpec(shot.imageModel).maxRefs }}
+                      editChoices={[{ value: "", label: "A fresh image" }, ...scratchList.slice(0, j).map((x, k) => ({ value: x.id, label: `0.${pad2(k + 1)} · ${x.title || x.description.slice(0, 40) || "Untitled"}${x.stillUrl ? "" : " (no still yet)"}` })).reverse()]}
+                      editFrom={editSource(scratchList, shot)}
+                      boardAspect={board.aspect}
+                      onEditInStudio={() => setStudioShot(shot.id)}
+                      isAdmin={isAdmin}
+                      refList={Array.isArray(shot.refs) ? shot.refs : autoShotRefs(board, shot).map(r => ({ id: r.id, url: r.url, on: true, assetId: r.assetId }))}
+                      refsAuto={!Array.isArray(shot.refs)}
+                      onRefsChange={next => setShot(shot.id, { refs: next })}
+                      refLibrary={refLibrary}
+                      boardStills={boardStills}
+                      assets={board.assets}
+                      onAddToAsset={(assetId, kind) => shot.stillUrl && addStillToAsset(shot.stillUrl, assetId, kind)}
+                      selecting={false}
+                      picked={false}
+                      onPick={() => {}}
+                      flash={flashIds.includes(shot.id)}
+                      onFocus={() => setFocusId(shot.id)}
+                      onOpen={() => openStill(shot)}
+                      onPickVideo={() => {}}
+                      opening={opening === shot.id}
+                      onAiEdit={instruction => aiEditShot(shot, instruction, "image")}
+                      inRefs={!!shot.stillUrl && activeRefKeys.has(stillKey(shot.stillUrl))}
+                      onAddRef={onAddRef && shot.stillUrl ? () => onAddRef(shot.stillUrl!) : undefined}
+                      onDragStart={() => setDragScratch(j)}
+                      onDragEnd={() => setDragScratch(null)}
+                      onDrop={() => { if (dragScratch !== null) moveScratch(dragScratch, j); setDragScratch(null) }}
+                    />
+                    {phase === "still-edits" && (
+                      <StillEditTools board={refBoard(board, shot)} shot={shot} isAdmin={isAdmin} running={running}
+                        onRun={body => runStillEdit(shot, body)} onStudio={() => setStudioShot(shot.id)} />
+                    )}
+                    </div>
+                  )
+                }
+                const scratchFolded = collapsed.includes(ASSET_SCENE_ID)
+                const scratchMissing = scratchList.filter(x => needsStill(x) && !stillBusy(x))
+                const scratchMaking = scratchList.filter(x => stillBusy(x)).length
+                const scene0 = (
+                  <section className="mb-6">
+                    <div className="silver-edge rounded-2xl p-3">
+                      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                        <button
+                          onClick={() => setCollapsed(x => (x.includes(ASSET_SCENE_ID) ? x.filter(y => y !== ASSET_SCENE_ID) : [...x, ASSET_SCENE_ID]))}
+                          title={scratchFolded ? "Show Scene 0" : "Fold Scene 0 away"}
+                          className="shrink-0 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white/[0.07] border border-white/10 text-[10px] font-mono font-bold tracking-[0.18em] text-slate-100 hover:bg-white/10"
+                        >
+                          <ImagePlus size={11} className="text-slate-400" /> SCENE 00
+                          <ChevronDown size={11} className={`text-slate-400 transition-transform ${scratchFolded ? "-rotate-90" : ""}`} />
+                        </button>
+                        <span className="text-[14px] font-bold text-white">Assets</span>
+                        <span className="text-[10px] font-mono text-slate-500 whitespace-nowrap">
+                          {scratchList.length} shot{scratchList.length === 1 ? "" : "s"} · {scratchList.filter(x => x.stillUrl).length}/{scratchList.length} stills{scratchMaking ? ` · ${scratchMaking} making` : ""}
+                        </span>
+                        <BrandButton onClick={() => generateMissing(ASSET_SCENE_ID)} disabled={batchScene === ASSET_SCENE_ID || scratchMissing.length === 0} busy={batchScene === ASSET_SCENE_ID} size="xs" className="ml-auto" title="Make every still Scene 0 is missing">
+                          {scratchMissing.length ? `Make ${scratchMissing.length} still${scratchMissing.length === 1 ? "" : "s"}` : "Stills made"}
+                          {scratchMissing.length > 0 && <Tix n={scratchMissing.reduce((t, x) => t + stillPrice(x), 0)} className="text-slate-300" />}
+                        </BrandButton>
+                      </div>
+                      {!scratchFolded && (
+                        <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
+                          Scratch paper for the board&apos;s assets: the pictures the AI draft suggests, and anything else you want to make alongside the board.
+                          Not part of the film - it is never shot, played or cut. A picture made for an asset joins it as it lands; put any other still into an asset with its Ref button.
+                        </p>
+                      )}
+                    </div>
+                    {!scratchFolded && (
+                      <div className="grid gap-3 items-start mt-3" style={gridStyle}>
+                        {scratchList.map(scratchCard)}
+                        {scratchList.length < MAX_ASSET_SHOTS && (
+                          <button
+                            onClick={addScratch}
+                            style={{ aspectRatio: aspectCss }}
+                            className="rounded-2xl border border-dashed border-white/15 hover:border-white/40 hover:bg-white/[0.03] text-slate-500 hover:text-slate-200 flex flex-col items-center justify-center gap-2 min-h-[160px] transition-colors"
+                          >
+                            <Plus size={20} />
+                            <span className="text-[11px] font-semibold">Add shot 0.{pad2(scratchList.length + 1)}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )
                 const addSceneBtn = (big: boolean) => board.scenes.length < MAX_SCENES && (
                   <button
                     onClick={addScene}
@@ -1742,6 +2107,7 @@ export function StoryboardWorkspace({
                 // ── an empty board: the first shot (or Draft with AI) makes Scene 1 ──
                 if (!board.scenes.length) return (
                   <>
+                    {scene0}
                     <div className="flex items-center gap-2.5 mb-3">
                       <BrandTitle title="Scene 01" logo={0} size="sm" />
                       <span className="hidden sm:inline text-[10px] text-slate-600">add a shot, or draft the board with AI</span>
@@ -1761,6 +2127,7 @@ export function StoryboardWorkspace({
                 const setView = (v: "all" | "one") => { setSceneView(v); try { localStorage.setItem("pv2-storyboard-view", v) } catch {} }
                 return (
                   <>
+                    {scene0}
                     <div className="flex flex-wrap items-center gap-2.5 mb-3">
                       <BrandTitle title={`Scenes · ${board.scenes.length}`} logo={0} size="sm" />
                       <span className="hidden sm:inline text-[10px] text-slate-600">{n} shot{n === 1 ? "" : "s"}{paged ? "" : " · drag a shot onto another scene to move it"}</span>
@@ -1822,7 +2189,7 @@ export function StoryboardWorkspace({
                       const missingHere = own.filter(x => needsStill(x) && !stillBusy(x))
                       const shootHere = own.filter(x => shootable(x) && x.video?.status !== "done" && !busy[x.id])
                       return (
-                        <section key={c.id} className="mb-6">
+                        <section key={c.id} id={`sb-scene-${c.id}`} className="mb-6">
                           <SceneHeader
                             scene={c}
                             n={k + 1}
@@ -1887,7 +2254,7 @@ export function StoryboardWorkspace({
         />
       )}
       {board && studioShot && (() => {
-        const sh = board.shots.find(x => x.id === studioShot)
+        const sh = allShots(board).find(x => x.id === studioShot)
         if (!sh?.stillUrl) return null
         return (
           <EditImagePopup
@@ -2476,10 +2843,12 @@ function ShotCard({
   index, label, nextLabel, shot, aspectCss, busy, queued = false, error, last, dragging, shootTickets,
   onChange, onGenerate, onShoot, onMove, onDuplicate, onInsert, canInsert, onRemove, onPlay, onDragStart, onDragEnd, onDrop, inRefs, onAddRef, prefer,
   stillCost, refsInfo, assets, onAddToAsset, selecting, picked, onPick, flash, onFocus, onOpen, opening, onAiEdit, onPickVideo,
-  refList, refsAuto, onRefsChange, refLibrary, boardStills, editChoices, editFrom, boardAspect, onEditInStudio, isAdmin,
+  refList, refsAuto, onRefsChange, refLibrary, boardStills, editChoices, editFrom, boardAspect, onEditInStudio, isAdmin, scratch = false,
 }: {
   /** Admin-only models in the menus. */
   isAdmin: boolean
+  /** A Scene 0 shot (the asset scratch paper): stills only - no video, length, hand-over or cut captions. */
+  scratch?: boolean
   index: number
   /** Its number on the board ("03", or "2.03" in scene 2); default = position. */
   label?: string
@@ -2607,7 +2976,9 @@ function ShotCard({
   const hasRaw = !!v?.rawUrl
   const playUrl = hasRaw && frame === "raw" ? v!.rawUrl! : v?.url ?? null
   const stale = outOfDate(shot)
-  const canShoot = !!shot.stillUrl && !!STORYBOARD_VIDEO_IDS[shot.videoModel]
+  const canShoot = !scratch && !!shot.stillUrl && !!STORYBOARD_VIDEO_IDS[shot.videoModel]
+  // The asset a Scene 0 picture is for
+  const forAsset = shot.assetFor ? assets.find(a => a.id === shot.assetFor!.assetId) : undefined
   const shooting = v?.status === "rendering"
   // The still's takes: the slot shows one, the rest are a tap away
   const takes = shot.stills ?? []
@@ -2678,6 +3049,9 @@ function ShotCard({
           )}
           {shot.aspect && shot.aspect !== boardAspect && !showVideo && (
             <span title="This still has its own frame" className="px-1.5 py-0.5 rounded-md bg-black/70 border border-sky-300/40 text-[9.5px] font-mono font-semibold text-sky-100">{shot.aspect}</span>
+          )}
+          {forAsset && (
+            <span title={`A picture for ${forAsset.name} - it joins the asset when it lands`} className="min-w-0 truncate px-1.5 py-0.5 rounded-md bg-black/70 border border-emerald-300/40 text-[9.5px] font-semibold text-emerald-100">{forAsset.name}</span>
           )}
           {editFrom && !showVideo && (
             <span title={`Edits the still of "${editFrom.title || "an earlier shot"}"`} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-black/70 border border-amber-300/40 text-[9.5px] font-semibold text-amber-100"><Wand2 size={9} />Edit</span>
@@ -2797,7 +3171,7 @@ function ShotCard({
                 <Pencil size={10} /><span>Edit</span>
               </button>
             )}
-            {shot.stillUrl && (
+            {shot.stillUrl && !scratch && (
               <button onClick={onPlay} title="Play the animatic from here" className="ml-auto w-6 h-6 rounded-full bg-black/70 border border-white/15 flex items-center justify-center text-white">
                 <Play size={10} />
               </button>
@@ -2815,7 +3189,7 @@ function ShotCard({
             placeholder="Shot title"
             className="flex-1 min-w-0 bg-transparent text-[12px] @[300px]/card:text-[14px] font-bold text-slate-100 focus:outline-none placeholder:text-slate-600"
           />
-          <Dropdown value={String(shot.duration)} options={DURATION_OPTIONS.some(o => o.value === String(shot.duration)) ? DURATION_OPTIONS : [...DURATION_OPTIONS, { value: String(shot.duration), label: `${shot.duration}s` }]} onChange={v => onChange({ duration: Number(v) })} className="w-16" />
+          {!scratch && <Dropdown value={String(shot.duration)} options={DURATION_OPTIONS.some(o => o.value === String(shot.duration)) ? DURATION_OPTIONS : [...DURATION_OPTIONS, { value: String(shot.duration), label: `${shot.duration}s` }]} onChange={v => onChange({ duration: Number(v) })} className="w-16" />}
         </div>
         <AutoText
           value={shot.description}
@@ -2824,11 +3198,11 @@ function ShotCard({
           className="w-full bg-transparent text-[11px] @[300px]/card:text-[12.5px] leading-snug @[300px]/card:leading-relaxed text-slate-300 focus:outline-none placeholder:text-slate-600 rounded-md focus:bg-black/30 focus:ring-1 focus:ring-white/30 px-1 -mx-1"
         />
         {/* how it hands over to the next shot */}
-        <div className="flex items-start gap-1.5 text-[10px] @[300px]/card:text-[11px] text-slate-500">
+        {!scratch && <div className="flex items-start gap-1.5 text-[10px] @[300px]/card:text-[11px] text-slate-500">
           <ArrowRight size={10} className="text-slate-300 shrink-0 mt-[3px]" />
           <span className="shrink-0 mt-px">{last ? "Ending" : `To ${nextLabel ?? pad2(index + 2)}`}</span>
           <AutoText value={shot.transition} onChange={v => onChange({ transition: v })} placeholder={last ? "How the film ends" : "Cut, match cut, dissolve…"} className="flex-1 min-w-0 bg-transparent text-[10.5px] @[300px]/card:text-[11.5px] leading-snug text-slate-300 focus:outline-none border-b border-transparent focus:border-white/40" />
-        </div>
+        </div>}
         {(error || (v?.status === "failed" && v.error)) && <p className="text-[10px] text-red-400 leading-snug">{error || `Shoot failed: ${v!.error}`}</p>}
 
         <div className="flex items-center gap-0.5 pt-1 border-t border-white/5">
@@ -2839,9 +3213,11 @@ function ShotCard({
           <span className="ml-1 min-w-0 flex items-center gap-1 text-[9.5px] text-slate-500" title={`Still: ${imageModelLabel(shot.imageModel)} · Video: ${shot.videoModel}`}>
             <ImagePlus size={10} className="shrink-0 text-slate-600" />
             <span className="truncate text-slate-400">{imageModelLabel(shot.imageModel)}</span>
-            <span className="shrink-0 text-slate-700">·</span>
-            <Film size={10} className="shrink-0 text-slate-600" />
-            <span className="truncate">{shot.videoModel}</span>
+            {!scratch && <>
+              <span className="shrink-0 text-slate-700">·</span>
+              <Film size={10} className="shrink-0 text-slate-600" />
+              <span className="truncate">{shot.videoModel}</span>
+            </>}
           </span>
           <span className="ml-auto" />
           <IconBtn title="Add a new shot before this one" onClick={() => onInsert("before")} disabled={!canInsert}><span className="flex items-center"><Plus size={11} /><ChevronLeft size={10} className="-ml-0.5" /></span></IconBtn>
@@ -2919,10 +3295,10 @@ function ShotCard({
                   </div>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-1">
+              {!scratch && <div className="grid grid-cols-2 gap-1">
                 <input value={shot.caption ?? ""} onChange={e => onChange({ caption: e.target.value || undefined })} maxLength={60} placeholder="Caption (Stills cut)" className="sb-input" />
                 <input value={shot.captionSub ?? ""} onChange={e => onChange({ captionSub: e.target.value || undefined })} maxLength={90} placeholder="Second line" className="sb-input" />
-              </div>
+              </div>}
               {shot.stillUrl && (
                 <BrandButton onClick={onEditInStudio} size="xs" className="w-full">
                   <Wand2 size={11} />Edit in Image Studio
@@ -2940,12 +3316,13 @@ function ShotCard({
                 className="sb-input"
               />
               <div className="flex items-center gap-1">
-                {(["image", "video", "both"] as const).map(sc => (
+                {/* Scene 0 has no video - its edits are the still's */}
+                {!scratch && (["image", "video", "both"] as const).map(sc => (
                   <button key={sc} onClick={() => setAiScope(sc)} className={`px-2 py-1 rounded-md border text-[10px] font-semibold capitalize ${aiScope === sc ? "border-white/50 bg-white/15 text-white" : "border-white/10 text-slate-400 hover:text-white"}`}>
                     {sc}
                   </button>
                 ))}
-                <BrandButton onClick={() => runAi(aiText, aiScope)} disabled={aiBusy || !aiText.trim()} busy={aiBusy} primary size="xs" className="ml-auto">Apply</BrandButton>
+                <BrandButton onClick={() => runAi(aiText, scratch ? "image" : aiScope)} disabled={aiBusy || !aiText.trim()} busy={aiBusy} primary size="xs" className="ml-auto">Apply</BrandButton>
               </div>
               {aiNote && (
                 <div className={`flex items-start gap-1.5 text-[10px] leading-snug ${aiNote.ok ? "text-emerald-300" : "text-red-300"}`}>
@@ -3052,6 +3429,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
               </p>
               <AutoText value={shot.imagePrompt} onChange={v => onChange({ imagePrompt: v })} minRows={3} placeholder="The full prompt for the still (leave empty to use What we see)" className="sb-input mt-1.5" />
             </Field>
+            {!scratch && <>
             <Field label="Video">
               <Dropdown value={shot.videoModel} options={videoOptions(isAdmin, shot.videoModel)} onChange={v => { onChange({ videoModel: v }); setAdapt(a => ({ ...a, video: true })) }} className="w-full" />
               {adapt.video && (
@@ -3069,6 +3447,7 @@ ${t.prompt.slice(0, 200)}` : ""}`}
               <span>~{shootTickets} tickets to shoot</span>
               {done && v && <span className="ml-auto truncate">last shot: {v.seconds}s · {v.model}</span>}
             </div>
+            </>}
           </div>
         )}
       </div>

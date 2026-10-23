@@ -99,8 +99,83 @@ export function buildFlexFormUrl(opts: {
     'X-userId': String(opts.userId),
     'X-planId': opts.plan.id,
     ...(opts.replacesSubscriptionId ? { 'X-replaces': String(opts.replacesSubscriptionId) } : {}),
+    // Billing sweep 2026-10-23: the formDigest above covers ONLY price/period,
+    // so the X- fields were free to edit in the browser - pay for Creator with
+    // X-planId=max and the webhook granted Max. X-sig signs them (see below).
+    'X-sig': signPassthrough(cfg.salt, opts.userId, opts.plan.id, opts.replacesSubscriptionId),
   })
   return `${FLEXFORM_BASE}/${cfg.flexformId}?${params.toString()}`
+}
+
+/*
+ * ── Passthrough signature (billing sweep 2026-10-23) ─────────────────────────
+ * HMAC-SHA256 over "userId|planId|replaces" with a key derived from the
+ * CCBill salt (server-only; already required for the FlexForm digest, so no
+ * new env var). The webhook recomputes it and refuses a sale whose X-userId,
+ * X-planId or X-replaces were changed after the server built the form link.
+ * The key is derived (not the raw salt) so this MAC can never be mistaken
+ * for, or help forge, CCBill's own MD5 formDigest.
+ */
+function passthroughKey(salt: string): Buffer {
+  return crypto.createHash('sha256').update(`ccbill-passthrough-v1:${salt}`).digest()
+}
+function signPassthrough(salt: string, userId: number | string, planId: string, replaces?: number | string | null): string {
+  const r = replaces == null || replaces === '' ? '' : String(replaces)
+  return crypto.createHmac('sha256', passthroughKey(salt)).update(`${String(userId)}|${planId}|${r}`).digest('hex')
+}
+
+/** Verify a webhook's echoed X-sig over its X-userId / X-planId / X-replaces. Fails closed (no salt, no sig, bad sig). */
+export function verifyPassthroughSig(fields: { userId?: string; planId?: string; replaces?: string; sig?: string }): boolean {
+  const salt = process.env.CCBILL_SALT
+  if (!salt || !fields.sig || !fields.userId || !fields.planId) return false
+  const expected = Buffer.from(signPassthrough(salt, fields.userId, fields.planId, fields.replaces ?? ''), 'hex')
+  const given = Buffer.from(String(fields.sig).trim().toLowerCase(), 'hex')
+  if (given.length !== expected.length) return false
+  return crypto.timingSafeEqual(given, expected)
+}
+
+/**
+ * Does the webhook's billed amount match the plan? (billing sweep 2026-10-23)
+ * CCBill echoes the sale's own pricing on NewSaleSuccess:
+ *   subscriptionInitialPrice / subscriptionRecurringPrice + subscriptionCurrencyCode
+ *     (in the currency the form was priced in - ours is USD, 840)
+ *   accountingInitialPrice + accountingCurrencyCode, billedInitialPrice + billedCurrencyCode
+ *   initialPeriod / recurringPeriod (days)
+ * The first price found in USD must equal the plan's price to the cent, and
+ * any period / recurring price present must match too. No usable price at
+ * all = refused: a grant needs proof of what was paid.
+ */
+export function saleMatchesPlan(body: Record<string, string>, plan: CcbillPlan): { ok: true } | { ok: false; reason: string } {
+  const usd = (code: string | undefined) => code == null || code === '' || code === CURRENCY_USD || code.toUpperCase() === 'USD'
+  const cents = (v: string | undefined) => (v == null || v === '' || !isFinite(Number(v)) ? null : Math.round(Number(v) * 100))
+  const want = Math.round(plan.price * 100)
+  const candidates: [string | undefined, string | undefined][] = [
+    [body.subscriptionInitialPrice, body.subscriptionCurrencyCode ?? body.subscriptionCurrency],
+    [body.accountingInitialPrice, body.accountingCurrencyCode ?? body.accountingCurrency],
+    [body.billedInitialPrice, body.billedCurrencyCode ?? body.billedCurrency],
+    [body.initialPrice, body.currencyCode],
+  ]
+  const found = candidates.find(([price, code]) => cents(price) != null && usd(code))
+  if (!found) return { ok: false, reason: 'no USD price on the event' }
+  if (cents(found[0]) !== want) return { ok: false, reason: `paid ${found[0]} but plan ${plan.id} costs ${plan.price.toFixed(2)}` }
+  const recurring = cents(body.subscriptionRecurringPrice ?? body.recurringPrice)
+  if (recurring != null && usd(body.subscriptionCurrencyCode ?? body.subscriptionCurrency ?? body.currencyCode) && recurring !== want) {
+    return { ok: false, reason: `recurring ${recurring / 100} but plan ${plan.id} costs ${plan.price.toFixed(2)}` }
+  }
+  for (const k of ['initialPeriod', 'recurringPeriod'] as const) {
+    const v = body[k]
+    if (v != null && v !== '' && Number(v) !== plan.periodDays) return { ok: false, reason: `${k} ${v} but plan ${plan.id} is ${plan.periodDays} days` }
+  }
+  return { ok: true }
+}
+
+/** A renewal's charge in USD, when the event carries one (billedAmount / accountingAmount); null = not stated. */
+export function renewalAmountUsd(body: Record<string, string>): number | null {
+  const usd = (code: string | undefined) => code == null || code === '' || code === CURRENCY_USD || code.toUpperCase() === 'USD'
+  for (const [v, code] of [[body.accountingAmount, body.accountingCurrencyCode ?? body.accountingCurrency], [body.billedAmount, body.billedCurrencyCode ?? body.billedCurrency]] as const) {
+    if (v != null && v !== '' && isFinite(Number(v)) && usd(code)) return Number(v)
+  }
+  return null
 }
 
 // Constant-time webhook secret check (fail closed when unconfigured)

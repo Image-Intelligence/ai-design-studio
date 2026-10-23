@@ -10,6 +10,9 @@ import { probeDuration } from '@/lib/video-clip'
 import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import path from 'path'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -50,6 +53,7 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params
   const seg = Math.min(2, Math.max(0, parseInt(new URL(req.url).searchParams.get('seg') || '0') || 0))
   const imageId = parseInt(id)

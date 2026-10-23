@@ -245,7 +245,9 @@ async function results(ctx: ToolCtx, items: Item[], headline: string, extra: Rec
     if (it.hidden) lines.push(`- ${it.kind} #${it.id ?? '?'} was made but can't be shown in ${ctx.app} (AI Design Studio keeps this chat suitable for all ages) - it is in the user's My Generations on the site.`)
     else if (it.status === 'done') lines.push(`- ${it.kind} #${it.id ?? '?'} (${it.model}${it.tickets ? `, ${it.tickets} tickets` : ''}): ${it.url}`)
     else if (it.status === 'rendering') lines.push(`- ${it.kind} still rendering (job ${it.jobId}, ${it.model}${it.tickets ? `, ${it.tickets} tickets` : ''}) - check with get_generations`)
-    else lines.push(`- ${it.kind} failed (${it.model}): ${it.error ?? 'unknown error'} - any tickets were refunded`)
+    // Billing sweep 2026-10-23: no blanket "any tickets were refunded" - the connector cannot see
+    // whether a refund happened for this item, so it must not promise one to the user
+    else lines.push(`- ${it.kind} failed (${it.model}): ${it.error ?? 'unknown error'} - the user's ticket balance on the site shows whether anything was charged`)
   }
   if (items.some(i => i.status === 'done')) lines.push(`Everything is saved in the user's My Generations: ${ctx.origin}/my-generations (links expire after 12 hours; the files stay in the library).`)
   const pics = items.filter(i => i.kind === 'image' && previews.has(i)).slice(0, 4).map(i => previews.get(i)!)

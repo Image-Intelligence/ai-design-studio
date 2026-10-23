@@ -154,12 +154,13 @@ export async function POST(req: Request) {
       inputSeconds,
       options: input.options,
     })
-    const charge = await deductGenerationTickets(user.id, user.email, ticketCost)
-    if (!charge.ok) return jsonPrivate({ error: `Insufficient tickets. Need ${charge.need}, you have ${charge.have}.` }, { status: 402 })
-
+    // Built before the charge: a throw here must not leave the user charged
     const falInput = spec.build(input)
     // A model with modes (HeyGen Voice / Turbo) runs on the chosen one's endpoint
     const runEndpoint = audioModeOf(spec, input.options).endpoint
+
+    const charge = await deductGenerationTickets(user.id, user.email, ticketCost)
+    if (!charge.ok) return jsonPrivate({ error: `Insufficient tickets. Need ${charge.need}, you have ${charge.have}.` }, { status: 402 })
     let requestId: string
     try {
       const sub = await fal.queue.submit(runEndpoint, { input: falInput })
@@ -171,33 +172,44 @@ export async function POST(req: Request) {
       return jsonPrivate({ error: msg ? `The model rejected this request: ${msg}` : 'Could not start the generation' }, { status: 502 })
     }
 
-    await prisma.generationQueue.create({
-      data: {
-        userId: user.id,
-        modelId: `${AUDIO_MODEL_PREFIX}${spec.id}`,
-        modelType: 'audio',
-        // A tool run with no text is named after its model and the file it worked on
-        prompt: (sourceSong
-          ? `${spec.name}${input.text ? ` · ${input.text}` : ''} · ${sourceSong.prompt}`
-          : input.text || input.lyrics || (params_fileName(body) ? `${spec.name} · ${params_fileName(body)}` : spec.name)).slice(0, 5000),
-        parameters: {
-          falEndpoint: runEndpoint,
-          falInput: falInput as object,
-          voice: input.voice ?? null,
-          voice2: input.voice2 ?? null,
-          duration: input.duration ?? null,
-          inputSeconds: inputSeconds ?? null,
-          audioUrl: input.audioUrl ?? null,
-          options: input.options ?? null,
-          sourceSongAssetId: sourceSong?.id ?? null,
-          chargeMode: 'deduct',
+    // The row is what settles (and refunds) the run. One that can't be made
+    // used to fall to the 500 below with the user charged and nothing to
+    // settle it (2026-10-23 billing sweep): now the tickets go back, fal is
+    // asked to drop the run, and the caller is told.
+    try {
+      await prisma.generationQueue.create({
+        data: {
+          userId: user.id,
+          modelId: `${AUDIO_MODEL_PREFIX}${spec.id}`,
+          modelType: 'audio',
+          // A tool run with no text is named after its model and the file it worked on
+          prompt: (sourceSong
+            ? `${spec.name}${input.text ? ` · ${input.text}` : ''} · ${sourceSong.prompt}`
+            : input.text || input.lyrics || (params_fileName(body) ? `${spec.name} · ${params_fileName(body)}` : spec.name)).slice(0, 5000),
+          parameters: {
+            falEndpoint: runEndpoint,
+            falInput: falInput as object,
+            voice: input.voice ?? null,
+            voice2: input.voice2 ?? null,
+            duration: input.duration ?? null,
+            inputSeconds: inputSeconds ?? null,
+            audioUrl: input.audioUrl ?? null,
+            options: input.options ?? null,
+            sourceSongAssetId: sourceSong?.id ?? null,
+            chargeMode: 'deduct',
+          },
+          status: 'audio-processing',
+          ticketCost,
+          falRequestId: requestId,
+          startedAt: new Date(),
         },
-        status: 'audio-processing',
-        ticketCost,
-        falRequestId: requestId,
-        startedAt: new Date(),
-      },
-    })
+      })
+    } catch (rowErr) {
+      console.error(`audio generate: queue row for ${requestId} could not be made - refunding:`, rowErr)
+      await fal.queue.cancel(runEndpoint, { requestId }).catch(() => {})
+      await refundGenerationTickets(user.id, user.email, ticketCost)
+      return jsonPrivate({ error: 'Could not start the generation - please try again. Your tickets were not used.' }, { status: 500 })
+    }
 
     // charged: what actually left the balance (admins are not charged)
     return jsonPrivate({ success: true, requestId, ticketCost, charged: charge.newBalance === -1 ? 0 : ticketCost })

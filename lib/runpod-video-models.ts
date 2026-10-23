@@ -86,6 +86,18 @@ const MOCHA_USD_PER_S = 0.00097
 const H3_USD_PER_S = 0.00133
 const toTickets = (usd: number) => Math.max(1, Math.ceil(usd / 0.04))
 
+/**
+ * The longest render the site sends (estimated by runpodRenderSec): the
+ * workers stop a render at 300 minutes, and the estimate can run ~10% short.
+ * Longer settings are refused before anything is charged.
+ */
+export const RUNPOD_RENDER_CAP_S = 270 * 60
+/** A render time for people: "45 min", "3 h 35 min". */
+export const formatRenderTime = (sec: number) => {
+  const m = Math.max(1, Math.round(sec / 60))
+  return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`
+}
+
 /** The frames MoCha renders: the first max_frames of the clip at its frame rate, down to 4n+1 (AI/mocha-worker prepare_clip). */
 export function mochaRenderFrames(advanced: Record<string, unknown> | undefined, sourceSec?: number): number {
   const fps = Number(advanced?.fps ?? 24) === 16 ? 16 : 24
@@ -97,32 +109,52 @@ export function mochaRenderFrames(advanced: Record<string, unknown> | undefined,
 type RunpodRunOpts = { resolution?: string; choice?: string; sourceSec?: number; advanced?: Record<string, unknown> }
 
 /**
+ * The seconds of the clip the H3 pair (Viggle Animate, H3 Character Swap)
+ * renders: the clip's length up to the panel's max_seconds (Viggle 15 at most,
+ * default 10; H3 Swap 30, default 15), whole seconds. `sourceSec` is the raw
+ * clip length (unknown: the max). One function for the page's price, the
+ * submit route's charge and the run's recorded duration (2026-10-23 billing
+ * sweep: the page priced the raw clip and ignored max_seconds while the route
+ * charged the rendered seconds, so the two disagreed on any clip longer than
+ * max_seconds).
+ */
+export function runpodRenderedSeconds(model: string, o: { sourceSec?: number; advanced?: Record<string, unknown> }): number {
+  const cap = model === 'runpod-viggle' ? 15 : 30
+  const asked = Number(o.advanced?.max_seconds ?? (model === 'runpod-viggle' ? 10 : 15))
+  const maxSeconds = Math.min(cap, Number.isFinite(asked) && asked > 0 ? asked : (model === 'runpod-viggle' ? 10 : 15))
+  const clip = o.sourceSec && o.sourceSec > 0 ? o.sourceSec : maxSeconds
+  return Math.max(1, Math.round(Math.min(clip, maxSeconds)))
+}
+
+/**
  * The GPU seconds a run's render takes (estimated from the measured runs) -
  * what its price is built on, and what the panel shows as its time. 0 for an
- * unknown model.
+ * unknown model. `sourceSec` is always the RAW clip length (MoCha works out
+ * its frames from it; the H3 pair its rendered seconds - runpodRenderedSeconds).
  */
 export function runpodRenderSec(model: string, o: RunpodRunOpts): number {
   if (model === 'runpod-mocha') {
     // The default 81 frames: 480p Fast measured (155 s); 720p ~2.8x (2.3x the
-    // pixels); Full is 30 sampling steps to Fast's 6 (~4.2x). Longer runs scale
-    // faster than the frame count - attention grows with the frames - by
-    // (frames/81)^1.5: 720p Fast at 161 frames measured 1,291 s (2026-10-22).
-    // (720p Full at 161 frames ran past the worker's old 50-minute cap: ~90 min.)
+    // pixels). Longer runs scale faster than the frame count - attention grows
+    // with the frames - by (frames/81)^1.5: 720p Fast at 161 frames measured
+    // 1,291 s (2026-10-22). Full is 30 steps at CFG 5 - two model passes a
+    // step, 60 in all to Fast's 6 at CFG 1 - so ~10x: 720p Full at 161 frames
+    // ran past 150 minutes twice (2026-10-23; the old 4.2x said ~90 min).
     const fast = o.resolution === '720p' ? 460 : 165
     const frames = mochaRenderFrames(o.advanced, o.sourceSec)
-    return (o.choice === 'full' ? fast * 4.2 : fast) * Math.pow(frames / 81, 1.5)
+    return (o.choice === 'full' ? fast * 10 : fast) * Math.pow(frames / 81, 1.5)
   }
   // The seconds of the clip each renders (the panel's default length when the clip is longer)
   if (model === 'runpod-viggle') {
     // ~44 s per clip second (480-class - measured: 230 s for a 5.25 s clip on 2026-10-22)
-    const sec = Math.min(15, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 10)
+    const sec = runpodRenderedSeconds(model, o)
     return 44 * Math.max(5.2, sec)
   }
   if (model === 'runpod-h3-swap') {
     // ~160 s of masking + render per clip second at 768p (measured: ~850 s for a
     // 5.25 s clip, one 124-frame window), ~65 at 480p (2.4x fewer pixels);
     // a clip shorter than one window still renders the whole window
-    const sec = Math.max(5.2, Math.min(30, o.sourceSec && o.sourceSec > 0 ? o.sourceSec : 15))
+    const sec = Math.max(5.2, runpodRenderedSeconds(model, o))
     return (o.resolution === '480p' ? 65 : 160) * sec
   }
   return 0

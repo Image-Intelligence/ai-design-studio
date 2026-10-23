@@ -2,9 +2,13 @@ import { NextResponse } from "next/server"
 import prisma from '@/lib/prisma'
 import * as fs from "fs"
 import * as path from "path"
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 
-export async function GET() {
+export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const [
       generatedTotal,

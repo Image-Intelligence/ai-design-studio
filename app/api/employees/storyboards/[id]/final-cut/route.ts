@@ -1,4 +1,5 @@
 import { startStudioJob, finishStudioJob, failStudioJob, touchStudioJob } from '@/lib/studio-activity'
+import { randomUUID } from 'crypto'
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import prisma from '@/lib/prisma'
@@ -18,7 +19,7 @@ import { NOVA_CRITIC_MODEL } from '@/lib/nova/config'
 import { chargeAiText, refundEnhance } from '@/lib/prompt-enhance'
 import { SHOT_EDIT_TICKETS } from '@/lib/ai-text-pricing'
 import {
-  sanitizeShots, sanitizeScenes, orderByScenes, totalSeconds, DEFAULT_FINAL_CUT_OPTIONS, NARRATOR_VOICES, SHOOT_RESOLUTIONS,
+  sanitizeShots, sanitizeScenes, orderByScenes, storyShots, totalSeconds, DEFAULT_FINAL_CUT_OPTIONS, NARRATOR_VOICES, SHOOT_RESOLUTIONS,
   FINAL_CUT_MAX_SHOTS, FINAL_CUT_MAX_SECONDS, FINAL_CUT_FORMATS,
   boardMode,
   MAX_REVISE_EDITS,
@@ -119,6 +120,8 @@ type Work = {
   musicRequestId?: string; musicUrl?: string | null; musicNote?: string
   mixUrl?: string
   lockUntil?: number
+  /** Whose step it is (the advance that took the lock) - its end-of-step save checks it is still there. */
+  lockToken?: string
   submitted?: boolean
   /** The narration takes, kept so a revision can re-place them without recording again. */
   takes?: { url: string; shot: number; seconds: number }[]
@@ -165,8 +168,41 @@ function cleanEdits(raw: unknown): ReviseEdit[] {
     on: e?.on !== false,
   })).filter(e => e.text)
 }
-async function save(boardId: number, s: Stored) {
-  await prisma.storyboard.update({ where: { id: boardId }, data: { finalCut: s as object } })
+/*
+ * 2026-10-23 billing sweep - the Final Cut's state is only ever changed
+ * under the row lock.
+ *
+ * Every action used to read the board, work, and write the whole state back.
+ * An advance step in flight when Cancel refunded the cut then saved ITS copy
+ * - status "running", the charge still on it - so the cut carried on and was
+ * delivered free, and a later cancel or start refunded it a second time. Two
+ * tabs could also both pass the plain lockUntil check and run the same step
+ * (the shoot step submitting twice, the save step making two rows).
+ *
+ * Now: withCutLock reads the state FOR UPDATE, lets `fn` decide, and writes
+ * (or not) in one transaction. An advance takes the step lock with a token
+ * (only while running and unlocked), and its end-of-step save happens only if
+ * that token is still there and the job still running - Cancel wipes the
+ * work (and the token), so a step that was cancelled under it writes nothing
+ * and its rows are taken back. A refund is the result of a guarded
+ * transition (the charge read and zeroed in the same transaction), so it can
+ * happen once.
+ */
+async function withCutLock<T>(boardId: number, fn: (cur: Stored) => { next: Stored | null; out: T }): Promise<T> {
+  return prisma.$transaction(async tx => {
+    const rows = await tx.$queryRaw<{ finalCut: unknown }[]>`SELECT "finalCut" FROM "Storyboard" WHERE id = ${boardId} FOR UPDATE`
+    const r = fn(stateOf(rows[0]?.finalCut))
+    if (r.next && rows.length) await tx.storyboard.update({ where: { id: boardId }, data: { finalCut: r.next as object } })
+    return r.out
+  })
+}
+/** The state as stored now (after a refused write, for the page). */
+async function currentState(boardId: number): Promise<Stored> {
+  return stateOf((await prisma.storyboard.findUnique({ where: { id: boardId }, select: { finalCut: true } }))?.finalCut)
+}
+/** Write the revision list alone - never the job or versions, which a running step owns. */
+async function saveRevision(boardId: number, revision: Stored['revision']): Promise<Stored> {
+  return withCutLock(boardId, cur => { const next = { ...cur, revision: revision ?? null }; return { next, out: next } })
 }
 const nextPhase = (p: FinalCutPhase, skip: FinalCutPhase[]): FinalCutPhase | null => {
   for (let i = ORDER.indexOf(p) + 1; i < ORDER.length; i++) if (!skip.includes(ORDER[i])) return ORDER[i]
@@ -382,7 +418,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if ('error' in r) return r.error
   const { user, board } = r
   const body = await req.json().catch(() => ({})) as Record<string, any>
-  const st = stateOf(board.finalCut)
+  // (an advance swaps this for the state as it stood when it took the step lock)
+  let st = stateOf(board.finalCut)
   /*
    * The shots this cut is of: the whole board, or one scene - named by the
    * request when a cut starts, then carried on the job for every later step.
@@ -391,7 +428,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const sceneId = body.action === 'start' ? (typeof body.sceneId === 'string' ? body.sceneId : null) : st.job?.sceneId ?? null
   const scene = sceneId ? scenes.find(c => c.id === sceneId) ?? null : null
   if (sceneId && !scene && body.action === 'start') return jsonPrivate({ error: 'That scene is gone - reload the board' }, { status: 400 })
-  const allShots = orderByScenes(sanitizeShots(board.shots), scenes)
+  // Scene 0 (the asset scratch paper) is never in a cut
+  const allShots = orderByScenes(storyShots(sanitizeShots(board.shots)), scenes)
   const shots = scene ? allShots.filter(s => s.sceneId === scene.id) : allShots
   const sceneLabel = scene ? `Scene ${scenes.indexOf(scene) + 1}${scene.title ? ` · ${scene.title}` : ''}` : null
   // What the edit plan and cards are told: the scene's own title and story when it is one
@@ -455,9 +493,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       const raw = JSON.parse(text)
       const edits = cleanEdits((Array.isArray(raw?.edits) ? raw.edits : []).map((e: any, i: number) => ({ ...e, id: `e${Date.now().toString(36)}${i}`, on: true })))
       if (!edits.length) throw new Error('The edit AI found nothing to change - try saying it differently')
-      st.revision = { from: v.n, notes, summary: String(raw?.summary ?? '').slice(0, 300), edits, rescore: raw?.rescore === true, at: now() }
-      await save(board.id, st)
-      return jsonPrivate({ finalCut: publicState(st), tickets: paid.free ? 0 : SHOT_EDIT_TICKETS, ...(paid.newBalance >= 0 ? { balance: paid.newBalance } : {}) })
+      // The revision alone is written (under the lock): never the job a running step owns
+      const saved = await saveRevision(board.id, { from: v.n, notes, summary: String(raw?.summary ?? '').slice(0, 300), edits, rescore: raw?.rescore === true, at: now() })
+      return jsonPrivate({ finalCut: publicState(saved), tickets: paid.free ? 0 : SHOT_EDIT_TICKETS, ...(paid.newBalance >= 0 ? { balance: paid.newBalance } : {}) })
     } catch (e: any) {
       await refund()
       return jsonPrivate({ error: String(e?.message || e).slice(0, 300) }, { status: 502 })
@@ -465,22 +503,37 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   }
   if (body.action === 'revise-update') {
     const r = body.revision
-    if (r === null) st.revision = null
-    else if (st.revision && r && typeof r === 'object') st.revision = { ...st.revision, edits: cleanEdits(r.edits), rescore: r.rescore === true, notes: typeof r.notes === 'string' ? r.notes.slice(0, 2000) : st.revision.notes }
-    await save(board.id, st)
-    return jsonPrivate({ finalCut: publicState(st) })
+    // On the state as stored now, under the lock - only the revision changes
+    const saved = await withCutLock(board.id, cur => {
+      if (r === null) cur.revision = null
+      else if (cur.revision && r && typeof r === 'object') cur.revision = { ...cur.revision, edits: cleanEdits(r.edits), rescore: r.rescore === true, notes: typeof r.notes === 'string' ? r.notes.slice(0, 2000) : cur.revision.notes }
+      else return { next: null, out: cur }
+      return { next: cur, out: cur }
+    })
+    return jsonPrivate({ finalCut: publicState(saved) })
   }
 
   if (body.action === 'cancel') {
-    // The cut's own charge comes back - nothing of it is delivered
-    if (st.job && st.job.status !== 'done' && st.job.charged) {
-      await refundGenerationTickets(user.id, user.email, st.job.charged)
-      st.job = { ...st.job, charged: 0 }
-    }
-    if (st.job?.status === 'running') { await failStudioJob(st.job.trackId, 'Cancelled'); st.job = { ...st.job, status: 'cancelled', message: 'Cancelled', error: null } }
-    st.work = {}
-    await save(board.id, st)
-    return jsonPrivate({ finalCut: publicState(st) })
+    /*
+     * The cut's own charge comes back - nothing of it is delivered. Read and
+     * zeroed under the lock (2026-10-23 billing sweep): of two cancels, or a
+     * cancel racing a start, exactly one takes the charge to refund. The work
+     * - and the running step's lock token - is wiped, so a step in flight
+     * saves nothing when it ends.
+     */
+    const { refund, trackId, state } = await withCutLock(board.id, cur => {
+      if (!cur.job) return { next: null, out: { refund: 0, trackId: null as number | null | undefined, state: cur } }
+      const refund = cur.job.status !== 'done' ? cur.job.charged ?? 0 : 0
+      const wasRunning = cur.job.status === 'running'
+      const next: Stored = {
+        ...cur, work: {},
+        job: { ...cur.job, charged: cur.job.status !== 'done' ? 0 : cur.job.charged, ...(wasRunning ? { status: 'cancelled' as const, message: 'Cancelled', error: null } : {}) },
+      }
+      return { next, out: { refund, trackId: wasRunning ? cur.job.trackId : undefined, state: next } }
+    })
+    if (refund > 0) await refundGenerationTickets(user.id, user.email, refund)
+    if (trackId !== undefined) await failStudioJob(trackId, 'Cancelled')
+    return jsonPrivate({ finalCut: publicState(state) })
   }
 
   if (body.action === 'start') {
@@ -516,19 +569,33 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     // The board's cues are already paid for; a revision may keep the last score
     const boardMusic = options.score === 'board' && shots.some((s, i) => activeCueAt(i)?.status === 'done')
     const keepScore = !!revise && !revise.rescore && !!baseV?.parts?.musicUrl && options.score !== 'board'
-    // Starting over a failed cut: its charge comes back first
-    if (st.job && st.job.status !== 'done' && st.job.charged) await refundGenerationTickets(user.id, user.email, st.job.charged)
     // The cut's own work, paid up front (the shots are charged as they are shot)
     const charged = finalCutExtraTickets(boardMusic ? options : { ...options, score: options.score === 'board' ? 'ai' : options.score }, totalSeconds(shots), { score: keepScore })
     const paid = await deductGenerationTickets(user.id, user.email, charged)
     if (!paid.ok) return jsonPrivate({ error: `The Final Cut needs ${paid.need} tickets for the edit, cards, music${options.review ? ', the critic' : ''}${options.formats?.length ? ' and the extra formats' : ''} (plus any shots it shoots) - you have ${paid.have}`, needTickets: true }, { status: 402 })
-    // An earlier run's tile, if it never settled, is done with
-    await failStudioJob(st.job?.trackId, 'Started over')
     const trackId = await startStudioJob({ userId: user.id, modelType: 'video', modelId: 'storyboard-final-cut', prompt: `${board.title} - Final Cut${sceneLabel ? ` (${sceneLabel})` : ''}`, studio: 'final-cut', aspectRatio: board.aspect, duration: Math.round(totalSeconds(shots)) })
-    st.job = { status: 'running', phase: 'shoot', message: revise ? `Revising Final Cut ${revise.from}` : scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null, charged: user.isAdmin ? 0 : charged, revise, trackId }
-    st.work = {}
-    await save(board.id, st)
-    return jsonPrivate({ finalCut: publicState(st) })
+    const job: NonNullable<Stored['job']> = { status: 'running', phase: 'shoot', message: revise ? `Revising Final Cut ${revise.from}` : scene ? `Starting ${sceneLabel}` : 'Starting', error: null, startedAt: now(), options, skip, sceneId: scene?.id ?? null, charged: user.isAdmin ? 0 : charged, revise, trackId }
+    /*
+     * Written under the lock (2026-10-23 billing sweep): a cut started by
+     * another tab meanwhile wins and this charge goes straight back; starting
+     * over a failed cut takes ITS charge (zeroed in the same write) to refund.
+     */
+    const r = await withCutLock<{ ok: boolean; state: Stored; oldCharge: number; oldTrack: number | null | undefined }>(board.id, cur => {
+      if (cur.job?.status === 'running') return { next: null, out: { ok: false, state: cur, oldCharge: 0, oldTrack: undefined } }
+      const oldCharge = cur.job && cur.job.status !== 'done' ? cur.job.charged ?? 0 : 0
+      const next: Stored = { ...cur, job, work: {} }
+      return { next, out: { ok: true, state: next, oldCharge, oldTrack: cur.job?.trackId } }
+    })
+    if (!r.ok) {
+      if (paid.newBalance >= 0) await refundGenerationTickets(user.id, user.email, charged)
+      await failStudioJob(trackId, 'Already running')
+      return jsonPrivate({ finalCut: publicState(r.state) })
+    }
+    // Starting over a failed cut: its charge comes back
+    if (r.oldCharge > 0) await refundGenerationTickets(user.id, user.email, r.oldCharge)
+    // An earlier run's tile, if it never settled, is done with
+    await failStudioJob(r.oldTrack, 'Started over')
+    return jsonPrivate({ finalCut: publicState(r.state) })
   }
 
   if (body.action === 'resume') {
@@ -540,29 +607,69 @@ export async function POST(req: NextRequest, ctx: Ctx) {
        * A failed cut that was never cancelled still holds its charge and
        * resumes without paying twice.
        */
-      let charged = st.job.charged ?? 0
+      const was = st.job
+      let charged = was.charged ?? 0
+      let paidNow = 0
       if (!user.isAdmin && !charged) {
-        const price = finalCutExtraTickets(st.job.options, totalSeconds(shots))
+        const price = finalCutExtraTickets(was.options, totalSeconds(shots))
         const paid = await deductGenerationTickets(user.id, user.email, price)
         if (!paid.ok) return jsonPrivate({ error: `Resuming the Final Cut needs ${paid.need} tickets for the edit, cards and music - you have ${paid.have}`, needTickets: true }, { status: 402 })
         charged = price
+        paidNow = paid.newBalance >= 0 ? price : 0
       }
       const trackId = await startStudioJob({ userId: user.id, modelType: 'video', modelId: 'storyboard-final-cut', prompt: `${board.title} - Final Cut (resumed)`, studio: 'final-cut', aspectRatio: board.aspect, duration: Math.round(totalSeconds(shots)) })
-      st.job = { ...st.job, charged, status: 'running', error: null, message: 'Resuming', trackId }
-      if (st.job.phase === 'shoot') st.work = { ...st.work, submitted: false }
-      await save(board.id, st)
+      /*
+       * Under the lock, and only if the job is still the one this request
+       * read (2026-10-23 billing sweep): resumed by another tab meanwhile, or
+       * cancelled (its charge refunded - resuming it on the charge read here
+       * would have been free), it is left as it is and any charge made here
+       * goes back. The page shows the state as it stands; press Resume again.
+       */
+      const r = await withCutLock(board.id, cur => {
+        const same = cur.job && cur.job.startedAt === was.startedAt && cur.job.status === was.status && (cur.job.charged ?? 0) === (was.charged ?? 0)
+        if (!same) return { next: null, out: { ok: false, state: cur } }
+        const next: Stored = { ...cur, job: { ...cur.job!, charged, status: 'running', error: null, message: 'Resuming', trackId } }
+        if (next.job!.phase === 'shoot') next.work = { ...next.work, submitted: false }
+        return { next, out: { ok: true, state: next } }
+      })
+      if (!r.ok) {
+        if (paidNow) await refundGenerationTickets(user.id, user.email, paidNow)
+        await failStudioJob(trackId, 'Already resumed')
+      }
+      return jsonPrivate({ finalCut: publicState(r.state) })
     }
     return jsonPrivate({ finalCut: publicState(st) })
   }
 
   // ── advance: one step ──
-  const job = st.job
-  if (!job || job.status !== 'running') return jsonPrivate({ finalCut: publicState(st) })
+  if (!st.job || st.job.status !== 'running') return jsonPrivate({ finalCut: publicState(st) })
+  /*
+   * The step lock, taken under the row lock with a token (2026-10-23 billing
+   * sweep): only while the job is running and no other advance holds it -
+   * two tabs no longer both pass a plain lockUntil check. The step then works
+   * on the state as it stood when the lock was taken (and the same job this
+   * request read - a cut restarted in between is left to the next call).
+   */
+  const token = randomUUID()
+  const readStartedAt = st.job.startedAt
+  const locked = await withCutLock(board.id, cur => {
+    if (cur.job?.status !== 'running' || cur.job.startedAt !== readStartedAt) return { next: null, out: null }
+    if (cur.work?.lockUntil && cur.work.lockUntil > now()) return { next: null, out: null }
+    const next: Stored = { ...cur, work: { ...(cur.work ?? {}), lockUntil: now() + LOCK_MS, lockToken: token } }
+    return { next, out: next }
+  })
+  if (!locked) {
+    const cur = await currentState(board.id)
+    return jsonPrivate({ finalCut: publicState(cur), ...(cur.job?.status === 'running' ? { busy: true } : {}) })
+  }
+  st = locked
+  const job = st.job!
   const work: Work = st.work ?? {}
-  if (work.lockUntil && work.lockUntil > now()) return jsonPrivate({ finalCut: publicState(st), busy: true })
-  work.lockUntil = now() + LOCK_MS
   st.work = work
-  await save(board.id, st)
+  // Rows this step makes (the saved film, its formats) and its tile's finish: undone / done only once its save holds
+  const stepRows: number[] = []
+  let finishTile: { rowId: number; url: string } | null = null
+  let revisionTouched = false
 
   // A revision reuses the score (and designed cards): those phases are skipped the second time round
   const skipNow: FinalCutPhase[] = [...(job.skip ?? []), ...(work.revised ? work.reviseSkip ?? [] : [])]
@@ -851,6 +958,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
               folderId, expiresAt: new Date(now() + 100 * 365 * 24 * 3600 * 1000), quality: job.options.resolution, aspectRatio: aspect,
               videoMetadata: { isVideo: true, duration: String(Math.round(v.durationSec)), thumbnailUrl: v.posterUrl ?? null, width: out.width, height: out.height },
             } })
+            stepRows.push(row.id)
             made.push({ aspect, url: canonicalMediaUrl(String(out.url)), imageId: row.id })
           } catch { /* one shape failing does not undo the others */ }
         }
@@ -873,7 +981,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           expiresAt: new Date(now() + 100 * 365 * 24 * 3600 * 1000), quality: job.options.resolution, aspectRatio: board.aspect,
           videoMetadata: { isVideo: true, duration: String(Math.round(work.cutSeconds ?? 0)), thumbnailUrl: poster },
         } })
-        await finishStudioJob(job.trackId, [row.id], work.mixUrl)
+        stepRows.push(row.id)
+        finishTile = { rowId: row.id, url: work.mixUrl! }
         st.versions = [...st.versions, {
           n, url: work.mixUrl!, durationSec: Math.round((work.cutSeconds ?? 0) * 10) / 10, at: now(), imageId: row.id, posterUrl: poster, scene: sceneLabel,
           note: [
@@ -892,7 +1001,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
           ...(job.revise ? { edits: job.revise.edits } : {}),
         }]
         // The edit list it made is done with
-        if (job.revise) st.revision = null
+        if (job.revise) { st.revision = null; revisionTouched = true }
         const ready = `${sceneLabel ? `${sceneLabel}: ` : ''}${work.musicNote ? `Final Cut ${n} is ready - ${work.musicNote}` : `Final Cut ${n} is ready`}${work.review ? ` · critic ${work.review.score}/10${work.revised ? ' after one revision' : ''}` : ''}`
         const next = nextPhase('save', skipNow)
         if (next) { work.ready = ready; setPhase(next, `${ready} - making the other formats`) }
@@ -907,12 +1016,28 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const why = Array.isArray(detail) ? detail.map((d: any) => d?.msg).filter(Boolean).join('; ') : typeof detail === 'string' ? detail : ''
     job.error = String(why || e?.message || e).slice(0, 400)
     job.message = 'Stopped'
-    await failStudioJob(job.trackId, job.error)
   }
+  if (st.work) { st.work.lockUntil = 0; delete st.work.lockToken }
+  st.job = job
+  /*
+   * The end-of-step save: only if this step still holds the lock (its token)
+   * and the job is still running - a Cancel (or a start over) meanwhile
+   * wiped both, and a stale step must not put back "running" and the charge
+   * the cancel refunded. The revision list is kept as stored unless this
+   * step finished with it (another request may have edited it meanwhile).
+   */
+  const kept = await withCutLock(board.id, cur => {
+    if (cur.work?.lockToken !== token || cur.job?.status !== 'running') return { next: null, out: false }
+    return { next: { ...st, revision: revisionTouched ? st.revision ?? null : cur.revision ?? null }, out: true }
+  })
+  if (!kept) {
+    // Cancelled under it: nothing it made is delivered
+    if (stepRows.length) await prisma.generatedImage.deleteMany({ where: { id: { in: stepRows }, userId: user.id } }).catch(() => {})
+    return jsonPrivate({ finalCut: publicState(await currentState(board.id)), ...(videos ? { videos } : {}) })
+  }
+  if (job.status === 'failed') await failStudioJob(job.trackId, job.error ?? 'Stopped')
+  if (finishTile) await finishStudioJob(job.trackId, [finishTile.rowId], finishTile.url)
   // Still cutting: its feed tile stays alive between steps
   if (job.status === 'running') await touchStudioJob(job.trackId)
-  if (st.work) st.work.lockUntil = 0
-  st.job = job
-  await save(board.id, st)
   return jsonPrivate({ finalCut: publicState(st), ...(videos ? { videos } : {}) })
 }

@@ -43,8 +43,9 @@ export function SceneRefs({ scenes, shots, onChange }: {
         <span className="font-mono text-[9.5px] text-slate-600">{onCount ? `${onCount} referenced` : "none referenced"}</span>
       </div>
       <p className="text-[10px] leading-snug text-slate-600">
-        Switch a scene on - or pick single shots of it - and the AI draft can use those stills as references for the shots it writes next,
-        so later scenes keep the same faces, places and outfits.
+        With none switched on, Extend, Rewrite and new scenes can use every still on the board as a reference. Switch a scene on - or pick
+        single shots of it - to choose exactly which stills the AI draft may hand to the shots it writes, so later scenes keep the same faces,
+        places and outfits.
       </p>
       {scenes.map((c, k) => {
         const own = shots.filter(s => s.sceneId === c.id)

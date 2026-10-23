@@ -12,8 +12,8 @@ import { buildFalCall } from '@/lib/chat-hub-create'
 import { fitRefsForModel } from '@/lib/fal-image-fit'
 import { ensureThumbnail } from '@/lib/thumbnail'
 import {
-  ASSET_KINDS, ASSET_PICTURE_MODEL, ASSET_PICTURE_QUALITY, MAX_ASSET_REFS, assetViewPlan, stillTickets, stillBuildOptions,
-  sanitizeAssets, newAssetRef, isPersonKind, isPlaceKind, cleanCaption, type AssetView, type StoryAsset,
+  ASSET_PICTURE_MODEL, ASSET_PICTURE_QUALITY, MAX_ASSET_REFS, assetViewPlan, assetViewPrompt, stillTickets, stillBuildOptions,
+  sanitizeAssets, newAssetRef, cleanCaption, type AssetView,
 } from '@/lib/storyboard'
 
 /**
@@ -34,6 +34,15 @@ import {
  */
 export const runtime = 'nodejs'
 export const maxDuration = 300
+/**
+ * The whole run's model time (2026-10-23 billing sweep): the views are paid
+ * up front, then made in two rounds inside a 300s function - a run still
+ * going at maxDuration was killed before any refund. Every fal call and
+ * fetch now stops by this deadline, so what failed is refunded in time.
+ * (The page no longer calls this route - Scene 0 replaced it - but it stays
+ * safe for anything that does.)
+ */
+const RUN_BUDGET_MS = 240_000
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -43,29 +52,6 @@ async function boardFolder(userId: number, title: string): Promise<number> {
   const name = title.slice(0, 80) || 'Untitled storyboard'
   const leaf = (await find(name, root.id)) ?? await prisma.userGenerationFolder.create({ data: { userId, name, parentId: root.id } })
   return leaf.id
-}
-
-/** The prompt for one view of an asset. */
-function viewPrompt(a: StoryAsset, v: AssetView, look: string, edit: boolean): string {
-  const desc = (a.notes || a.name).trim()
-  const style = look ? ` Rendered in this style: ${look}.` : ''
-  const noun = a.kind === 'creature' ? 'creature' : a.kind === 'character' ? 'character' : ASSET_KINDS.find(k => k.id === a.kind)?.label.toLowerCase() ?? 'subject'
-  if (isPersonKind(a.kind)) {
-    if (!edit) return `Character reference photo of ${a.name}: ${desc}. Full body from head to feet, standing upright and facing the camera, arms relaxed at the sides, neutral expression. Plain light-grey studio backdrop, soft even studio lighting, sharp focus. No text, no other people or creatures.${style}`
-    const turn = v.id === 'back' ? 'seen from directly behind (a back view)' : v.id === 'three-quarter' ? 'turned about 45 degrees to their left (a three-quarter view)' : 'from another angle'
-    return `Edit this photo: show the SAME ${noun} - identical face, hair, body, skin and every piece of the outfit - ${turn}, full body from head to feet, standing. Keep the plain light-grey backdrop and the lighting exactly the same. No text.`
-  }
-  if (a.kind === 'wardrobe') {
-    if (!edit) return `Product photo of the outfit "${a.name}": ${desc}. The garments alone on an invisible mannequin - no person, no face, no skin - the whole outfit from the front, plain light-grey backdrop, soft even studio light, sharp fabric detail. No text.${style}`
-    if (v.id === 'detail') return 'Edit this photo: a close-up detail of the SAME outfit - its fabric, stitching, fastenings and trims, identical colours and materials. No person, no text.'
-    return 'Edit this photo: the SAME outfit, every garment identical, now seen from the back. Keep the invisible mannequin, the backdrop and the lighting the same. No person, no text.'
-  }
-  if (isPlaceKind(a.kind)) {
-    if (!edit) return `Establishing wide shot of ${a.name}: ${desc}. No people. The light and weather the description gives. No text.${style}`
-    return 'Edit this photo: the SAME place - every building, landmark, material and colour, the weather and the time of day identical - seen from a different camera position (a medium shot from another side). No people, no text.'
-  }
-  if (!edit) return `Product-style photo of ${a.name}: ${desc}. A three-quarter view of the whole ${noun}, plain light-grey backdrop, soft studio lighting, sharp detail. No people, no text.${style}`
-  return `Edit this photo: the SAME ${noun} - identical shape, materials, colours and marks - seen from another side. Keep the backdrop and the lighting the same. No people, no text.`
 }
 
 export async function POST(req: NextRequest, ctx: Ctx) {
@@ -101,11 +87,13 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!paid.ok) return jsonPrivate({ error: `These pictures need ${paid.need} tickets - you have ${paid.have}`, needTickets: true }, { status: 402 })
   const charged = paid.newBalance >= 0
   let refunded = 0
+  const deadline = Date.now() + RUN_BUDGET_MS
+  const left = () => AbortSignal.timeout(Math.max(1_000, deadline - Date.now()))
   const folderId = await boardFolder(user.id, board.title)
   const look = (board.look || '').trim().slice(0, 300)
 
   const run = async (v: AssetView, i: number, base: string | null): Promise<{ url: string; v: AssetView } | null> => {
-    const prompt = viewPrompt(asset, v, look, !!base)
+    const prompt = assetViewPrompt(asset, v, look, !!base)
     const refs = base ? [base] : []
     // The feed's generating tile for this view (lib/studio-activity)
     const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: ASSET_PICTURE_MODEL, prompt: `${asset.name} (${v.label}) - ${prompt}`, studio: 'storyboard-asset', aspectRatio: v.aspect, quality: ASSET_PICTURE_QUALITY })
@@ -113,10 +101,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       const call = buildFalCall(ASSET_PICTURE_MODEL, prompt, await fitRefsForModel(ASSET_PICTURE_MODEL, refs), { aspect: v.aspect, quality: ASSET_PICTURE_QUALITY }, stillBuildOptions(ASSET_PICTURE_MODEL, {}))
       if ('error' in call) throw new Error(call.error)
       publicStillSafety(ASSET_PICTURE_MODEL, call.input as Record<string, unknown>, user.isAdmin)
-      const out: any = await fal.subscribe(call.endpoint, { input: call.input })
+      const out: any = await fal.subscribe(call.endpoint, { input: call.input, abortSignal: left() })
       const falUrl: string | undefined = out?.data?.images?.[0]?.url ?? out?.data?.image?.url
       if (!falUrl) throw new Error('The model returned no image')
-      const res = await fetch(falUrl)
+      const res = await fetch(falUrl, { signal: left() })
       if (!res.ok) throw new Error('Could not fetch the result')
       const buf = Buffer.from(await res.arrayBuffer())
       const ct = res.headers.get('content-type') ?? 'image/png'

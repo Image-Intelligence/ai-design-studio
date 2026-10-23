@@ -9,7 +9,8 @@ import { checkIsAdmin } from '@/lib/admin-check'
 import { gptImage25TicketCost, ideogramTicketCost, nb21TicketCost, clarityUpscaleTicketCost, flux1DevTicketCost, flux2TicketCost, CLARITY_MAX_OUTPUT_PX } from '@/lib/ticket-pricing'
 import { fal } from "@/lib/fal-client"
 import { isGenerationBlocked } from '@/lib/generation-guard'
-import { releaseReservedTickets, reserveGenerationTickets, settleReservedTickets } from '@/lib/ticket-gate'
+import { releaseReservedTickets, reserveTicketsAtomic, settleReservedTickets, chargeTicketsAtomic } from '@/lib/ticket-gate'
+import { failQueueRow } from '@/lib/queue-settle'
 import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { canonicalisePayload, signMediaUrl, FAL_TTL } from '@/lib/media-url'
@@ -66,6 +67,8 @@ async function refToBase64(ref: string): Promise<string> {
 // cache hit skips the download that would otherwise reveal it.
 const falUploadCache = new Map<string, { url: string; at: number; dims?: { width: number; height: number } }>()
 const FAL_UPLOAD_TTL_MS = 30 * 60 * 1000
+// Uploads under way: runs submitted together share one upload of a reference
+const falUploadsInFlight = new Map<string, Promise<string>>()
 const FAL_UPLOAD_CACHE_MAX = 200
 
 function rememberFalUpload(source: string, url: string, dims?: { width: number; height: number }) {
@@ -80,7 +83,60 @@ function rememberFalUpload(source: string, url: string, dims?: { width: number; 
   }
 }
 
+/*
+ * The reservation one request is holding (2026-10-23 billing sweep).
+ *
+ * Every paid path now RESERVES before it calls a provider (one atomic
+ * statement that only succeeds if the free balance covers it), and the
+ * reservation then leaves this request exactly one way:
+ *   handOff()  a GenerationQueue row now owns it - the fal webhook settles
+ *              it, failQueueRow releases it (rows say chargeMode 'reserve')
+ *   settle()   a synchronous result was delivered - reserved -> spent
+ *   release()  anything else: an error, an early return, a refusal
+ * POST wraps the handler so whatever is still held when it returns or throws
+ * is released - early returns can no longer strand a reservation.
+ *
+ * Before this the synchronous paths (fal syncMode, Gemini) generated FIRST
+ * and charged after: parallel requests all passed the one balance read, the
+ * charge then failed and the picture was kept (or, on Gemini, returned with a
+ * log line). And reserveGenerationTickets skipped owner emails while the
+ * webhook still charged their rows - reserveTicketsAtomic has no email bypass;
+ * who generates free is decided here, by skipTickets alone.
+ */
+type TicketHold = ReturnType<typeof makeTicketHold>
+function makeTicketHold() {
+  let userId = 0
+  let amount = 0
+  return {
+    async reserve(uid: number, cost: number) {
+      const r = await reserveTicketsAtomic(uid, cost)
+      if (r.ok && cost > 0) { userId = uid; amount += cost }
+      return r
+    },
+    handOff() { amount = 0 },
+    async settle() {
+      const n = amount
+      amount = 0
+      if (n > 0) await settleReservedTickets(userId, n)
+    },
+    async release() {
+      const n = amount
+      amount = 0
+      if (n > 0) await releaseReservedTickets(userId, n)
+    },
+  }
+}
+
 export async function POST(request: Request) {
+  const hold = makeTicketHold()
+  try {
+    return await generate(request, hold)
+  } finally {
+    await hold.release()
+  }
+}
+
+async function generate(request: Request, hold: TicketHold) {
   try {
     console.log('=== UNIVERSE SCAN STARTED ===')
 
@@ -233,7 +289,14 @@ export async function POST(request: Request) {
       if (denied) return denied
       if (!canUseModel(apiAuth, 'image', model)) return modelNotPermittedResponse(model)
     }
-    const adminMode = apiAuth ? false : adminModeRaw
+    /*
+     * adminMode is a request flag, so it is only honoured for an account the
+     * SERVER knows is an admin (2026-10-23 billing sweep). Taken as sent, any
+     * signed-in user could post adminMode:true and skip the per-user
+     * concurrency cap below. (Free tickets additionally need the owner email -
+     * skipTickets.)
+     */
+    const adminMode = !apiAuth && adminModeRaw === true && (await checkIsAdmin(user.email))
     const syncMode = apiAuth ? false : syncModeRaw
 
     // Check if admin mode is requested and user is actually admin
@@ -405,7 +468,6 @@ export async function POST(request: Request) {
       // ============================================
       console.log('Using FAL.ai async queue...')
 
-      let reservationMade = false
       try {
         let modelEndpoint = selectedModel.name
 
@@ -453,7 +515,7 @@ export async function POST(request: Request) {
           }
 
           if (!skipTickets) {
-            const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
+            const reserveResult = await hold.reserve(user.id, ticketCost)
             if (!reserveResult.ok) {
               return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
@@ -492,12 +554,16 @@ export async function POST(request: Request) {
               modelType: 'image',
               prompt: upscalePrompt,
               parameters: {
+                // The cron's lost-webhook pass checks the job at fal by this (2026-10-23 review)
+                falEndpoint: 'fal-ai/clarity-upscaler',
                 source: 'main-scanner',
                 clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
                 adminMode: skipTickets,
+                // Reserved at submit; the fal webhook settles it (lib/queue-settle)
+                chargeMode: 'reserve',
                 upscaleImageUrl,
                 upscaleFactor,
                 upscaleCreativity,
@@ -512,6 +578,8 @@ export async function POST(request: Request) {
             }
           }))
 
+          // The row owns the reservation now (webhook settles, failQueueRow releases)
+          hold.handOff()
           // Increment active counts — per-model AND global (best-effort, see bumpActiveCounters)
           await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
@@ -534,7 +602,7 @@ export async function POST(request: Request) {
           }
 
           if (!skipTickets) {
-            const reserveResult = await reserveGenerationTickets(user.id, user.email!, 1)
+            const reserveResult = await hold.reserve(user.id, 1)
             if (!reserveResult.ok) {
               return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
@@ -582,12 +650,16 @@ export async function POST(request: Request) {
               modelType: 'image',
               prompt: `${upscaleFactor}x AuraSR`,
               parameters: {
+                // The cron's lost-webhook pass checks the job at fal by this (2026-10-23 review)
+                falEndpoint: 'fal-ai/aura-sr',
                 source: 'main-scanner',
                 clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
                 adminMode: skipTickets,
+                // Reserved at submit; the fal webhook settles it (lib/queue-settle)
+                chargeMode: 'reserve',
                 upscaleImageUrl,
                 upscaleFactor,
                 auraSrCheckpoint,
@@ -600,6 +672,8 @@ export async function POST(request: Request) {
             }
           }))
 
+          // The row owns the reservation now (webhook settles, failQueueRow releases)
+          hold.handOff()
           await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[aura-sr] ${upscaleFactor}x checkpoint=${auraSrCheckpoint} submitted, request_id=${request_id}`)
@@ -621,7 +695,7 @@ export async function POST(request: Request) {
           }
 
           if (!skipTickets) {
-            const reserveResult = await reserveGenerationTickets(user.id, user.email!, 1)
+            const reserveResult = await hold.reserve(user.id, 1)
             if (!reserveResult.ok) {
               return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
@@ -670,12 +744,16 @@ export async function POST(request: Request) {
               modelType: 'image',
               prompt: `${upscaleFactor}x ESRGAN (${esrganModel})`,
               parameters: {
+                // The cron's lost-webhook pass checks the job at fal by this (2026-10-23 review)
+                falEndpoint: 'fal-ai/esrgan',
                 source: 'main-scanner',
                 clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
                 adminMode: skipTickets,
+                // Reserved at submit; the fal webhook settles it (lib/queue-settle)
+                chargeMode: 'reserve',
                 upscaleImageUrl,
                 upscaleFactor,
                 esrganModel,
@@ -689,6 +767,8 @@ export async function POST(request: Request) {
             }
           }))
 
+          // The row owns the reservation now (webhook settles, failQueueRow releases)
+          hold.handOff()
           await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[esrgan] ${upscaleFactor}x model=${esrganModel} submitted, request_id=${request_id}`)
@@ -738,7 +818,7 @@ export async function POST(request: Request) {
 
           // Check actual ticket cost against balance — atomic to prevent TOCTOU races
           if (!skipTickets) {
-            const reserveResult = await reserveGenerationTickets(user.id, user.email!, drctTicketCost)
+            const reserveResult = await hold.reserve(user.id, drctTicketCost)
             if (!reserveResult.ok) {
               return jsonPrivate(
                 { error: `Insufficient tickets. Need ${drctTicketCost} ticket(s) for this output size, but you have ${reserveResult.have}.` },
@@ -766,12 +846,16 @@ export async function POST(request: Request) {
               modelType: 'image',
               prompt: `${upscaleFactor}x DRCT`,
               parameters: {
+                // The cron's lost-webhook pass checks the job at fal by this (2026-10-23 review)
+                falEndpoint: 'fal-ai/drct-super-resolution',
                 source: 'main-scanner',
                 clientSlotId,
                 quality: `${upscaleFactor}x`,
                 aspectRatio: 'auto',
                 model,
                 adminMode: skipTickets,
+                // Reserved at submit; the fal webhook settles it (lib/queue-settle)
+                chargeMode: 'reserve',
                 upscaleImageUrl,
                 upscaleFactor,
                 drctTicketCost,
@@ -783,6 +867,8 @@ export async function POST(request: Request) {
             }
           }))
 
+          // The row owns the reservation now (webhook settles, failQueueRow releases)
+          hold.handOff()
           await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
           console.log(`[drct] ${upscaleFactor}x submitted (${drctTicketCost} tickets), request_id=${request_id}`)
@@ -805,7 +891,7 @@ export async function POST(request: Request) {
 
           const supirCost = 8
           if (!skipTickets) {
-            const reserveResult = await reserveGenerationTickets(user.id, user.email!, supirCost)
+            const reserveResult = await hold.reserve(user.id, supirCost)
             if (!reserveResult.ok) {
               return jsonPrivate(
                 { error: `Insufficient tickets. Need ${supirCost}, have ${reserveResult.have}.` },
@@ -843,7 +929,8 @@ export async function POST(request: Request) {
           })
           if (!predRes.ok) {
             const errText = await predRes.text()
-            if (!skipTickets) await releaseReservedTickets(user.id, supirCost)
+            // Released by the hold (the reservation never reached a row)
+            await hold.release()
             if (predRes.status === 429) {
               return jsonPrivate({ error: 'SUPIR is rate limited — only 1 prediction at a time on your Replicate plan. Add credit to your Replicate account to increase the limit.' }, { status: 429 })
             }
@@ -857,28 +944,41 @@ export async function POST(request: Request) {
               modelId: 'supir',
               modelType: 'image',
               prompt: `${upscaleFactor}x SUPIR`,
-              parameters: { source: 'main-scanner', quality: `${upscaleFactor}x`, aspectRatio: 'auto', model: 'supir', adminMode: skipTickets, upscaleImageUrl, upscaleFactor },
+              parameters: { source: 'main-scanner', quality: `${upscaleFactor}x`, aspectRatio: 'auto', model: 'supir', adminMode: skipTickets, chargeMode: 'reserve', upscaleImageUrl, upscaleFactor },
               status: 'processing',
               ticketCost: skipTickets ? 0 : supirCost,
               falRequestId: prediction.id,
               startedAt: new Date(),
             },
           })
+          // The row owns the reservation now: the poller below settles or
+          // releases it, exactly once
+          hold.handOff()
 
-          // Background: poll Replicate → save result → settle tickets → mark done
+          /*
+           * Background: poll Replicate → save result → settle tickets → mark done.
+           *
+           * Every ending goes through a status-guarded flip of the row
+           * (2026-10-23 billing sweep): the old loop ran its "timed out" branch
+           * after a success on the LAST attempt (attempt >= maxAttempts was true
+           * either way), releasing a reservation it had just settled, and a
+           * sweeper failing the row meanwhile could release it a second time.
+           * Now only the caller whose flip wins moves tickets - failQueueRow
+           * for the failures, the updateMany below for the success.
+           */
           after(async () => {
             try {
               const pollUrl = `https://api.replicate.com/v1/predictions/${prediction.id}`
               const headers = { 'Authorization': `Bearer ${process.env.REPLICATE_API_TOKEN}` }
               const maxAttempts = 72  // 72 × 5s = 6 minutes max
-              let attempt = 0
-              while (attempt < maxAttempts) {
-                attempt++
+              let finished = false
+              for (let attempt = 1; attempt <= maxAttempts && !finished; attempt++) {
                 await new Promise(r => setTimeout(r, 5000))
                 const poll = await fetch(pollUrl, { headers })
                 if (!poll.ok) continue
                 const pred = await poll.json()
                 if (pred.status === 'succeeded' && pred.output) {
+                  finished = true
                   const outputUrl: string = Array.isArray(pred.output) ? pred.output[0] : pred.output
                   let hostedUrl = outputUrl
                   try {
@@ -901,27 +1001,37 @@ export async function POST(request: Request) {
                       falRequestId: prediction.id,
                     },
                   })
-                  await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'completed' } })
+                  const flipped = await prisma.generationQueue.updateMany({
+                    where: { id: queueEntry.id, status: 'processing' },
+                    data: { status: 'completed', completedAt: new Date() },
+                  })
                   if (!skipTickets) {
-                    await settleReservedTickets(user.id, supirCost)
+                    if (flipped.count === 1) {
+                      await settleReservedTickets(user.id, supirCost)
+                    } else {
+                      // A sweeper failed the row first and already released the
+                      // reservation, yet the picture was delivered: charge it
+                      // from the free balance (never below 0, never a
+                      // reservation that belongs to another job)
+                      await chargeTicketsAtomic(user.id, supirCost)
+                    }
                   }
-                  break
                 } else if (pred.status === 'failed' || pred.status === 'canceled') {
+                  finished = true
                   const rawErr: string = pred.error || 'Replicate prediction failed'
                   const friendlyErr = rawErr.includes('CUDA out of memory') || rawErr.includes('out of memory')
                     ? 'GPU out of memory — try a smaller image or lower upscale factor'
                     : rawErr.slice(0, 120)
-                  await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: friendlyErr } })
-                  if (!skipTickets) await releaseReservedTickets(user.id, supirCost)
-                  break
+                  await failQueueRow(queueEntry.id, friendlyErr, ['processing'])
                 }
               }
-              if (attempt >= maxAttempts) {
-                await prisma.generationQueue.update({ where: { id: queueEntry.id }, data: { status: 'failed', errorMessage: 'SUPIR timed out' } })
-                if (!skipTickets) await releaseReservedTickets(user.id, supirCost)
+              if (!finished) {
+                await failQueueRow(queueEntry.id, 'SUPIR timed out', ['processing'])
               }
             } catch (err) {
               console.error('[supir] background worker error:', err)
+              // Still processing = no ending ran: give the reservation back
+              await failQueueRow(queueEntry.id, 'SUPIR failed', ['processing']).catch(() => {})
             }
           })
 
@@ -1387,33 +1497,62 @@ export async function POST(request: Request) {
           const maxImages = model === 'flux-2' ? 4 : isSingularI2I ? 1 : referenceImages.length
           const imagesToUpload = referenceImages.slice(0, maxImages)
 
-          const imageUrls: string[] = []
-          for (const ref of imagesToUpload) {
+          /*
+           * All references at once, and each library picture sent to fal ONCE
+           * for every run that uses it (falUploadCache, plus the uploads still
+           * in flight). They went one at a time, per run: six SeeDream 4.5
+           * runs with the same seven references (2026-10-23, the owner on the
+           * localhost dev server over home internet) pushed 42 uploads and sat
+           * 3-5 minutes before any reached fal.
+           */
+          const uploaded = await Promise.all(imagesToUpload.map(async (ref: string) => {
             try {
-              // Refs arrive either as an https URL (library images — the client
-              // no longer base64-encodes those) or as a base64 data URL.
-              const imageBuffer = await refToBuffer(ref)
-              // FLUX 2's edit bills every reference's megapixels: measured below
-              if (model === 'flux-2') {
+              const isHttpRef = /^https?:\/\//i.test(ref)
+              // FLUX 2's edit bills every reference's megapixels, read from the bytes - no shortcut there
+              const hit = isHttpRef && model !== 'flux-2' ? falUploadCache.get(ref) : undefined
+              if (hit && Date.now() - hit.at < FAL_UPLOAD_TTL_MS) return { falUrl: hit.url, permanent: ref }
+              const pending = isHttpRef && model !== 'flux-2' ? falUploadsInFlight.get(ref) : undefined
+              if (pending) return { falUrl: await pending, permanent: ref }
+              const work = (async () => {
+                // Refs arrive either as an https URL (library images — the client
+                // no longer base64-encodes those) or as a base64 data URL.
+                const imageBuffer = await refToBuffer(ref)
+                if (model === 'flux-2') {
+                  const m = await (await import('sharp')).default(imageBuffer).metadata().catch(() => null)
+                  legacyRefMP += m?.width && m?.height ? (m.width * m.height) / 1e6 : 16
+                }
+                const url = await fal.storage.upload(new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' }))
+                // Its size rides along in the cache: other models' size limits read it (maxRefEdge)
                 const m = await (await import('sharp')).default(imageBuffer).metadata().catch(() => null)
-                legacyRefMP += m?.width && m?.height ? (m.width * m.height) / 1e6 : 16
+                return { url, imageBuffer, dims: m?.width && m?.height ? { width: m.width, height: m.height } : undefined }
+              })()
+              if (!isHttpRef) {
+                // Also save to permanent R2 storage for the DB record
+                const { url, imageBuffer } = await work
+                const refFilename = `reference-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
+                return { falUrl: url, permanent: await uploadToR2(refFilename, imageBuffer, 'image/jpeg') }
               }
-              const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' })
-              const uploadedUrl = await fal.storage.upload(blob)
-              imageUrls.push(uploadedUrl)
-
-              // Also save to permanent R2 storage for the DB record. If the ref
-              // was already a permanent https URL, reuse it rather than re-hosting.
-              if (typeof ref === 'string' && /^https?:\/\//i.test(ref)) {
-                permanentReferenceUrls.push(ref)
-              } else {
-                const refFilename = `reference-${user.id}-${Date.now()}-${imageUrls.length}.jpg`
-                const refUrl = await uploadToR2(refFilename, imageBuffer, 'image/jpeg')
-                permanentReferenceUrls.push(refUrl)
+              // An https ref is already permanent - reuse it rather than re-hosting
+              const urlOnly = work.then(w => w.url)
+              urlOnly.catch(() => {}) // a failure is handled below; no run waiting on it must not crash the process
+              falUploadsInFlight.set(ref, urlOnly)
+              try {
+                const { url, dims } = await work
+                rememberFalUpload(ref, url, dims)
+                return { falUrl: url, permanent: ref }
+              } finally {
+                falUploadsInFlight.delete(ref)
               }
             } catch (uploadError) {
               console.error('Failed to upload reference image:', uploadError)
+              return null
             }
+          }))
+          const imageUrls: string[] = []
+          for (const u of uploaded) {
+            if (!u) continue
+            imageUrls.push(u.falUrl)
+            permanentReferenceUrls.push(u.permanent)
           }
 
           if (imageUrls.length > 0) {
@@ -1457,6 +1596,19 @@ export async function POST(request: Request) {
         if (syncMode) {
           // ─── SYNCHRONOUS PATH (composition canvas) ────────────────────
           // Wait for FAL.ai to finish and return imageUrl immediately.
+          // Reserved BEFORE fal runs (2026-10-23 billing sweep): this path used
+          // to generate, save, and only then try to charge - a failed charge
+          // returned 402 with the picture already kept. The hold settles on
+          // delivery below and is released on any error (POST's wrapper).
+          if (!skipTickets) {
+            const reserveResult = await hold.reserve(user.id, ticketCost)
+            if (!reserveResult.ok) {
+              return jsonPrivate(
+                { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
+                { status: 402 }
+              )
+            }
+          }
           console.log(`Calling FAL.ai synchronously: ${modelEndpoint}`)
           const result = await fal.subscribe(modelEndpoint, { input: inputParams, logs: false })
           const falImageUrl = result.data.images?.[0]?.url
@@ -1489,21 +1641,10 @@ export async function POST(request: Request) {
           // Thumbnail + display copy before the result goes back (lib/thumbnail)
           if (!(await attachImageVariants(syncRow.id, await syncVariants))) after(() => { void ensureThumbnail(syncRow.id) })
 
-          // Deduct tickets atomically — prevents negative balances from concurrent sync requests
+          // Delivered: the reservation taken before the run becomes spend
           let newBalance = ticketRecord?.balance || 0
           if (!skipTickets) {
-            const affected = await prisma.$executeRaw`
-              UPDATE "Ticket"
-              SET balance = balance - ${ticketCost}, "totalUsed" = "totalUsed" + ${ticketCost}
-              WHERE "userId" = ${user.id}
-                AND (balance - GREATEST(0, COALESCE(reserved, 0))) >= ${ticketCost}
-            `
-            if (affected === 0) {
-              return jsonPrivate(
-                { error: `Insufficient tickets. Need ${ticketCost} ticket(s) to complete this generation.` },
-                { status: 402 }
-              )
-            }
+            await hold.settle()
             const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
             newBalance = Math.max(0, (updatedTicket?.balance ?? 0) - (updatedTicket?.reserved ?? 0))
           }
@@ -1519,14 +1660,13 @@ export async function POST(request: Request) {
           // Reserve tickets upfront — same for both queued and immediate paths.
           // The actual balance deduction only happens in the FAL webhook on success.
           if (!skipTickets) {
-            const reserveResult = await reserveGenerationTickets(user.id, user.email!, ticketCost)
+            const reserveResult = await hold.reserve(user.id, ticketCost)
             if (!reserveResult.ok) {
               return jsonPrivate(
                 { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
                 { status: 402 }
               )
             }
-            reservationMade = true
           }
           const updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
           const newBalance = skipTickets
@@ -1557,6 +1697,8 @@ export async function POST(request: Request) {
                   aspectRatio,
                   model,
                   adminMode: skipTickets,
+                  // Reserved at submit; the fal webhook settles it (lib/queue-settle)
+                  chargeMode: 'reserve',
                   referenceImageUrls: permanentReferenceUrls,
                   loraUrl: loraUrl || null,
                   loraName: loraName || null,
@@ -1587,6 +1729,9 @@ export async function POST(request: Request) {
                 // falRequestId and startedAt are null until the job is promoted
               },
             })
+
+            // The queued row owns the reservation now (promoter / webhook / failQueueRow)
+            hold.handOff()
 
             console.log(
               `[global-limit] At capacity (${globalLimit.currentActive}/${globalLimit.maxConcurrent}) — job #${queueEntry.id} queued`
@@ -1632,6 +1777,8 @@ export async function POST(request: Request) {
                 aspectRatio,
                 model,
                 adminMode: skipTickets,
+                // Reserved at submit; the fal webhook settles it (lib/queue-settle)
+                chargeMode: 'reserve',
                 referenceImageUrls: permanentReferenceUrls,
                 loraUrl: loraUrl || null,
                 loraName: loraName || null,
@@ -1677,6 +1824,8 @@ export async function POST(request: Request) {
             }
           }))
 
+          // The row owns the reservation now (webhook settles, failQueueRow releases)
+          hold.handOff()
           // Increment active counts — per-model AND global (best-effort, see bumpActiveCounters)
           await bumpActiveCounters(model, FAL_GLOBAL_ID)
 
@@ -1698,11 +1847,11 @@ export async function POST(request: Request) {
 
       } catch (error: any) {
         console.error('FAL.ai queue submit error:', error)
-        // If the reservation was made before the error, release it so tickets
-        // aren't stuck in "reserved" state from a job that will never complete.
-        if (reservationMade) {
-          await releaseReservedTickets(user.id, ticketCost)
-        }
+        // Whatever this request still holds (no queue row took it over) goes
+        // back, so tickets aren't stuck in "reserved" for a job that will never
+        // complete. Covers the upscalers too, whose reservations this catch
+        // used to miss.
+        await hold.release()
         return jsonPrivate(
           { error: `FAL.ai submission failed: ${error.message}` },
           { status: 500 }
@@ -1721,6 +1870,21 @@ export async function POST(request: Request) {
           { error: 'Multiverse Scanner not configured. Contact administrator.' },
           { status: 500 }
         )
+      }
+
+      // Reserved before Gemini is called (2026-10-23 billing sweep). This path
+      // used to generate first and charge after with WHERE balance >= cost,
+      // which ignored other jobs' reservations - and when that charge failed it
+      // logged and returned the picture anyway. Every early return below is
+      // released by POST's wrapper; delivery settles it.
+      if (!skipTickets) {
+        const reserveResult = await hold.reserve(user.id, ticketCost)
+        if (!reserveResult.ok) {
+          return jsonPrivate(
+            { error: `Insufficient tickets. Need ${reserveResult.need} ticket(s), but you have ${reserveResult.have}.` },
+            { status: 402 }
+          )
+        }
       }
 
       // Use the model's actual name (not ID) for API calls
@@ -1982,23 +2146,12 @@ export async function POST(request: Request) {
     }
 
     // Consume tickets (only once, even for multi-image) - skip for admin mode.
-    // Atomic WHERE balance >= cost prevents going negative even if a concurrent
-    // request slipped through the earlier balance check.
+    // The reservation taken before the Gemini call becomes spend; it cannot
+    // fail for want of balance, because the tickets were set aside up front.
     let updatedTicket = ticketRecord
     if (!skipTickets) {
       console.log(`Consuming ${ticketCost} ticket(s)...`)
-      const affected = await prisma.$executeRaw`
-        UPDATE "Ticket"
-        SET balance = balance - ${ticketCost}, "totalUsed" = "totalUsed" + ${ticketCost}
-        WHERE "userId" = ${user.id} AND balance >= ${ticketCost}
-      `
-      if (affected === 0) {
-        // Balance was depleted between the earlier check and now (race condition).
-        // Image already generated and saved — log but don't charge negative.
-        console.error(`[generate] Atomic deduction failed for user ${user.id} — balance depleted mid-request. Image: ${uploadedImages[0]?.url}`)
-      } else {
-        console.log('Tickets consumed.')
-      }
+      await hold.settle()
       updatedTicket = await prisma.ticket.findUnique({ where: { userId: user.id } })
     } else {
       console.log('🔓 ADMIN MODE: Skipping ticket deduction')

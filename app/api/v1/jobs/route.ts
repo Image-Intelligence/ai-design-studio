@@ -29,7 +29,7 @@ export async function GET(request: Request) {
         ? { id }
         : {
             OR: [
-              { status: { in: ['queued', 'processing'] } },
+              { status: { in: ['queued', 'processing', 'saving'] } },
               { completedAt: { gte: twoHoursAgo } },
             ],
           }),
@@ -52,5 +52,6 @@ export async function GET(request: Request) {
     take: 100,
   })
 
-  return jsonPrivate({ jobs }, { headers: { 'Cache-Control': 'no-store' } })
+  // A finished video being stored ('saving', lib/video-save-guard) is still processing to a caller
+  return jsonPrivate({ jobs: jobs.map(j => (j.status === 'saving' ? { ...j, status: 'processing' } : j)) }, { headers: { 'Cache-Control': 'no-store' } })
 }

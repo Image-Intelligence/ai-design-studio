@@ -82,21 +82,37 @@ export async function saveLayerizeResult(o: {
     ...(l.description ? { description: String(l.description).slice(0, 300) } : {}),
   }))
 
-  const row = await prisma.generatedImage.create({
-    data: {
-      createdAt: o.createdAt,
-      userId: o.userId,
-      prompt: o.prompt,
-      imageUrl: url,
-      model: o.modelId,
-      falRequestId: o.falRequestId,
-      ticketCost: o.ticketCost,
-      referenceImageUrls: o.referenceImageUrls,
-      quality: '1k',
-      aspectRatio: `${W}:${H}`,
-      videoMetadata: { layerize: { width: W, height: H, layers } },
-      expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
-    },
+  const data = {
+    createdAt: o.createdAt,
+    userId: o.userId,
+    prompt: o.prompt,
+    imageUrl: url,
+    model: o.modelId,
+    falRequestId: o.falRequestId,
+    ticketCost: o.ticketCost,
+    referenceImageUrls: o.referenceImageUrls,
+    quality: '1k',
+    aspectRatio: `${W}:${H}`,
+    videoMetadata: { layerize: { width: W, height: H, layers } },
+    expiresAt: new Date(Date.now() + 100 * 365 * 24 * 3600 * 1000),
+  }
+  if (!o.falRequestId) {
+    const row = await prisma.generatedImage.create({ data })
+    return { id: row.id, url }
+  }
+  /*
+   * One card per fal job (2026-10-23 billing sweep): the webhook and the
+   * polled-job harvester can both reach here for the same job. Under the same
+   * advisory lock the polled savers take (lib/harvest-polling-jobs
+   * polledSaveLockKey - the key is spelt out here, that module imports this
+   * one), the second one finds the first one's row and returns it.
+   */
+  const rid = o.falRequestId
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`nb2-save-${rid}`}))`
+    const had = await tx.generatedImage.findFirst({ where: { falRequestId: rid }, select: { id: true, imageUrl: true }, orderBy: { id: 'asc' } })
+    if (had) return { id: had.id, url: had.imageUrl }
+    const row = await tx.generatedImage.create({ data })
+    return { id: row.id, url }
   })
-  return { id: row.id, url }
 }

@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 const RUNPOD_API = 'https://api.runpod.ai/v2'
 
 // POST { url, r2Key, civitaiToken? }
 // Submits a download_to_r2 job to the RunPod worker and returns { job_id }
 export async function POST(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const endpointId = process.env.RUNPOD_ENDPOINT_ID
   const apiKey     = process.env.RUNPOD_API_KEY
   if (!endpointId || !apiKey)
@@ -35,6 +39,7 @@ export async function POST(req: Request) {
 
 // GET ?job_id=xxx — poll RunPod status, return { status, r2Key, sizeMb, error }
 export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const endpointId = process.env.RUNPOD_ENDPOINT_ID
   const apiKey     = process.env.RUNPOD_API_KEY
   if (!endpointId || !apiKey)

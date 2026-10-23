@@ -12,6 +12,9 @@ import { tmpdir } from 'os'
 import path from 'path'
 import { fetchMedia } from '@/lib/media-fetch'
 import { signMediaUrl } from '@/lib/media-url'
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 export const maxDuration = 60
 const execP = promisify(execFile)
@@ -136,6 +139,7 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  if (!await checkAdminRequest(_req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params
   const imageId = parseInt(id)
   if (isNaN(imageId)) return new NextResponse('Invalid id', { status: 400 })

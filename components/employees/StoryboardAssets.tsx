@@ -85,26 +85,21 @@ export type RefCap = {
  * draft decides which assets each shot shows and sends their photos with
  * that still (a shot's References, in its Details, is where to change it).
  */
-/**
- * Cast & sets (2026-10-11): make an asset's reference pictures from its
- * description (route asset-pictures). Returns the new pictures, or the error.
- */
-export async function requestAssetPictures(boardId: number, a: StoryAsset, o: { outfitViews?: number; another?: boolean } = {}): Promise<{ refs?: { id: string; url: string; caption?: string; tags?: string[] }[]; tickets?: number; balance?: number; error?: string; needTickets?: boolean }> {
-  const r = await fetch(`/api/employees/storyboards/${boardId}/asset-pictures`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assetId: a.id, outfitViews: o.outfitViews, another: o.another, asset: a }),
-  }).catch(() => null)
-  const j = r ? await r.json().catch(() => ({})) : {}
-  if (!r?.ok) return { error: j.error || `Could not make the pictures (${r?.status ?? "network"})`, needTickets: !!j.needTickets }
-  return j
-}
 /** Whether an asset kind can get "another angle" (an edit of its first picture). */
 export const canAddAngle = (k: string) => isPlaceKind(k) || k === "object" || k === "vehicle"
 
-export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId, boardAspect }: {
+export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId, boardAspect, onMakePictures, making = {} }: {
   /** the board (Cast & sets pictures are made on it) */
   boardId?: number
   boardAspect?: string
+  /**
+   * Make an asset's pictures (2026-10-23): as Scene 0 shots on the board,
+   * sent at once - their tiles show there while they are made, and each one
+   * joins the asset as it lands. Returns the error, if any.
+   */
+  onMakePictures: (a: StoryAsset, o: { outfitViews?: number; another?: boolean }) => Promise<string | null>
+  /** Scene 0 pictures under way, per asset id. */
+  making?: Record<string, number>
   assets: StoryAsset[]
   onChange: (fn: (a: StoryAsset[]) => StoryAsset[]) => void
   refLibrary: { id: string; url: string }[]
@@ -133,18 +128,18 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
   const [outfitViews, setOutfitViews] = useState<Record<string, number>>({})
   const suggestedList = assets.filter(a => a.suggested)
   const priceOf = (a: StoryAsset, another = false) => assetPicturesTickets(a.kind, { outfitViews: outfitViews[a.id] ?? 1, another, boardAspect })
-  /** Make (or add) an asset's pictures; the asset is accepted if it was a suggestion. */
+  /**
+   * Make (or add) an asset's pictures - in Scene 0 on the board, where their
+   * tiles show while they are made; the asset is accepted if it was a suggestion.
+   */
   const makePictures = async (a: StoryAsset, another = false) => {
     if (!boardId || picturing[a.id]) return
     if (!(a.notes || "").trim()) { flash(`Describe ${a.name} first - its pictures are made from the description`); return }
-    const asset = { ...a, suggested: undefined }
-    patch(a.id, () => asset)
+    const n = assetViewPlan(a.kind, { outfitViews: outfitViews[a.id] ?? 1, another, boardAspect }).length
     setPicturing(p => ({ ...p, [a.id]: true }))
-    const j = await requestAssetPictures(boardId, asset, { outfitViews: outfitViews[a.id] ?? 1, another })
+    const err = await onMakePictures(a, { outfitViews: outfitViews[a.id] ?? 1, another })
     setPicturing(p => ({ ...p, [a.id]: false }))
-    if (j.error || !j.refs) { flash(j.error || "Could not make the pictures"); return }
-    patch(a.id, x => ({ ...x, suggested: undefined, refs: [...x.refs, ...j.refs!.filter(r => !x.refs.some(y => y.url === r.url)).map(r => ({ id: r.id, url: r.url, active: false, ...(r.caption ? { caption: r.caption } : {}), ...(r.tags?.length ? { tags: r.tags } : {}) }))].slice(0, MAX_ASSET_REFS) }))
-    flash(`${a.name}: ${j.refs.length} picture${j.refs.length === 1 ? "" : "s"} made${j.tickets ? ` · ${j.tickets} tickets` : ""}`)
+    flash(err || `${a.name}: making ${n} picture${n === 1 ? "" : "s"} in Scene 0 - each joins the asset as it lands`)
   }
 
   const refCount = assets.reduce((n, a) => n + a.refs.length, 0)
@@ -421,7 +416,7 @@ export function AssetsPanel({ assets, onChange, refLibrary, boardStills, boardId
                       {a.refs.length === 0 ? "Make pictures" : "Another angle"}
                       <span className="inline-flex items-center gap-0.5 font-mono opacity-80"><Ticket size={9} />{priceOf(a, a.refs.length > 0)}</span>
                     </button>
-                    {picturing[a.id] && <span className="text-[9.5px] text-slate-500">about a minute…</span>}
+                    {!!making[a.id] && <span className="flex items-center gap-1 text-[9.5px] text-slate-400"><Loader2 size={9} className="animate-spin" />{making[a.id]} in Scene 0…</span>}
                   </div>
                 )}
                 <input

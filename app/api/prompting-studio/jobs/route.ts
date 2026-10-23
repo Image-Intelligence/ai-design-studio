@@ -3,8 +3,9 @@
 // current user so the canvas can restore loading placeholders after a page refresh
 // and enforce per-account concurrency limits.
 
-import { releaseReservedTickets } from '@/lib/ticket-gate'
-import { NextResponse, after } from 'next/server'
+import { failQueueRow } from '@/lib/queue-settle'
+import { promoteNextQueuedJob, releaseHeldSlots } from '@/lib/fal-queue'
+import { after } from 'next/server'
 import { harvestPollingJobs } from '@/lib/harvest-polling-jobs'
 import prisma from '@/lib/prisma'
 import { getUserFromSession } from '@/lib/auth'
@@ -75,9 +76,9 @@ export async function GET(request: Request) {
         status: { in: ['processing', 'queued'] },
         startedAt: { lt: tenMinutesAgo },
       },
-      select: { id: true, ticketCost: true, falRequestId: true, parameters: true },
+      select: { id: true, ticketCost: true, falRequestId: true, parameters: true, modelId: true, status: true },
     })
-    const provablyDead: { id: number; ticketCost: number }[] = []
+    const provablyDead: typeof staleCandidates = []
     for (const j of staleCandidates.slice(0, 20)) {
       if (!j.falRequestId) { provablyDead.push(j); continue }
       try {
@@ -92,20 +93,30 @@ export async function GET(request: Request) {
         // ok / in-progress / completed / transient error → spare
       } catch { /* unreachable — spare, re-checked next poll */ }
     }
-    if (provablyDead.length > 0) {
-      await prisma.generationQueue.updateMany({
-        where: { id: { in: provablyDead.map(j => j.id) }, status: { in: ['processing', 'queued'] } },
-        data: {
-          status: 'failed',
-          errorMessage: 'Generation timed out — please try again',
-          completedAt: new Date(),
-        },
-      })
-      const totalReserved = provablyDead.reduce((sum, j) => sum + j.ticketCost, 0)
-      if (totalReserved > 0) {
-        await releaseReservedTickets(user.id, totalReserved)
+    // One guarded flip per row (2026-10-23 billing sweep). This used to flip
+    // them all in one updateMany and then release the SUM for every
+    // candidate without looking at how many rows it actually flipped - so two
+    // overlapping polls (every open tab polls every few seconds) both released
+    // the same tickets - and it RELEASED rows that had been charged at submit
+    // (polled images, videos), which needed a refund instead. failQueueRow
+    // returns each row's tickets the way they were taken, and only for the
+    // caller whose flip won - and that same winner gives back the concurrency
+    // slots the row held (only those, floored: lib/fal-queue heldSlots - a
+    // 'processing' canvas or /api/generate row holds model + global, a row
+    // still 'queued' holds none). A loser does nothing at all.
+    let freed = 0
+    for (const j of provablyDead) {
+      try {
+        const won = await failQueueRow(j.id, 'Generation timed out — please try again', ['processing', 'queued'])
+        if (!won) continue
+        await releaseHeldSlots(j)
+        freed++
+      } catch (e) {
+        console.error(`[jobs] could not fail stale job #${j.id}:`, e)
       }
     }
+    // Slots opened up: let waiting jobs in now rather than at the next cron tick
+    if (freed > 0) after(async () => { await promoteNextQueuedJob().catch(() => {}) })
 
     // Fetch jobs that are still in-flight OR settled within the last 2 hours.
     // The 2-hour window lets the client resolve placeholders that completed

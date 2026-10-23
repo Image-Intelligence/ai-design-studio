@@ -25,7 +25,6 @@ import { NextRequest } from 'next/server'
 import { tool, jsonSchema, type ToolSet } from 'ai'
 import prisma from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
-import { deductGenerationTickets } from '@/lib/ticket-gate'
 import { videoTicketCost, batch1003TicketCost } from '@/lib/ticket-pricing'
 import { OMNIHUMAN_AUDIO_SEC } from '@/lib/batch-1003-video'
 import { ADMIN_ONLY_VIDEO_MODELS } from '@/lib/fal-video-endpoints'
@@ -38,7 +37,7 @@ import { addLesson } from '@/lib/nova/lessons'
 import { inspectMedia } from '@/lib/nova/media-inspect'
 import { NOVA_CRITIC_MODEL, novaCutTickets } from '@/lib/nova/config'
 import {
-  guard, settleSpend, newStep, update, ownedRows, kindOf, withPictures, clip, secondsOf, imagePart, cleanBible, bibleIds,
+  guard, settleSpend, prepayTool, settlePrepaid, refundPrepaid, commitPrepaid, prepaidAbandoned, newStep, update, ownedRows, kindOf, withPictures, clip, secondsOf, imagePart, cleanBible, bibleIds,
   type NovaTurnCtx, type Row,
   agentModel, agentName,
 } from '@/lib/nova/agent-tools'
@@ -148,7 +147,14 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
       const est = novaCutTickets(secondsOf(src))
       const refused = guard(ctx, est)
       if (refused) return { error: refused }
-      const step = newStep(ctx, { tool: 'make_loop', kind: 'video', label: `Loop of #${src.id} (${method.replace('_', ' ')})`, status: 'running', model: `${agentName(ctx)} loop`, tickets: est })
+      // Billing sweep 2026-10-23: paid BEFORE the render (lib/nova/agent-tools prepayTool) - no ticket, no loop
+      const unpaid = await prepayTool(ctx, est)
+      if (unpaid) { await settleSpend(ctx, est, 0); return { error: unpaid } }
+      /** Tickets taken that a failure must give back (zeroed once delivered or refunded). */
+      let held = ctx.isAdmin ? 0 : est
+      let booked = false
+      // `prepaid` is saved with the step: a turn killed mid-render is refunded by sweepStaleTurns
+      const step = newStep(ctx, { tool: 'make_loop', kind: 'video', label: `Loop of #${src.id} (${method.replace('_', ' ')})`, status: 'running', model: `${agentName(ctx)} loop`, tickets: est, prepaid: held })
       try {
         const made = await withClip(src.imageUrl, async (file, dir, p) => {
           const r = await makeLoop(file, dir, p, method, Number(input.blend_sec) || undefined, Number(input.min_sec) || undefined)
@@ -156,10 +162,11 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
         })
         const url = await uploadToR2(`nova-loop-${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp4`, made.mp4, 'video/mp4')
         const actual = novaCutTickets(made.seconds)
-        let charged = 0
-        if (!ctx.isAdmin) { const paid = await deductGenerationTickets(uid, ctx.user.email, actual); charged = paid.ok ? actual : 0 }
-        // Admins pay nothing but the would-be price still counts against plans and limits
-        await settleSpend(ctx, est, ctx.isAdmin ? actual : charged)
+        // The turn may have ended (Stop / time limit) and refunded this step already: then nothing is delivered
+        if (!commitPrepaid(step)) throw new Error('Cut off before it finished - its tickets were refunded')
+        const charged = await settlePrepaid(ctx, est, actual)
+        held = charged
+        update(ctx, step, { prepaid: charged })
         const row = await prisma.generatedImage.create({
           data: {
             userId: uid, prompt: clip(`Seamless loop (${method}) of #${src.id}: ${src.prompt}`, 900), imageUrl: url, model: agentModel(ctx, 'loop'), ticketCost: charged,
@@ -168,14 +175,23 @@ export function makeStudioTools(ctx: NovaTurnCtx): ToolSet {
           },
           select: { id: true },
         })
+        // Delivered: spent for good. Admins pay nothing but the would-be price still counts against plans and limits
+        held = 0
+        booked = true
+        await settleSpend(ctx, est, ctx.isAdmin ? actual : charged)
         ctx.seenIds.add(row.id)
-        update(ctx, step, { status: 'done', mediaUrl: url, generationId: row.id, tickets: ctx.isAdmin ? actual : charged, note: `seam ${made.before.verdict} -> ${made.after.verdict}` })
+        update(ctx, step, { status: 'done', mediaUrl: url, generationId: row.id, tickets: ctx.isAdmin ? actual : charged, prepaid: 0, note: `seam ${made.before.verdict} -> ${made.after.verdict}` })
         const frames = await withClip(url, (file, dir, p) => seamFrames(file, dir, p)).catch(() => [] as Buffer[])
         return { id: row.id, seconds: made.seconds, did: made.note, seamBefore: made.before, seamAfter: made.after, ticketsCharged: charged, pictures: 'the new END frame, then the START frame', _pictures: frames.map(pngPart) }
       } catch (e: any) {
-        await settleSpend(ctx, est, 0)
         const msg = String(e?.message || e).slice(0, 300)
-        update(ctx, step, { status: 'error', error: msg, tickets: 0 })
+        if (booked) return { error: `The loop was saved but something after it failed: ${msg}` }
+        // Never delivered: what is still held goes back, once
+        const back = held; held = 0
+        // An abandoned step was refunded by the turn's end
+        if (!prepaidAbandoned(step)) await refundPrepaid(ctx, back)
+        await settleSpend(ctx, est, 0)
+        update(ctx, step, { status: 'error', error: msg, tickets: 0, prepaid: 0 })
         return { error: msg }
       }
     },

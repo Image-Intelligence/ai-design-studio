@@ -7,6 +7,7 @@ import { checkUserConcurrency } from '@/lib/user-concurrency'
 import { cookies } from 'next/headers'
 import { isGenerationBlocked } from '@/lib/generation-guard'
 import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-gate'
+import { savePolledImagesOnce, failPolledJob } from '@/lib/harvest-polling-jobs'
 import { enforceContentFilter } from '@/lib/content-filter'
 import { canonicalisePayload } from '@/lib/media-url'
 
@@ -111,6 +112,12 @@ export async function POST(req: Request) {
       { status: 402 },
     )
   }
+  /*
+   * What was actually taken (2026-10-23 billing sweep): owner emails are not
+   * charged (newBalance -1), and the row's ticketCost is what a failure gives
+   * back - storing the price for them minted tickets on every failed run.
+   */
+  const charged = ticketResult.newBalance >= 0 ? ticketCost : 0
   const encoder = new TextEncoder()
   const safeFormat = ['jpeg', 'png', 'webp'].includes(outputFormat) ? outputFormat : 'png'
   // FAL only accepts low/medium/high
@@ -123,6 +130,11 @@ export async function POST(req: Request) {
         try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)) } catch {}
       }
       let submittedEventSent = false
+      // Tickets this stream itself must give back (set once fal has the job and no row could be made)
+      let refundOwed = 0
+      const giveBackOnce = async () => {
+        if (refundOwed > 0) { const n = refundOwed; refundOwed = 0; await refundGenerationTickets(userId, sessionUser.email, n) }
+      }
 
       try {
         console.log(`GPT Image 2 stream: quality=${quality}→${safeQuality} size=${size} format=${safeFormat} refs=${referenceImages.length}`)
@@ -164,7 +176,7 @@ export async function POST(req: Request) {
           // If every ref failed to upload, the edit endpoint would 422 on an empty
           // image_urls — fail fast with an actionable message (and refund) instead.
           if (falUrls.length === 0) {
-            await refundGenerationTickets(userId, sessionUser.email, ticketCost)
+            if (charged > 0) await refundGenerationTickets(userId, sessionUser.email, charged)
             send({ type: 'error', error: 'Your reference image(s) couldn\'t be uploaded to the model. Remove and re-add them, then try again.' })
             return
           }
@@ -202,9 +214,17 @@ export async function POST(req: Request) {
               modelId:     'gpt-image-2',
               modelType:   'image',
               prompt:      prompt.trim(),
-              parameters:  { falEndpoint: endpoint, falInput: input, size, quality: safeQuality, ticketCost } as any,
+              /*
+               * chargeMode 'deduct': charged above, at submit - so a failure REFUNDS
+               * it, and the cron's lost-webhook pass (reserve-model jobs only) never
+               * finalizes it a second time. usePolling: if this stream dies, the
+               * page's gpt-image-2-status poll and the cron harvest finish the job.
+               * slotClaimed false: the stream never takes a fal slot, so settling
+               * it gives none back (lib/admin-queue-helpers holdsFalSlot).
+               */
+              parameters:  { falEndpoint: endpoint, falInput: input, size, quality: safeQuality, ticketCost: charged, chargeMode: 'deduct', usePolling: true, slotClaimed: false } as any,
               status:      'processing',
-              ticketCost:  typeof ticketCost === 'number' ? ticketCost : 0,
+              ticketCost:  charged,
               falRequestId: requestId,
               startedAt:   new Date(),
             },
@@ -214,18 +234,23 @@ export async function POST(req: Request) {
         } catch (dbErr) {
           console.error('gpt-image-2-stream: queue entry creation failed (non-fatal):', dbErr)
         }
+        // Without a row nobody else can settle this job: its tickets are this stream's to give back
+        refundOwed = queueEntryId ? 0 : charged
+        /** A failure: through the status-guarded refund when there is a row, else this stream refunds once. */
+        const failJob = async (error: string) => {
+          if (queueEntryId) {
+            const r = await failPolledJob(requestId, error)
+            // Another writer finished it after all - deliver what it saved
+            if (r.status === 'completed') return r
+          } else {
+            await giveBackOnce()
+          }
+          return null
+        }
 
         // Send 'submitted' immediately — client writes slot to sessionStorage
         submittedEventSent = true
         send({ type: 'submitted', requestId, falEndpoint: endpoint, permanentReferenceUrls })
-
-        const markQueueDone = async (status: 'completed' | 'failed') => {
-          if (!queueEntryId) return
-          await prisma.generationQueue.update({
-            where: { id: queueEntryId },
-            data: { status, completedAt: new Date() },
-          }).catch(() => {})
-        }
 
         // Poll until FAL job completes (max ~4 minutes, 5s intervals = 48 polls)
         let result: any = null
@@ -236,15 +261,23 @@ export async function POST(req: Request) {
             result = await fal.queue.result<any>(endpoint, { requestId })
             break
           } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
-            await markQueueDone('failed')
+            const done = await failJob('Generation failed on FAL servers')
+            if (done?.status === 'completed') { send({ type: 'complete', requestId, images: done.images, permanentReferenceUrls }); return }
             send({ type: 'error', error: 'Generation failed on FAL servers' })
             return
           }
         }
 
         if (!result) {
-          await markQueueDone('failed')
-          send({ type: 'error', error: 'Generation timed out' })
+          /*
+           * Still rendering after 4 minutes: NOT a failure (2026-10-23 review).
+           * Failing it here refunded nothing and made the status route refuse to
+           * save it, so a paid image that finished at minute 5 was lost. The row
+           * stays 'processing' (usePolling): the page's poll or the cron harvest
+           * saves it, or refunds it if fal really fails. No row: refund now.
+           */
+          if (!queueEntryId) { await giveBackOnce(); send({ type: 'error', error: 'Generation timed out - your tickets are back' }); return }
+          send({ type: 'error', error: 'Still rendering - it will appear in your feed when it is done' })
           return
         }
 
@@ -252,6 +285,8 @@ export async function POST(req: Request) {
           result?.images || result?.data?.images || []
 
         if (falImages.length === 0) {
+          const done = await failJob('No images returned from model')
+          if (done?.status === 'completed') { send({ type: 'complete', requestId, images: done.images, permanentReferenceUrls }); return }
           send({ type: 'error', error: 'No images returned from model' })
           return
         }
@@ -290,61 +325,58 @@ export async function POST(req: Request) {
         }
 
         if (hostedImages.length === 0) {
-          send({ type: 'error', error: 'Failed to download generated images' })
+          // Re-hosting failed: the page's poll / the cron harvest retries the save (the row stays processing)
+          if (!queueEntryId) await giveBackOnce()
+          send({ type: 'error', error: queueEntryId ? 'Saving the image is taking longer - it will appear in your feed' : 'Failed to download generated images - your tickets are back' })
           return
         }
 
-        // Idempotency: skip DB save if already saved via polling path
-        let savedIds: number[] = []
-        try {
-          const existing = await prisma.generatedImage.findMany({
-            where: { falRequestId: requestId },
-            select: { id: true, imageUrl: true },
-            orderBy: { id: 'asc' },
-          })
-          if (existing.length > 0) {
-            console.log(`↩ GPT Image 2 already saved [${requestId}] — skipping duplicate DB write`)
-            savedIds = existing.map(r => r.id)
-          } else {
-            const created = await Promise.all(hostedImages.map(img =>
-              prisma.generatedImage.create({
-                data: {
-                  userId,
-                  prompt:             prompt.trim(),
-                  imageUrl:           img.url,
-                  model:              'gpt-image-2',
-                  ticketCost:         typeof ticketCost === 'number' ? ticketCost : 0,
-                  quality:            safeQuality,
-                  aspectRatio:        size || '1024x1024',
-                  referenceImageUrls: Array.isArray(permanentReferenceUrls) ? permanentReferenceUrls : [],
-                  expiresAt:          new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-                  falRequestId:       requestId,
-                },
-                select: { id: true },
-              })
-            ))
-            savedIds = created.map(r => r.id)
-          }
-        } catch (dbErr) {
-          console.error('gpt-image-2-stream: DB save failed (non-fatal):', dbErr)
+        /*
+         * One save per job (2026-10-23 billing sweep): through the same lock and
+         * status flip as the gpt-image-2-status poll and the cron harvest, so
+         * racing savers make one set of rows, and a job already failed (refunded)
+         * is not delivered for free.
+         */
+        const rows = hostedImages.map(img => ({
+          userId,
+          prompt:             prompt.trim(),
+          imageUrl:           img.url,
+          model:              'gpt-image-2',
+          ticketCost:         charged,
+          quality:            safeQuality,
+          aspectRatio:        size || '1024x1024',
+          referenceImageUrls: Array.isArray(permanentReferenceUrls) ? permanentReferenceUrls : [],
+          expiresAt:          new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
+        }))
+        const saved = await savePolledImagesOnce(requestId, rows).catch(e => {
+          console.error('gpt-image-2-stream: DB save failed - the poll / harvest retries it:', e)
+          return null
+        })
+        if (!saved) {
+          send({ type: 'error', error: 'Saving the image is taking longer - it will appear in your feed' })
+          return
         }
-
-        await markQueueDone('completed')
-        console.log(`✓ GPT Image 2 completed [${requestId}] ${hostedImages.length} image(s)`)
+        if (!saved.saved) {
+          send({ type: 'error', error: saved.error })
+          return
+        }
+        console.log(`✓ GPT Image 2 completed [${requestId}] ${saved.images.length} image(s)`)
         send({
           type: 'complete',
           requestId,
-          images: hostedImages.map((img, i) => ({ url: img.url, dbId: savedIds[i] ?? null })),
+          images: saved.images.map(img => ({ url: img.imageUrl, dbId: img.id })),
           permanentReferenceUrls,
         })
       } catch (err: any) {
         console.error('gpt-image-2-stream error:', err, 'body:', JSON.stringify(err?.body))
         const { friendlyFalError, extractFalErrorDetail } = await import('@/lib/fal-friendly-errors')
         send({ type: 'error', error: friendlyFalError(extractFalErrorDetail(err)) })
-        // Only refund server-side if FAL submit never happened — post-submit failures
-        // are refunded by the client's existing use-tickets refund call.
-        if (!submittedEventSent) {
-          await refundGenerationTickets(userId, sessionUser.email, ticketCost)
+        // Before fal took it: refund here. After: the row's poll / harvest settles it
+        // (status-guarded), and a job with no row was refunded by giveBackOnce paths.
+        if (!submittedEventSent && charged > 0) {
+          await refundGenerationTickets(userId, sessionUser.email, charged)
+        } else {
+          await giveBackOnce()
         }
       } finally {
         controller.close()

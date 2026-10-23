@@ -15,7 +15,7 @@ import { canonicalisePayload, isOurMedia } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
 import { uploadToR2, uploadPublicAsset } from '@/lib/r2'
 import { boardFolder } from '@/lib/storyboard-shoot'
-import { sanitizeShots, sanitizeScenes, orderByScenes, STILLS_CUT_TICKETS, type StoryboardShot } from '@/lib/storyboard'
+import { sanitizeShots, storyShots, sanitizeScenes, orderByScenes, STILLS_CUT_TICKETS, type StoryboardShot } from '@/lib/storyboard'
 import { renderCaption, isCaptionPos, SAFE_AREAS, type CaptionPos, type SafeArea } from '@/lib/caption-art'
 
 /**
@@ -190,7 +190,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const { W, H } = frameFor(format, board.aspect)
     const safe: SafeArea = SAFE_AREAS[format === 'social' ? 'social' : format === 'card' ? 'card' : 'plain']
     const scenes = sanitizeScenes(board.scenes)
-    let shots = orderByScenes(sanitizeShots(board.shots), scenes)
+    // Scene 0 (the asset scratch paper) is never in a cut
+    let shots = orderByScenes(storyShots(sanitizeShots(board.shots)), scenes)
     if (typeof body.sceneId === 'string' && body.sceneId) shots = shots.filter(s => s.sceneId === body.sceneId)
     const useClips = body.clips === true
     const usable = shots.filter(s => s.stillUrl || (useClips && s.video?.status === 'done' && s.video.url))

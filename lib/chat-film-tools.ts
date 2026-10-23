@@ -258,7 +258,8 @@ export async function executeRenderShots(
         where: {
           userId: ctx.user.id,
           modelType: 'video',
-          status: { in: ['queued', 'processing'] },
+          // 'saving': finished at fal, being stored (lib/video-save-guard) - still in flight
+          status: { in: ['queued', 'processing', 'saving'] },
           createdAt: { gt: new Date(Date.now() - 15 * 60 * 1000) },
           ...(ownIds ? { id: { in: ownIds } } : {}),
         },
@@ -340,7 +341,7 @@ export async function executeRenderShots(
         userId: ctx.user.id,
         modelId: spec.id,
         prompt: shot.prompt.trim(),
-        status: { in: ['queued', 'processing', 'completed'] },
+        status: { in: ['queued', 'processing', 'saving', 'completed'] },
         createdAt: { gt: new Date(Date.now() - 6 * 60 * 60 * 1000) },
         // Only this film's own shots — another production that happens to share
         // a prompt is a different film and must render its own footage.
@@ -553,7 +554,7 @@ export async function executeAssembleFilm(
           // VIDEO only: a still that has not landed does not stop a cut, and
           // blocking on one would deadlock the film behind a stuck plate.
           modelType: 'video',
-          status: { in: ['queued', 'processing'] },
+          status: { in: ['queued', 'processing', 'saving'] },
           // And only recent work — an abandoned row from hours ago is not a
           // reason to refuse forever.
           createdAt: { gt: new Date(Date.now() - 60 * 60 * 1000) },

@@ -1,6 +1,9 @@
 import { OWN_QUEUE_MODEL_IDS } from '@/lib/runpod-video-models'
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { checkAdminRequest } from '@/lib/admin-check'
+// Admins only (2026-10-23 sweep): /api/admin/* is not covered by proxy.ts (it
+// gates pages), so every route here checks for itself - this one did not.
 
 // GET - Fetch queue statistics (pure read — no side effects)
 //
@@ -13,7 +16,8 @@ import prisma from '@/lib/prisma';
 //   • /api/admin/queue/sync-counters  (manual)
 //   • /api/admin/queue/reset-stale    (manual)
 //   • /api/cron/drain-queue           (automatic, every minute)
-export async function GET() {
+export async function GET(req: Request) {
+  if (!await checkAdminRequest(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const [totalQueued, totalProcessing, totalCompleted, totalFailed] = await Promise.all([
       prisma.generationQueue.count({ where: { status: 'queued' } }),
@@ -37,7 +41,7 @@ export async function GET() {
 // (e.g. immediately after force-failing stale jobs, or from the kick endpoint
 // which runs before any concurrent promotions start).
 export async function syncActiveCounters() {
-  const [processingByModel, totalFalProcessing] = await Promise.all([
+  const [processingByModel, allFalProcessing, slotless] = await Promise.all([
     prisma.generationQueue.groupBy({
       by: ['modelId'],
       // 3D jobs run on fal's own queue for minutes to an hour and never held
@@ -47,8 +51,12 @@ export async function syncActiveCounters() {
     }),
     // fal's slots: Higgsfield's jobs run on their own queue (lib/higgsfield)
     prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' }, modelId: { notIn: OWN_QUEUE_MODEL_IDS } } }),
+    // ...minus the rows that never held a fal slot (non-admin video - lib/admin-queue-helpers
+    // holdsFalSlot): their release does not decrement, so counting them ran the counter high
+    prisma.generationQueue.count({ where: { status: 'processing', modelType: { not: 'threed' }, modelId: { notIn: OWN_QUEUE_MODEL_IDS }, parameters: { path: ['slotClaimed'], equals: false } } }),
   ]);
 
+  const totalFalProcessing = Math.max(0, allFalProcessing - slotless)
   const actualCounts: Record<string, number> = {};
   for (const row of processingByModel) {
     actualCounts[row.modelId] = row._count.id;

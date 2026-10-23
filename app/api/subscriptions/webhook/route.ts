@@ -28,13 +28,21 @@ async function getPayPalAccessToken() {
 }
 
 // Verify webhook signature from PayPal
+//
+// Billing sweep 2026-10-23: this FAILED OPEN - with PAYPAL_WEBHOOK_ID unset
+// every POST was accepted, so anyone could send a forged PAYMENT.SALE.COMPLETED
+// and be credited tickets. It now fails closed: no webhook id, no PayPal
+// credentials, a PayPal error or anything but SUCCESS = rejected (401). To use
+// this endpoint, set PAYPAL_WEBHOOK_ID (the id of the webhook in the PayPal
+// developer dashboard) in Vercel.
 async function verifyWebhookSignature(req: NextRequest, body: any): Promise<boolean> {
-  if (!PAYPAL_WEBHOOK_ID) {
-    console.warn('⚠️ PAYPAL_WEBHOOK_ID not set - skipping signature verification');
-    return true; // Allow in development
+  if (!PAYPAL_WEBHOOK_ID || !PAYPAL_CLIENT_ID || !PAYPAL_SECRET) {
+    console.error('PayPal webhook REJECTED: PAYPAL_WEBHOOK_ID / PAYPAL_CLIENT_ID / PAYPAL_SECRET not set - signatures cannot be verified');
+    return false;
   }
-
+  try {
   const accessToken = await getPayPalAccessToken();
+  if (!accessToken) return false;
 
   const headers = {
     'transmission-id': req.headers.get('paypal-transmission-id') || '',
@@ -61,8 +69,13 @@ async function verifyWebhookSignature(req: NextRequest, body: any): Promise<bool
     }),
   });
 
+  if (!verifyResponse.ok) return false;
   const verifyData = await verifyResponse.json();
   return verifyData.verification_status === 'SUCCESS';
+  } catch (e) {
+    console.error('PayPal webhook signature check failed:', e);
+    return false;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -208,29 +221,18 @@ async function handleSubscriptionActivated(body: any) {
   });
 
   if (activatedSub && billingAmount) {
-    // Create initial payment transaction record
-    await prisma.subscriptionTransaction.create({
-      data: {
-        subscriptionId: activatedSub.id,
-        userId: activatedSub.userId,
-        type: 'payment',
-        amount: billingAmount,
-        paypalTransactionId: resource.id, // Subscription ID as reference
-        description: `Initial subscription payment - ${billingCycle}`,
-        metadata: {
-          planId: planId,
-          billingCycle: billingCycle,
-          isInitialPayment: true,
-          activationTime: resource.start_time || resource.create_time,
-        }
-      }
+    // Initial payment record + its tickets, exactly once per subscription (a redelivered
+    // ACTIVATED event used to credit again) - see creditPaymentOnce
+    await creditPaymentOnce(paypalSubscriptionId, resource.id /* the subscription id as the reference */, billingAmount, {
+      description: `Initial subscription payment - ${billingCycle}`,
+      metadata: {
+        planId: planId,
+        billingCycle: billingCycle,
+        isInitialPayment: true,
+        activationTime: resource.start_time || resource.create_time,
+      },
     });
-
-    console.log(`✅ Created initial payment transaction record: $${billingAmount}`);
   }
-
-  // Award initial tickets based on plan
-  await awardTickets(paypalSubscriptionId, billingAmount);
 }
 
 // PAYMENT.SALE.COMPLETED - Recurring payment processed successfully
@@ -257,32 +259,25 @@ async function handlePaymentCompleted(body: any) {
     return;
   }
 
-  // Create payment transaction record
-  await prisma.subscriptionTransaction.create({
-    data: {
-      subscriptionId: subscription.id,
-      userId: subscription.userId,
-      type: 'payment',
-      amount: amount,
-      paypalTransactionId: paypalTransactionId,
-      description: `PayPal subscription payment - ${subscription.billingCycle}`,
-      metadata: {
-        paypalSubscriptionId: paypalSubscriptionId,
-        billingCycle: subscription.billingCycle,
-        paymentDetails: {
-          state: resource.state,
-          paymentMode: resource.payment_mode,
-          createTime: resource.create_time,
-          updateTime: resource.update_time,
-        }
+  if (!paypalTransactionId || !Number.isFinite(amount)) {
+    console.error('PayPal sale without an id or amount - not credited', paypalSubscriptionId);
+    return;
+  }
+  // Payment record + this cycle's tickets, exactly once per sale id (PayPal redelivers webhooks)
+  const fresh = await creditPaymentOnce(paypalSubscriptionId, paypalTransactionId, amount, {
+    description: `PayPal subscription payment - ${subscription.billingCycle}`,
+    metadata: {
+      paypalSubscriptionId: paypalSubscriptionId,
+      billingCycle: subscription.billingCycle,
+      paymentDetails: {
+        state: resource.state,
+        paymentMode: resource.payment_mode,
+        createTime: resource.create_time,
+        updateTime: resource.update_time,
       }
-    }
+    },
   });
-
-  console.log(`✅ Created payment transaction record: $${amount}`);
-
-  // Award tickets for this billing cycle
-  await awardTickets(paypalSubscriptionId, amount);
+  if (!fresh) return; // a redelivery: already credited, billing date already moved
 
   // Update next billing date
   if (subscription.billingCycle) {
@@ -367,80 +362,98 @@ async function handleSubscriptionUpdated(body: any) {
   // You can update relevant fields here if needed
 }
 
-// Helper: Award tickets based on subscription plan
-async function awardTickets(paypalSubscriptionId: string, amount: number | null) {
-  // Get subscription to find userId
-  const subscription = await prisma.subscription.findFirst({
-    where: { paypalSubscriptionId: paypalSubscriptionId },
-  });
-
-  if (!subscription) {
-    console.error('Subscription not found for ticket award');
-    return;
-  }
-
-  // Determine ticket amount based on billing amount
-  let ticketsToAward = 0;
-  let planName = '';
-  if (amount === 20) {
-    ticketsToAward = 250; // Biweekly
-    planName = 'Dev Tier - Biweekly';
-  } else if (amount === 40) {
-    ticketsToAward = 500; // Monthly
-    planName = 'Dev Tier - Monthly';
-  } else if (amount === 480) {
-    ticketsToAward = 500; // Yearly (500/month but only awarded monthly)
-    planName = 'Dev Tier - Yearly';
-  }
-
-  if (ticketsToAward === 0) {
-    console.log('No tickets to award for this amount:', amount);
-    return;
-  }
-
-  // Get current balance before awarding
-  const currentTicket = await prisma.ticket.findUnique({
-    where: { userId: subscription.userId },
-  });
-
-  const previousBalance = currentTicket?.balance || 0;
-
-  // Award tickets
-  const updatedTicket = await prisma.ticket.upsert({
-    where: { userId: subscription.userId },
-    create: {
-      userId: subscription.userId,
-      balance: ticketsToAward,
-      totalBought: ticketsToAward,
-    },
-    update: {
-      balance: { increment: ticketsToAward },
-      totalBought: { increment: ticketsToAward },
-    },
-  });
-
-  const newBalance = updatedTicket.balance;
-
-  console.log(`🎟️ Awarded ${ticketsToAward} tickets to user ${subscription.userId} (${previousBalance} → ${newBalance})`);
-
-  // Create ticket distribution transaction record
-  await prisma.subscriptionTransaction.create({
-    data: {
-      subscriptionId: subscription.id,
-      userId: subscription.userId,
-      type: 'ticket_distribution',
-      ticketsAdded: ticketsToAward,
-      previousBalance: previousBalance,
-      newBalance: newBalance,
-      description: `${planName} - ${ticketsToAward} tickets distributed`,
-      metadata: {
-        planName: planName,
-        billingAmount: amount,
-        billingCycle: subscription.billingCycle,
-        paypalSubscriptionId: paypalSubscriptionId,
-      }
+/*
+ * Billing sweep 2026-10-23 - exactly-once crediting. PAYMENT.SALE.COMPLETED
+ * (and ACTIVATED) are redelivered by PayPal until it sees a 2xx, and the old
+ * handler created the payment row and incremented the balance on EVERY
+ * delivery (SubscriptionTransaction.paypalTransactionId is not unique, so the
+ * database didn't stop it). Now the payment row, the ticket credit and the
+ * distribution row are written in ONE transaction that first takes a
+ * transaction-scoped advisory lock on the PayPal reference and then checks
+ * for an existing payment row with that reference: two concurrent deliveries
+ * serialise on the lock, the second sees the first's row and credits nothing,
+ * and a crash mid-way rolls everything back so the retry credits it once.
+ * (No schema change: a unique index on paypalTransactionId would be the
+ * belt-and-braces follow-up.) Returns true when this call credited.
+ */
+async function creditPaymentOnce(
+  paypalSubscriptionId: string,
+  paypalReference: string,
+  amount: number,
+  record: { description: string; metadata: Record<string, unknown> },
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'paypal-payment-' + paypalReference}))`;
+    const subscription = await tx.subscription.findFirst({ where: { paypalSubscriptionId } });
+    if (!subscription) {
+      console.error('Subscription not found for ticket award');
+      return false;
     }
-  });
+    const seen = await tx.subscriptionTransaction.findFirst({
+      where: { subscriptionId: subscription.id, type: 'payment', paypalTransactionId: paypalReference },
+      select: { id: true },
+    });
+    if (seen) {
+      console.log(`PayPal payment ${paypalReference} already credited - redelivery ignored`);
+      return false;
+    }
+    await tx.subscriptionTransaction.create({
+      data: {
+        subscriptionId: subscription.id,
+        userId: subscription.userId,
+        type: 'payment',
+        amount,
+        paypalTransactionId: paypalReference,
+        description: record.description,
+        metadata: record.metadata as object,
+      },
+    });
 
-  console.log(`✅ Created ticket distribution transaction record`);
+    // Determine ticket amount based on billing amount (unchanged price table)
+    let ticketsToAward = 0;
+    let planName = '';
+    if (amount === 20) {
+      ticketsToAward = 250; // Biweekly
+      planName = 'Dev Tier - Biweekly';
+    } else if (amount === 40) {
+      ticketsToAward = 500; // Monthly
+      planName = 'Dev Tier - Monthly';
+    } else if (amount === 480) {
+      ticketsToAward = 500; // Yearly (500/month but only awarded monthly)
+      planName = 'Dev Tier - Yearly';
+    }
+    if (ticketsToAward === 0) {
+      console.log('No tickets to award for this amount:', amount);
+      return true;
+    }
+
+    const previousBalance = (await tx.ticket.findUnique({ where: { userId: subscription.userId }, select: { balance: true } }))?.balance ?? 0;
+    const updatedTicket = await tx.ticket.upsert({
+      where: { userId: subscription.userId },
+      create: { userId: subscription.userId, balance: ticketsToAward, totalBought: ticketsToAward },
+      update: { balance: { increment: ticketsToAward }, totalBought: { increment: ticketsToAward } },
+      select: { balance: true },
+    });
+    console.log(`Awarded ${ticketsToAward} tickets to user ${subscription.userId} (${previousBalance} -> ${updatedTicket.balance})`);
+
+    await tx.subscriptionTransaction.create({
+      data: {
+        subscriptionId: subscription.id,
+        userId: subscription.userId,
+        type: 'ticket_distribution',
+        ticketsAdded: ticketsToAward,
+        previousBalance,
+        newBalance: updatedTicket.balance,
+        description: `${planName} - ${ticketsToAward} tickets distributed`,
+        metadata: {
+          planName,
+          billingAmount: amount,
+          billingCycle: subscription.billingCycle,
+          paypalSubscriptionId,
+          paypalReference,
+        },
+      },
+    });
+    return true;
+  });
 }

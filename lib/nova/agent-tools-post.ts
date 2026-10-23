@@ -25,7 +25,6 @@
 import { tool, jsonSchema, type ToolSet } from 'ai'
 import prisma from '@/lib/prisma'
 import { uploadToR2 } from '@/lib/r2'
-import { deductGenerationTickets } from '@/lib/ticket-gate'
 import { fal } from '@/lib/fal-client'
 import { geminiGenerate, geminiText, type GeminiRequest } from '@/lib/gemini-generate'
 import { inspectMedia, type MediaReport } from '@/lib/nova/media-inspect'
@@ -34,7 +33,7 @@ import { withClip, withMedia, trimMedia, colourStats, matchFilter, filterClip, o
 import { addLesson } from '@/lib/nova/lessons'
 import { NOVA_CRITIC_MODEL, NOVA_ROUTES, novaCutTickets, novaChatUsd } from '@/lib/nova/config'
 import {
-  guard, settleSpend, newStep, update, ownedRows, kindOf, withPictures, assemble, clip, secondsOf,
+  guard, settleSpend, prepayTool, settlePrepaid, refundPrepaid, commitPrepaid, prepaidAbandoned, newStep, update, ownedRows, kindOf, withPictures, assemble, clip, secondsOf,
   type NovaTurnCtx, type Row,
   agentModel, agentName,
 } from '@/lib/nova/agent-tools'
@@ -162,7 +161,14 @@ export async function runCut(ctx: NovaTurnCtx, edl: Edl, opts: { label: string; 
   const est = novaCutTickets(estSec) + extras
   const refused = guard(ctx, est)
   if (refused) return { error: refused }
-  const step = newStep(ctx, { tool: opts.recutOf ? 'recut' : 'assemble_cut', kind: 'cut', label: opts.label, status: 'running', tickets: est })
+  // Billing sweep 2026-10-23: the estimate is paid BEFORE the render (see prepayTool) - no ticket, no cut
+  const unpaid = await prepayTool(ctx, est)
+  if (unpaid) { await settleSpend(ctx, est, 0); return { error: unpaid } }
+  /** Tickets taken for this cut that a failure must give back (zeroed once settled or refunded). */
+  let held = ctx.isAdmin ? 0 : est
+  let booked = false
+  // `prepaid` is saved with the step: a turn killed mid-render is refunded by sweepStaleTurns
+  const step = newStep(ctx, { tool: opts.recutOf ? 'recut' : 'assemble_cut', kind: 'cut', label: opts.label, status: 'running', tickets: est, prepaid: held })
   const notes: string[] = []
   try {
     // 1. colour: every video clip toward the reference clip
@@ -261,10 +267,12 @@ export async function runCut(ctx: NovaTurnCtx, edl: Edl, opts: { label: string; 
       if (edl.look) notes.push(`${edl.look} look`)
     }
     const actual = novaCutTickets(seconds) + extras
-    let charged = 0
-    if (!ctx.isAdmin) { const paid = await deductGenerationTickets(uid, ctx.user.email, actual); charged = paid.ok ? actual : 0 }
-    // Admins pay nothing but the would-be price still counts against plans and limits
-    await settleSpend(ctx, est, ctx.isAdmin ? actual : charged)
+    // Squared with the prepaid estimate (never delivered unpaid - the estimate was taken up front)
+    // The turn may have ended (Stop / time limit) and refunded this step already: then nothing is delivered
+    if (!commitPrepaid(step)) throw new Error('Cut off before it finished - its tickets were refunded')
+    const charged = await settlePrepaid(ctx, est, actual)
+    held = charged
+    update(ctx, step, { prepaid: charged })
     const row = await prisma.generatedImage.create({
       data: {
         userId: uid, prompt: `${agentName(ctx)} final cut: ${clip(edl.title, 200)}`, imageUrl: url, model: agentModel(ctx, 'final-cut'), ticketCost: charged,
@@ -277,14 +285,26 @@ export async function runCut(ctx: NovaTurnCtx, edl: Edl, opts: { label: string; 
       },
       select: { id: true },
     })
+    // Delivered: the tickets are now spent for good. Admins pay nothing but the would-be price still counts against plans and limits
+    held = 0
+    booked = true
+    await settleSpend(ctx, est, ctx.isAdmin ? actual : charged)
     ctx.seenIds.add(row.id)
-    update(ctx, step, { status: 'done', mediaUrl: url, generationId: row.id, tickets: ctx.isAdmin ? actual : charged, ...(notes.length ? { note: notes.join(' · ') } : {}) })
-    const rep = await inspectMedia(url, 'video', { frames: 3, maxFrameSide: 320 })
-    return { id: row.id, seconds: Math.round(seconds), tickets: actual, ticketsCharged: charged, ...(notes.length ? { done: notes } : {}), check: facts(rep), _pictures: framesToParts(rep) }
+    update(ctx, step, { status: 'done', mediaUrl: url, generationId: row.id, tickets: ctx.isAdmin ? actual : charged, prepaid: 0, ...(notes.length ? { note: notes.join(' · ') } : {}) })
+    // The cut is delivered and paid: a failed frame check must not read as a failed cut
+    const rep = await inspectMedia(url, 'video', { frames: 3, maxFrameSide: 320 }).catch(() => null)
+    return { id: row.id, seconds: Math.round(seconds), tickets: actual, ticketsCharged: charged, ...(notes.length ? { done: notes } : {}), check: rep ? facts(rep) : ['the frame check could not run'], _pictures: rep ? framesToParts(rep) : [] }
   } catch (e: any) {
-    await settleSpend(ctx, est, 0)
+    // Only a cut that was never delivered is refunded (once - `held` is zeroed); a failure after delivery (the frame check) keeps its charge
+    if (!booked) {
+      const back = held; held = 0
+      // An abandoned step was refunded by the turn's end
+      if (!prepaidAbandoned(step)) await refundPrepaid(ctx, back)
+      await settleSpend(ctx, est, 0)
+    }
     const msg = String(e?.message || e).slice(0, 300)
-    update(ctx, step, { status: 'error', error: msg, tickets: 0 })
+    if (booked) return { error: `The cut was saved but something after it failed: ${msg}` }
+    update(ctx, step, { status: 'error', error: msg, tickets: 0, prepaid: 0 })
     return { error: msg }
   }
 }

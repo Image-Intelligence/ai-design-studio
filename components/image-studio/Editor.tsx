@@ -36,7 +36,7 @@ import {
   type Runtime, newCanvas, ctx2d, copyCanvas, canvasId, loadToCanvas, fileToCanvas, toBlob, fitWithin, layerMatrix, toLocal, corners,
   contentSize, hitLayer, measureText, drawText, drawShape, layerContent, compose, flatten, layerInCanvasSpace, canvasMaskToLayer,
   selectionFromPath, selectionFromMaskImage, combineSelection, invertSelection, featherSelection, selectionEmpty, selectionBounds,
-  selectionEdges, brushTip, blurCanvas, applyAdjust, floodMask, parseColor, toHex, growMask, isIOSDevice, deviceMaxSide,
+  selectionEdges, brushTip, blurCanvas, applyAdjust, floodMask, parseColor, toHex, growMask, isIOSDevice, deviceMaxSide, deviceFit, fitDocToDevice,
 } from "./engine"
 import { LayersPanel, AdjustPanel, TextPanel, ShapePanel, CanvasPanel, Slider, ColorField } from "./panels"
 import { AiPanel, type GenRequest } from "./ai-panel"
@@ -289,6 +289,12 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
         d = j.canvas.doc
         setTitle(j.canvas.title)
         setSourceRefId(j.canvas.sourceRefId ?? null)
+      }
+      // Bigger than this device can draw (a 28 MP canvas on an iPad showed blank, 2026-10-23): scaled to fit
+      const fitted = fitDocToDevice(d)
+      if (fitted !== d) {
+        flash(`This canvas is ${d.width} x ${d.height} - shown at ${fitted.width} x ${fitted.height}, the most this device can draw`)
+        d = fitted
       }
       // Every layer's pixels and mask, loaded in parallel
       await Promise.all(d.layers.map(async l => {
@@ -1668,6 +1674,8 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   const resizeImage = (w: number, h: number) => {
     const d = docRef.current!
     w = Math.min(MAX_CANVAS_SIDE, Math.max(16, w)); h = Math.min(MAX_CANVAS_SIDE, Math.max(16, h))
+    // Never past what this device can draw (an iPad's canvases stop at 16.7 MP)
+    ;({ w, h } = deviceFit(w, h, MAX_CANVAS_SIDE))
     const sx = w / d.width, sy = h / d.height
     apply("Image size", dd => ({ ...dd, width: w, height: h, layers: dd.layers.map(l => ({ ...l, x: l.x * sx, y: l.y * sy, w: l.w * sx, h: l.h * sy, ...(l.text ? { text: { ...l.text, size: l.text.size * Math.sqrt(sx * sy) } } : {}) })) }))
     setSelection(null)
@@ -1676,6 +1684,7 @@ export function Editor({ canvasId, inline, canUseLayers = true, onApply, extraAc
   const canvasSize = (w: number, h: number, ax: number, ay: number) => {
     const d = docRef.current!
     w = Math.min(MAX_CANVAS_SIDE, Math.max(16, w)); h = Math.min(MAX_CANVAS_SIDE, Math.max(16, h))
+    ;({ w, h } = deviceFit(w, h, MAX_CANVAS_SIDE))
     const dx = (w - d.width) * ax, dy = (h - d.height) * ay
     apply("Canvas size", dd => ({ ...dd, width: w, height: h, layers: dd.layers.map(l => ({ ...l, x: l.x + dx, y: l.y + dy })) }))
     setSelection(null)

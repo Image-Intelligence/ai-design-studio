@@ -120,25 +120,43 @@ export async function POST(req: Request) {
 
     console.log(`FAL accepted SeeDream 5 Pro job: ${request_id}`)
 
-    const queueEntry = await prisma.generationQueue.create({
-      data: {
-        userId:      user.id,
-        modelId:     'seedream-5-pro',
-        modelType:   'image',
-        prompt:      prompt.trim(),
-        parameters:  {
-          source: 'main-scanner',
-          adminMode: false,
-          quality,
-          aspectRatio,
-          referenceImageUrls,
+    // If this insert fails the job still runs at fal, but with no row the
+    // webhook has nothing to settle - so nothing would ever release the
+    // reservation taken above (2026-10-23 billing sweep). Release it here.
+    let queueEntry: { id: number }
+    try {
+      queueEntry = await prisma.generationQueue.create({
+        data: {
+          userId:      user.id,
+          modelId:     'seedream-5-pro',
+          modelType:   'image',
+          prompt:      prompt.trim(),
+          parameters:  {
+            source: 'main-scanner',
+            adminMode: false,
+            quality,
+            aspectRatio,
+            referenceImageUrls,
+            // How the tickets were taken (lib/queue-settle chargeModeOf), which
+            // counters this job holds (only the global one - see below; the
+            // webhook gives back exactly those), and the endpoint, so the
+            // cron can ask fal about this job if its webhook is lost
+            // (2026-10-23 billing sweep)
+            chargeMode: 'reserve',
+            slots: 'global',
+            falEndpoint: endpoint,
+          },
+          status:      'processing',
+          ticketCost,
+          falRequestId: request_id,
+          startedAt:   new Date(),
         },
-        status:      'processing',
-        ticketCost,
-        falRequestId: request_id,
-        startedAt:   new Date(),
-      },
-    })
+        select: { id: true },
+      })
+    } catch (dbErr) {
+      await releaseReservedTickets(user.id, ticketCost)
+      throw dbErr
+    }
 
     const { FAL_GLOBAL_ID } = await import('@/lib/fal-queue')
     await prisma.modelConcurrencyLimit.updateMany({

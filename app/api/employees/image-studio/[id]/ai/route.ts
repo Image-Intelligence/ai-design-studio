@@ -66,6 +66,8 @@ import {
 export const maxDuration = 300
 /** How long a Higgsfield generate is waited for (inside maxDuration, with room for the steps around it). */
 const HF_WAIT_MS = 240_000
+/** How long a fal run is waited for - the rest of maxDuration is for saving it, or refunding a timeout. */
+const FAL_WAIT_MS = 200_000
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -324,8 +326,26 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   // The feed's generating tile for it (lib/studio-activity)
   const track = await startStudioJob({ userId: user.id, modelType: 'image', modelId: model, prompt: `${what}${prompt ? `: ${prompt}` : ''} (Image Studio)`, studio: 'image-studio', quality: quality || undefined })
+  /*
+   * Bounded (2026-10-23 billing sweep): charged above, then waited on inside
+   * a 300s function - a model still running at maxDuration got the function
+   * killed and the catch below (the refund) never ran. Now the wait is given
+   * up at FAL_WAIT_MS, which leaves time to refund; fetching the result is
+   * bounded too. The fal request id is logged when the wait is given up, so
+   * a result that still finishes can be found in fal's request history.
+   */
+  let falRequestId: string | null = null
   try {
-    const out: any = await fal.subscribe(endpoint, { input })
+    const out: any = await fal.subscribe(endpoint, {
+      input, abortSignal: AbortSignal.timeout(FAL_WAIT_MS),
+      onEnqueue: (id: string) => { falRequestId = id },
+    }).catch((e: any) => {
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+        console.warn(`[image-studio ai] ${model} gave up waiting (fal request ${falRequestId ?? 'unknown'}) - refunded`)
+        throw new Error('The model took too long - your tickets were refunded')
+      }
+      throw e
+    })
     /*
      * Layerize: the background and each object, saved together as ONE card the
      * way the fal webhook saves it (lib/layerize-save); the page gets every
@@ -347,7 +367,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     }
     const falUrl: string | undefined = out?.data?.images?.[0]?.url ?? out?.data?.image?.url
     if (!falUrl) throw new Error('The model returned no image')
-    const res = await fetch(falUrl)
+    const res = await fetch(falUrl, { signal: AbortSignal.timeout(30_000) })
     if (!res.ok) throw new Error('Could not fetch the result')
     let buf: Buffer = Buffer.from(await res.arrayBuffer())
     /*

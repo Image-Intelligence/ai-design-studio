@@ -1,29 +1,61 @@
-import { NextResponse } from 'next/server'
 import { fal } from '@/lib/fal-client'
 import { uploadToR2 } from '@/lib/r2'
-import prisma from '@/lib/prisma'
 import { releaseQueueSlot } from '@/lib/admin-queue-helpers'
 import { getUserFromSession } from '@/lib/auth'
 import { cookies } from 'next/headers'
 import { jsonPrivate } from '@/lib/api-json'
+import {
+  authorizePolledJob, existingPolledImages, savePolledImagesOnce, failPolledJob,
+  pollErrorIsGone, polledJobIsStale, type PolledJobRow,
+} from '@/lib/harvest-polling-jobs'
 
 fal.config({ credentials: process.env.FAL_KEY! })
 
 // POST /api/admin/gpt-image-2-status
 // Polls a FAL queue ChatGPT Images 2.0 job. On completion, re-hosts images on R2 and saves to DB.
+//
+// 2026-10-23 billing sweep: the same shape as nb2-status now (lib/harvest-polling-jobs) -
+// the job must be the caller's (admins: any) and fal is asked at the endpoint stored on the
+// queue row; saved rows are looked for BEFORE any download; the save takes the shared lock
+// and refuses a job already failed and refunded; a download hiccup keeps polling instead of
+// refunding. Before, this route looked for rows only after a slow download and then inserted
+// unlocked, so two pollers (or a poller and the harvester) both saved - duplicate tiles.
 export async function POST(req: Request) {
   let requestId: string | undefined
+  let job: PolledJobRow | null = null
   try {
     const cookieStore = await cookies()
     const token = cookieStore.get('session')?.value
     const sessionUser = token ? await getUserFromSession(token) : null
 
     const body = await req.json()
-    requestId = body.requestId
-    const { falEndpoint, prompt, aspectRatio, quality, referenceImageUrls, ticketCost, size, queuedAt } = body
+    requestId = typeof body.requestId === 'string' ? body.requestId : undefined
+    const { aspectRatio, quality, referenceImageUrls, ticketCost, size, queuedAt } = body
+    const prompt = typeof body.prompt === 'string' ? body.prompt : ''
 
-    if (!requestId || !falEndpoint) {
-      return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 })
+    if (!requestId) {
+      return jsonPrivate({ error: 'Missing requestId' }, { status: 400 })
+    }
+
+    // Owner and fal endpoint from the queue row, not the body
+    const access = await authorizePolledJob(requestId, sessionUser, body.falEndpoint)
+    if (!access.ok) return jsonPrivate({ error: access.error }, { status: access.status })
+    job = access.row
+    const falEndpoint = access.falEndpoint
+
+    // Idempotency FIRST: a repeat poll of a saved job gets its rows back without touching fal or R2
+    const existing = await existingPolledImages(requestId).catch(() => [])
+    if (existing.length > 0) {
+      console.log(`↩ GPT Image 2 already saved [${requestId}] returning ${existing.length} record(s)`)
+      await releaseQueueSlot(requestId, false)
+      return jsonPrivate({
+        status: 'completed',
+        images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
+      })
+    }
+    // Failed (and refunded) already - never deliver it for free
+    if (job && (job.status === 'failed' || job.status === 'cancelled')) {
+      return jsonPrivate({ status: 'failed', error: job.errorMessage || 'Generation failed' })
     }
 
     const status = await fal.queue.status(falEndpoint, { requestId, logs: false })
@@ -35,8 +67,7 @@ export async function POST(req: Request) {
       const falImages: { url?: string; content_type?: string; file_name?: string }[] = result.data?.images || []
 
       if (falImages.length === 0) {
-        await releaseQueueSlot(requestId, true, 'No images returned from model')
-        return jsonPrivate({ status: 'failed', error: 'No images returned from model' })
+        return jsonPrivate(await failPolledJob(requestId, 'No images returned from model'))
       }
 
       const hostedImages: { url: string }[] = []
@@ -70,70 +101,52 @@ export async function POST(req: Request) {
       }
 
       if (hostedImages.length === 0) {
-        await releaseQueueSlot(requestId, true, 'Failed to download generated images')
-        return jsonPrivate({ status: 'failed', error: 'Failed to download generated images' })
+        // A download / R2 hiccup is not the job failing - keep polling until fal has purged it
+        if (polledJobIsStale(job)) return jsonPrivate(await failPolledJob(requestId, 'Failed to download generated images'))
+        return jsonPrivate({ status: 'in_progress', error: 'Could not fetch the result yet - retrying' })
       }
 
-      // Idempotency: skip if already saved
+      // createdAt = when the user QUEUED this generation, not when it finished. The feed
+      // orders on createdAt, so completion time reshuffled tiles on every refresh.
+      // Sanity-capped to the last 24h; the queue row knows when the client forgot.
+      const queuedMs = typeof queuedAt === 'number' ? queuedAt : (job?.createdAt.getTime() ?? 0)
+
+      let saved: Awaited<ReturnType<typeof savePolledImagesOnce>>
       try {
-        const existing = await prisma.generatedImage.findMany({
-          where: { falRequestId: requestId },
-          select: { id: true, imageUrl: true },
-          orderBy: { id: 'asc' },
+        saved = await savePolledImagesOnce(requestId, hostedImages.map(img => ({
+          ...(queuedMs > Date.now() - 24 * 3600 * 1000 && queuedMs <= Date.now() + 60_000
+            ? { createdAt: new Date(queuedMs) } : {}),
+          userId:             job?.userId ?? sessionUser!.id, // the job's owner, even when an admin polls it
+          prompt,
+          imageUrl:           img.url,
+          model:              'gpt-image-2',
+          ticketCost:         typeof ticketCost === 'number' ? ticketCost : 0,
+          quality:            quality || 'medium',
+          aspectRatio:        size || aspectRatio || '1024x1024',
+          referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls : [],
+          expiresAt:          new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
+        })))
+      } catch (dbErr) {
+        // Rolled back, job still processing: the next poll or the harvester saves it
+        console.error('gpt-image-2-status: DB save failed, will retry:', dbErr)
+        return jsonPrivate({ status: 'in_progress', error: 'Saving the result - retrying' })
+      }
+      if (!saved.saved) return jsonPrivate({ status: 'failed', error: saved.error })
+      if (!saved.fresh) {
+        return jsonPrivate({
+          status: 'completed',
+          images: saved.images.map(img => ({ url: img.imageUrl, dbId: img.id })),
         })
-        if (existing.length > 0) {
-          console.log(`↩ GPT Image 2 already saved [${requestId}] returning ${existing.length} record(s)`)
-          return jsonPrivate({
-            status: 'completed',
-            images: existing.map(img => ({ url: img.imageUrl, dbId: img.id })),
-          })
-        }
-      } catch {}
-
-      const savedIds: number[] = []
-      const targetUserId: number | null = sessionUser?.id ?? null
-      if (!targetUserId) {
-        console.error('gpt-image-2-status: no session user — skipping DB save')
-      } else {
-        try {
-          const created = await Promise.all(hostedImages.map(img =>
-            prisma.generatedImage.create({
-              data: {
-                // createdAt = when the user QUEUED this generation, not when it
-                // finished. The feed orders on createdAt, so completion time
-                // reshuffled tiles on every refresh. Sanity-capped to the last 24h.
-                ...(typeof queuedAt === 'number' && queuedAt > Date.now() - 24 * 3600 * 1000 && queuedAt <= Date.now() + 60_000
-                  ? { createdAt: new Date(queuedAt) } : {}),
-                userId:             targetUserId,
-                prompt:             prompt || '',
-                imageUrl:           img.url,
-                model:              'gpt-image-2',
-                ticketCost:         typeof ticketCost === 'number' ? ticketCost : 0,
-                quality:            quality || 'medium',
-                aspectRatio:        size || aspectRatio || '1024x1024',
-                referenceImageUrls: Array.isArray(referenceImageUrls) ? referenceImageUrls : [],
-                expiresAt:          new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-                falRequestId:       requestId,
-              },
-              select: { id: true },
-            })
-          ))
-          created.forEach(r => savedIds.push(r.id))
-        } catch (dbErr) {
-          console.error('gpt-image-2-status: DB save failed (non-fatal):', dbErr)
-        }
       }
 
-      await releaseQueueSlot(requestId, false)
       console.log(`✓ GPT Image 2 completed [${requestId}] ${hostedImages.length} image(s)`)
       return jsonPrivate({
         status: 'completed',
-        images: hostedImages.map((img, i) => ({ ...img, dbId: savedIds[i] ?? null })),
+        images: hostedImages.map((img, i) => ({ ...img, dbId: saved.images[i]?.id ?? null })),
       })
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
-      await releaseQueueSlot(requestId, true, 'Generation failed on FAL servers')
-      return jsonPrivate({ status: 'failed', error: 'Generation failed on FAL servers' })
+      return jsonPrivate(await failPolledJob(requestId, 'Generation failed on FAL servers'))
     } else {
       return jsonPrivate({ status: 'in_progress', falStatus: status.status })
     }
@@ -143,8 +156,12 @@ export async function POST(req: Request) {
     if (error.status === 422 || error.constructor?.name === 'ValidationError') {
       const { friendlyFalError, extractFalErrorDetail } = await import('@/lib/fal-friendly-errors')
       const detail = friendlyFalError(extractFalErrorDetail(error))
-      if (requestId) await releaseQueueSlot(requestId, true, `Generation failed: ${detail}`)
+      if (requestId) return jsonPrivate(await failPolledJob(requestId, `Generation failed: ${detail}`))
       return jsonPrivate({ status: 'failed', error: `Generation failed: ${detail}` })
+    }
+    // fal's own 404 / 410 for an older job: the result is gone for good
+    if (requestId && pollErrorIsGone(error, job)) {
+      return jsonPrivate(await failPolledJob(requestId, 'Generation request expired or not found'))
     }
     return jsonPrivate({ status: 'in_progress', error: error.message })
   }

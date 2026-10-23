@@ -40,7 +40,9 @@ export async function GET(req: Request) {
 
     const params = job.parameters as any
     return NextResponse.json({
-      status: job.status,          // 'queued' | 'processing' | 'completed' | 'failed'
+      // 'queued' | 'processing' | 'completed' | 'failed' - a video being stored ('saving',
+      // lib/video-save-guard) reads as processing, so the page keeps its tile and polls on
+      status: job.status === 'saving' ? 'processing' : job.status,
       falRequestId: job.falRequestId,
       // Higgsfield's queued videos carry their poller marker (lib/higgsfield-models)
       falEndpoint: params?.falEndpoint ?? (params?.provider === 'higgsfield' && params?.hfEndpoint ? `higgsfield:${params.hfEndpoint}`

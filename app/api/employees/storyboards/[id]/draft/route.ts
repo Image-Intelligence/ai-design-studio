@@ -12,7 +12,7 @@ import { deductGenerationTickets, refundGenerationTickets } from '@/lib/ticket-g
 import { storyboardDraftTickets, geminiUsage } from '@/lib/ai-text-pricing'
 import { canonicalisePayload } from '@/lib/media-url'
 import { fetchMedia } from '@/lib/media-fetch'
-import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, sanitizeAssets, assetForDraft, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
+import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX_DRAFT_SHOTS, MAX_SCENES, fitDurations, runtimeRange, lengthLabel, sanitizeShots, storyShots, sanitizeAssets, assetForDraft, sanitizeScenes, orderByScenes, ensureScenes, sceneShots, newShot, newScene, boardMode, isBoardMode, isFraming, framingRule, ASSET_KINDS, imageModelLabel, STORYBOARD_VIDEO_MODELS, refsFromAssets, refsFromPhotos, photoLabel, sceneRefAssets, SCENE_REF_PREFIX, fillCharacterSlots, AUDIO_PLAN_RULES, linesFromPlan, cueFromPlan, voicePicker, voiceMenu, type StoryboardShot, type StoryScene, type StoryAsset } from '@/lib/storyboard'
 
 /**
  * POST /api/employees/storyboards/[id]/draft - plan the board with AI.
@@ -43,7 +43,13 @@ import { STORYBOARD_IMAGE_MODELS, storyboardModelMenu, DURATIONS, MAX_SHOTS, MAX
  * panel) join every action as picture lists - "Scene 2 #3" is that scene's
  * third chosen still - so new shots can be handed earlier shots' stills to
  * carry the same faces, set, outfits and light forward (lib/storyboard
- * sceneRefAssets).
+ * sceneRefAssets). With NONE switched on, extend / scene / regenerate use
+ * every still the board has (2026-10-23, owner: extending "should be able to
+ * use the stills/shots that are already generated as references"), and the
+ * planner sees the ones nearest the new shots.
+ * A NEW scene is the page's: it adds an empty scene where it goes and drafts
+ * it with `scene` - a scene with no name or summary yet is named, cast and
+ * summed up by the planner, and the story rewritten to take it in.
  * A new board can be planned in scenes: `scenes` 2+ splits the `shots` across
  * that many scenes. An OUTFIT PACK always is: one scene per Wardrobe asset (or
  * per outfit the premise names), `shots` per outfit, each scene carrying its
@@ -229,7 +235,8 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const prefVideo = typeof body.preferredVideoModel === 'string' && (STORYBOARD_VIDEO_MODELS as readonly string[]).includes(body.preferredVideoModel) && videoModelOpen(body.preferredVideoModel, user.isAdmin)
     ? body.preferredVideoModel : null
   const boardScenes = sanitizeScenes(board.scenes)
-  const current = orderByScenes(sanitizeShots(board.shots), boardScenes)
+  // The film's shots - Scene 0 (the asset scratch paper) is never drafted, and stays as it is
+  const current = orderByScenes(storyShots(sanitizeShots(board.shots)), boardScenes)
   // The audio lane too (the workspace asks on every draft since 2026-10-21)
   const withAudio = body.audio === true && mode !== 'refs'
   // Set once the plan is read: one voice per speaker (the plan's casting, else the board's)
@@ -254,8 +261,16 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
   const allAssets = sanitizeAssets(board.assets)
   // ...and only the assets (and pictures) switched on for drafting (assetForDraft)
   const assets = allAssets.filter(a => !a.suggested).map(assetForDraft).filter((a): a is StoryAsset => !!a)
-  // The scenes the director switched on as references, as picture lists
-  const sceneAssets = sceneRefAssets({ scenes: boardScenes, shots: current })
+  /*
+   * The scenes the director switched on as references, as picture lists. None
+   * switched on: when new shots are written (extend, a scene, a rewrite) every
+   * still the board already has is offered - minus the shots being rewritten.
+   */
+  const anchor = mode === 'extend' ? Math.max(...picked) : -1 // new shots go after this slot
+  const autoRefs = (mode === 'extend' || mode === 'scene' || mode === 'regenerate') && !boardScenes.some(c => c.asRef)
+  const rewriting = mode === 'regenerate' ? new Set(picked.map(i => current[i].id)) : new Set<string>()
+  const refScenes = autoRefs ? boardScenes.map(c => ({ ...c, asRef: true, refOff: current.filter(x => x.sceneId === c.id && rewriting.has(x.id)).map(x => x.id) })) : boardScenes
+  const sceneAssets = sceneRefAssets({ scenes: refScenes, shots: current })
   // Every picture list "photos" may pick from: the board's assets, then the scenes
   const pool = [...assets, ...sceneAssets]
   const outfitPack = kind.id === 'outfit'
@@ -306,10 +321,26 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     const refs = await ownRefs(user, Array.isArray(body.refs) ? (body.refs as unknown[]).filter((u): u is string => typeof u === 'string').slice(0, 4) : [])
     parts.push(...(await Promise.all(refs.map(inlineRef))).filter(Boolean) as { inlineData: { mimeType: string; data: string } }[])
   }
-  // A still from each referenced scene (its first chosen one), so the planner
-  // sees what those scenes look like - the rest go by their descriptions
-  const sceneImages = (await Promise.all(sceneAssets.slice(0, 6).map(async a => ({ a, got: await inlineRef(a.refs[0].url) })))).filter(x => x.got)
-  for (const { a, got } of sceneImages) parts.push({ text: `${photoLabel(a, 0)} (a still from ${a.name}):` }, got!)
+  /*
+   * Stills the planner SEES. Scenes switched on by hand: the first chosen still
+   * of each. The board's own (autoRefs): the stills nearest where the new shots
+   * go - before them first - so it can tell which face, set and light to carry on.
+   */
+  const labelOfShot = (x: StoryboardShot) => {
+    const a = sceneAssets.find(y => y.id === `${SCENE_REF_PREFIX}${x.sceneId}`)
+    const k = a ? a.refs.findIndex(r => r.id === `s${x.id}`) : -1
+    return a && k >= 0 ? { a, k } : null
+  }
+  const near = mode === 'extend' ? anchor
+    : mode === 'scene' && target ? current.reduce((m, x, i) => (boardScenes.findIndex(c => c.id === x.sceneId) <= boardScenes.indexOf(target) ? i : m), -1)
+    : picked[0] ?? 0
+  const shown = autoRefs
+    ? current.map((x, i) => ({ x, i, at: labelOfShot(x) })).filter(o => o.at)
+        .sort((p, q) => (p.i <= near ? near - p.i : 1000 + p.i - near) - (q.i <= near ? near - q.i : 1000 + q.i - near)).slice(0, 6)
+        .map(o => ({ a: o.at!.a, k: o.at!.k, url: o.x.stillUrl!, about: `shot ${o.i + 1} of the board` }))
+    : sceneAssets.slice(0, 6).map(a => ({ a, k: 0, url: a.refs[0].url, about: `a still from ${a.name}` }))
+  const sceneImages = (await Promise.all(shown.map(async o => ({ ...o, got: await inlineRef(o.url) })))).filter(x => x.got)
+  for (const { a, k, about, got } of sceneImages) parts.push({ text: `${photoLabel(a, k)} (${about}):` }, got!)
   const imageCount = parts.filter(p => 'inlineData' in p).length
   const nums = picked.map(i => i + 1)
   // Each asset, and - when its pictures are described - every picture by its
@@ -373,7 +404,6 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
     const imagePrompt = unlabel(shot.imagePrompt, raw)
     return refs === null ? { ...shot, imagePrompt } : { ...shot, refs, imagePrompt }
   }
-  const anchor = mode === 'extend' ? Math.max(...picked) : -1 // new shots go after this slot
 
   const head = [
     'You are a film director and storyboard artist planning a short AI-generated video, shot by shot, BEFORE any motion is shot.',
@@ -391,7 +421,9 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
       ? `THE DIRECTOR'S PREFERRED MODELS - these override the default model guidance below: ${[prefImage && `every still on "${prefImage}" (imageModel)`, prefVideo && `every shot animated with "${prefVideo}" (videoModel)`].filter(Boolean).join(', and ')}. Use a different model for a shot ONLY where the direction above explicitly asks for one.`
       : '',
     sceneLines.length ? [
-      `SCENES TO REFERENCE - the director chose these scenes' stills as references for new shots (${sceneImages.length ? 'one still of each is attached under its label' : 'described below'}):`,
+      autoRefs
+        ? `THE BOARD'S STILLS SO FAR - every still already made, scene by scene, usable as references for the shots you write (${sceneImages.length ? 'the ones nearest the new shots are attached under their labels' : 'described below'}):`
+        : `SCENES TO REFERENCE - the director chose these scenes' stills as references for new shots (${sceneImages.length ? 'one still of each is attached under its label' : 'described below'}):`,
       ...sceneLines,
       'A new shot that brings back a character, outfit, place or lighting from one of these scenes should list the matching stills in "photos" by their labels ("Scene 2 #3") - the still that shows that person, set or look most clearly and closest to the new frame - next to any asset pictures, and its "imagePrompt" names them in that order ("the man from the first reference image, in the same alley as the second"). Say what to take from each still (the face, the jacket, the set) - never copy its framing or action unless the shot is meant to repeat it.',
     ].join('\n') : '',
@@ -462,9 +494,9 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
         target.summary ? `What happens in it: ${target.summary}` : '',
         names.length ? `In this scene: ${names.join(', ')} - keep each looking the same as everywhere else.` : '',
         'They must cut together with the shots around them (continuity of characters, place, light and time).',
-        blank ? 'The scene has no name or summary yet: also return "scene": {"title": string, "setting": string, "summary": string} for it.' : '',
+        blank ? `This is a NEW scene${k > 0 ? ' that carries the story on from the scene before it - a new place, time or beat, as the direction says' : ''}. It has no name or summary yet: also return "scene": {"title": string, "setting": string, "summary": string, "assets": [the names of THE BOARD'S ASSETS in it, exactly as written]} for it, and "story": the board's story rewritten to take the new scene in.` : '',
         'Rules:', ...SHOT_RULES, editRule('a shot number from THE BOARD AROUND IT above - an existing shot'), '',
-        `Reply with JSON only: {${blank ? '"scene": {"title": string, "setting": string, "summary": string}, ' : ''}"shots": [${SHOT_SHAPE}]}`,
+        `Reply with JSON only: {${blank ? '"scene": {"title": string, "setting": string, "summary": string, "assets": [string]}, "story": string, ' : ''}"shots": [${SHOT_SHAPE}]}`,
       ]
     } else if (mode === 'refs') {
       task = [
@@ -593,14 +625,18 @@ async function handle(req: NextRequest, ctx: Ctx, bill: Bill) {
       })
       if (!fresh.length) return jsonPrivate({ error: 'The model returned no new shots - try again' }, { status: 502 })
       // A scene that had no name yet takes the one the planner gave it
-      const sc = plan?.scene && !target.title && !target.summary ? {
+      const blank = !target.title && !target.summary
+      const named = (Array.isArray(plan?.scene?.assets) ? plan.scene.assets : []).map((n: unknown) => String(n).trim().toLowerCase())
+      const sc = plan?.scene && blank ? {
         ...target,
         title: String(plan.scene.title ?? '').slice(0, 120),
         setting: String(plan.scene.setting ?? '').slice(0, 160),
         summary: String(plan.scene.summary ?? '').slice(0, 2000),
+        // Its cast, from the assets the planner says are in it (a new scene starts with none)
+        ...(target.assetIds.length ? {} : { assetIds: assets.filter(a => named.includes(a.name.trim().toLowerCase())).map(a => a.id) }),
       } : target
       const scenes = boardScenes.map(c => (c.id === target.id ? sc : c))
-      return reply({ title: board.title, story: board.story, look: board.look, shots: orderByScenes([...current, ...fresh], scenes), scenes, changed: fresh.map(s => s.id) })
+      return reply({ title: board.title, story: blank ? story : board.story, look: board.look, shots: orderByScenes([...current, ...fresh], scenes), scenes, changed: fresh.map(s => s.id) })
     }
 
     if (mode === 'replace') {

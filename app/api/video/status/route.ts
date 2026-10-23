@@ -58,7 +58,22 @@ export async function POST(request: NextRequest) {
       ticketCost,
       thumbnailUrl,
       queuedAt,
+      saveDeadlineAt,
+      mayClaimSave,
     } = await request.json();
+
+    /*
+     * In-process callers that will be cut off (2026-10-23 billing sweep): the
+     * cron, Storyboard's shoot poll, Nova's jobs poll and the chat film poll
+     * call this handler as a function inside their own, shorter, time limit.
+     * They claimed the save and were killed mid-download, again and again. A
+     * caller says when it ends (saveDeadlineAt, epoch ms) or that it must not
+     * claim at all (mayClaimSave: false): it then claims only with time to
+     * finish (lib/video-save-guard mayClaimBy), its download is bounded to
+     * fit, and a save that still can't finish hands the claim back. A plain
+     * HTTP poll sends neither and behaves as before.
+     */
+    const deadlineAt: number | null = typeof saveDeadlineAt === 'number' && saveDeadlineAt > 0 ? saveDeadlineAt : null
 
     if (!requestId || !falEndpoint) {
       return jsonPrivate({ error: 'Missing requestId or falEndpoint' }, { status: 400 });
@@ -98,26 +113,38 @@ export async function POST(request: NextRequest) {
           // Close the row, refund and free the slot — the same bookkeeping the
           // ERROR branch below does. Returning the verdict without it left the
           // job 'processing' forever, still holding a concurrency slot.
-          const { releaseQueueSlot } = await import('@/lib/admin-queue-helpers')
-          await releaseQueueSlot(requestId, true, reason).catch(() => {})
+          // failVideoJob also closes a STALE 'saving' claim (2026-10-23 billing
+          // sweep): the cron's sweeper re-saves those through here, and a
+          // result fal has since purged must fail and refund, not loop.
+          const { failVideoJob } = await import('@/lib/video-save-guard')
+          await failVideoJob(requestId, reason).catch(() => {})
           return jsonPrivate({ status: 'failed', error: reason });
         }
         throw err
       }
 
-      // Most models return one `video`; a few (Mirelo SFX) return a list of takes
-      const falVideoUrl = result.data?.video?.url ?? (Array.isArray(result.data?.video) ? result.data.video[0]?.url : undefined);
+      // The one extractor both status routes share (lib/video-save-guard):
+      // `video`, a list of takes (Mirelo SFX) or a `videos` list
+      const { falVideoUrlOf, failVideoJob, finishVideoSave, mayClaimBy, saveDownloadMs, releaseSaveClaim } = await import('@/lib/video-save-guard')
+      const falVideoUrl = falVideoUrlOf(result.data);
       if (!falVideoUrl) {
+        // Final: close the row, refund, free the slot (2026-10-23 billing
+        // sweep - this answered "failed" and left the job 'processing' for
+        // ever, charged and holding its slot)
+        await failVideoJob(requestId, 'No video URL in result').catch(() => {})
         return jsonPrivate({ status: 'failed', error: 'No video URL in result' });
       }
 
       const actualPrompt = result.data?.actual_prompt || prompt;
 
       // Saved exactly once (lib/video-save-guard): fal's file has to answer,
-      // then one call claims the job and only that call downloads and saves.
+      // then one call claims the job ('saving') and only that call downloads
+      // and saves - closing the claim (finishVideoSave) once the row exists.
       // (This route is the cron's and the jobs poll's - it had only a check up
       // front, so polls waiting on one slow download each saved a row.)
-      const claim = await (await import('@/lib/video-save-guard')).claimVideoSave(requestId, falVideoUrl)
+      const claim = await (await import('@/lib/video-save-guard')).claimVideoSave(requestId, falVideoUrl, {
+        mayClaim: mayClaimSave !== false && mayClaimBy(deadlineAt),
+      })
       if (claim.kind === 'saved') {
         console.log(`↩ Video already saved [${requestId}] returning existing record ${claim.id}`)
         return jsonPrivate({
@@ -137,9 +164,11 @@ export async function POST(request: NextRequest) {
 
       // Upload video to Vercel Blob for permanent storage (FAL URLs expire after ~24–48h)
       let permanentVideoUrl = falVideoUrl
+      let rehosted = false
       try {
-        // Bounded: a hung download used to hold every poll at once
-        const videoRes = await fetch(falVideoUrl, { signal: AbortSignal.timeout(240_000) })
+        // Bounded: a hung download used to hold every poll at once (and a
+        // caller with a deadline gets only what fits before it)
+        const videoRes = await fetch(falVideoUrl, { signal: AbortSignal.timeout(saveDownloadMs(deadlineAt)) })
         if (videoRes.ok) {
           const contentType = videoRes.headers.get('content-type') || 'video/mp4'
           const ext = contentType.includes('webm') ? 'webm' : 'mp4'
@@ -171,10 +200,17 @@ export async function POST(request: NextRequest) {
             videoBuffer = Buffer.from(await faststart(videoBuffer))
           }
           permanentVideoUrl = await uploadToR2(filename, videoBuffer, contentType)
+          rehosted = true
           console.log(`[video/status] Uploaded video to blob: ${permanentVideoUrl}`)
         }
       } catch (uploadErr) {
         console.error('[video/status] Failed to upload video to blob (using FAL URL as fallback):', uploadErr)
+      }
+      // A caller with a deadline whose copy didn't make it: hand the claim
+      // back for a caller with time, rather than saving fal's expiring link
+      if (!rehosted && deadlineAt) {
+        await releaseSaveClaim(requestId)
+        return jsonPrivate({ status: 'in_progress' })
       }
 
       // Real dimensions when fal reports them — feeds display tiles at the true
@@ -219,7 +255,8 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // (The GenerationQueue row was settled by the claim above. A recovered
+      // (The GenerationQueue row was claimed above - 'saving' - and is closed
+      // only now that the video row exists: finishVideoSave. A recovered
       // orphan claim can still meet a twin: the lowest id wins, as in
       // admin/video-status)
       const first = await prisma.generatedImage.findFirst({
@@ -229,8 +266,10 @@ export async function POST(request: NextRequest) {
       }).catch(() => null)
       if (first && first.id !== savedVideo.id) {
         await prisma.generatedImage.delete({ where: { id: savedVideo.id } }).catch(() => {})
+        await finishVideoSave(requestId, first.id)
         return jsonPrivate({ status: 'completed', videoUrl: first.imageUrl, thumbnailUrl: first.imageUrl, videoId: first.id, actualPrompt })
       }
+      await finishVideoSave(requestId, savedVideo.id)
 
       return jsonPrivate({
         status: 'completed',
@@ -241,8 +280,8 @@ export async function POST(request: NextRequest) {
       });
 
     } else if ((status as any).status === 'ERROR' || (status as any).status === 'FAILED') {
-      const { releaseQueueSlot } = await import('@/lib/admin-queue-helpers')
-      await releaseQueueSlot(requestId, true, 'Video generation failed on FAL processing servers').catch(() => {})
+      const { failVideoJob } = await import('@/lib/video-save-guard')
+      await failVideoJob(requestId, 'Video generation failed on FAL processing servers').catch(() => {})
       return jsonPrivate({ status: 'failed', error: 'Video generation failed on FAL processing servers' });
     } else {
       // IN_QUEUE or IN_PROGRESS
