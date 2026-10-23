@@ -1624,7 +1624,7 @@ const VIDEO_MODEL_CONFIGS: VideoModelConfig[] = [
     // bring your own (2026-10-22, owner)
     choice: { label: "First frame", note: "Viggle carries a repainted first frame through the clip", options: [{ value: "auto", label: "Auto repaint" }, { value: "mine", label: "My own frame" }] },
     sourceClipImages: { max: 1, label: "Character", hint: "Auto repaint: a clear picture of who replaces the person - the site paints them into the clip's first frame with NanoBanana (its usual price is added). My own frame: the clip's first frame already repainted with your character, same framing and pose - no NanoBanana step.", required: true } },
-  { id: "runpod-h3-swap", name: "H3 Character Swap", durations: [], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
+  { id: "runpod-h3-swap", name: "H3 Character Swap", durations: [], resolutions: ["480p","768p"], supportsEndFrame: false, audioType: "none", isVideoTool: true, toolPrompt: true, supportsReferenceVideo: true, sourceClipMaxSec: 60,
     sourceClipImages: { max: 1, label: "Character", hint: "A picture of the character ON THEIR OWN - full body, plain background - who replaces the largest person in the clip. Not a frame of the clip (that is Viggle Animate's My own frame): H3 builds the new person from this picture.", required: true } },
   { id: "dreamactor-v2", name: "DreamActor v2", durations: [], supportsEndFrame: false, audioType: "none", isVideoTool: true, supportsReferenceVideo: true, sourceClipMaxSec: 30,
     sourceClipImages: { max: 1, label: "Character", hint: "Who performs the clip - one clear picture; people, cartoon characters and pets all work. The video takes the PICTURE's shape, so frame it like the clip.", required: true } },
@@ -2308,7 +2308,8 @@ const ADMIN_VIDEO_MODEL_GROUPS = [
   // public 2026-10-08 and moved to its makers' groups above
 ]
 // Models fal runs without any prompt (their inputs are the image/audio)
-const PROMPTLESS_VIDEO_MODELS = new Set(["runpod-mocha", "runpod-viggle", "runpod-h3-swap", "mureka-lyrics-video", "omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "wan-2.2-animate-move", "dreamactor-v2"])
+// (H3 Character Swap takes an optional one since 2026-10-23 - its worker adds it to H3's swap prompt)
+const PROMPTLESS_VIDEO_MODELS = new Set(["runpod-mocha", "runpod-viggle", "mureka-lyrics-video", "omnihuman-v2", "minimax-h3-max-lipsync", "pixverse-music-video", "minimax-h3-max-camera", "minimax-h3-max-relight", "wan-2.2-animate-replace", "wan-2.2-animate-move", "dreamactor-v2"])
 // What the prompt box is FOR, per model, where "Describe the motion..." would
 // mislead (tools that act on a clip, audio-driven models, the talking photo)
 /** Minutes the portal keeps polling a video before giving up (default 20) - the
@@ -2330,6 +2331,7 @@ const VIDEO_RUN_NAMES: Record<string, string> = {
 const videoRunName = (id: string) => VIDEO_RUN_NAMES[id] ?? VIDEO_MODEL_CONFIGS.find(m => m.id === id)?.name ?? getModelDisplayName(id)
 
 const VIDEO_PROMPT_HINTS: Record<string, string> = {
+  "runpod-h3-swap": "Optional - who to replace and who they become, e.g. \"the man in the blue jacket; a red-haired knight in silver armour\"",
   "higgsfield-genjutsu-motion": "Optional - how the new characters should look or act",
   "higgsfield-genjutsu-swap": "Optional - what to swap and where",
   "higgsfield-genjutsu-lite-motion": "Optional - how the new characters should look or act",

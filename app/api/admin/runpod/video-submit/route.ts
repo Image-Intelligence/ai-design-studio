@@ -134,7 +134,8 @@ export async function POST(req: Request) {
           return jsonPrivate({ success: false, error: "That picture looks like a frame of the clip itself. H3 Character Swap needs a picture of the character on their own (full body, plain background) - it builds the new person from it. For a repainted first frame, use Viggle Animate's My own frame." }, { status: 400 })
         }
         const subject = await vm.firstMatchingSubject(clip, ['person', 'figure']).catch(() => null)
-        input = { action: 'h3-swap', video: runpodMedia(clip), ref: runpodMedia(images[0]), resolution: resolution === '480p' ? '480' : '768', max_seconds: maxSeconds, ...(subject ? { subject } : {}) }
+        // The prompt (optional): who to replace and what the character looks like - the worker adds it to its structured swap prompt
+        input = { action: 'h3-swap', video: runpodMedia(clip), ref: runpodMedia(images[0]), resolution: resolution === '480p' ? '480' : '768', max_seconds: maxSeconds, ...(subject ? { subject } : {}), ...(prompt ? { prompt } : {}) }
       }
       input.keep_audio = settings.keep_audio !== false
       if (typeof settings.seed === 'number') input.seed = settings.seed

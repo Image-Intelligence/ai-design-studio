@@ -34,6 +34,7 @@ Job input:
   output_r2_key  where the finished MP4 goes
   resolution     h3-swap: "480" | "768" (default; Relay's pixel budgets). viggle: always its 480-class ladder
   max_seconds    how much of the clip to render (viggle default 10, up to 15; h3-swap default 15, up to 30)
+  prompt         h3-swap (optional): who to replace and what the character looks like - added to SWAP_PROMPT
   seed, keep_audio (default true)
 Output: {success, output_r2_key, width, height, frames, fps, seconds, seed, timings, handler_version}
 or {success: false, error}.
@@ -58,7 +59,7 @@ import boto3
 import runpod
 from botocore.config import Config
 
-HANDLER_VERSION = '2026-10-22-v4'
+HANDLER_VERSION = '2026-10-23-v5'
 
 COMFY_DIR = '/workspace/ComfyUI'
 COMFY_MODELS = os.path.join(COMFY_DIR, 'models')
@@ -89,6 +90,44 @@ SWAP_FILES = [
     ('akatz-ai/MiniMax-H3-Character-Swap-LoRA', 'h3_character_swap_v1.5.safetensors', 'loras', SWAP_LORA),
     ('Comfy-Org/sam3.1', 'checkpoints/sam3.1_multiplex_fp16.safetensors', 'checkpoints', 'sam3.1_multiplex_fp16.safetensors'),
 ]
+
+# What H3 is told for a character swap: akatz-ai's tested Turbo8 recipe
+# (examples/akatz-labs-character-swap-turbo8-adaptive-window.json in the LoRA's
+# repo), in H3's own structured caption form. Relay's graph only says "Replace
+# the selected person with the reference character" - with that, realistic
+# characters came back as the clip's own person, untouched (2026-10-23: the
+# owner's 13.8 s run changed nothing inside the person's mask; the LoRA card
+# names "returns to the source appearance" as its failure). The user's own
+# words, when given, go after the first line ({extra}).
+SWAP_PROMPT = """Replace the person in <Video 1> with the character shown in <Picture 1>.{extra}
+
+subject_definitions:
+<Subject 1> is the replacement character whose appearance comes from <Picture 1> and whose performance comes from the person being replaced in <Video 1>. Preserve the reference character's facial features, hairstyle, skin tone, body proportions, clothing, colors, and distinctive visual style. The reference image supplies appearance only, not the character's pose, expression, background, or framing.
+<Subject 2> is the surrounding scene from <Video 1>, including its background, lighting, objects, and any people other than the person being replaced.
+<Video 1> is the source video being edited and supplies the shot composition, camera movement, timing, and sequence of actions.
+
+summary:
+[video editing + reference generation] The target video is an edited version of <Video 1>. Replace the original person with <Subject 1>, transferring their complete visible performance to the reference character while preserving <Subject 2> and the source video's framing and timing.
+
+retention_analysis:
+<Subject 1> (throughout [Shot 1]): fully_preserved - maintain the character's referenced identity, clothing, proportions, and visual style consistently as the character performs the source person's movements.
+<Subject 2> (throughout [Shot 1]): fully_preserved - retain the surrounding scene and its changes over time.
+<Video 1>: partially_preserved - retain composition, camera motion, action timing, and duration; replace only the selected person's appearance.
+
+detailed_description:
+Preserve the source scene's visual treatment while retaining the replacement character's distinctive design. Adapt illumination, shading, and perspective to the source scene.
+
+[Shot 1] Begin with the same composition and camera viewpoint as <Video 1>. <Subject 1> occupies the original person's position and follows their movement through the frame. Match the original performance moment by moment: body posture, gestures, head turns, gaze, blinking, facial expressions, and visible mouth movements.
+
+Maintain the reference character's identity through every expression and viewing angle. Hair and clothing move naturally with the transferred performance. Preserve interactions with source-scene objects and the ordering of foreground and background occlusions.
+
+Keep the source video's crop and shot scale. Show only the portions of the replacement character that belong within that framing; do not widen the shot to reproduce the full-body reference. Do not import the reference image's background, static pose, or handheld props. Preserve the source camera movement and action timing through the final frame.
+
+overall_soundscape:
+Retain the source clip's existing sound without adding new dialogue or sound effects.
+
+non_diegetic_music:
+Retain existing source music, if present; add no new music."""
 
 # Viggle-Animate's trained sizes (constant ~400k-pixel area): the clip goes to the nearest shape
 VIGGLE_LADDER = [(416, 960), (448, 896), (480, 832), (544, 736), (640, 640), (736, 544), (832, 480), (896, 448), (960, 416)]
@@ -482,6 +521,8 @@ def swap_job(inp, job, work, jid):
     graph['reference']['inputs']['image'] = ref_name
     graph['prepare']['inputs']['resolution'] = '480' if str(inp.get('resolution')) == '480' else '768'
     graph['adapter']['inputs']['lora_name'] = SWAP_LORA
+    extra = ' '.join(str(inp.get('prompt') or '').split())[:1200]
+    graph['reference_conditioning']['inputs']['prompt'] = SWAP_PROMPT.format(extra=f' {extra}' if extra else '')
     graph['plan']['inputs']['seed'] = seed
     graph['save']['inputs']['filename_prefix'] = f'h3-swap/{jid}'
     runpod.serverless.progress_update(job, 'h3 swap: masking and rendering')
